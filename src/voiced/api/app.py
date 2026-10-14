@@ -24,10 +24,12 @@ from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocket
 
 from voiced import __version__
-from voiced.api import routes_stt, routes_tts
+from voiced.api import routes_stt, routes_tts, status_page
 from voiced.api.context import WS_CLOSE, APIError, Ctx, require_api_key, require_loaded
+from voiced.api.foreign_models import foreign_model_map
 from voiced.config import Settings
 from voiced.context import ServiceContext
+from voiced.engines import registry
 from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
 from voiced.inference import classify
@@ -187,18 +189,10 @@ def _build(ctx: ServiceContext) -> FastAPI:
             ],
         }
 
-    @app.get("/", include_in_schema=False)
-    async def status_page() -> JSONResponse:
-        return _not_implemented("status page")
+    # GET / (the status page) and GET /metrics.json. Unauthenticated like /health.
+    app.include_router(status_page.router)
 
     return app
-
-
-def _not_implemented(what: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        content={"error": {"message": f"{what} is not implemented yet", "type": "not_implemented"}},
-    )
 
 
 def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
@@ -216,6 +210,7 @@ def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
+    app.state.foreign_models = foreign_model_map(registry.list_stt_engines(), engine.name)
     app.include_router(routes_stt.router, dependencies=V1_DEPENDENCIES)
     return app
 
@@ -235,5 +230,6 @@ def create_tts_app(settings: Settings, engine: TTSEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
+    app.state.foreign_models = foreign_model_map(registry.list_tts_engines(), engine.name)
     app.include_router(routes_tts.router, dependencies=V1_DEPENDENCIES)
     return app

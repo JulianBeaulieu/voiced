@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>voiced</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e3e6eb; --text: #1c2026; --muted: #6b7280;
+    --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --accent: #2563eb; --accent-text: #ffffff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --line: #272d36; --text: #e6e9ee; --muted: #8b93a1;
+      --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --accent: #60a5fa; --accent-text: #0f1216;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 24px; }
+  header h1 { font-size: 22px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 14px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--line); font-size: 13px; font-weight: 600; background: var(--panel);
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.ok .dot { background: var(--ok); }
+  .pill.starting .dot { background: var(--warn); }
+  .pill.degraded .dot, .pill.down .dot { background: var(--bad); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    min-height: 84px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .tile .label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .tile .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .tile .value.small { font-size: 15px; font-family: var(--mono); font-weight: 500; }
+  .tile .hint { color: var(--muted); font-size: 12px; }
+  svg.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  section { margin-top: 28px; }
+  section h2 { font-size: 15px; font-weight: 650; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; border-top: 0; }
+  td.mono { font-family: var(--mono); white-space: nowrap; }
+  td.msg { overflow-wrap: anywhere; }
+  .empty { color: var(--muted); font-size: 13px; }
+  textarea, input[type=text], input[type=password], select {
+    width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  textarea { min-height: 84px; resize: vertical; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .row > * { flex: 1 1 160px; }
+  .row > button { flex: 0 0 auto; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); display: inline-flex; align-items: center; gap: 8px;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .out { margin-top: 12px; font-family: var(--mono); font-size: 13px; white-space: pre-wrap; min-height: 1.5em; }
+  .out.err { color: var(--bad); }
+  audio { width: 100%; margin-top: 12px; }
+  footer { margin-top: 36px; color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+  footer a { color: inherit; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">voiced</h1>
+    <span class="pill" id="status"><span class="dot"></span><span id="status-text">connecting</span></span>
+    <span class="sub" id="subtitle"></span>
+  </header>
+
+  <div class="grid">
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-cpu"/></svg>Engine</div><div class="value small" id="engine">-</div><div class="hint" id="languages"></div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-file"/></svg>Model</div><div class="value small" id="model">-</div><div class="hint" id="license"></div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-clock"/></svg>Uptime</div><div class="value" id="uptime">-</div><div class="hint" id="version"></div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-memory"/></svg>Resident memory</div><div class="value" id="memory">-</div><div class="hint" id="memory-kind"></div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-layers"/></svg>Queue</div><div class="value" id="queue">-</div><div class="hint">waiting or running / capacity</div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-activity"/></svg>Last inference</div><div class="value" id="last-ms">-</div><div class="hint" id="last-inference"></div></div>
+  </div>
+
+  <section>
+    <h2><svg class="icon"><use href="#i-gauge"/></svg>Latency</h2>
+    <div class="panel">
+      <div id="ops-empty" class="empty">No inferences yet.</div>
+      <table id="ops" class="hidden">
+        <thead><tr><th>Operation</th><th>p50</th><th>p95</th><th>Samples</th><th>ok</th><th>busy</th><th>client error</th><th>disconnect</th><th>failure</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><svg class="icon"><use href="#i-alert"/></svg>Recent errors</h2>
+    <div class="panel">
+      <div id="errors-empty" class="empty">No errors recorded.</div>
+      <table id="errors" class="hidden">
+        <thead><tr><th>Time (UTC)</th><th>Operation</th><th>Outcome</th><th>Detail</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="apikey-section" class="hidden">
+    <h2><svg class="icon"><use href="#i-key"/></svg>API key</h2>
+    <div class="panel">
+      <input type="password" id="apikey" placeholder="Bearer token for the test box (server.api_key)" autocomplete="off">
+      <div class="hint">Kept in this tab only.</div>
+    </div>
+  </section>
+
+  <section id="tts-box" class="hidden">
+    <h2><svg class="icon"><use href="#i-volume"/></svg>Try it</h2>
+    <div class="panel">
+      <textarea id="tts-text">The quick brown fox jumps over the lazy dog.</textarea>
+      <div class="row">
+        <select id="tts-voice"></select>
+        <button id="tts-play"><svg class="icon"><use href="#i-play"/></svg>Speak</button>
+      </div>
+      <audio id="tts-audio" controls class="hidden"></audio>
+      <div class="out" id="tts-out"></div>
+    </div>
+  </section>
+
+  <section id="stt-box" class="hidden">
+    <h2><svg class="icon"><use href="#i-mic"/></svg>Try it</h2>
+    <div class="panel">
+      <div class="row">
+        <input type="file" id="stt-file" accept="audio/*,video/*,.wav,.mp3,.m4a,.ogg,.flac,.webm">
+        <button id="stt-send"><svg class="icon"><use href="#i-upload"/></svg>Transcribe</button>
+      </div>
+      <div class="out" id="stt-out"></div>
+    </div>
+  </section>
+
+  <footer>
+    <a href="/docs">OpenAPI docs</a>
+    <a href="/health">/health</a>
+    <a href="/metrics.json">/metrics.json</a>
+  </footer>
+</main>
+
+<!-- Lucide icons (https://lucide.dev, ISC license), vendored inline. -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+  <symbol id="i-memory" viewBox="0 0 24 24"><path d="M6 19v-3M10 19v-3M14 19v-3M18 19v-3M8 11V9M16 11V9M12 11V9M2 15h20"/><path d="M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v1.1a2 2 0 0 0 0 3.837V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5.1a2 2 0 0 0 0-3.837Z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
+</svg>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var service = null;
+  var voicesLoaded = false;
+
+  function fmtUptime(s) {
+    s = Math.floor(s);
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    if (d > 0) return d + "d " + h + "h";
+    if (h > 0) return h + "h " + m + "m";
+    if (m > 0) return m + "m " + (s % 60) + "s";
+    return s + "s";
+  }
+  function fmtBytes(b) {
+    if (b == null) return "-";
+    var units = ["B", "KB", "MB", "GB"], i = 0;
+    while (b >= 1024 && i < units.length - 1) { b /= 1024; i++; }
+    return (i >= 2 ? b.toFixed(1) : Math.round(b)) + " " + units[i];
+  }
+  function fmtMs(v) { return v == null ? "-" : (v >= 1000 ? (v / 1000).toFixed(2) + " s" : Math.round(v) + " ms"); }
+  function fmtTime(iso) { return iso ? iso.replace("T", " ").replace("+00:00", "") : ""; }
+  function setStatus(state, text) {
+    var pill = $("status");
+    pill.className = "pill " + state;
+    $("status-text").textContent = text;
+  }
+  function authHeaders() {
+    var key = $("apikey").value.trim();
+    return key ? { "Authorization": "Bearer " + key } : {};
+  }
+  function describeError(r, body) {
+    try { var j = JSON.parse(body); if (j.error && j.error.message) return r.status + ": " + j.error.message; } catch (e) {}
+    return r.status + " " + r.statusText;
+  }
+
+  function render(d) {
+    var h = d.health;
+    if (service !== d.service) {
+      service = d.service;
+      $("title").textContent = "voiced " + service;
+      document.title = "voiced " + service;
+      $("subtitle").textContent = service === "stt" ? "speech-to-text" : "text-to-speech";
+      $("tts-box").classList.toggle("hidden", service !== "tts");
+      $("stt-box").classList.toggle("hidden", service !== "stt");
+    }
+    $("apikey-section").classList.toggle("hidden", !d.api_key_required);
+    setStatus(h.status, h.status === "ok" ? "healthy" : h.status);
+    $("engine").textContent = d.engine.name;
+    $("languages").textContent = "languages: " + (d.engine.languages || []).join(", ");
+    $("model").textContent = d.engine.model;
+    $("license").textContent = "license: " + d.engine.license;
+    $("uptime").textContent = fmtUptime(h.uptime_s);
+    $("version").textContent = "voiced " + h.version;
+    var m = d.metrics;
+    $("memory").textContent = fmtBytes(m.memory.rss_bytes);
+    $("memory-kind").textContent = "current RSS";
+    $("queue").textContent = h.queue_depth + " / " + h.queue_capacity;
+    $("last-ms").textContent = h.last_inference_ms == null ? "-" : fmtMs(h.last_inference_ms);
+    $("last-inference").textContent = h.last_inference_at
+      ? "at " + new Date(h.last_inference_at * 1000).toLocaleTimeString()
+      : "no inference yet";
+
+    var ops = Object.keys(m.operations || {});
+    $("ops-empty").classList.toggle("hidden", ops.length > 0);
+    $("ops").classList.toggle("hidden", ops.length === 0);
+    var obody = $("ops").querySelector("tbody");
+    obody.textContent = "";
+    ops.forEach(function (name) {
+      var op = m.operations[name], c = op.counts, l = op.latency;
+      var tr = document.createElement("tr");
+      [["mono", name], ["mono", fmtMs(l.p50_ms)], ["mono", fmtMs(l.p95_ms)], ["mono", String(l.samples)],
+       ["mono", String(c.ok)], ["mono", String(c.busy)], ["mono", String(c.client_error)],
+       ["mono", String(c.disconnect)], ["mono", String(c.failure)]].forEach(function (cell) {
+        var td = document.createElement("td"); td.className = cell[0]; td.textContent = cell[1]; tr.appendChild(td);
+      });
+      obody.appendChild(tr);
+    });
+
+    var errs = m.recent_errors || [];
+    $("errors-empty").classList.toggle("hidden", errs.length > 0);
+    $("errors").classList.toggle("hidden", errs.length === 0);
+    var tbody = $("errors").querySelector("tbody");
+    tbody.textContent = "";
+    errs.slice(0, 20).forEach(function (e) {
+      var tr = document.createElement("tr");
+      [["mono", fmtTime(e.at)], ["mono", e.operation], ["mono", e.outcome], ["msg", e.detail || ""]].forEach(function (c) {
+        var td = document.createElement("td"); td.className = c[0]; td.textContent = c[1]; tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    if (service === "tts" && !voicesLoaded) loadVoices(d.default_voice);
+  }
+
+  function poll() {
+    fetch("/metrics.json", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    }).then(render).catch(function () {
+      setStatus("down", "unreachable");
+    });
+  }
+  poll();
+  setInterval(poll, 2000);
+
+  function loadVoices(defaultVoice) {
+    fetch("/v1/audio/voices", { headers: authHeaders() }).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    }).then(function (j) {
+      var sel = $("tts-voice");
+      sel.textContent = "";
+      (j.data || []).forEach(function (v) {
+        var o = document.createElement("option");
+        o.value = v.id;
+        o.textContent = v.id + " (" + v.name + ", " + v.language + (v.gender ? ", " + v.gender : "") + ")";
+        if (v.id === defaultVoice) o.selected = true;
+        sel.appendChild(o);
+      });
+      voicesLoaded = sel.options.length > 0;
+    }).catch(function () { /* retried on the next poll */ });
+  }
+  $("apikey").addEventListener("change", function () { voicesLoaded = false; });
+
+  $("tts-play").addEventListener("click", function () {
+    var btn = $("tts-play"), out = $("tts-out"), audio = $("tts-audio");
+    btn.disabled = true; out.className = "out"; out.textContent = "synthesizing...";
+    var t0 = performance.now();
+    var headers = authHeaders(); headers["Content-Type"] = "application/json";
+    fetch("/v1/audio/speech", {
+      method: "POST", headers: headers,
+      body: JSON.stringify({ model: "voiced", input: $("tts-text").value, voice: $("tts-voice").value || undefined, response_format: "wav" })
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(describeError(r, t)); });
+      return r.blob();
+    }).then(function (blob) {
+      var ms = Math.round(performance.now() - t0);
+      if (audio.src) URL.revokeObjectURL(audio.src);
+      audio.src = URL.createObjectURL(blob);
+      audio.classList.remove("hidden");
+      out.textContent = fmtBytes(blob.size) + " of audio in " + ms + " ms";
+      audio.play().catch(function () {});
+    }).catch(function (e) {
+      out.className = "out err"; out.textContent = String(e.message || e);
+    }).then(function () { btn.disabled = false; });
+  });
+
+  $("stt-send").addEventListener("click", function () {
+    var btn = $("stt-send"), out = $("stt-out"), input = $("stt-file");
+    if (!input.files || !input.files[0]) { out.className = "out err"; out.textContent = "Choose an audio file first."; return; }
+    btn.disabled = true; out.className = "out"; out.textContent = "transcribing...";
+    var fd = new FormData();
+    fd.append("file", input.files[0]);
+    fd.append("model", "voiced");
+    fd.append("response_format", "verbose_json");
+    var t0 = performance.now();
+    fetch("/v1/audio/transcriptions", { method: "POST", headers: authHeaders(), body: fd }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(describeError(r, t)); });
+      return r.json();
+    }).then(function (j) {
+      var ms = Math.round(performance.now() - t0);
+      var lines = [j.text || "(no speech detected)", ""];
+      lines.push(j.duration.toFixed(2) + " s of audio, language " + (j.language || "unknown") + ", " + ms + " ms");
+      out.textContent = lines.join("\n");
+    }).catch(function (e) {
+      out.className = "out err"; out.textContent = String(e.message || e);
+    }).then(function () { btn.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

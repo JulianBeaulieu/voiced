@@ -1,0 +1,206 @@
+"""``WS /v1/audio/transcriptions/stream`` with Starlette's TestClient (no sockets).
+
+Close codes follow the ADR 0005 outcome table (``voiced.api.context.WS_CLOSE``).
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+from fastapi import FastAPI
+from starlette.testclient import WebSocketDisconnect
+
+from tests.api.conftest import pcm16, sync_client
+from voiced.config import Settings
+from voiced.engines.base import STTStreamSession
+from voiced.stt import build_stt_app
+from voiced.testing import FakeSTTEngine, FakeSTTStreamSession
+
+PATH = "/v1/audio/transcriptions/stream"
+
+
+def test_partial_then_final(stt_app: FastAPI, stt_engine: FakeSTTEngine) -> None:
+    with sync_client(stt_app) as client, client.websocket_connect(PATH) as ws:
+        ws.send_text(json.dumps({"type": "config", "sample_rate": 16000, "language": "en"}))
+        ws.send_bytes(pcm16(0.3))
+        assert ws.receive_json() == {"type": "partial", "text": "hello"}
+        ws.send_bytes(pcm16(0.2))  # same hypothesis: no second partial
+        ws.send_text(json.dumps({"type": "end"}))
+        final = ws.receive_json()
+        assert final["type"] == "final"
+        assert final["text"] == "hello world"
+        assert final["language"] == "en"
+        assert final["duration"] == pytest.approx(0.5, abs=0.01)
+        assert final["segments"] == [{"start": 0.0, "end": 0.5, "text": "hello world"}]
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 1000
+    assert stt_engine.calls == 1
+    assert stt_app.state.ctx.queue.depth == 0
+    stream = stt_app.state.ctx.metrics.snapshot()["operations"]["stream"]
+    assert stream["counts"]["ok"] == 1 and stream["latency"]["samples"] == 1
+
+
+def test_config_is_optional_and_other_rates_are_resampled(stt_app: FastAPI) -> None:
+    with sync_client(stt_app) as client:
+        with client.websocket_connect(PATH) as ws:
+            ws.send_bytes(pcm16(0.5))
+            ws.send_text(json.dumps({"type": "end"}))
+            assert ws.receive_json()["type"] == "partial"
+            assert ws.receive_json()["duration"] == pytest.approx(0.5, abs=0.01)
+        with client.websocket_connect(PATH) as ws:
+            ws.send_text(json.dumps({"type": "config", "sample_rate": 8000}))
+            ws.send_bytes(pcm16(0.5, sample_rate=8000))
+            ws.send_text(json.dumps({"type": "end"}))
+            ws.receive_json()
+            assert ws.receive_json()["duration"] == pytest.approx(0.5, abs=0.01)
+
+
+def test_end_without_audio_gives_empty_final(stt_app: FastAPI) -> None:
+    with sync_client(stt_app) as client, client.websocket_connect(PATH) as ws:
+        ws.send_text(json.dumps({"type": "end"}))
+        final = ws.receive_json()
+        assert final == {
+            "type": "final",
+            "text": "",
+            "language": None,
+            "duration": 0.0,
+            "segments": [],
+        }
+
+
+def test_bad_frames_are_client_errors_1008(stt_app: FastAPI) -> None:
+    with sync_client(stt_app) as client:
+        for first_frame in ("not json", json.dumps({"type": "config", "sample_rate": "fast"})):
+            with client.websocket_connect(PATH) as ws:
+                ws.send_text(first_frame)
+                with pytest.raises(WebSocketDisconnect) as exc:
+                    ws.receive_json()
+                assert exc.value.code == 1008
+                assert exc.value.reason.startswith("BadFrame: ")
+        with client.websocket_connect(PATH) as ws:
+            ws.send_text(json.dumps({"type": "config", "language": "xx"}))
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
+            assert exc.value.reason.startswith("UnsupportedLanguage: ")
+    assert stt_app.state.ctx.queue.depth == 0
+    stream = stt_app.state.ctx.metrics.snapshot()["operations"]["stream"]
+    assert stream["counts"]["client_error"] == 3
+
+
+def test_odd_sized_frames_carry_the_trailing_byte(stt_app: FastAPI) -> None:
+    audio = pcm16(0.5)  # 16000 bytes
+    frames = [audio[:1001], audio[1001:1002], audio[1002:7777], audio[7777:]]
+    assert [len(f) % 2 for f in frames] == [1, 1, 1, 1]
+    with sync_client(stt_app) as client, client.websocket_connect(PATH) as ws:
+        for frame in frames:
+            ws.send_bytes(frame)
+        ws.send_text(json.dumps({"type": "end"}))
+        ws.receive_json()  # partial
+        final = ws.receive_json()
+        assert final["duration"] == 0.5, "no sample lost or misaligned"
+
+
+def test_idle_session_is_a_disconnect(stt_app: FastAPI) -> None:
+    stt_app.state.ctx.settings.server.session_idle_s = 0.2
+    with sync_client(stt_app) as client:
+        with client.websocket_connect(PATH) as ws:
+            ws.send_bytes(pcm16(0.1))
+            ws.receive_json()
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()  # nothing sent for 0.2 s
+            assert exc.value.code == 1001
+        _wait_for_depth(stt_app, 0)
+        snap = stt_app.state.ctx.metrics.snapshot()
+        assert snap["operations"]["stream"]["counts"]["disconnect"] == 1
+        assert snap["recent_errors"] == [], "disconnects are counted, not logged"
+        assert client.get("/health").json()["status"] == "ok"
+
+
+def test_api_key_enforced_on_websocket(stt_app: FastAPI) -> None:
+    stt_app.state.ctx.settings.server.api_key = "s3cret"
+    with sync_client(stt_app) as client:
+        with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect(PATH):
+            pass
+        assert exc.value.code == 1008
+        with client.websocket_connect(PATH, headers={"Authorization": "Bearer s3cret"}) as ws:
+            ws.send_text(json.dumps({"type": "end"}))
+            assert ws.receive_json()["type"] == "final"
+
+
+def test_configured_languages_are_enforced(settings: Settings) -> None:
+    settings.stt.languages = ["de"]
+    app = build_stt_app(settings, FakeSTTEngine())
+    with sync_client(app) as client, client.websocket_connect(PATH) as ws:
+        ws.send_text(json.dumps({"type": "config", "language": "en"}))
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 1008 and "'en' is not served" in exc.value.reason
+
+
+def test_queue_full_closes_with_1013(settings: Settings) -> None:
+    app = build_stt_app(settings, FakeSTTEngine())  # queue_depth is 2 in the test settings
+    with sync_client(app) as client:
+        first = client.websocket_connect(PATH).__enter__()
+        second = client.websocket_connect(PATH).__enter__()
+        first.send_bytes(pcm16(0.1))
+        first.receive_json()  # partial: the first session holds the slot
+        _wait_for_depth(app, 2)
+        with client.websocket_connect(PATH) as third:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                third.receive_json()
+            assert exc.value.code == 1013
+        for ws in (first, second):
+            ws.send_text(json.dumps({"type": "end"}))
+            while ws.receive_json()["type"] != "final":
+                pass
+            ws.__exit__(None, None, None)
+    _wait_for_depth(app, 0)
+
+
+def test_client_disconnect_releases_slot(stt_app: FastAPI) -> None:
+    with sync_client(stt_app) as client:
+        with client.websocket_connect(PATH) as ws:
+            ws.send_bytes(pcm16(0.2))
+            ws.receive_json()
+            _wait_for_depth(stt_app, 1)
+        # Context exit sends a disconnect without "end"; the session closes and the slot frees.
+        _wait_for_depth(stt_app, 0)
+        with client.websocket_connect(PATH) as ws:
+            ws.send_text(json.dumps({"type": "end"}))
+            assert ws.receive_json()["type"] == "final"
+    assert stt_app.state.ctx.metrics.snapshot()["operations"]["stream"]["counts"]["disconnect"] == 1
+
+
+def test_engine_failure_closes_with_1011_and_degrades_health(settings: Settings) -> None:
+    class BrokenSession(FakeSTTStreamSession):
+        async def add_audio(self, samples) -> None:  # type: ignore[no-untyped-def]
+            raise RuntimeError("metal wedged")
+
+    class Broken(FakeSTTEngine):
+        async def stream(self, language: str | None = None) -> STTStreamSession:
+            return BrokenSession(self, language)
+
+    app = build_stt_app(settings, Broken())
+    with sync_client(app) as client:
+        with client.websocket_connect(PATH) as ws:
+            ws.send_bytes(pcm16(0.1))
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1011
+            assert exc.value.reason == "RuntimeError: metal wedged"
+        _wait_for_depth(app, 0)
+        health = client.get("/health").json()
+        assert health["status"] == "degraded"
+        assert "metal wedged" in health["last_error"]
+
+
+def _wait_for_depth(app: FastAPI, depth: int, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while app.state.ctx.queue.depth != depth:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"queue depth {app.state.ctx.queue.depth}, expected {depth}")
+        time.sleep(0.01)
