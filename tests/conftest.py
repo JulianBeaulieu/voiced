@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -25,6 +26,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("model") is not None:
             item.add_marker(skip)
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+    return port
 
 
 @pytest.fixture
@@ -55,11 +63,15 @@ def tts_engine() -> FakeTTSEngine:
 
 @pytest.fixture
 def stt_app(settings: Settings, stt_engine: FakeSTTEngine) -> FastAPI:
+    # Ephemeral Wyoming port so running the app lifespan in a test never binds
+    # the real 10300 (which may be in use by `voiced serve` elsewhere).
+    settings.stt.wyoming_port = _free_port()
     return build_stt_app(settings, stt_engine)
 
 
 @pytest.fixture
 def tts_app(settings: Settings, tts_engine: FakeTTSEngine) -> FastAPI:
+    settings.tts.wyoming_port = _free_port()
     return build_tts_app(settings, tts_engine)
 
 
