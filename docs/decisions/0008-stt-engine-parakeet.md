@@ -123,10 +123,12 @@ lead-in from 0 to 620 ms) per row, real-time paced:
 
 | Chunks | After the speech | Worst | p95 | Median | Over 50 ms |
 |---|---|---|---|---|---|
-| 100 ms | digital silence | 120 ms | 114 ms | 10 ms | 15 of 32 |
-| 100 ms | -55 dBFS room noise, speech at -6 dBFS | 109 ms | 107 ms | 2 ms | 14 of 32 |
-| 64 ms | digital silence | 163 ms | 162 ms | 54 ms | 17 of 32 |
-| 64 ms | -55 dBFS room noise, speech at -6 dBFS | 156 ms | 155 ms | 21 ms | 15 of 32 |
+| 100 ms | digital silence | 148 ms | 119 ms | 14 ms | 15 of 32 |
+| 100 ms | -55 dBFS room noise, speech at -6 dBFS | 126 ms | 123 ms | 3 ms | 14 of 32 |
+| 64 ms | digital silence | 172 ms | 166 ms | 64 ms | 17 of 32 |
+| 64 ms | -55 dBFS room noise, speech at -6 dBFS | 186 ms | 167 ms | 29 ms | 15 of 32 |
+
+A second run of the same sweep gave worst cases of 109 to 163 ms and medians of 2 to 54 ms: the share of alignments over 50 ms is stable, the exact numbers move by a few tens of milliseconds.
 
 The distribution is bimodal: a few milliseconds, or about one encoder call.
 For comparison, the simple rule (no flush before `finalize()`), over 16
@@ -143,13 +145,13 @@ Other numbers:
 |---|---|
 | Load from local cache plus warm-up | 1.2 s (about 8 s with a cold disk cache) |
 | Batch, 3.4 s clip, first call in the process | 130 ms |
-| Batch, 9.4 s clip, warm | 163 ms |
-| `add_audio`, max | 0.35 ms |
+| Batch, 9.4 s clip, warm | 164 ms |
+| `add_audio`, max | 0.97 ms |
 | `finalize()` after the fixture with 1 s of trailing silence | 1.9 ms |
-| `finalize()` for a 3.4 s clip delivered in one burst | 1.46 s (one call per 400 ms) |
+| `finalize()` for a 3.4 s clip delivered in one burst | 1.50 s (one call per 400 ms) |
 | Pauses of 110, 250 and 400 ms between words, flush on against off, real weights | identical text, 6 to 9 rollbacks each |
 | Room noise before speech (-55 dBFS, 300 to 800 ms lead-in, 30 runs) | 0 of 30 with invented leading words, gate off and gate on |
-| Peak resident memory, model test process | 1.89 GB |
+| Peak resident memory, model test process (all tests, `ru_maxrss`) | 1.95 GB |
 
 The invented leading words of fact 4 appeared in 2 of about 50 runs on
 earlier versions of the pass logic and in none of 30 on the final grid, with
@@ -168,7 +170,7 @@ An encoder call takes about 195 ms for a 3 s utterance, and the endpointer
 window is 192 ms. When a regular grid call happens to start in the last
 200 ms of speech, the end-of-speech flush can only start once it finishes:
 two calls after the speaker stops, about 390 ms, so `finalize()` waits 100 to
-165 ms. Traced on the worst alignments: a grid call from -49 ms to +145 ms
+185 ms. Traced on the worst alignments: a grid call from -49 ms to +145 ms
 around the end of speech, then the flush from +146 ms to +340 ms, finalize
 called at +207 ms. Every design that encodes during speech has this case;
 the speculative flush only removes the call that would otherwise always
