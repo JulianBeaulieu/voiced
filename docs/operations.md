@@ -125,7 +125,7 @@ now. The design is in [ADR 0012](decisions/0012-watchdog.md).
 |---|---|
 | `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
 | `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
-| `~/Library/Logs/voiced/<service>.stderr.log` | launchd's capture of stderr. The services also log every line to stderr, so this file repeats the service log, plus tracebacks from a failed startup. It is not rotated; truncate it by hand if it grows. |
+| `~/Library/Logs/voiced/<service>.stderr.log` | launchd's capture of stderr. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | launchd's capture of stdout; normally empty. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.

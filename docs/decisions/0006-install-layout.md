@@ -62,6 +62,22 @@ afterwards only if that left it empty. Every recursive delete is also
 guarded against the filesystem root, the home directory and its ancestors,
 and symlinks.
 
+### Logs
+
+Each service writes its log through a `RotatingFileHandler` to
+`<log_dir>/<service>.log` (10 MB, five backups). The plist also points
+`StandardErrorPath` at `<service>.stderr.log`, and launchd never rotates
+that file, so a service that logged every line to stderr as well would grow
+it without bound and duplicate the rotated log. `configure_logging`
+therefore adds a stderr handler only when there is no log directory or
+stderr is a terminal (`voiced serve` run by hand, which shows every line).
+Under launchd stderr is a file, so no log records go there; the stderr file
+keeps only what bypasses logging: a traceback from a crash during import or
+before logging is configured, and errors raised by the logging system
+itself. The watchdog follows the same rule (ADR 0012). `voiced logs` reads
+the rotated `<service>.log`; `voiced logs --stderr` adds the stderr file
+when looking for a crash.
+
 `HF_HOME` is resolved once when the plan is built (`[install] hf_home`,
 else the installing shell's `HF_HOME`, else unset) and written identically
 into the plists and the model download command, so the daemons find the
