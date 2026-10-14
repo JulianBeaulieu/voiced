@@ -11,6 +11,7 @@ from voiced.audio import (
     UnsupportedAudioFormat,
     float32_to_pcm16,
     pcm16_to_float32,
+    resample,
     wav_header,
 )
 from voiced.engines.base import EngineError
@@ -100,6 +101,46 @@ def test_wav_header_streaming_form() -> None:
     h = wav_header()
     assert len(h) == 44
     assert h[4:8] == b"\xff\xff\xff\xff" and h[40:44] == b"\xff\xff\xff\xff"
+
+
+def test_resample_same_rate_is_identity() -> None:
+    audio = np.linspace(-1, 1, 100, dtype=np.float32)
+    out = resample(audio, 24_000, 24_000)
+    assert out.dtype == np.float32
+    assert np.array_equal(out, audio)
+
+
+def test_resample_rejects_nonpositive_rates() -> None:
+    with pytest.raises(ValueError):
+        resample(np.zeros(10, dtype=np.float32), 0, 24_000)
+    with pytest.raises(ValueError):
+        resample(np.zeros(10, dtype=np.float32), 32_000, 0)
+
+
+def test_resampled_chunk_durations_add_up() -> None:
+    """Chunks resampled separately add up to the whole within one sample per chunk."""
+    pytest.importorskip("scipy")
+    for n in [160, 321, 1600, 16_001]:
+        out = resample(np.zeros(n, dtype=np.float32), 32_000, 24_000)
+        assert abs(len(out) - n * 3 / 4) <= 1
+
+
+def test_resample_flattens_batch_dimension() -> None:
+    pytest.importorskip("scipy")
+    out = resample(np.zeros((1, 3200), dtype=np.float32), 32_000, 24_000)
+    assert out.shape == (2400,)
+
+
+def test_resample_32k_to_24k_keeps_the_tone() -> None:
+    pytest.importorskip("scipy")
+    src_rate, seconds = 32_000, 0.5
+    t = np.arange(int(src_rate * seconds)) / src_rate
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    out = resample(tone, src_rate, 24_000)
+    assert len(out) == int(24_000 * seconds)
+    freqs = np.fft.rfftfreq(len(out), 1 / 24_000)
+    assert abs(freqs[int(np.argmax(np.abs(np.fft.rfft(out))))] - 440) < 5
+    assert np.max(np.abs(out)) == pytest.approx(0.5, abs=0.02)
 
 
 def _encode(x: np.ndarray, width: int) -> bytes:

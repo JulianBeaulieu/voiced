@@ -14,9 +14,10 @@ import pytest
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded, UnknownVoice
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.sentence import SentenceTTSEngine
+from voiced.engines.soprano import SopranoEngine
 from voiced.queue import InferenceQueue
 
-ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine]
+ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine, SopranoEngine]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
 

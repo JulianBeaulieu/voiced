@@ -26,11 +26,12 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.inference` | `inference()` around every engine call: slot, timing, health, metrics; `classify()` and `bounded()` for transports (ADR 0005). |
 | `voiced.threads` | `run_blocking()`: thread calls that keep the slot until the GPU is idle, even on cancel; `ModelThread`: the same, pinned to one thread per MLX engine (MLX streams are per thread). |
 | `voiced.metrics` | `Operation`, `Outcome`; per-operation p50/p95 latency, outcome counts, recent errors, resident memory. |
-| `voiced.audio` | PCM conversion (`PCMConverter`, int16 and float32), WAV headers, and `frame_rms` / `dbfs_to_amplitude` on the shared 32 ms frame. No transport imports. |
+| `voiced.audio` | PCM conversion (`PCMConverter`, int16 and float32), `resample` (polyphase, for engines whose model rate is not 24 kHz), WAV headers, and `frame_rms` / `dbfs_to_amplitude` on the shared 32 ms frame. No transport imports. |
 | `voiced.vad` | Endpointing: `Endpointer` (speech start and end with the `vad_silence_ms` window) over `SileroDetector`. Top level because the STT engine uses it and the transports will. |
 | `voiced.engines` | Frozen engine interfaces and the entry-point registry. |
 | `voiced.engines.sentence` | `SentenceTTSEngine`: `load()`, the loaded, voice and speed checks, and the split-synthesize-yield loop shared by sentence-at-a-time TTS engines. |
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
+| `voiced.engines.soprano` | The Soprano TTS engine, selectable, not default (repetition penalty and a per-sentence bound against runaways); see ADR 0010. |
 | `voiced.engines.parakeet` | The Parakeet TDT STT engine (`parakeet-mlx`): batch, and streaming through a planner (gate, grid, speculative final call) and a thin library seam; see ADR 0008. |
 | `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |
 | `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies; `api.ffmpeg` decodes uploads and encodes mp3/opus through ffmpeg; `api.formats` renders transcripts (json, text, verbose_json, srt, vtt); `api.foreign_models` rejects a `model` that names another installed engine; `api.responses` holds `ClosingStreamingResponse`; `api.status_page` serves `/` and `/metrics.json`. |

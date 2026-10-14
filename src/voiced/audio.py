@@ -8,6 +8,7 @@ callers pass plain ``bytes`` and format parameters.
 from __future__ import annotations
 
 import struct
+from fractions import Fraction
 
 import numpy as np
 from numpy.typing import NDArray
@@ -81,6 +82,23 @@ def frame_rms(samples: NDArray[np.float32], frame: int = VAD_FRAME_SAMPLES) -> N
         arr = np.concatenate([arr, np.zeros(pad, dtype=np.float32)])
     frames = arr.reshape(-1, frame)
     return np.sqrt(np.mean(np.square(frames), axis=1)).astype(np.float32)
+
+
+def resample(samples: NDArray[np.floating], src_rate: int, dst_rate: int) -> NDArray[np.float32]:
+    """Polyphase resampling (``scipy.signal.resample_poly``, imported lazily; ``tts`` extra).
+
+    Chunks resampled separately add up to the whole within one sample per chunk.
+    """
+    if src_rate == dst_rate:
+        return np.asarray(samples, dtype=np.float32).reshape(-1)
+    if src_rate <= 0 or dst_rate <= 0:
+        raise ValueError(f"sample rates must be positive, got {src_rate} and {dst_rate}")
+    from scipy.signal import resample_poly
+
+    ratio = Fraction(dst_rate, src_rate)
+    flat = np.asarray(samples, dtype=np.float32).reshape(-1)
+    out = resample_poly(flat, ratio.numerator, ratio.denominator)
+    return np.asarray(out, dtype=np.float32)
 
 
 def wav_header(
