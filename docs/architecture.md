@@ -115,7 +115,7 @@ pinning it.
 
 | Stream | Holds the slot |
 |---|---|
-| WebSocket transcription | from the first frame to `final` |
+| WebSocket transcription | from the accepted connection to `final` |
 | Wyoming STT utterance | from `AudioStart` to `Transcript`, with size and wall-clock limits ([details](api.md#wyoming-protocol)) |
 | HTTP speech | while synthesizing; the response is delivered from a buffer after the slot is released |
 | Wyoming streaming TTS | one sentence at a time, so a conversation agent pausing between sentences does not block others |
@@ -150,8 +150,8 @@ fields and the `starting`, `ok` and `degraded` rules are in the
 [API reference](api.md#get-health). Only a `failure` outcome makes a service
 `degraded`; a stream of bad requests cannot make the watchdog restart a
 healthy model. `voiced.metrics` keeps per-operation outcome counts, p50 and
-p95 latency over the last 1000 inferences and the last 50 errors, in memory,
-for the status page.
+p95 latency over the last 1000 successful inferences and the last 50 errors,
+in memory, for the status page.
 
 ## launchd and the watchdog
 
@@ -279,6 +279,8 @@ class PiperEngine(TTSEngine):
 
     async def voices(self) -> list[Voice]:
         return [Voice(id="en_US-lessac-medium", name="Lessac", language="en-US")]
+
+    def _synth(self, sentence: str, voice: str, speed: float) -> bytes: ...  # blocking
 
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0

@@ -1,7 +1,8 @@
 # API reference
 
-voiced runs two HTTP servers, one per service. Each one also serves its
-OpenAPI schema at `/docs`. The Wyoming listeners used by Home Assistant are
+voiced runs two HTTP servers, one per service. Each one also serves
+interactive Swagger UI at `/docs` and its OpenAPI schema at
+`/openapi.json`. The Wyoming listeners used by Home Assistant are
 described at the [end of this page](#wyoming-protocol).
 
 | Service | Default base URL | Endpoints |
@@ -46,7 +47,7 @@ listeners are not affected: the protocol has no authentication.
 ## The `model` field
 
 Each service runs exactly one model, so `model` in a request is ignored:
-`whisper-1`, `tts-1`, `kokoro` or anything else selects the running engine.
+`whisper-1`, `tts-1` or any other name selects the running engine.
 The one exception is a name that belongs to another engine installed on the
 same machine (its engine name or model id). That is a `400`
 `model_not_served`, because the caller clearly expected a different model.
@@ -220,8 +221,9 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 | `mp3` | `audio/mpeg` | Encoded by ffmpeg while synthesis runs. |
 | `opus` | `audio/ogg` | Opus in an Ogg container, encoded by ffmpeg while synthesis runs. |
 
-Errors are decided before any audio is sent, so a failed request never
-arrives as a truncated file:
+Errors found before the first audio, listed below, are ordinary HTTP
+errors. An engine failure later in a long text ends the stream early,
+since the status line has already been sent:
 
 | Status | `type` | When |
 |---|---|---|
@@ -235,10 +237,8 @@ synthesis at the next chunk and is counted as a `disconnect` on the status
 page. A hang-up after synthesis finished counts as `ok`: the audio was
 produced and only its delivery failed. A client that stays connected but
 stops reading is cut off after `server.write_timeout_s` (default 10 s),
-which frees its encoder and buffered audio; uvicorn then logs
-`ASGI callable returned without completing response` at ERROR level. That
-line is a client that stopped reading, not a server error, and health is
-untouched.
+which frees its encoder and buffered audio and leaves an expected ERROR
+line in the log ([details](operations.md#logs)).
 
 ```python
 from openai import OpenAI
@@ -381,7 +381,7 @@ internet. If an API key is set, type it into the page to use the test box.
 | `service` | `stt` or `tts` |
 | `engine` | `name`, `model`, `license`, `languages` |
 | `health` | The `/health` document |
-| `metrics` | Per-operation (`transcribe`, `stream`, `speech`) counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`), p50 and p95 latency over the last 1000 inferences, the last 50 errors, resident memory |
+| `metrics` | `operations`: per operation (`transcribe`, `stream`, `speech`), counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`) and p50 and p95 latency over the last 1000 successful inferences. `recent_errors`: the last 50 errors. `memory.rss_bytes`: resident memory. |
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
 
@@ -412,10 +412,11 @@ the message with the exception name (`UnknownVoice`, `UnsupportedLanguage`,
 | 500 | `ffmpeg_missing` | ffmpeg is needed and not installed. |
 | 503 | `server_busy` | The inference queue is full, or the model is still loading. Carries `Retry-After: 1`. |
 
-The `openai` client raises `openai.BadRequestError`,
-`openai.AuthenticationError`, `openai.InternalServerError` and
-`openai.APIStatusError` (for 413 and 503) accordingly, with the message in the
-exception.
+The `openai` client raises `openai.BadRequestError` for 400,
+`openai.AuthenticationError` for 401, `openai.InternalServerError` for 500
+and 503, and a plain `openai.APIStatusError` for 413, with the message in
+the exception. It retries 500 and 503 automatically, honouring
+`Retry-After`, before raising.
 
 ## Concurrency
 
@@ -439,8 +440,9 @@ in [ADR 0011](decisions/0011-wyoming.md).
 `voiced` and one model whose name is the model id and whose languages are
 the [served languages](#languages). Send `Transcribe` (with an optional
 `language`), `AudioStart`, `AudioChunk` events, then `AudioStop`; the answer
-is `Transcript`. Any sample width, channel count and rate is accepted and
-converted to mono 16 kHz. `requires_external_vad` is true: the client
+is `Transcript`. Sample widths of 1, 2 or 4 bytes, any channel count and
+any rate are accepted and converted to mono 16 kHz; another width is an
+`invalid_request_error`. `requires_external_vad` is true: the client
 decides when speech ends.
 
 Bounds on one utterance, so a client cannot hold the GPU indefinitely:

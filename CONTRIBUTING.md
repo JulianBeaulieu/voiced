@@ -107,7 +107,8 @@ under 300 KB each, free of personal content. Never commit model weights.
   the `stt` or `tts` extras; test and lint tools in the `dev` group.
 - Documentation that describes behaviour which has not landed yet carries an
   HTML comment `<!-- TODO(phase2): ... -->` on its own line. The canonical
-  list of open items is `grep -rn 'TODO(phase2)' README.md CONTRIBUTING.md docs`;
+  list of open items is
+  `grep -rn 'TODO(phase2)' README.md CONTRIBUTING.md CHANGELOG.md docs`;
   resolve the item and delete the comment in the same change.
 
 ## Adding an engine

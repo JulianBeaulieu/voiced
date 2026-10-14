@@ -16,7 +16,7 @@ merge, and this index is updated when a record lands on `main`.
 | [0007](0007-http-api.md) | HTTP API layer | ffmpeg as an external dependency, every speech format streaming, upload and input limits, the `model` field, the WebSocket protocol, the status page. |
 | [0009](0009-tts-kokoro-espeak-tokens.md) | Kokoro pronounces espeak-ng phonemes | espeak-ng phonemes into the MLX model instead of misaki, how espeak-ng is found, the GPL-3 implication. |
 | [0011](0011-wyoming.md) | Wyoming listeners | In-process listeners, STT utterance bounds, per-sentence TTS slots, error codes, zeroconf only when reachable, what Home Assistant expects. |
-| [0012](0012-watchdog.md) | Watchdog design | Stdlib-only third daemon, the decision rules, stall detection, restart by SIGKILL plus `kickstart` as a non-root user. Written as a second 0005 and renumbered. |
+| [0012](0012-watchdog.md) | Watchdog design | Stdlib-only third daemon, the decision rules, stall detection, restart by SIGKILL plus `kickstart` as a non-root user. |
 
 <!-- TODO(phase2): add 0008 (Parakeet) and 0010 (Soprano) when their PRs merge -->
 

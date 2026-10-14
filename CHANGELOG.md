@@ -48,7 +48,5 @@ uses [Semantic Versioning](https://semver.org/).
 
 - CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.0`, installs
   ffmpeg, and cancels superseded runs of the same branch.
-- The watchdog decision record is ADR 0012; it was written as a second
-  0005.
 
 <!-- TODO(phase2): add the Parakeet and Soprano entries when they merge -->

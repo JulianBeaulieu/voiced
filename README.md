@@ -2,9 +2,10 @@
 
 Run speech-to-text and text-to-speech on your Mac for Home Assistant voice
 control or any app that speaks the OpenAI audio API. Models stay loaded on
-the Apple Silicon GPU, so replies start in about 100 ms. voiced installs as
-a pair of launchd services that start at boot without anyone logging in and
-restart themselves after a crash or a hang. Home Assistant talks to it over
+the Apple Silicon GPU, so replies start in about 100 ms. voiced runs as two
+services, one for each direction, under launchd plus a watchdog: they start
+at boot without anyone logging in and restart themselves after a crash or a
+hang. Home Assistant talks to it over
 Wyoming, the protocol its Assist pipelines use for local speech services.
 
 **Status:** pre-alpha. The HTTP API, the Wyoming listeners, the installer,
@@ -29,6 +30,14 @@ Until the first release, install from a checkout:
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced
 uv tool install ./voiced
+uv tool update-shell
+```
+
+`uv tool install` puts the `voiced` command in `~/.local/bin`, which is
+often not on your `PATH` yet; `uv tool update-shell` adds it. Open a new
+terminal, then:
+
+```sh
 voiced install --source "$PWD/voiced"
 ```
 
@@ -171,7 +180,9 @@ exposes the services to your whole network:
 
 - The HTTP API has no authentication unless `api_key` is set. Set it before
   you bind to the LAN. `/health`, `/` and `/metrics.json` stay open either
-  way; they show latencies and error counts, not what clients said.
+  way. They show latencies, error counts and recent error messages; with
+  `api_key` set the error messages are left out, since they can echo what a
+  client sent.
 - The Wyoming protocol has no authentication at all. Only expose it on a
   network you trust.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
@@ -204,6 +215,9 @@ use.
 ## Benchmarks
 
 M1 Max MacBook Pro with 64 GB, macOS 15.7, warm model, local request.
+Pre-release measurements: the engine rows come from the Kokoro engine
+running alone in a process, the others from benchmark scripts written
+before this package.
 "First audio" is the time to the first PCM chunk of a multi-sentence text.
 
 | Metric | Measured | Source |
@@ -211,12 +225,12 @@ M1 Max MacBook Pro with 64 GB, macOS 15.7, warm model, local request.
 | Kokoro first audio | 106 ms median | Kokoro engine, 2026-10-14 |
 | Kokoro real-time factor | 0.046 | Kokoro engine, 2026-10-14 |
 | Kokoro load including warm-up | 1.9 s | Kokoro engine, 2026-10-14 |
-| tts service peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
-| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms | prototype, 2026-10-13 |
-| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median | prototype, 2026-10-13 |
+| Kokoro engine process, peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
+| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms | pre-release script, 2026-10-13 |
+| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median | pre-release script, 2026-10-13 |
 
-"Prototype" numbers come from the benchmark scripts that preceded this
-package; packaged numbers for speech-to-text follow with its engine.
+Numbers measured on the installed services follow with the speech-to-text
+engine.
 
 ## Troubleshooting
 
@@ -235,7 +249,7 @@ daemons and Metal access, including from a real daemon context with
 | HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg: `brew install ffmpeg`. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
-| ERROR log line `ASGI callable returned without completing response` | A speech client stopped reading and was cut off after `write_timeout_s`. Not a server error; health is untouched. |
+| ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
 | `voiced stop` prints a `sudo` command | Unloading a LaunchDaemon needs root; run the printed command. |
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
