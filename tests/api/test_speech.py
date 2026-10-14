@@ -271,10 +271,14 @@ async def _asgi_post(
 ) -> _Run:
     """POST /v1/audio/speech straight into the ASGI app, recording every body message.
 
-    With ``disconnect`` set, ``receive`` reports ``http.disconnect`` (spec 2.0
-    path) and ``send`` raises ``OSError`` like a server whose socket is gone
-    (spec 2.4 path).
+    With ``disconnect`` set, the client goes away the way each ASGI spec
+    version signals it: under 2.0 Starlette listens on ``receive``, which
+    then reports ``http.disconnect``; under 2.4 it does not, and ``send``
+    raises ``OSError`` like a server whose socket is gone. Raising from
+    ``send`` under 2.0 as well would race the task-group cancellation and
+    leak a bare ``OSError`` out of the app.
     """
+    send_raises = tuple(int(x) for x in spec_version.split(".")) >= (2, 4)
     payload = json.dumps(body).encode()
     run = _Run()
     sent_body = False
@@ -291,7 +295,7 @@ async def _asgi_post(
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, object]) -> None:
-        if disconnect is not None and disconnect.is_set():
+        if send_raises and disconnect is not None and disconnect.is_set():
             raise OSError("client gone")
         if message["type"] == "http.response.start":
             run.status = int(message["status"])  # type: ignore[call-overload]
