@@ -231,11 +231,14 @@ public struct SettingsSetResult: Decodable, Sendable, Equatable {
 
 public struct STTEngineInfo: Codable, Sendable, Equatable {
     public var name: String
+    /// A human name for the engine; added to the contract later, so it may be missing.
+    public var label: String?
     public var models: [String]
     public var languages: [String]
 
-    public init(name: String, models: [String], languages: [String]) {
+    public init(name: String, label: String? = nil, models: [String], languages: [String]) {
         self.name = name
+        self.label = label
         self.models = models
         self.languages = languages
     }
@@ -243,27 +246,57 @@ public struct STTEngineInfo: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
+        label = try? c.decodeIfPresent(String.self, forKey: .label)
         models = try c.decodeIfPresent([String].self, forKey: .models) ?? []
         languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? []
     }
+
+    public var displayName: String { label.flatMap { $0.isEmpty ? nil : $0 } ?? name }
 }
 
 public struct TTSEngineInfo: Codable, Sendable, Equatable {
     public var name: String
+    /// A human name for the engine; may be missing.
+    public var label: String?
     public var models: [String]
     public var voices: [String]
+    /// Human names for voice ids, such as "Heart (American English, female)"; may be missing
+    /// or partial.
+    public var voiceLabels: [String: String]
+    public var languages: [String]
 
-    public init(name: String, models: [String], voices: [String]) {
+    public init(
+        name: String, label: String? = nil, models: [String], voices: [String],
+        voiceLabels: [String: String] = [:], languages: [String] = []
+    ) {
         self.name = name
+        self.label = label
         self.models = models
         self.voices = voices
+        self.voiceLabels = voiceLabels
+        self.languages = languages
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, models, voices, languages
+        case voiceLabels = "voice_labels"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
+        label = try? c.decodeIfPresent(String.self, forKey: .label)
         models = try c.decodeIfPresent([String].self, forKey: .models) ?? []
         voices = try c.decodeIfPresent([String].self, forKey: .voices) ?? []
+        voiceLabels = (try? c.decodeIfPresent([String: String].self, forKey: .voiceLabels)) ?? [:]
+        languages = (try? c.decodeIfPresent([String].self, forKey: .languages)) ?? []
+    }
+
+    public var displayName: String { label.flatMap { $0.isEmpty ? nil : $0 } ?? name }
+
+    /// The voice's label, or its id when the server has none.
+    public func voiceName(_ id: String) -> String {
+        voiceLabels[id].flatMap { $0.isEmpty ? nil : $0 } ?? id
     }
 }
 

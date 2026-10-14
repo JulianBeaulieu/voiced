@@ -44,8 +44,9 @@ third-party packages.
   window names the path it tried.
 - **Status in the menu bar window, settings in a Settings window.** The
   menu bar window shows only status and one-click actions and stays one
-  size; "Settings…" (⌘,) opens the standard Settings window, sized to its
-  form with no scrolling. An earlier version had both on tabs inside the
+  size; "Settings…" (⌘,) opens the standard Settings window, as tall as
+  its form up to 640 pt and scrolling past that, so it fits a 13-inch
+  screen whatever notices are showing. An earlier version had both on tabs inside the
   menu bar window: it jumped from 340 to 609 pt high on the Settings tab and
   still scrolled the last sections out of sight. Notices that ask for action
   (restart needed, LAN without a key, warnings, errors) appear in both

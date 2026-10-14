@@ -67,8 +67,10 @@ public struct Dashboard: Sendable, Equatable {
     public var message: String?
     /// A command that fixes the situation, shown copyable under the message.
     public var command: String?
-    /// A one-line note above the rows while connected, such as a missing install.
+    /// A note above the rows while connected, such as a missing install.
     public var notice: String?
+    /// A command for the notice, shown copyable.
+    public var noticeCommand: String?
 
     public init(
         health: OverallHealth, headline: String, rows: [ServiceRowState] = [],
@@ -106,8 +108,9 @@ public enum DashboardReducer {
             if !status.installed {
                 // The watchdog answers (run by hand, say) but the LaunchDaemons are missing:
                 // keep the controls, say what is missing.
-                dashboard.notice = "voiced is not installed as LaunchDaemons, so it will not "
-                    + "start at boot. Run `voiced install` to set that up."
+                dashboard.notice = "voiced is running but will not start automatically when "
+                    + "this Mac restarts. To set that up:"
+                dashboard.noticeCommand = "voiced install --source ~/voiced"
             }
             return dashboard
         }
@@ -117,7 +120,7 @@ public enum DashboardReducer {
         let notRunning = "voiced is installed, but its watchdog is not running. The watchdog "
             + "supervises both services and answers this app. Start it with:"
         switch reason {
-        case .cannotConnect(.noSocket) where !installed:
+        case .cannotConnect(.noSocket) where !installed, .cannotConnect(.notListening) where !installed:
             return Dashboard(health: .off, headline: "Not installed", showsInstallHelp: true)
         case .cannotConnect(.noSocket):
             return Dashboard(

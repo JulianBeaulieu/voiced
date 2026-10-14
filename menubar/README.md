@@ -36,8 +36,9 @@ swift test
 
 `Scripts/bundle.sh` builds `build/voiced.app`: the release binary in an app
 bundle with `LSUIElement` (no Dock icon), bundle id
-`io.github.julianbeaulieu.voiced.menubar` and the version from the repo's
-`pyproject.toml`. The bundle is ad-hoc signed, which has no identity and is
+`io.github.julianbeaulieu.voiced.menubar`, the version from the repo's
+`pyproject.toml` (mapped to X.Y.Z) and an icon drawn by
+`Scripts/make-icon.swift` from the `waveform` symbol. The bundle is ad-hoc signed, which has no identity and is
 not notarized; [Scripts/SIGNING.md](Scripts/SIGNING.md) lists what signing
 and notarizing for distribution takes.
 

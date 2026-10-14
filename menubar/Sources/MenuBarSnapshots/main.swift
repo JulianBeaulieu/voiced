@@ -23,6 +23,8 @@ struct Shot {
     var window = Window.status
     var edits: [SettingsEdit] = []
     var options = FakeControlServer.Options()
+    /// Render the Settings window at the app's own height cap instead of uncapped.
+    var capped = false
 }
 
 var overriding = FakeControlServer.Options()
@@ -38,8 +40,13 @@ let shots = [
     Shot(name: "not-running", scenario: nil, installed: true),
     Shot(name: "newer-protocol", scenario: .newerProtocol),
     Shot(name: "settings", scenario: .running, window: .settings),
+    Shot(name: "settings-not-connected", scenario: nil, window: .settings),
     Shot(name: "lan-without-key", scenario: .running, edits: [.clearAPIKey, .bind(.lan)]),
     Shot(name: "lan-without-key-settings", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)]),
+    // The key flow: none set on the LAN, then set (Remove and Replace appear, the warning goes).
+    Shot(name: "key-1-not-set", scenario: .lanWithoutKey, window: .settings),
+    Shot(name: "key-2-set", scenario: .lanWithoutKey, window: .settings, edits: [.apiKey("example-key")]),
+    Shot(name: "settings-capped", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)], options: overriding, capped: true),
     Shot(name: "env-override-settings", scenario: .running, window: .settings, edits: [.ttsVoice("bf_emma")], options: overriding),
 ]
 
@@ -108,7 +115,9 @@ func run() async {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
             case .status: await render(PopoverView(model: model), dark: dark, to: file)
-            case .settings: await render(SettingsView(model: model, loginItem: LoginItem()), dark: dark, to: file)
+            case .settings:
+                // Uncapped, so the whole form is in one picture; the app caps it at 640 pt.
+                await render(SettingsView(model: model, loginItem: LoginItem(), maxHeight: shot.capped ? 640 : 1400), dark: dark, to: file)
             }
             print(file.path)
         }

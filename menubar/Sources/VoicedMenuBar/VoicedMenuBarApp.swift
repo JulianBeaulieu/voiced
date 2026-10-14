@@ -55,8 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settings window: on a crowded menu bar macOS may hide the icon, and this is the way
     /// back in.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        NSApplication.shared.activate()
-        openSettings?()
+        if let openSettings { SettingsWindow.show(openSettings) }
         return false
     }
 }

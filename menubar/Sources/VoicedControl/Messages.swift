@@ -54,6 +54,22 @@ public enum ConnectFailure: Sendable, Equatable {
     case other(String)
 }
 
+extension ConnectFailure {
+    /// A short description for error messages; the window explains each case at length.
+    public var summary: String {
+        switch self {
+        case .noSocket: "the control socket does not exist"
+        case .notListening: "nothing is listening on the control socket"
+        case .permissionDenied: "the control socket belongs to another user"
+        case .notASocket: "the path is not a socket"
+        case .pathTooLong: "the socket path is too long"
+        case .noHello: "the server did not say hello"
+        case .closedBeforeHello: "the server closed the connection before saying hello"
+        case .other(let detail): detail
+        }
+    }
+}
+
 /// Everything that can go wrong on the client side.
 public enum ControlError: Error, Sendable, Equatable {
     case cannotConnect(ConnectFailure)
@@ -71,7 +87,7 @@ extension ControlError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .cannotConnect(let failure):
-            "Cannot connect to voiced: \(failure)."
+            "Cannot connect to voiced: \(failure.summary)."
         case .unsupportedProtocol(let server, let supported) where server > supported:
             "This voiced uses control protocol \(server); this menu bar app only knows "
                 + "protocol \(supported). Update the menu bar app."

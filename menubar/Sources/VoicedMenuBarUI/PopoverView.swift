@@ -42,7 +42,7 @@ public struct PopoverView: View {
                 MessageView(dashboard: dashboard, isConnecting: model.connection == .connecting)
                     .padding(14)
             }
-            NoticeStrip(model: model)
+            NoticeStrip(model: model, openSettings: showSettings)
             Divider()
             VStack(spacing: 0) {
                 if dashboard.isControllable {
@@ -60,12 +60,8 @@ public struct PopoverView: View {
                     }
                     .disabled(!model.restarting.isEmpty)
                 }
-                ActionRow(title: "Settings…", symbol: "gearshape", shortcut: "⌘,") {
-                    NSApplication.shared.activate()
-                    openSettings()
-                }
-                .keyboardShortcut(",")
-                .disabled(model.settings == nil)
+                ActionRow(title: "Settings…", symbol: "gearshape", shortcut: "⌘,", action: showSettings)
+                    .keyboardShortcut(",")
             }
             .padding(6)
             Divider()
@@ -74,6 +70,32 @@ public struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 340)
+    }
+
+    private func showSettings() {
+        SettingsWindow.show(openSettings)
+    }
+}
+
+/// Opening the Settings window from a menu bar app: the app is not active, so the window
+/// would open behind whatever is in front. Activate first, then bring the window forward once
+/// SwiftUI has created it.
+@MainActor
+public enum SettingsWindow {
+    public static func show(_ openSettings: OpenSettingsAction) {
+        show { openSettings() }
+    }
+
+    public static func show(_ open: () -> Void) {
+        NSApplication.shared.activate()
+        open()
+        DispatchQueue.main.async {
+            let window = NSApplication.shared.windows.first {
+                $0.identifier?.rawValue.contains("Settings") == true
+            }
+            window?.makeKeyAndOrderFront(nil)
+            window?.orderFrontRegardless()
+        }
     }
 }
 
@@ -129,7 +151,12 @@ struct ServiceList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let notice = dashboard.notice {
-                Notice(symbol: "info.circle.fill", tint: .secondary, text: notice)
+                VStack(alignment: .leading, spacing: 6) {
+                    Notice(symbol: "info.circle.fill", tint: .secondary, text: notice)
+                    if let command = dashboard.noticeCommand {
+                        CommandBlock(command: command)
+                    }
+                }
             }
             ForEach(dashboard.rows) { row in
                 ServiceRowView(
@@ -200,6 +227,8 @@ struct ServiceRowView: View {
                 } else {
                     Button(action: restart) {
                         Image(systemName: "arrow.clockwise")
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .help("Restart \(row.kind.title.lowercased())")
@@ -214,6 +243,8 @@ struct ServiceRowView: View {
 /// Things the user should act on, shown in the status window and the settings window alike.
 struct NoticeStrip: View {
     let model: AppModel
+    /// Offered on the LAN warning in the menu bar window; the Settings window has none.
+    var openSettings: (() -> Void)?
 
     var body: some View {
         let restart = model.restartRequired
@@ -223,7 +254,9 @@ struct NoticeStrip: View {
                 if model.showsLANWarning {
                     Notice(
                         symbol: "exclamationmark.triangle.fill", tint: .orange,
-                        text: SettingsWarning.lanWithoutKey)
+                        text: SettingsWarning.lanWithoutKey,
+                        actionTitle: openSettings == nil ? nil : "Set Key"
+                    ) { openSettings?() }
                 }
                 ForEach(others, id: \.self) { warning in
                     Notice(symbol: "exclamationmark.triangle.fill", tint: .orange, text: warning)
@@ -374,7 +407,7 @@ struct InstallHelpView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
-            Text("With the prerequisites in place, from your checkout:")
+            Text("With the prerequisites in place, run:")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)

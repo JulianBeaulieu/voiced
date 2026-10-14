@@ -106,7 +106,11 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.health, .running)
         XCTAssertFalse(dashboard.showsInstallHelp)
         XCTAssertTrue(dashboard.isControllable)
-        XCTAssertTrue(dashboard.notice?.contains("not installed as LaunchDaemons") ?? false)
+        XCTAssertEqual(
+            dashboard.notice,
+            "voiced is running but will not start automatically when this Mac restarts. To set that up:")
+        XCTAssertEqual(dashboard.noticeCommand, "voiced install --source ~/voiced")
+        XCTAssertFalse(dashboard.notice?.contains("`") ?? true)
     }
 
     private func unreachable(_ failure: ConnectFailure, installed: Bool = true) -> Dashboard {
@@ -137,6 +141,8 @@ final class DashboardTests: XCTestCase {
             XCTAssertNotNil(dashboard.message)
         }
         XCTAssertTrue(unreachable(.permissionDenied).message?.contains("/Users/someone/.voiced/control.sock") ?? false)
+        // A socket left behind by a watchdog run by hand, nothing installed: install help.
+        XCTAssertTrue(unreachable(.notListening, installed: false).showsInstallHelp)
         // Not installed but something odd at the path: explain the oddity, not the install.
         XCTAssertFalse(unreachable(.notASocket, installed: false).showsInstallHelp)
     }
@@ -204,5 +210,37 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(Formatting.engineLine(engine: "fake", model: "fake"), "fake")
         XCTAssertEqual(Formatting.engineLine(engine: nil, model: "m"), "m")
         XCTAssertNil(Formatting.engineLine(engine: nil, model: nil))
+    }
+}
+
+final class EngineLabelTests: XCTestCase {
+    func testLabelsDecodeAndFallBackToIds() throws {
+        let engines = try decodeJSON(
+            EnginesPayload.self,
+            """
+            {"stt": [{"name": "parakeet", "label": "Parakeet TDT 0.6B v3", "models": [], "languages": ["en"]},
+                     {"name": "plain", "models": [], "languages": []}],
+             "tts": [{"name": "kokoro", "label": "Kokoro-82M", "models": [], "voices": ["af_heart", "zz_new"],
+                      "voice_labels": {"af_heart": "Heart (American English, female)"}, "languages": ["en"]},
+                     {"name": "bare", "models": [], "voices": ["v"]}]}
+            """)
+        XCTAssertEqual(engines.stt[0].displayName, "Parakeet TDT 0.6B v3")
+        XCTAssertEqual(engines.stt[1].displayName, "plain")
+        let kokoro = try XCTUnwrap(engines.ttsEngine(named: "kokoro"))
+        XCTAssertEqual(kokoro.displayName, "Kokoro-82M")
+        XCTAssertEqual(kokoro.voiceName("af_heart"), "Heart (American English, female)")
+        XCTAssertEqual(kokoro.voiceName("zz_new"), "zz_new")
+        XCTAssertEqual(kokoro.languages, ["en"])
+        let bare = try XCTUnwrap(engines.ttsEngine(named: "bare"))
+        XCTAssertEqual(bare.displayName, "bare")
+        XCTAssertEqual(bare.voiceName("v"), "v")
+    }
+
+    func testMalformedLabelsAreIgnoredNotFatal() throws {
+        let engine = try decodeJSON(
+            TTSEngineInfo.self,
+            #"{"name": "k", "label": 3, "models": [], "voices": ["a"], "voice_labels": ["a"]}"#)
+        XCTAssertEqual(engine.displayName, "k")
+        XCTAssertEqual(engine.voiceName("a"), "a")
     }
 }

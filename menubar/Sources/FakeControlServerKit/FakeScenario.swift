@@ -115,22 +115,39 @@ extension FakeState {
             engines: EnginesPayload(
                 stt: [
                     STTEngineInfo(
-                        name: "parakeet", models: ["mlx-community/parakeet-tdt-0.6b-v3"],
-                        languages: ["en"]),
-                    STTEngineInfo(name: "fake", models: ["fake"], languages: ["en"]),
+                        name: "parakeet", label: "Parakeet TDT 0.6B v3",
+                        models: ["mlx-community/parakeet-tdt-0.6b-v3"], languages: ["en"]),
+                    STTEngineInfo(name: "fake", label: "Fake (testing)", models: ["fake"], languages: ["en"]),
                 ],
                 tts: [
                     TTSEngineInfo(
-                        name: "kokoro", models: ["mlx-community/Kokoro-82M-bf16"],
-                        voices: [
-                            "af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael",
-                            "bf_emma", "bf_isabella", "bm_george", "bm_lewis",
-                        ]),
+                        name: "kokoro", label: "Kokoro-82M", models: ["mlx-community/Kokoro-82M-bf16"],
+                        voices: kokoroVoices, voiceLabels: kokoroLabels(kokoroVoices), languages: ["en"]),
                     TTSEngineInfo(
-                        name: "soprano", models: ["mlx-community/Soprano-80M-bf16"],
-                        voices: ["default"]),
+                        name: "soprano", label: "Soprano-80M", models: ["mlx-community/Soprano-80M-bf16"],
+                        voices: ["default"], voiceLabels: ["default": "Default"], languages: ["en"]),
+                    // No labels, as from an engine (or a server) that does not send them.
                     TTSEngineInfo(name: "fake", models: ["fake"], voices: ["fake"]),
                 ]),
             apiKey: "sample-key")
     }
+}
+
+private let kokoroVoices = [
+    "af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael",
+    "bf_emma", "bf_isabella", "bm_george", "bm_lewis",
+]
+
+/// Labels in the shape the real server derives from Kokoro's voice id convention.
+private func kokoroLabels(_ ids: [String]) -> [String: String] {
+    let accents: [Character: String] = ["a": "American English", "b": "British English"]
+    var labels: [String: String] = [:]
+    for id in ids {
+        let parts = id.split(separator: "_", maxSplits: 1)
+        guard parts.count == 2, let first = parts[0].first, let last = parts[0].last,
+            let accent = accents[first]
+        else { continue }
+        labels[id] = "\(parts[1].capitalized) (\(accent), \(last == "f" ? "female" : "male"))"
+    }
+    return labels
 }

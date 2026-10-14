@@ -151,6 +151,21 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.status)
     }
 
+    func testHelloThenCloseReadsAsDisconnected() async throws {
+        let server = try startServer { $0.closeAfterHello = true }
+        defer { server.stop() }
+        let model = try makeModel(
+            socket: server.socketPath, backoff: Backoff(initial: .seconds(5), maximum: .seconds(5)))
+        model.start()
+        defer { model.stop() }
+        let ended = await eventually {
+            if case .unreachable = model.connection { return true }
+            return false
+        }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(model.connection, .unreachable(installed: false, reason: .disconnected))
+    }
+
     func testStopThenStartRunsOneConnection() async throws {
         let server = try startServer()
         defer { server.stop() }

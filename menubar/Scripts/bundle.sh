@@ -29,6 +29,12 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/voiced-menubar" "$app/Contents/MacOS/voiced-menubar"
 
+# The icon is drawn from an SF Symbol by make-icon.swift, its source.
+iconset="$(mktemp -d)/AppIcon.iconset"
+swift "$package_dir/Scripts/make-icon.swift" "$iconset"
+iconutil -c icns -o "$app/Contents/Resources/AppIcon.icns" "$iconset"
+rm -rf "$(dirname "$iconset")"
+
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +46,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <string>voiced</string>
     <key>CFBundleExecutable</key>
     <string>voiced-menubar</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>io.github.julianbeaulieu.voiced.menubar</string>
     <key>CFBundleInfoDictionaryVersion</key>

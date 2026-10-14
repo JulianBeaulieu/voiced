@@ -9,35 +9,47 @@ public struct SettingsView: View {
     @State private var newKey = ""
     @State private var confirmingRemoval = false
 
-    public init(model: AppModel, loginItem: LoginItem) {
+    let maxHeight: CGFloat
+
+    /// `maxHeight` caps the window: past it the form scrolls, so it fits a 13-inch screen
+    /// whatever notices are showing.
+    public init(model: AppModel, loginItem: LoginItem, maxHeight: CGFloat = 640) {
         self.model = model
         self.loginItem = loginItem
+        self.maxHeight = maxHeight
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            NoticeStrip(model: model)
-                .padding(.top, 12)
-            if let settings = model.settings {
+        // Notices and form at their natural height inside a scroll view: the window is as
+        // tall as its content up to `maxHeight`, and scrolls past it.
+        ScrollView {
+            VStack(spacing: 0) {
+                NoticeStrip(model: model)
+                    .padding(.top, 12)
                 Form {
-                    network(settings)
-                    access(settings)
-                    engines(settings)
-                    statusPage(settings)
+                    if let settings = model.settings {
+                        network(settings)
+                        access(settings)
+                        engines(settings)
+                        statusPage(settings)
+                    } else {
+                        Section {
+                            Label("Not connected to voiced", systemImage: "waveform.slash")
+                        } footer: {
+                            Text("The voiced settings appear while voiced is running.").footnote()
+                        }
+                    }
                     menuBarApp
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
                 .scrollDisabled(true)
+                .fixedSize(horizontal: false, vertical: true)
                 .disabled(model.isSaving)
-            } else {
-                ContentUnavailableView(
-                    "Not connected", systemImage: "waveform.slash",
-                    description: Text("Settings are available while voiced is running."))
-                    .padding(40)
             }
         }
         .frame(width: 460)
+        .frame(maxHeight: maxHeight)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { loginItem.refresh() }
     }
@@ -116,19 +128,19 @@ public struct SettingsView: View {
         let catalogue = model.engines
         Section("Speech") {
             Picker("Speech to text", selection: binding(settings.stt.engine) { .sttEngine($0) }) {
-                ForEach(options(catalogue?.stt.map(\.name), current: settings.stt.engine), id: \.self) {
-                    Text($0).tag($0)
+                ForEach(options(catalogue?.stt.map(\.name), current: settings.stt.engine), id: \.self) { name in
+                    Text(catalogue?.sttEngine(named: name)?.displayName ?? name).tag(name)
                 }
             }
             Picker("Text to speech", selection: binding(settings.tts.engine) { .ttsEngine($0) }) {
-                ForEach(options(catalogue?.tts.map(\.name), current: settings.tts.engine), id: \.self) {
-                    Text($0).tag($0)
+                ForEach(options(catalogue?.tts.map(\.name), current: settings.tts.engine), id: \.self) { name in
+                    Text(catalogue?.ttsEngine(named: name)?.displayName ?? name).tag(name)
                 }
             }
-            let voices = catalogue?.ttsEngine(named: settings.tts.engine)?.voices
+            let engine = catalogue?.ttsEngine(named: settings.tts.engine)
             Picker("Voice", selection: binding(settings.tts.voice) { .ttsVoice($0) }) {
-                ForEach(options(voices, current: settings.tts.voice), id: \.self) {
-                    Text($0).tag($0)
+                ForEach(options(engine?.voices, current: settings.tts.voice), id: \.self) { voice in
+                    Text(engine?.voiceName(voice) ?? voice).tag(voice)
                 }
             }
         }

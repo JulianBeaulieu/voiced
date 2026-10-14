@@ -49,9 +49,22 @@ final class EnvironmentTests: XCTestCase {
         try writePlist(
             ["ProgramArguments": ["/usr/local/bin/other", "--watch"], "UserName": "alex"],
             to: directory.appendingPathComponent("com.other.watchdog.plist"))
+        // Another vendor's watchdog run as this user, ending in "watchdog" too.
+        try writePlist(
+            ["ProgramArguments": ["/opt/vendor/bin/agent", "watchdog"], "UserName": "alex"],
+            to: directory.appendingPathComponent("com.vendor.watchdog.plist"))
+        try writePlist(
+            ["ProgramArguments": ["/opt/voiced", "--verbose", "watchdog"], "UserName": "alex"],
+            to: directory.appendingPathComponent("com.extra.watchdog.plist"))
         FileManager.default.createFile(
             atPath: directory.appendingPathComponent("broken.watchdog.plist").path, contents: Data("x".utf8))
         XCTAssertFalse(InstallProbe(launchDaemonsDirectory: directory, userName: "alex").isInstalled())
+    }
+
+    func testErrorTextIsForPeople() {
+        let text = ControlError.cannotConnect(.closedBeforeHello).localizedDescription
+        XCTAssertFalse(text.contains("closedBeforeHello"))
+        XCTAssertTrue(text.contains("closed the connection before saying hello"))
     }
 
     func testWarningsAreDescribed() {
@@ -71,6 +84,10 @@ final class OpenPolicyTests: XCTestCase {
             action(.statusPage, "http://127.0.0.1:8880/"), .webPage(URL(string: "http://127.0.0.1:8880/")!))
         XCTAssertNotNil(action(.statusPage, "http://localhost:8880/"))
         XCTAssertNotNil(action(.statusPage, "http://[::1]:8880/"))
+        XCTAssertNotNil(action(.statusPage, "http://127.1.2.3:8880/"))
+        XCTAssertNil(action(.statusPage, "http://127.evil.example/"))
+        XCTAssertNil(action(.statusPage, "http://1270.0.0.1/"))
+        XCTAssertNil(action(.statusPage, "http://[::2]/"))
         XCTAssertNotNil(action(.statusPage, "http://10.0.0.5:8880/", local: ["10.0.0.5"]))
         XCTAssertNil(action(.statusPage, "http://10.0.0.6:8880/", local: ["10.0.0.5"]))
         XCTAssertNil(action(.statusPage, "https://example.com/"))

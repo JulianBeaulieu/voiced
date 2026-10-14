@@ -10,8 +10,12 @@ import VoicedControl
 @MainActor
 @Observable
 public final class AppModel {
-    public private(set) var connection: ConnectionState = .connecting
-    public private(set) var status: StatusPayload?
+    public private(set) var connection: ConnectionState = .connecting {
+        didSet { if connection != oldValue { updateDashboard() } }
+    }
+    public private(set) var status: StatusPayload? {
+        didSet { if status != oldValue { updateDashboard() } }
+    }
     public private(set) var settings: SettingsPayload?
     public private(set) var engines: EnginesPayload?
     /// Services whose settings changed and that have not restarted since.
@@ -22,8 +26,13 @@ public final class AppModel {
     public private(set) var isSaving = false
     public var errorMessage: String?
 
-    public var dashboard: Dashboard {
-        DashboardReducer.reduce(connection: connection, status: status, socketPath: socketPath)
+    /// What the windows and the icon show. Kept up to date when the connection or the status
+    /// changes, rather than recomputed by every view that reads it.
+    public private(set) var dashboard = Dashboard(health: .attention, headline: "Connecting")
+
+    private func updateDashboard() {
+        let next = DashboardReducer.reduce(connection: connection, status: status, socketPath: socketPath)
+        if next != dashboard { dashboard = next }
     }
 
     public var serverVersion: String? {
@@ -68,6 +77,7 @@ public final class AppModel {
         self.livenessTimeout = livenessTimeout
         self.restartTimeout = restartTimeout
         self.opener = opener
+        updateDashboard()
     }
 
     // MARK: - Connection
@@ -95,6 +105,7 @@ public final class AppModel {
             if self.client === client { self.client = nil }
             status = nil
             restarting = []
+            lastHeard = .now
             if let reason {
                 connection = .unreachable(installed: installProbe.isInstalled(), reason: reason)
             }
@@ -128,7 +139,9 @@ public final class AppModel {
         let liveness = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: livenessTimeout / 5)
-                if ContinuousClock.now - lastHeard > livenessTimeout {
+                // A restart in flight can hold the server's attention for longer than the
+                // liveness window; its answer, or its timeout, decides instead.
+                if restarting.isEmpty, ContinuousClock.now - lastHeard > livenessTimeout {
                     stalled = true
                     client.close()
                     return
@@ -161,6 +174,10 @@ public final class AppModel {
             handleStatus(newStatus)
             self.settings = newSettings
             self.engines = newEngines
+            return nil
+        } catch ControlError.connectionClosed, ControlError.notConnected {
+            // The connection went away under the requests; that is a disconnect, not a
+            // misbehaving server.
             return nil
         } catch {
             return "voiced did not answer the first requests: \(Self.describe(error))"

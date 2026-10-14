@@ -24,6 +24,8 @@ public final class FakeControlServer: @unchecked Sendable {
         /// Close every connection right after accepting it, as the peer check does for
         /// another user.
         public var closeOnAccept = false
+        /// Close every connection right after hello, as a watchdog that crashes on start does.
+        public var closeAfterHello = false
         /// Settings a `VOICED_*` environment variable overrides, reported as
         /// `env_override:<key>` warnings when they are set, as the real server does.
         public var environmentOverrides: Set<SettingKey> = []
@@ -243,6 +245,7 @@ public final class FakeControlServer: @unchecked Sendable {
                         ],
                     ], to: client)
             }
+            if options.closeAfterHello { disconnect(client) }
         }
     }
 

@@ -49,9 +49,18 @@ public enum OpenPolicy {
         host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
     }
 
+    /// `localhost`, `::1` or an IPv4 address in 127.0.0.0/8. A name that merely starts with
+    /// "127." (127.example.com) is not one.
     static func isLoopback(_ host: String) -> Bool {
         let host = bare(host)
-        return host == "localhost" || host == "::1" || host.hasPrefix("127.")
+        if host == "localhost" { return true }
+        var v6 = in6_addr()
+        if inet_pton(AF_INET6, host, &v6) == 1 {
+            return withUnsafeBytes(of: &v6) { Array($0) } == Array(repeating: 0, count: 15) + [1]
+        }
+        var v4 = in_addr()
+        guard inet_pton(AF_INET, host, &v4) == 1 else { return false }
+        return UInt32(bigEndian: v4.s_addr) >> 24 == 127
     }
 
     /// The IPv4 and IPv6 addresses of this Mac's interfaces. Reads the interface list; opens
