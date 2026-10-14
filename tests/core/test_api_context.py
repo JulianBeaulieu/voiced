@@ -193,6 +193,17 @@ async def test_health_answers_starting_while_loading(settings: Settings) -> None
         assert list(r.json()) == HEALTH_KEYS
 
 
+async def test_no_served_language_logs_a_warning_after_load(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings.stt.languages = ["de"]  # engine serves only "en"
+    app = build_stt_app(settings, FakeSTTEngine())
+    with caplog.at_level("WARNING", logger="voiced.api.app"):
+        async with lifespan_client(app) as c:
+            assert (await c.get("/health")).status_code == 200
+    assert any("serves no language" in r.message for r in caplog.records)
+
+
 async def test_blocking_load_in_a_thread_keeps_health_answering(settings: Settings) -> None:
     class SlowLoad(FakeSTTEngine):
         async def load(self) -> None:

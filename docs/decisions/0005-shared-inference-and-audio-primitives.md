@@ -56,9 +56,15 @@ transport, without a separate "starting" code path.
 configured ones, matched on the primary subtag in either direction (`_` is
 read as `-`), reporting the narrower tag of each pair. `voices()` filters by
 the same predicate, and `check_language(hint)` resolves a client's hint to
-the engine's own code or raises `UnsupportedLanguage`. Both transports use
-these three and never match language tags themselves. The `languages`
-settings may not be empty.
+the engine's own code (preferring an exact tag, then the advertised tag for
+that subtag, then any tag with that subtag) or raises `UnsupportedLanguage`.
+Both transports use these three and never match language tags themselves.
+Because matching is by subtag, a config of `["en-gb"]` against an `["en-US"]`
+engine advertises `en-gb` while the voices it serves are the engine's en-US
+ones; that is intended. The `languages` settings may not be empty, and a
+service whose config and engine share no subtag (so `languages` is empty)
+logs a warning after load rather than failing, since the engine is otherwise
+healthy.
 
 `voiced.audio.UnsupportedAudioFormat` subclasses `EngineError`, so a bad
 sample width or rate is a client error on every transport.

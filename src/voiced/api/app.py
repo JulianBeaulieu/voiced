@@ -66,6 +66,15 @@ async def _load(ctx: ServiceContext) -> None:
         logging.shutdown()
         exit_process(1)
     ctx.health.mark_loaded()
+    if not ctx.languages:
+        log.warning(
+            "%s serves no language: engine %s offers %s but %s.languages is %s",
+            ctx.service,
+            ctx.engine.name,
+            ctx.engine.languages,
+            ctx.service,
+            ctx._configured,
+        )
     log.info("%s ready in %.1fs", ctx.service, time.perf_counter() - started)
 
 

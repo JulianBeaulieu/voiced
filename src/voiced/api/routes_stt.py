@@ -1,4 +1,4 @@
-"""``/v1/audio/transcriptions`` routes. Stubs until the API worker fills them in.
+"""``/v1/audio/transcriptions`` routes. Stubs; implemented in a later change.
 
 Planned (see HANDOFF section 5):
 

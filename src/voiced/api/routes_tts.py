@@ -1,5 +1,5 @@
-"""``/v1/audio/speech`` and ``/v1/audio/voices`` routes. Stubs until the API
-worker fills them in.
+"""``/v1/audio/speech`` and ``/v1/audio/voices`` routes. Stubs; implemented in
+a later change.
 
 Planned (see HANDOFF section 5):
 

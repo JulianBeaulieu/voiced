@@ -254,6 +254,29 @@ async def test_check_language(settings: Settings) -> None:
         c.check_loaded()
 
 
+@pytest.mark.parametrize(
+    ("hint", "engine_langs", "configured", "resolved"),
+    [
+        ("en-GB", ["en-US", "en-GB"], ["en"], "en-GB"),  # exact tag beats same-base
+        ("EN_gb", ["en-US", "en-GB"], ["en"], "en-GB"),  # normalized exact match
+        ("en", ["en-US", "en-GB"], ["en-gb"], "en-GB"),  # the advertised narrower tag
+        ("en-US", ["en-US", "en-GB"], ["en"], "en-US"),
+        ("en", ["en"], ["en"], "en"),
+    ],
+)
+def test_check_language_prefers_exact_region(
+    settings: Settings,
+    hint: str,
+    engine_langs: list[str],
+    configured: list[str],
+    resolved: str,
+) -> None:
+    engine = FakeTTSEngine()
+    engine.languages = engine_langs
+    settings.tts.languages = configured
+    assert _tts_ctx(settings, engine).check_language(hint) == resolved
+
+
 def test_languages_setting_may_not_be_empty() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"tts": {"languages": []}})
