@@ -217,9 +217,11 @@ async def test_queue_full_is_503(settings: Settings) -> None:
 async def test_client_disconnect_mid_stream_releases_slot(
     settings: Settings, spec_version: str, fmt: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Under spec 2.4 Starlette leaves the body loop through ClientDisconnect without
-    aclose(); ClosingStreamingResponse must still release the slot (and ffmpeg), and
-    a hang-up is not an error: nothing escapes the app and nothing is logged at ERROR."""
+    """A hang-up releases the slot (and ffmpeg), is counted as a disconnect, and is
+    not an error: nothing escapes the app and nothing is logged at ERROR.
+
+    Under spec 2.0 Starlette cancels the streaming task; under 2.4 it leaves the
+    body loop through ClientDisconnect without aclose(). Both must count."""
     if fmt == "mp3" and not ffmpeg.ffmpeg_available():
         pytest.skip("ffmpeg is not installed")
     engine = FakeTTSEngine(latency_s=0.05)
@@ -249,10 +251,23 @@ async def test_client_disconnect_mid_stream_releases_slot(
         disconnect.set()
         run = await asyncio.wait_for(task, 2.0)  # ClientDisconnect no longer escapes
         assert len([b for b in run.bodies if b]) < 6, "stopped early"
-        assert app.state.ctx.queue.depth == 0
+        # The synthesis ends at the next chunk and frees the slot then.
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 0
+        assert app.state.ctx.health.snapshot(0).status == "ok", "a hang-up leaves health alone"
         assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
         # The next request gets the slot immediately.
         assert (await _asgi_post(app, {"input": "Hi."})).status == 200
+
+
+async def _wait_until(condition: Callable[[], bool]) -> None:
+    """Poll for up to 2 s."""
+    for _ in range(400):
+        if condition():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition not met within 2 s")
 
 
 class _Run:

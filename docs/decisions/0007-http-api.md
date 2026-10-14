@@ -44,12 +44,28 @@ this before taking the slot, so a voice the engine knows but whose language
 is not configured is a 400 `UnknownVoice`, and so is a `tts.default_voice`
 outside the configured languages.
 
-The body is an async generator wrapping `inference()` (ADR 0005); the route
-primes it with one `anext()` *before* the response starts. That keeps the
-status codes honest: a full queue is still a 503 and an engine error is
-still a 400 instead of a truncated stream. The response class
-(`ClosingStreamingResponse`) always calls `aclose()` on the body generator,
-so a client that disconnects mid-stream frees the slot and any ffmpeg pipe
+The engine runs inside `inference()` in its own task, which hands chunks to
+the response body through a queue (ADR 0005). The route primes the body with
+one `anext()` *before* the response starts. That keeps the status codes
+honest: a full queue is still a 503 and an engine error is still a 400
+instead of a truncated stream.
+
+Keeping `inference()` out of the body is what lets a hang-up be counted. A
+server stops a response by cancelling the task that streams it; with the
+block inside the body, that `CancelledError` landed inside `inference()`,
+which records nothing for cancellation, so hang-ups never showed up in the
+metrics. Now the body only sets a flag when it stops, and the synthesis task
+raises a disconnect at the next chunk, which `inference()` counts. The slot
+is therefore released after the chunk in flight, which a blocking model call
+required anyway (`run_blocking` waits for its thread).
+
+The queue is unbounded: synthesis runs at GPU speed and frees the slot as
+soon as it finishes, however slowly the client reads. `tts.max_input_chars`
+bounds what can pile up (a few minutes of 24 kHz audio, about 13 MB).
+`inference()` therefore times the synthesis, not the client's download.
+
+The response class (`ClosingStreamingResponse`) always calls `aclose()` on
+the body generator, so a client that disconnects frees any ffmpeg pipe
 immediately rather than when the garbage collector gets to it. A hang-up is
 not an error: the response class absorbs it, so neither the app nor the
 server logs a traceback for it.
@@ -62,7 +78,10 @@ while it is being read, before multipart parsing finishes and before ffmpeg,
 whether or not the client sent `Content-Length`; the cap allows 64 KB of
 multipart framing on top of the limit. The parsed file is then held to the
 exact limit. Both return 413 `payload_too_large`. A malformed multipart body
-is Starlette's own 400, rendered in the shared envelope.
+is Starlette's own 400, rendered in the shared envelope. A client that hangs
+up mid-upload is not an error and is not logged as one. An upload ffmpeg
+cannot decode is a 400 `invalid_audio` with a fixed message; ffmpeg's own
+output goes to the debug log, since it names temporary files.
 `tts.max_input_chars` (default 4096, the OpenAI limit) bounds `input`, also
 with 413.
 
@@ -117,7 +136,10 @@ It polls `GET /metrics.json`, which merges the `/health` snapshot with the
 over the last 1000 inferences, the last 50 errors, resident memory) and
 engine metadata. Both routes are unauthenticated like
 `/health`: the page would be useless behind a key, and the data it exposes is
-operational (error messages, latencies), not user content. The test boxes on
+operational (latencies, outcome counts, error times), not user content. An
+error's detail can echo what a client sent, such as an unknown language tag,
+so with `server.api_key` set the feed omits each error's `detail` and keeps
+its time, operation and outcome. The test boxes on
 the page call the `/v1` routes and send the API key the operator types in.
 
 ## Consequences

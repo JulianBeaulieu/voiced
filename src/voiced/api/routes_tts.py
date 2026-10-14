@@ -16,13 +16,16 @@ through a pipe while the engine is still producing audio.
 language is configured; anything else, including a ``tts.default_voice``
 outside the configured languages, is 400 ``UnknownVoice``.
 
-The body is an async generator that runs ``inference()`` around the engine
-call; the route primes it with one ``anext()`` so a full queue is still a
-503 and an engine error still a 400 before any header is sent (ADR 0005).
+The engine runs inside ``inference()`` in its own task, and the response
+body reads its chunks from a queue. The route primes the body with one
+``anext()``, so a full queue is still a 503 and an engine error still a 400
+before any header is sent (ADR 0005). A client that hangs up stops the body;
+the synthesis then ends at the next chunk and is counted as a disconnect.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
@@ -30,6 +33,7 @@ from typing import Any, Literal, cast
 
 from fastapi import APIRouter, status
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import ClientDisconnect
 
 from voiced import audio
 from voiced.api import ffmpeg
@@ -138,25 +142,77 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
     )
 
 
+_END = object()
+"""Queue marker: synthesis finished."""
+
+_SYNTHESES: set[asyncio.Task[None]] = set()
+"""Strong references to running syntheses; asyncio keeps only weak ones."""
+
+
 async def _synthesize(
     ctx: ServiceContext, text: str, voice: str, speed: float
 ) -> AsyncGenerator[bytes, None]:
-    """PCM bytes from the engine, inside one ``inference()`` block.
+    """The response body: PCM bytes from a synthesis running in its own task.
 
-    Yields ``b""`` once the first chunk is in hand (the route consumes that
-    priming value with ``anext()``), then the audio. Closing the generator early (client disconnect)
-    passes ``GeneratorExit`` through ``inference()`` and frees the slot.
+    Yields ``b""`` once the first result is in hand (the route consumes that
+    priming value with ``anext()``, so ``QueueFull`` and a pre-audio
+    ``EngineError`` raise before the response starts), then the audio.
+
+    The ``inference()`` block lives in :func:`_produce`, not here. When a
+    client hangs up, the server cancels the task streaming this body; if the
+    block were in this generator, the ``CancelledError`` would land inside it
+    and nothing would be recorded (ADR 0005). Instead, stopping this generator
+    for any reason sets ``stop``, and the synthesis ends at the next chunk with
+    a disconnect that ``inference()`` counts. Cancellation itself is untouched.
     """
-    async with inference(ctx, Operation.SPEECH):
-        # base.py requires synthesize() to be an async generator.
-        chunks = cast(AsyncGenerator[PCMChunk, None], ctx.tts_engine.synthesize(text, voice, speed))
-        async with aclosing(chunks):
-            first = await anext(chunks, None)
-            yield b""
-            if first is not None:
-                yield first.data
+    out: asyncio.Queue[object] = asyncio.Queue()
+    stop = asyncio.Event()
+    task = asyncio.create_task(_produce(ctx, text, voice, speed, out, stop))
+    _SYNTHESES.add(task)
+    task.add_done_callback(_SYNTHESES.discard)
+    try:
+        item = await out.get()
+        if isinstance(item, Exception):
+            raise item
+        yield b""
+        while item is not _END:
+            yield cast(bytes, item)
+            item = await out.get()
+            if isinstance(item, Exception):
+                raise item
+    finally:
+        stop.set()
+
+
+async def _produce(
+    ctx: ServiceContext,
+    text: str,
+    voice: str,
+    speed: float,
+    out: asyncio.Queue[object],
+    stop: asyncio.Event,
+) -> None:
+    """Run the engine inside ``inference()`` and hand each chunk to the body.
+
+    The queue is unbounded on purpose: synthesis runs at GPU speed and frees
+    the slot as soon as it is done, however slowly the client reads (the input
+    is bounded by ``tts.max_input_chars``).
+    """
+    try:
+        async with inference(ctx, Operation.SPEECH):
+            # base.py requires synthesize() to be an async generator.
+            chunks = cast(
+                AsyncGenerator[PCMChunk, None], ctx.tts_engine.synthesize(text, voice, speed)
+            )
+            async with aclosing(chunks):
                 async for chunk in chunks:
-                    yield chunk.data
+                    if stop.is_set():
+                        raise ClientDisconnect  # the body stopped reading: a disconnect
+                    out.put_nowait(chunk.data)
+        out.put_nowait(_END)
+    except Exception as exc:
+        # inference() has already recorded the outcome; hand the error to the body.
+        out.put_nowait(exc)
 
 
 async def _prefixed(head: bytes, rest: AsyncGenerator[bytes, None]) -> AsyncGenerator[bytes, None]:

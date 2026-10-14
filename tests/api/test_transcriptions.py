@@ -198,7 +198,10 @@ async def test_invalid_audio_is_400(
             file=("x.bin", b"definitely not audio" * 50, "application/octet-stream"),
             model="whisper-1",
         )
-    assert exc.value.body["type"] == "invalid_audio"  # type: ignore[index]
+    assert exc.value.body == {  # type: ignore[comparison-overlap]
+        "message": "the upload is not an audio file ffmpeg can decode",
+        "type": "invalid_audio",
+    }, "ffmpeg's stderr (temp file names) stays out of the response"
     # Rejected before any inference: nothing reaches metrics (ADR 0005).
     assert (await stt_client.get("/metrics.json")).json()["metrics"]["recent_errors"] == []
 
@@ -353,3 +356,43 @@ async def test_engine_failure_is_500_and_degrades_health(
         health = (await c.get("/health")).json()
         assert health["status"] == "degraded"
         assert "metal wedged" in health["last_error"]
+
+
+async def test_hang_up_mid_upload_is_quiet(
+    stt_app: FastAPI, fake_decode: list[int], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A client that drops halfway through the upload: nothing escapes the app (the
+    server would log a traceback), nothing is logged at ERROR, nothing is decoded."""
+    head = (
+        b'--xyz\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n'
+        b"Content-Type: audio/wav\r\n\r\n"
+    )
+    messages = [
+        {"type": "http.request", "body": head + b"\x00" * 4096, "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive() -> dict[str, object]:
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        pass
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audio/transcriptions",
+        "raw_path": b"/v1/audio/transcriptions",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"voiced"), (b"content-type", b"multipart/form-data; boundary=xyz")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8881),
+    }
+    async with loaded(stt_app):
+        await stt_app(scope, receive, send)  # must not raise
+    assert fake_decode == []
+    assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []

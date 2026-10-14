@@ -34,17 +34,17 @@ from __future__ import annotations
 import json
 import logging
 import time
-from contextlib import suppress
 from dataclasses import asdict
 from typing import Any, cast
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import Response
 from starlette.datastructures import FormData, UploadFile
+from starlette.requests import ClientDisconnect
 from starlette.types import Message, Receive
 
 from voiced.api import ffmpeg, formats
-from voiced.api.context import WS_CLOSE, APIError, Ctx
+from voiced.api.context import WS_CLOSE, APIError, Ctx, close_ws
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.audio import PCMConverter
 from voiced.context import ServiceContext
@@ -60,6 +60,9 @@ PARTIAL_INTERVAL_S = 0.25
 """Minimum time between two ``partial`` events on the WebSocket."""
 
 MB = 1024 * 1024
+
+CLIENT_CLOSED_REQUEST = 499
+"""Status for a request the client abandoned (nginx's convention); never delivered."""
 
 UPLOAD_SLACK_BYTES = 64 * 1024
 """Multipart framing allowance on top of ``stt.max_upload_mb``."""
@@ -156,6 +159,12 @@ async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> 
             data, fmt, language = await _parse_upload(ctx, foreign, form)
     except _PayloadTooLarge:
         raise _too_large(limit_mb) from None
+    except ClientDisconnect:
+        # The client hung up mid-upload. Not an error, and there is no one to
+        # answer: return quietly (the server discards this response) rather
+        # than raise, which would make the server log a traceback.
+        log.debug("client went away during the upload")
+        return Response(status_code=CLIENT_CLOSED_REQUEST)
 
     try:
         samples = await ffmpeg.decode(data, STT_SAMPLE_RATE)
@@ -208,9 +217,9 @@ async def transcriptions_stream(ws: WebSocket, ctx: Ctx) -> None:
         if outcome is Outcome.FAILURE:
             log.exception("streaming transcription failed")
         reason = "" if outcome is Outcome.DISCONNECT else f"{type(exc).__name__}: {exc}"
-        await _safe_close(ws, WS_CLOSE[outcome], reason.encode()[:123].decode(errors="ignore"))
+        await close_ws(ws, WS_CLOSE[outcome], reason)
         return
-    await _safe_close(ws, status.WS_1000_NORMAL_CLOSURE)
+    await close_ws(ws, status.WS_1000_NORMAL_CLOSURE)
 
 
 async def _next_frame(ws: WebSocket, ctx: ServiceContext) -> bytes | dict[str, Any]:
@@ -293,14 +302,3 @@ async def _stream_session(ws: WebSocket, ctx: ServiceContext) -> None:
     finally:
         if session is not None:
             await session.close()
-
-
-async def _safe_close(ws: WebSocket, code: int, reason: str | None = None) -> None:
-    """Close unless the connection is already gone.
-
-    ``RuntimeError``: the socket was already closed. ``WebSocketDisconnect``:
-    Starlette's translation of the server's send error after a TCP drop.
-    Neither is news; letting them escape makes uvicorn log a traceback.
-    """
-    with suppress(RuntimeError, WebSocketDisconnect):
-        await ws.close(code=code, reason=reason)

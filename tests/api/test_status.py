@@ -87,3 +87,20 @@ async def test_metrics_json_tracks_requests_and_errors(settings: Settings) -> No
     assert "refuses that text" in err["detail"]
     assert doc["health"]["last_inference_ms"] is not None
     assert doc["health"]["status"] == "ok", "client errors leave health alone"
+
+
+async def test_error_detail_is_hidden_from_the_open_feed_when_a_key_is_set(
+    settings: Settings,
+) -> None:
+    """Error detail can echo request content; with a key set the open feed omits it."""
+    settings.server.api_key = "s3cret"
+    app = build_tts_app(settings, _Refuses())
+    auth = {"Authorization": "Bearer s3cret"}
+    async with lifespan_client(app) as c:
+        r = await c.post("/v1/audio/speech", json={"input": "refuse jane-doe-123"}, headers=auth)
+        assert r.status_code == 400
+        doc = (await c.get("/metrics.json")).json()  # no key: the status page's view
+    (err,) = doc["metrics"]["recent_errors"]
+    assert set(err) == {"at", "operation", "outcome"}
+    assert "jane-doe" not in str(doc)
+    assert doc["metrics"]["operations"]["speech"]["counts"]["client_error"] == 1

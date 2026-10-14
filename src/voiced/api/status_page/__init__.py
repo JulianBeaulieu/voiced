@@ -19,6 +19,7 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from voiced.api.context import Ctx
+from voiced.context import ServiceContext
 
 router = APIRouter(tags=["service"])
 
@@ -48,7 +49,23 @@ async def metrics_json(ctx: Ctx) -> dict[str, Any]:
             "languages": ctx.languages,
         },
         "health": ctx.health.snapshot(ctx.queue.depth).model_dump(),
-        "metrics": ctx.metrics.snapshot(),
+        "metrics": _public_metrics(ctx),
         "api_key_required": bool(ctx.settings.server.api_key),
         "default_voice": ctx.settings.tts.default_voice if ctx.service == "tts" else None,
     }
+
+
+def _public_metrics(ctx: ServiceContext) -> dict[str, Any]:
+    """The metrics snapshot, minus request content when an API key is set.
+
+    An error's ``detail`` can echo what a client sent (an unknown language
+    tag, a voice name). This feed is unauthenticated, so with
+    ``server.api_key`` set it keeps each error's time, operation and outcome
+    but not the detail, which would otherwise leak requests past the key.
+    """
+    snapshot = ctx.metrics.snapshot()
+    if ctx.settings.server.api_key:
+        snapshot["recent_errors"] = [
+            {k: v for k, v in error.items() if k != "detail"} for error in snapshot["recent_errors"]
+        ]
+    return snapshot

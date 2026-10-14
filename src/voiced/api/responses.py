@@ -20,10 +20,11 @@ class ClosingStreamingResponse(StreamingResponse):
     slot (and any ffmpeg pipe) to the garbage collector. This closes it
     deterministically, whatever happened.
 
-    A client that hangs up mid-stream is not an error: the headers are sent,
-    there is no one left to answer, and ``inference()`` has already counted
-    the disconnect. The exception stops here, so neither the app's catch-all
-    handler nor the server logs a traceback for it.
+    A client that hangs up mid-stream is not an error: the headers are sent
+    and there is no one left to answer. The exception stops here, so neither
+    the app's catch-all handler nor the server logs a traceback for it. The
+    route counts the disconnect, not this class: closing the body ends the
+    synthesis, which ``inference()`` records as a disconnect.
     """
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

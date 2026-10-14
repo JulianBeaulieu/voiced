@@ -17,7 +17,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.websockets import WebSocket
 
 from tests.api.conftest import pcm16, sync_client
-from voiced.api import routes_stt
+from voiced.api.context import close_ws
 from voiced.audio import pcm16_to_float32
 from voiced.config import Settings
 from voiced.engines.base import STTStreamSession
@@ -241,7 +241,7 @@ def _wait_for_depth(app: FastAPI, depth: int, timeout: float = 2.0) -> None:
         time.sleep(0.01)
 
 
-async def test_safe_close_tolerates_a_dropped_connection() -> None:
+async def test_close_ws_tolerates_a_dropped_connection() -> None:
     """After a TCP drop the server's send fails; Starlette turns that into
     WebSocketDisconnect(1006). Closing must swallow it, or uvicorn logs a traceback."""
     sent: list[str] = []
@@ -257,5 +257,24 @@ async def test_safe_close_tolerates_a_dropped_connection() -> None:
     scope = {"type": "websocket", "path": PATH, "headers": [], "query_string": b""}
     ws = WebSocket(scope, receive, send)
     await ws.accept()
-    await routes_stt._safe_close(ws, 1011, "internal error")  # must not raise
+    await close_ws(ws, 1011, "x" * 200)  # must not raise
     assert sent == ["websocket.accept", "websocket.close"]
+
+
+async def test_close_ws_truncates_the_reason_to_the_protocol_limit() -> None:
+    closes: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "websocket.close":
+            closes.append(message)
+
+    scope = {"type": "websocket", "path": PATH, "headers": [], "query_string": b""}
+    ws = WebSocket(scope, receive, send)
+    await ws.accept()
+    await close_ws(ws, 1008, "é" * 100)  # 200 bytes of UTF-8
+    (close,) = closes
+    assert close["code"] == 1008
+    assert len(close["reason"].encode()) <= 123 and close["reason"] == "é" * 61

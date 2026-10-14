@@ -13,10 +13,12 @@ the OpenAI clients parse into their exceptions::
 from __future__ import annotations
 
 import hmac
+from contextlib import suppress
 from typing import Annotated
 
 from fastapi import Depends, status
 from starlette.requests import HTTPConnection
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voiced.context import ServiceContext
 from voiced.metrics import Outcome
@@ -28,6 +30,19 @@ WS_CLOSE: dict[Outcome, int] = {
     Outcome.FAILURE: status.WS_1011_INTERNAL_ERROR,
 }
 """WebSocket close code per outcome, for the handshake and in-session alike."""
+
+
+async def close_ws(ws: WebSocket, code: int, reason: str = "") -> None:
+    """Close ``ws`` with ``code``, unless the connection is already gone.
+
+    The reason is cut to the protocol's 123-byte limit. ``RuntimeError`` means
+    the socket was already closed; ``WebSocketDisconnect`` is Starlette's
+    translation of the server's send error after the peer dropped the TCP
+    connection. Neither is news, and letting either escape makes the server
+    log a traceback.
+    """
+    with suppress(RuntimeError, WebSocketDisconnect):
+        await ws.close(code, reason.encode()[:123].decode(errors="ignore"))
 
 
 def get_context(conn: HTTPConnection) -> ServiceContext:

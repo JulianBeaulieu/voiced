@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import NoReturn
 
 from fastapi import Depends, FastAPI, status
@@ -22,11 +22,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import HTTPConnection
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocket
 
 from voiced import __version__
 from voiced.api import routes_stt, routes_tts, status_page
-from voiced.api.context import WS_CLOSE, APIError, Ctx, require_api_key, require_loaded
+from voiced.api.context import (
+    WS_CLOSE,
+    APIError,
+    Ctx,
+    close_ws,
+    require_api_key,
+    require_loaded,
+)
 from voiced.api.foreign_models import foreign_model_map
 from voiced.config import Settings
 from voiced.context import ServiceContext
@@ -96,12 +103,7 @@ async def _error(
             close_code = WS_CLOSE[Outcome.FAILURE]
         else:
             close_code = WS_CLOSE[Outcome.CLIENT_ERROR]
-        # Close reasons are capped at 123 bytes by the protocol.
-        reason = message.encode()[:123].decode(errors="ignore")
-        # RuntimeError: already closed. WebSocketDisconnect: the peer dropped
-        # the connection and the server's send failed.
-        with suppress(RuntimeError, WebSocketDisconnect):
-            await conn.close(close_code, reason)
+        await close_ws(conn, close_code, message)
         return None
     return JSONResponse(
         status_code=code, content={"error": {"message": message, "type": type}}, headers=headers
@@ -168,9 +170,12 @@ def _build(ctx: ServiceContext) -> FastAPI:
         # engine; a bug outside a slot is not an engine failure. uvicorn logs
         # the traceback after this response, so log one line here.
         if classify(exc) is Outcome.DISCONNECT:
-            # The client hung up (Starlette raises ClientDisconnect under ASGI
-            # 2.4). Not an error. The middleware still needs a response object
-            # if none started; the server drops it for a closed connection.
+            # A client hang-up is not an error, so it is not logged as one here.
+            # This only quiets our own line: ServerErrorMiddleware re-raises after
+            # this handler and the server logs its traceback anyway, so routes
+            # stop disconnects themselves (ClosingStreamingResponse, the upload
+            # route). The middleware still needs a response object if none
+            # started; the server drops it for a closed connection.
             log.debug("client went away on %s: %r", conn.url.path, exc)
         else:
             log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)

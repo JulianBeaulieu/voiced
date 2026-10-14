@@ -127,8 +127,9 @@ async def decode(data: bytes, sample_rate: int = STT_SAMPLE_RATE) -> NDArray[np.
         except OSError:  # pragma: no cover
             pass
     if proc.returncode != 0:
-        message = err.decode(errors="replace").strip().splitlines()
-        raise AudioDecodeError(message[-1] if message else "ffmpeg could not decode the upload")
+        # ffmpeg's stderr names temp files and internals; keep it out of the response.
+        log.debug("ffmpeg could not decode the upload: %s", err.decode(errors="replace").strip())
+        raise AudioDecodeError("the upload is not an audio file ffmpeg can decode")
     if not out:
         raise AudioDecodeError("no audio stream in upload")
     return np.frombuffer(out, dtype=np.float32)
