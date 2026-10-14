@@ -847,8 +847,8 @@ async def test_finalize_latency_over_alignments(
     """End of speech at every 20 ms offset relative to the chunk and pass grid,
     then the endpointer's silence window (digital, or room noise at -55 dBFS
     with speech at a -6 dBFS peak), then finalize. The bound assumes the GPU is
-    not shared: one run at 774 ms happened while another process used it, and
-    did not recur in 10 runs alone (320 alignments, worst 38 ms)."""
+    not shared: one run at 774 ms probably overlapped another process using it,
+    and did not recur in 10 runs alone (320 alignments, worst 38 ms)."""
     voice = speech if noise_dbfs is None else at_peak(speech, -6.0)
     latencies: list[float] = []
     for lead_ms in range(0, 640, 20):

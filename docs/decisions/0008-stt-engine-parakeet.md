@@ -264,11 +264,15 @@ longer maximum wait: a change inside `voiced.vad` plus a config key.
   light" (250 ms gaps) and "set the the th thermostat" (400 ms gaps) where
   batch is right; encoding the same windows straight through, with no
   checkpoint or restore, gives the same text, so the speculative call is not
-  the cause. One pause of 1.0 s between "set the" and "thermostat" gave "the
-  the" at 3 of 4 alignments, again with or without the speculative call;
-  0.6, 0.8 and 1.2 to 4.0 s pauses were clean at every alignment. Natural
-  speech (the fixtures and the 27 s passage) scores 0.92 to 1.00 against
-  batch.
+  the cause. A single pause of roughly 0.9 to 1.1 s can repeat a short word
+  ("set the the thermostat"): with a 1.0 s pause at each of the fixture's 7
+  word gaps, it happened at 3 of them, at up to about 60 % of alignments,
+  with or without the speculative call; batch on the same audio never
+  repeated at 2 of those 3. Pauses of 0.6, 0.8 and 1.2 to 4.0 s were clean
+  at every alignment. Natural speech (the fixtures and the 27 s passage)
+  scores 0.92 to 1.00 against batch.
+- Known limits: a pause of about 1 s may repeat a short word; partials trail
+  by about 0.7 s; loading peaks over the memory budget once (below).
 - A client that delivers a whole clip at once through the streaming API pays
   one call per 800 ms of audio; the batch endpoint is the right tool for
   files.
@@ -280,9 +284,9 @@ longer maximum wait: a change inside `voiced.vad` plus a config key.
   transcribed in 20 s chunks overlapping by 4 s and merged on their tokens, as
   parakeet-mlx's own file transcription does, and MLX's buffer cache is
   emptied after each request. Serving then peaks at 2.46 GB for any input
-  length (a 4 minute request, and a stream; in one piece a 62 s request
-  peaked at 4.1 GB and 5 minutes at 6.4 GB, with as much again held in the
-  cache), inside the 3 GB budget for STT and TTS together (Kokoro is 469 MB
+  length (a 5 minute request, and a stream; in one piece a 62 s request
+  peaked at 2.97 to 4.09 GB depending on the audio and 5 minutes at 6.4 GB,
+  with as much again held in the cache), inside the 3 GB budget for STT and TTS together (Kokoro is 469 MB
   on its own). Chunked text matched the one-piece transcript at 0.985 (62 s)
   to 0.999 (5 min) word accuracy. Loading peaks once at 3.6 to 4.1 GB,
   because parakeet-mlx reads the fp32 weights and then casts them to bf16;
