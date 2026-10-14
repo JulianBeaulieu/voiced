@@ -32,8 +32,8 @@ class HealthResponse(BaseModel):
 class HealthState:
     """Mutable per-process health record. One instance per service process.
 
-    The API layer owns it, the engine wrapper updates it after each inference,
-    and ``/health`` serializes it. ``status`` is derived:
+    ``voiced.context.ServiceContext`` owns it, ``voiced.inference.inference``
+    updates it after each inference, and ``/health`` serializes it. ``status`` is derived:
 
     * ``starting`` until the engine's ``load()`` has finished,
     * ``degraded`` if the most recent inference raised,
@@ -47,7 +47,6 @@ class HealthState:
     queue_capacity: int
     started_at: float = field(default_factory=time.monotonic)
     model_loaded: bool = False
-    queue_depth: int = 0
     last_inference_at: float | None = None
     last_inference_ms: float | None = None
     last_error: str | None = None
@@ -72,7 +71,8 @@ class HealthState:
             return "degraded"
         return "ok"
 
-    def snapshot(self) -> HealthResponse:
+    def snapshot(self, queue_depth: int) -> HealthResponse:
+        """Serialize for ``/health``. Read-only: ``queue_depth`` comes from the queue."""
         return HealthResponse(
             status=self.status,
             service=self.service,
@@ -80,7 +80,7 @@ class HealthState:
             model=self.model,
             model_loaded=self.model_loaded,
             uptime_s=round(time.monotonic() - self.started_at, 3),
-            queue_depth=self.queue_depth,
+            queue_depth=queue_depth,
             queue_capacity=self.queue_capacity,
             last_inference_at=self.last_inference_at,
             last_inference_ms=self.last_inference_ms,

@@ -60,6 +60,10 @@ class ServerConfig(_Section):
     api_key: str = ""
     log_dir: Path = Field(default_factory=lambda: Path("~/Library/Logs/voiced").expanduser())
     log_level: LogLevel = "info"
+    # Bounds on socket awaits for transports holding the inference slot, so a
+    # half-open peer cannot pin the GPU (voiced.inference.bounded).
+    session_idle_s: float = Field(default=30.0, gt=0)
+    write_timeout_s: float = Field(default=10.0, gt=0)
 
     @field_validator("log_dir", mode="after")
     @classmethod
@@ -72,7 +76,7 @@ class STTConfig(_Section):
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
     engine: str = "parakeet"
     model: str = "mlx-community/parakeet-tdt-0.6b-v3"
-    languages: list[str] = Field(default_factory=lambda: ["en"])
+    languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
     max_upload_mb: int = Field(default=50, ge=1)
@@ -84,7 +88,7 @@ class TTSConfig(_Section):
     engine: str = "kokoro"
     model: str = "mlx-community/Kokoro-82M-bf16"
     default_voice: str = "af_heart"
-    languages: list[str] = Field(default_factory=lambda: ["en"])
+    languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     speed: float = Field(default=1.0, gt=0)
     queue_depth: int = Field(default=8, ge=1)
     max_input_chars: int = Field(default=4096, ge=1)

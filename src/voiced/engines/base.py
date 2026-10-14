@@ -16,7 +16,9 @@ Audio conventions (fixed for the whole project):
 
 Concurrency: engine methods are ``async`` so the server can await them, but
 the GPU work inside is blocking and not thread-safe. Engines run blocking
-calls with ``asyncio.to_thread`` and must not assume they are reentrant: the
+calls with ``voiced.threads.run_blocking`` (not ``asyncio.to_thread``, which
+lets a cancelled caller release the slot while the thread still runs) and
+must not assume they are reentrant: the
 server serializes calls per engine through ``voiced.queue.InferenceQueue`` and
 never calls two inference methods on the same engine at once. ``load()`` is
 called exactly once, before any other method.
@@ -222,6 +224,9 @@ class STTEngine(_EngineMeta):
 
         Called once at startup before the service reports healthy. May take
         seconds to minutes; must raise on failure rather than loading lazily.
+        Runs while the server is already answering ``/health``, so all
+        blocking work goes through ``voiced.threads.run_blocking``; blocking
+        the event loop here stalls the health endpoint.
         """
 
     @abstractmethod
@@ -249,7 +254,9 @@ class TTSEngine(_EngineMeta):
     async def load(self) -> None:
         """Download if needed, load the model and voices, and warm up.
 
-        Called once at startup before the service reports healthy.
+        Called once at startup before the service reports healthy. Same
+        rule as :meth:`STTEngine.load`: blocking work goes through
+        ``voiced.threads.run_blocking``.
         """
 
     @abstractmethod

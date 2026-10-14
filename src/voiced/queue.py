@@ -6,28 +6,27 @@ the rest wait in FIFO order. Waiting is bounded; when ``capacity`` requests are
 already queued or running, new ones fail immediately with :class:`QueueFull`,
 which the API layer maps to HTTP 503. Callers are never blocked indefinitely.
 
-Two entry points:
-
-* ``async with queue.slot():`` holds the GPU for the duration of the block.
-  Use this for streaming (TTS sentence loops, STT stream sessions).
-* ``await queue.run(fn, *args)`` runs a blocking callable in a worker thread
-  while holding a slot. Use this for one-shot inference.
+``async with queue.slot():`` holds the GPU for the duration of the block. It
+is the queue's only interface; transports reach it through
+:func:`voiced.inference.inference`, which also records the outcome. Blocking
+model calls inside the block go through :func:`voiced.threads.run_blocking`,
+so a cancelled caller keeps the slot until its thread has finished and a
+second inference never starts on a busy GPU.
 
 Cancellation: if the awaiting task is cancelled while waiting, it leaves the
-queue without running. Once ``fn`` has started in its thread it runs to
-completion (threads cannot be interrupted), but the slot is released as soon as
-it returns, so a cancelled client never wedges the queue.
+queue without running.
+
+Re-entering ``slot()`` from the task that already holds it would wait on
+itself forever, so it raises ``RuntimeError`` instead. A task spawned inside
+a slot is a different task and is not caught by that check: never take a
+slot from a child task while its parent holds one, or both wait forever.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import ParamSpec, TypeVar
-
-P = ParamSpec("P")
-T = TypeVar("T")
 
 
 class QueueFull(Exception):
@@ -45,6 +44,7 @@ class InferenceQueue:
         self.capacity = capacity
         self._lock = asyncio.Lock()
         self._pending = 0
+        self._holder: asyncio.Task[object] | None = None
 
     @property
     def depth(self) -> int:
@@ -53,15 +53,18 @@ class InferenceQueue:
 
     @asynccontextmanager
     async def slot(self) -> AsyncIterator[None]:
+        task = asyncio.current_task()
+        if task is not None and task is self._holder:
+            raise RuntimeError("this task already holds the inference slot")
         if self._pending >= self.capacity:
             raise QueueFull(self.capacity)
         self._pending += 1
         try:
             async with self._lock:
-                yield
+                self._holder = task
+                try:
+                    yield
+                finally:
+                    self._holder = None
         finally:
             self._pending -= 1
-
-    async def run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-        async with self.slot():
-            return await asyncio.to_thread(fn, *args, **kwargs)
