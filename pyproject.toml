@@ -32,7 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 # Real inference engines. Apple Silicon only; not installed in CI.
 stt = ["parakeet-mlx>=0.5"]
-tts = ["mlx-audio>=0.2", "kokoro-onnx>=0.4"]
+tts = ["mlx-audio>=0.5", "kokoro-onnx>=0.4", "huggingface-hub>=0.23", "scipy>=1.10"]
 
 [dependency-groups]
 dev = [
@@ -59,6 +59,8 @@ fake = "voiced.testing.fakes:FakeSTTEngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"
+kokoro = "voiced.engines.kokoro:KokoroEngine"
+soprano = "voiced.engines.soprano:SopranoEngine"
 
 [build-system]
 requires = ["hatchling"]
@@ -84,7 +86,16 @@ mypy_path = "src"
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "mlx.*"]
+module = [
+    "wyoming.*",
+    "parakeet_mlx.*",
+    "mlx_audio.*",
+    "kokoro_onnx.*",
+    "mlx.*",
+    "espeakng_loader.*",
+    "huggingface_hub.*",
+    "scipy.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -92,3 +103,6 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error::DeprecationWarning:voiced.*"]
+markers = [
+    "model: needs real model weights and Metal; skipped unless VOICED_MODEL_TESTS=1",
+]
