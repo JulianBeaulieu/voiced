@@ -57,7 +57,27 @@ which records nothing for cancellation, so hang-ups never showed up in the
 metrics. Now the body only sets a flag when it stops, and the synthesis task
 raises a disconnect at the next chunk, which `inference()` counts. The slot
 is therefore released after the chunk in flight, which a blocking model call
-required anyway (`run_blocking` waits for its thread).
+required anyway (`run_blocking` waits for its thread). Only a hang-up while
+the engine is still producing is a disconnect; one after synthesis finished
+records `ok`, since the audio was produced and only its delivery failed.
+
+Because the slot is free once synthesis ends, a client that stops reading no
+longer holds the GPU, but it would still hold its response task, its queued
+audio and, for mp3 and opus, an ffmpeg process. Every `send` of the response
+is therefore bounded by `server.write_timeout_s` (default 10 s); after that
+the client counts as gone and all of it is released. Releasing ffmpeg needs
+one more step: since Python 3.12 `Process.wait()` returns only once every
+pipe is closed, and ffmpeg's stdout, full because nobody reads it, is paused
+and never sees EOF, so the encoder reads stdout to its end before waiting.
+
+The response cannot complete for a client that is not reading, so uvicorn
+logs one line per such client ("ASGI callable returned without completing
+response") and closes the connection. That line is kept: a client that
+stalls for 10 s is worth a line. uvicorn's close still waits to flush what is
+buffered, so the socket lingers until the client reads or leaves, and a stop
+would wait for it indefinitely. `voiced serve` therefore gives uvicorn a 10 s
+graceful-shutdown timeout, below launchd's ExitTimeOut, so stalled clients
+cannot turn a stop into a SIGKILL.
 
 The queue is unbounded: synthesis runs at GPU speed and frees the slot as
 soon as it finishes, however slowly the client reads. `tts.max_input_chars`

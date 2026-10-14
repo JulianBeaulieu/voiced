@@ -19,8 +19,10 @@ outside the configured languages, is 400 ``UnknownVoice``.
 The engine runs inside ``inference()`` in its own task, and the response
 body reads its chunks from a queue. The route primes the body with one
 ``anext()``, so a full queue is still a 503 and an engine error still a 400
-before any header is sent (ADR 0005). A client that hangs up stops the body;
-the synthesis then ends at the next chunk and is counted as a disconnect.
+before any header is sent (ADR 0005). A client that hangs up while the engine
+is still producing stops the body; the synthesis then ends at the next chunk
+and is counted as a disconnect. A hang-up after synthesis finished records
+``ok``: the audio was produced, only its delivery failed.
 """
 
 from __future__ import annotations
@@ -138,7 +140,10 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
     elif fmt in ("mp3", "opus"):
         stream = ffmpeg.encode_stream(pcm, fmt, TTS_SAMPLE_RATE)
     return ClosingStreamingResponse(
-        stream, media_type=MEDIA_TYPES[fmt], headers={"Cache-Control": "no-store"}
+        stream,
+        write_timeout_s=ctx.settings.server.write_timeout_s,
+        media_type=MEDIA_TYPES[fmt],
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -209,10 +214,12 @@ async def _produce(
                     if stop.is_set():
                         raise ClientDisconnect  # the body stopped reading: a disconnect
                     out.put_nowait(chunk.data)
-        out.put_nowait(_END)
     except Exception as exc:
         # inference() has already recorded the outcome; hand the error to the body.
         out.put_nowait(exc)
+    finally:
+        # Always, even if this task is cancelled, so the body never waits forever.
+        out.put_nowait(_END)
 
 
 async def _prefixed(head: bytes, rest: AsyncGenerator[bytes, None]) -> AsyncGenerator[bytes, None]:

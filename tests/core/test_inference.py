@@ -159,7 +159,7 @@ async def test_cancellation_passes_through_and_releases_slot(ctx: ServiceContext
     assert counts(ctx) == {}
 
 
-async def test_generator_closed_early_is_a_disconnect(ctx: ServiceContext) -> None:
+async def test_generator_closed_early_records_nothing(ctx: ServiceContext) -> None:
     async def stream() -> AsyncGenerator[int]:
         async with inference(ctx, OP):
             for i in range(10):
@@ -167,16 +167,9 @@ async def test_generator_closed_early_is_a_disconnect(ctx: ServiceContext) -> No
 
     gen = stream()
     assert await anext(gen) == 0
-    await gen.aclose()  # the consumer stopped early: GeneratorExit
+    await gen.aclose()
     assert ctx.queue.depth == 0
-    assert counts(ctx) == {"disconnect": 1}
-    assert ctx.health.last_inference_at is None and ctx.health.last_error is None
-    assert ctx.metrics.snapshot()["recent_errors"] == [], "disconnects are counted, not logged"
-
-    exhausted = stream()
-    assert [i async for i in exhausted] == list(range(10))
-    await exhausted.aclose()  # no-op on a finished generator: still ok
-    assert counts(ctx) == {"disconnect": 1, "ok": 1}
+    assert counts(ctx) == {}
 
 
 async def test_event_driven_session_records_failure_then_cleanup(ctx: ServiceContext) -> None:

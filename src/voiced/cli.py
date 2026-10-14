@@ -17,6 +17,13 @@ from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.config import Settings, config_path, load_settings
 
+GRACEFUL_SHUTDOWN_S = 10
+"""How long uvicorn waits for open connections on SIGTERM before closing them.
+
+Below launchd's ExitTimeOut (about 20 s), so a stuck client cannot turn a
+clean stop into a SIGKILL.
+"""
+
 LIFECYCLE = ("install", "start", "stop", "status", "logs", "uninstall", "doctor", "watchdog")
 
 
@@ -53,7 +60,13 @@ def cmd_serve(settings: Settings, service: str) -> int:
 
         app = build_tts_app(settings)
         port = settings.tts.http_port
-    uvicorn.run(app, host=settings.server.bind, port=port, log_config=None)
+    uvicorn.run(
+        app,
+        host=settings.server.bind,
+        port=port,
+        log_config=None,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+    )
     return 0
 
 

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterable, Mapping
+from typing import Any
 
 from fastapi.responses import StreamingResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
-from voiced.inference import DISCONNECT_ERRORS
+from voiced.inference import DISCONNECT_ERRORS, bounded
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +22,10 @@ class ClosingStreamingResponse(StreamingResponse):
     slot (and any ffmpeg pipe) to the garbage collector. This closes it
     deterministically, whatever happened.
 
+    Every ``send`` is bounded by ``write_timeout_s`` (``server.write_timeout_s``),
+    so a client that stops reading is treated as gone instead of holding the
+    response open indefinitely.
+
     A client that hangs up mid-stream is not an error: the headers are sent
     and there is no one left to answer. The exception stops here, so neither
     the app's catch-all handler nor the server logs a traceback for it. The
@@ -27,9 +33,29 @@ class ClosingStreamingResponse(StreamingResponse):
     synthesis, which ``inference()`` records as a disconnect.
     """
 
+    def __init__(
+        self,
+        content: AsyncIterable[bytes],
+        *,
+        write_timeout_s: float,
+        media_type: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(content, media_type=media_type, headers=headers, **kwargs)
+        self.write_timeout_s = write_timeout_s
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        timeout = self.write_timeout_s
+
+        async def bounded_send(message: Message) -> None:
+            # A client that stops reading must not keep this task, its queued
+            # audio and any ffmpeg process alive: after server.write_timeout_s
+            # the send raises ClientTimeout (a ConnectionError), handled below.
+            await bounded(send(message), timeout)
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, bounded_send)
         except DISCONNECT_ERRORS as exc:
             log.debug("client went away mid-stream: %r", exc)
         finally:

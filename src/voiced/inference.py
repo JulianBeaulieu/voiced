@@ -16,10 +16,9 @@ Inside an :func:`inference` block, raise only :class:`EngineError`
 subclasses for client mistakes: any other exception, including a transport's
 own request errors, is classified as a server ``failure``.
 
-Cancellation: ``CancelledError`` passes through untouched, records nothing,
-and still releases the slot. ``GeneratorExit``, which a streaming generator
-only receives when its consumer stopped early, is recorded as a
-``disconnect`` and re-raised.
+Cancellation: ``CancelledError`` (and ``GeneratorExit`` when a streaming
+generator is closed early) passes through untouched, records nothing, and
+still releases the slot.
 """
 
 from __future__ import annotations
@@ -101,11 +100,6 @@ async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[
         async with ctx.queue.slot():
             started = time.perf_counter()
             yield
-    except GeneratorExit:
-        # A streaming body closed before it was exhausted: the consumer, in
-        # practice the client, stopped early. Count it; health is untouched.
-        ctx.metrics.record(operation, Outcome.DISCONNECT, _elapsed_ms(started), "GeneratorExit")
-        raise
     except Exception as exc:
         outcome = classify(exc)
         if outcome is Outcome.FAILURE:

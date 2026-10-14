@@ -215,7 +215,13 @@ async def encode_stream(
     finally:
         if proc.returncode is None:
             proc.kill()
-        for task in (feeder, stderr_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(feeder, stderr_task, proc.wait(), return_exceptions=True)
+        if not feeder.done():
+            feeder.cancel()
+        # Read stdout and stderr to EOF before waiting. Since Python 3.12,
+        # Process.wait() returns only once every pipe is closed, and a pipe
+        # whose reader stopped (a client that stopped reading leaves stdout
+        # full, so asyncio paused it) never sees EOF on its own: wait() would
+        # block forever and pin this response, even with ffmpeg killed. What is
+        # left is at most a pipe buffer.
+        await asyncio.gather(feeder, stderr_task, stdout.read(), return_exceptions=True)
+        await proc.wait()

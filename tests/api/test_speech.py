@@ -9,6 +9,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 import openai
+import psutil
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
@@ -259,6 +260,69 @@ async def test_client_disconnect_mid_stream_releases_slot(
         assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
         # The next request gets the slot immediately.
         assert (await _asgi_post(app, {"input": "Hi."})).status == 200
+
+
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+@pytest.mark.parametrize("fmt", ["pcm", "mp3"])
+async def test_client_that_stops_reading_is_released_after_the_write_timeout(
+    settings: Settings, fmt: str, spec_version: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A client that reads the headers and a little audio, then stops reading.
+
+    The response gives up after server.write_timeout_s, so the task, the queued
+    audio and any ffmpeg process are released. The input is long enough that
+    ffmpeg's output backs up while the client stalls, which is the case that
+    used to leave the response waiting on the ffmpeg process forever."""
+    if fmt == "mp3" and not ffmpeg.ffmpeg_available():
+        pytest.skip("ffmpeg is not installed")
+    settings.server.write_timeout_s = 0.3
+    app = build_tts_app(settings, FakeTTSEngine())
+    text = "Sentence number. " * 230  # about 37 s of audio, 600 KB as mp3
+    payload = json.dumps({"input": text, "response_format": fmt}).encode()
+    delivered = 0
+    sent_body = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await asyncio.Event().wait()  # never reports a disconnect
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, object]) -> None:
+        nonlocal delivered
+        if message["type"] == "http.response.body":
+            delivered += 1
+            if delivered > 2:
+                await asyncio.Event().wait()  # the client stopped reading
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/audio/speech",
+        "raw_path": b"/v1/audio/speech",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"voiced"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8880),
+    }
+    async with loaded(app):
+        started = time.perf_counter()
+        await asyncio.wait_for(app(scope, receive, send), 3.0)  # returns, nothing escapes
+        assert time.perf_counter() - started < 2.0, "gave up after the write timeout"
+        assert delivered == 3, "it was the stalled send that timed out"
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        await _wait_until(lambda: not psutil.Process().children(recursive=True))
+    assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
 
 
 async def _wait_until(condition: Callable[[], bool]) -> None:
