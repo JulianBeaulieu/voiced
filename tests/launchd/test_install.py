@@ -20,6 +20,7 @@ from voiced.launchd.install import (
     InstallPlan,
     daemon_install_lines,
     plan_install,
+    plan_summary,
     removal_refusal,
     remove_targets,
     run_install,
@@ -145,6 +146,17 @@ def test_paths_with_spaces_are_quoted(settings: Settings, tmp_path: Path) -> Non
     ]
 
 
+def test_long_venv_path_is_not_flagged(settings: Settings, tmp_path: Path) -> None:
+    """uv and pip both write a /bin/sh trampoline instead of a ``#!`` line when the
+    interpreter path is long or has spaces, and the engine reads espeak-ng data
+    from Homebrew, not from the venv, so no venv path length is too long."""
+    venv = tmp_path / "Application Support" / ("x" * 200) / ".voiced"
+    p = plan_install(settings, venv_dir=venv, user="u", home=tmp_path, uv=None)
+    summary = plan_summary(p)
+    assert f"venv           {venv}" in summary
+    assert "warning" not in summary
+
+
 def test_default_install_runner_streams() -> None:
     assert inspect.signature(run_install).parameters["runner"].default is run_streaming
 
@@ -182,6 +194,33 @@ def test_hf_home_resolved_once_for_plist_and_download(
     monkeypatch.chdir(tmp_path)
     p = make()  # a relative HF_HOME is made absolute: the daemon's cwd differs
     assert p.environment()["HF_HOME"] == str(tmp_path / "relative/cache")
+
+
+def test_espeak_override_reaches_daemons_and_download(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The override `voiced doctor` suggests must be in the daemons' environment too."""
+
+    def make() -> InstallPlan:
+        return plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
+
+    p = make()
+    assert not {"VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA"} & set(p.environment())
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "lib/libespeak-ng.dylib")
+    monkeypatch.setenv("VOICED_ESPEAK_DATA", str(tmp_path / "data"))
+    p = make()
+    expected = {
+        "VOICED_ESPEAK_LIBRARY": str(tmp_path / "lib/libespeak-ng.dylib"),  # made absolute
+        "VOICED_ESPEAK_DATA": str(tmp_path / "data"),
+    }
+    for service in ("stt", "tts", "watchdog"):
+        env = plistlib.loads(p.render(service))["EnvironmentVariables"]
+        assert {k: env[k] for k in expected} == expected
+    command = p.model_download_command()
+    assert all(f"{k}={v}" in command for k, v in expected.items())
+    assert f"VOICED_ESPEAK_LIBRARY {expected['VOICED_ESPEAK_LIBRARY']}" in plan_summary(p)
 
 
 def test_venv_commands_with_uv(plan: InstallPlan) -> None:

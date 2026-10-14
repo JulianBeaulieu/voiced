@@ -28,11 +28,12 @@ script; it unloads and reloads all three daemons:
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 
-`voiced doctor` checks Apple Silicon, the macOS version, Python, espeak-ng,
-ffmpeg, memory, the four ports (and which process holds them), FileVault,
-whether the daemons are installed and loaded, Metal from the service
-environment, and the last `--metal-probe` result. It exits non-zero only on
-a failed check, not on a warning.
+`voiced doctor` checks Apple Silicon, the macOS version, Python, the
+espeak-ng library Kokoro would load (the Homebrew keg or
+`VOICED_ESPEAK_LIBRARY`), ffmpeg, memory, the four ports (and which process
+holds them), FileVault, whether the daemons are installed and loaded, Metal
+from the service environment, and the last `--metal-probe` result. It exits
+non-zero only on a failed check, not on a warning.
 
 ## launchd
 
@@ -125,7 +126,7 @@ now. The design is in [ADR 0012](decisions/0012-watchdog.md).
 |---|---|
 | `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
 | `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
-| `~/Library/Logs/voiced/<service>.stderr.log` | launchd's capture of stderr. The services also log every line to stderr, so this file repeats the service log, plus tracebacks from a failed startup. It is not rotated; truncate it by hand if it grows. |
+| `~/Library/Logs/voiced/<service>.stderr.log` | launchd's capture of stderr. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | launchd's capture of stdout; normally empty. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.

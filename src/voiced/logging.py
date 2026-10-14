@@ -8,20 +8,29 @@ import sys
 from pathlib import Path
 
 from voiced.config import LogLevel
+from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
 
-FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-MAX_BYTES = 10 * 1024 * 1024
-BACKUP_COUNT = 5
+FORMAT = LOG_FORMAT
+MAX_BYTES = LOG_MAX_BYTES
+BACKUP_COUNT = LOG_BACKUP_COUNT
 
 
 def configure_logging(
-    service: str, level: LogLevel = "info", log_dir: Path | None = None
+    service: str,
+    level: LogLevel = "info",
+    log_dir: Path | None = None,
+    *,
+    interactive: bool | None = None,
 ) -> logging.Logger:
-    """Log to stderr and, if ``log_dir`` is given, to ``<log_dir>/<service>.log``.
+    """Log to ``<log_dir>/<service>.log`` (rotated) and, when someone watches, to stderr.
 
-    Under launchd stderr is also redirected to a file by the plist, so the file
-    handler is what matters in production; stderr is for ``voiced serve`` in a
-    terminal. Safe to call more than once: handlers are replaced, not stacked.
+    Without ``log_dir`` everything goes to stderr. With it, the rotating file
+    gets every line and stderr gets them too only when it is a terminal
+    (``interactive``, default ``sys.stderr.isatty()``): ``voiced serve`` run by
+    hand. Under launchd stderr is a file the plist names, which launchd never
+    rotates, so nothing is logged there; it keeps only what bypasses logging,
+    such as a traceback from a crash before or outside it (ADR 0006). Safe to
+    call more than once: handlers are replaced, not stacked.
     """
     root = logging.getLogger()
     root.setLevel(level.upper())
@@ -29,9 +38,12 @@ def configure_logging(
         root.removeHandler(handler)
     formatter = logging.Formatter(FORMAT)
 
-    stream = logging.StreamHandler(sys.stderr)
-    stream.setFormatter(formatter)
-    root.addHandler(stream)
+    if interactive is None:
+        interactive = sys.stderr.isatty()
+    if log_dir is None or interactive:
+        stream = logging.StreamHandler(sys.stderr)
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
 
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)

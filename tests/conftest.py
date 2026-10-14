@@ -53,6 +53,10 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     # the real 10300/10200 (which `voiced serve` may hold in another terminal).
     s.stt.wyoming_port = free_port()
     s.tts.wyoming_port = free_port()
+    # Same for HTTP: `voiced status` and the watchdog send real health requests
+    # to these, and a running voiced on 8880/8881 would answer them.
+    s.stt.http_port = free_port()
+    s.tts.http_port = free_port()
     return s
 
 

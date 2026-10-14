@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Literal
 
 from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings
+from voiced.engines.kokoro import (
+    ENV_ESPEAK_LIBRARY,
+    ESPEAK_INSTALL_HINT,
+    EspeakNotFound,
+    KokoroEngine,
+    espeak_candidates,
+)
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
 from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
@@ -102,14 +109,35 @@ def check_python(version: tuple[int, int, int] | None = None) -> Check:
 # External programs ---------------------------------------------------------
 
 
-def check_espeak(which: Which = _which) -> Check:
-    found = which("espeak-ng")
+def check_espeak(required: bool = True) -> Check:
+    """Does the Kokoro engine find an espeak-ng library?
+
+    Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`):
+    ``VOICED_ESPEAK_LIBRARY`` when set, else the Homebrew keg, which is found
+    whether or not it is linked. An ``espeak-ng`` binary on ``PATH`` is
+    irrelevant: the engine loads the library. ``required`` is whether the
+    configured TTS engine needs it; if not, any problem is only a warning.
+    The library is found, not loaded: the engine's phonemizer self-test runs
+    only in the service.
+    """
+    name = "espeak-ng"
+    result: Result = "fail" if required else "warn"
+    try:
+        found = espeak_candidates()
+    except EspeakNotFound as exc:
+        return Check(name, result, str(exc))
     if found:
-        return Check("espeak-ng", "pass", found)
+        library, data = found[0]
+        override = library == os.environ.get(ENV_ESPEAK_LIBRARY)
+        detail = f"found {library} ({ENV_ESPEAK_LIBRARY if override else 'Homebrew'})"
+        if data:
+            detail += f", data {data}"
+        return Check(name, "pass", detail)
     return Check(
-        "espeak-ng",
-        "warn",
-        "not found; Kokoro's phonemizer needs it: brew install espeak-ng",
+        name,
+        result,
+        f"library not found; Kokoro needs it: {ESPEAK_INSTALL_HINT} "
+        f"(or set {ENV_ESPEAK_LIBRARY} to libespeak-ng.dylib)",
     )
 
 
@@ -371,7 +399,7 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
-        check_espeak(),
+        check_espeak(required=settings.tts.engine == KokoroEngine.name),
         check_ffmpeg(),
         check_memory(runner),
         *check_ports(settings, runner),

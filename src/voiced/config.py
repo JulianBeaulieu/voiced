@@ -133,8 +133,7 @@ class WatchdogConfig(_Section):
 
 
 class InstallConfig(_Section):
-    # Where `voiced install` creates the virtual environment. Keep it short:
-    # espeak-ng (Kokoro's phonemizer) fails with long data paths.
+    # Where `voiced install` creates the virtual environment.
     venv_dir: Path = Field(default_factory=lambda: Path("~/.voiced").expanduser())
     # Interpreter or version spec for the venv ("3.12", or a path). Empty = auto.
     python: str = ""

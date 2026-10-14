@@ -37,6 +37,8 @@ from voiced.text.sentences import cut_to_length
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "ENV_ESPEAK_DATA",
+    "ENV_ESPEAK_LIBRARY",
     "ESPEAK_INSTALL_HINT",
     "EspeakNotFound",
     "KokoroEngine",

@@ -210,8 +210,10 @@ def test_watchdog_specs(settings: Settings) -> None:
     settings.server.bind = "0.0.0.0"
     specs = lc.watchdog_specs(settings)
     assert [s.name for s in specs] == ["stt", "tts"]
-    assert specs[0].base_url == "http://127.0.0.1:8881"
-    assert specs[1].health_url == "http://127.0.0.1:8880/health"
+    # A wildcard bind is polled on loopback.
+    assert specs[0].base_url == settings.http_url("stt")
+    assert specs[0].base_url == f"http://127.0.0.1:{settings.stt.http_port}"
+    assert specs[1].health_url == f"{settings.http_url('tts')}/health"
     assert specs[0].probe is not None and specs[0].probe.path == "/v1/audio/transcriptions"
     assert specs[1].probe is not None and b'"voice": "af_heart"' in specs[1].probe.body
     assert settings.watchdog.stall_after_s == 60 and settings.watchdog.probe is False

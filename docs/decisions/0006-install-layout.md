@@ -6,17 +6,19 @@ Date: 2026-10-14. Status: accepted.
 
 `voiced install` has to work for people who are not the author, on a Mac
 that may have Homebrew, `uv`, both or neither, and it must not take root
-silently. Two concrete constraints:
+silently. The daemons run as the installing user, so everything they need
+must be readable by that user without root, and the user must be able to
+update it without root.
 
-- **espeak-ng breaks on long paths.** Kokoro's phonemizer path goes through
-  espeak-ng, whose data-directory handling uses a fixed-size path buffer.
-  With the venv under a long directory (a nested project checkout, a
-  worktree, anything under `Library/Application Support`) phonemization
-  fails. This was reproduced while benchmarking the engines before this
-  project started; a short, fixed venv path avoids it.
-- **The daemons run as the installing user**, so everything they need must be
-  readable by that user without root, and the user must be able to update it
-  without root.
+The venv path length is not a constraint. espeak-ng does break on long data
+paths, but only the copy bundled in the `espeakng-loader` wheel lives inside
+the venv, and the Kokoro engine does not use it: it loads the Homebrew keg
+or the `VOICED_ESPEAK_LIBRARY` override (ADR 0009). The other usual limit,
+the kernel's 512-byte `#!` line, does not apply either: uv and pip both
+write a `/bin/sh` trampoline instead of a `#!` interpreter line when the
+interpreter path is long or contains spaces (checked with uv 0.9 and pip 26
+on a 743-character venv path). An earlier installer warned above 80
+characters; that warning was removed.
 
 ## Decision
 
@@ -61,6 +63,24 @@ file, the staged plists and the generated scripts. A directory is removed
 afterwards only if that left it empty. Every recursive delete is also
 guarded against the filesystem root, the home directory and its ancestors,
 and symlinks.
+
+### Logs
+
+Each service writes its log through a `RotatingFileHandler` to
+`<log_dir>/<service>.log` (10 MB, five backups). The plist also points
+`StandardErrorPath` at `<service>.stderr.log`, and launchd never rotates
+that file, so a service that logged every line to stderr as well would grow
+it without bound and duplicate the rotated log. `configure_logging`
+therefore adds a stderr handler only when there is no log directory or
+stderr is a terminal (`voiced serve` run by hand, which shows every line).
+Under launchd stderr is a file, so no log records go there; the stderr file
+keeps only what bypasses logging: a traceback from a crash during import or
+before logging is configured, and errors raised by the logging system
+itself. The watchdog decides by mode instead (ADR 0012): as a daemon it
+writes only its rotating file, and with `--once` only stderr; both
+configurers share the size and backup count from `voiced.launchd.plist`. `voiced logs` reads
+the rotated `<service>.log`; `voiced logs --stderr` adds the stderr file
+when looking for a crash.
 
 `HF_HOME` is resolved once when the plan is built (`[install] hf_home`,
 else the installing shell's `HF_HOME`, else unset) and written identically

@@ -21,6 +21,7 @@ from typing import Literal
 
 import voiced
 from voiced.config import HTTP_SERVICES, SERVICES, DaemonName, Settings, config_path
+from voiced.engines.kokoro import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -34,9 +35,6 @@ from voiced.launchd.plist import log_paths, render_plist
 Service = DaemonName
 EXTRAS: tuple[str, ...] = HTTP_SERVICES  # one package extra per inference service
 METAL_PROBE_FILE = "metal-probe.json"
-# espeak-ng (Kokoro's phonemizer) uses a fixed-size buffer for its data path;
-# the venv path plus site-packages/espeakng_loader/espeak-ng-data must fit.
-MAX_COMFORTABLE_VENV_PATH = 80
 
 # Label prefixes used by earlier releases. ``uninstall`` boots these out too
 # (ADR 0003). Empty until the prefix changes for the first time.
@@ -116,6 +114,9 @@ class InstallPlan:
     python: str = ""
     uv: str | None = None
     hf_home: Path | None = None
+    # VOICED_ESPEAK_LIBRARY / VOICED_ESPEAK_DATA from the installing shell, so the
+    # daemons load the same espeak-ng that `voiced doctor` found.
+    espeak_env: dict[str, str] = field(default_factory=dict)
     extras: tuple[str, ...] = EXTRAS
     pip_python: str = field(default_factory=lambda: sys.executable)
 
@@ -156,6 +157,7 @@ class InstallPlan:
         }
         if self.hf_home is not None:
             env["HF_HOME"] = str(self.hf_home)
+        env.update(self.espeak_env)
         return env
 
     def program_arguments(self, service: str) -> list[str]:
@@ -205,6 +207,7 @@ class InstallPlan:
         env = ["/usr/bin/env", f"VOICED_CONFIG={self.config_file}"]
         if self.hf_home is not None:
             env.append(f"HF_HOME={self.hf_home}")
+        env += [f"{key}={value}" for key, value in self.espeak_env.items()]
         return [*env, str(self.python_bin), "-c", MODEL_DOWNLOAD_SCRIPT]
 
     def sudo_install_script(self) -> str:
@@ -390,6 +393,11 @@ def plan_install(
     hf_home = settings.install.hf_home or (Path(env_hf_home) if env_hf_home else None)
     if hf_home is not None:
         hf_home = hf_home.expanduser().absolute()  # the daemon has a different cwd
+    espeak_env = {
+        key: str(Path(value).expanduser().absolute())
+        for key in (ENV_ESPEAK_LIBRARY, ENV_ESPEAK_DATA)
+        if (value := os.environ.get(key))
+    }
     return InstallPlan(
         user=user or getpass.getuser(),
         home=home or Path.home(),
@@ -402,6 +410,7 @@ def plan_install(
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
         hf_home=hf_home,
+        espeak_env=espeak_env,
         extras=tuple(extras),
     )
 
@@ -419,13 +428,9 @@ def plan_summary(plan: InstallPlan) -> str:
         f"staging        {plan.staging_dir}",
         f"hf_home        {plan.hf_home or '(Hugging Face default)'}",
     ]
+    lines += [f"{key:<14} {value}" for key, value in plan.espeak_env.items()]
     for service in SERVICES:
         lines.append(f"label {service:<9}{plan.labels[service]}")
-    if len(str(plan.venv_dir)) > MAX_COMFORTABLE_VENV_PATH:
-        lines.append(
-            f"warning: venv path is {len(str(plan.venv_dir))} characters; espeak-ng fails with "
-            f"long data paths, keep it under {MAX_COMFORTABLE_VENV_PATH} (for example ~/.voiced)"
-        )
     return "\n".join(lines)
 
 
