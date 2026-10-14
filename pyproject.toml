@@ -1,0 +1,94 @@
+[project]
+name = "voiced"
+version = "0.0.1"
+description = "Local speech-to-text and text-to-speech server for Apple Silicon. OpenAI-compatible API and Wyoming protocol, runs as a launchd daemon."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Julian Beaulieu" }]
+requires-python = ">=3.11,<3.14"
+keywords = ["speech-to-text", "text-to-speech", "mlx", "apple-silicon", "home-assistant", "wyoming", "openai"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "numpy>=1.26",
+    "wyoming>=1.6",
+]
+
+[project.optional-dependencies]
+# Real inference engines. Apple Silicon only; not installed in CI.
+stt = ["parakeet-mlx>=0.5"]
+tts = ["mlx-audio>=0.2", "kokoro-onnx>=0.4"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "httpx>=0.27",
+    "openai>=1.50",
+]
+
+[project.urls]
+Homepage = "https://github.com/JulianBeaulieu/voiced"
+Repository = "https://github.com/JulianBeaulieu/voiced"
+Issues = "https://github.com/JulianBeaulieu/voiced/issues"
+
+[project.scripts]
+voiced = "voiced.cli:main"
+
+# Engine plugins. Third-party packages add their own engines by declaring
+# entry points in these two groups; see docs/decisions/0002-engine-interfaces.md.
+[project.entry-points."voiced.stt_engines"]
+fake = "voiced.testing.fakes:FakeSTTEngine"
+
+[project.entry-points."voiced.tts_engines"]
+fake = "voiced.testing.fakes:FakeTTSEngine"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voiced"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["RUF012"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["voiced"]
+mypy_path = "src"
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "mlx.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::DeprecationWarning:voiced.*"]

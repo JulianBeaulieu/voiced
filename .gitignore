@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment and secrets: never committed, never opened by tooling
+.env
+.env.*
+*.pem
+*.key
+
+# Local config and models
+config.toml
+models/
+*.safetensors
+*.onnx
+
+# Audio fixtures live in tests/fixtures only
+*.wav
+*.mp3
+*.flac
+*.ogg
+!tests/fixtures/**
+
+# macOS
+.DS_Store
+
+# Editor and agent tooling
+.idea/
+.vscode/
+.claude/

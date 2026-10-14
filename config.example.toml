@@ -1,0 +1,66 @@
+# voiced configuration. Copy to ~/.config/voiced/config.toml and edit.
+#
+# Every key can also be set with an environment variable. The name is
+# VOICED_<SECTION>__<KEY> in upper case, for example:
+#   VOICED_SERVER__BIND=0.0.0.0
+#   VOICED_TTS__DEFAULT_VOICE=bf_emma
+#   VOICED_STT__LANGUAGES='["en"]'   (lists are JSON)
+# Environment variables take precedence over this file.
+# All values below are the defaults.
+
+[server]
+# Address both services listen on. 127.0.0.1 is local-only. Set to 0.0.0.0 to
+# serve your LAN; the HTTP API then has no authentication unless api_key is set,
+# and the Wyoming protocol has none at all, so only do this on a trusted network.
+bind = "127.0.0.1"
+
+# Optional bearer token for the HTTP API. Empty disables authentication.
+# Wyoming has no authentication in the protocol and is not affected.
+api_key = ""
+
+# Where the services write their logs.
+log_dir = "~/Library/Logs/voiced"
+
+# debug, info, warning, error
+log_level = "info"
+
+[stt]
+# OpenAI-compatible HTTP API for transcription.
+http_port = 8881
+# Wyoming protocol listener used by Home Assistant.
+wyoming_port = 10300
+# Engine plugin name (see `voiced doctor` for the installed list).
+engine = "parakeet"
+model = "mlx-community/parakeet-tdt-0.6b-v3"
+# Languages advertised to clients. Must be a subset of what the engine supports.
+languages = ["en"]
+# End-of-speech detection: how much trailing silence ends an utterance.
+vad_silence_ms = 200
+# Requests waiting for the GPU beyond this number get HTTP 503.
+queue_depth = 8
+# Largest upload accepted by /v1/audio/transcriptions.
+max_upload_mb = 50
+
+[tts]
+http_port = 8880
+wyoming_port = 10200
+engine = "kokoro"
+model = "mlx-community/Kokoro-82M-bf16"
+default_voice = "af_heart"
+languages = ["en"]
+# Default playback speed multiplier.
+speed = 1.0
+queue_depth = 8
+# Longest text accepted by one /v1/audio/speech request, in characters.
+max_input_chars = 4096
+
+[launchd]
+# Reverse-DNS prefix for the launchd labels. Services are
+# <prefix>.stt, <prefix>.tts and <prefix>.watchdog.
+label_prefix = "io.github.julianbeaulieu.voiced"
+
+[watchdog]
+# How often the watchdog polls each service's /health.
+interval_s = 15
+# Consecutive failed polls before the service is restarted.
+failures_before_restart = 3

@@ -1,0 +1,51 @@
+"""Engine interfaces and plugin registry."""
+
+from voiced.engines.base import (
+    AudioInput,
+    EngineError,
+    EngineNotLoaded,
+    PCMChunk,
+    Segment,
+    STTEngine,
+    STTStreamSession,
+    Transcript,
+    TTSEngine,
+    UnknownVoice,
+    UnsupportedLanguage,
+    Voice,
+)
+from voiced.engines.registry import (
+    STT_ENTRY_POINT_GROUP,
+    TTS_ENTRY_POINT_GROUP,
+    UnknownEngine,
+    get_stt_engine,
+    get_tts_engine,
+    list_stt_engines,
+    list_tts_engines,
+    register_stt_engine,
+    register_tts_engine,
+)
+
+__all__ = [
+    "STT_ENTRY_POINT_GROUP",
+    "TTS_ENTRY_POINT_GROUP",
+    "AudioInput",
+    "EngineError",
+    "EngineNotLoaded",
+    "PCMChunk",
+    "STTEngine",
+    "STTStreamSession",
+    "Segment",
+    "TTSEngine",
+    "Transcript",
+    "UnknownEngine",
+    "UnknownVoice",
+    "UnsupportedLanguage",
+    "Voice",
+    "get_stt_engine",
+    "get_tts_engine",
+    "list_stt_engines",
+    "list_tts_engines",
+    "register_stt_engine",
+    "register_tts_engine",
+]
