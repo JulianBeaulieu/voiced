@@ -11,22 +11,21 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.stt.vad import FRAME_SAMPLES
+from voiced.audio import VAD_FRAME_SAMPLES, dbfs_to_amplitude, frame_rms
 
 
 class EnergyDetector:
-    """RMS threshold. ``threshold`` is linear amplitude; 0.01 is about -40 dBFS."""
+    """RMS threshold. ``threshold_dbfs`` defaults to -40 dBFS."""
 
-    frame_samples = FRAME_SAMPLES
+    frame_samples = VAD_FRAME_SAMPLES
 
-    def __init__(self, threshold: float = 0.01) -> None:
-        if threshold <= 0:
-            raise ValueError("threshold must be positive")
-        self.threshold = threshold
+    def __init__(self, threshold_dbfs: float = -40.0) -> None:
+        if threshold_dbfs >= 0:
+            raise ValueError("threshold_dbfs must be below 0 dBFS")
+        self.threshold = dbfs_to_amplitude(threshold_dbfs)
 
     def probability(self, frame: NDArray[np.float32]) -> float:
-        rms = float(np.sqrt(np.mean(np.square(frame, dtype=np.float32))))
-        return 1.0 if rms >= self.threshold else 0.0
+        return 1.0 if float(np.max(frame_rms(frame), initial=0.0)) >= self.threshold else 0.0
 
     def reset(self) -> None:
         return None

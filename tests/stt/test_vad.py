@@ -125,7 +125,7 @@ def test_rejects_bad_parameters() -> None:
     with pytest.raises(ValueError):
         energy_endpointer(silence_ms=-1)
     with pytest.raises(ValueError):
-        EnergyDetector(threshold=0)
+        EnergyDetector(threshold_dbfs=0)
     with pytest.raises(ValueError):
         energy_endpointer().feed(np.zeros((2, 512), np.float32))
 

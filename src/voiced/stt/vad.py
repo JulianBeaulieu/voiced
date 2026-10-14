@@ -9,9 +9,10 @@ the :class:`Endpointer` next to the engine's stream session and calls
     async with await engine.stream() as session:
         async for chunk in audio_chunks:
             await session.add_audio(chunk)
-            for event in endpointer.feed(chunk):
-                if event.kind == "speech_end":
-                    transcript = await session.finalize()
+            events = endpointer.feed(chunk)
+            if any(event.kind == "speech_end" for event in events):
+                transcript = await session.finalize()
+                break
 
 Two layers:
 
@@ -28,7 +29,7 @@ Two layers:
 Semantic end-of-turn models (smart-turn and the like) would sit in the same
 place: a detector that, once the silence window has elapsed, is asked whether
 the utterance is complete before ``speech_end`` is raised. Nothing ships with
-voiced yet; see docs/decisions/0004-stt-engine-parakeet.md.
+voiced yet; see docs/decisions/0008-stt-engine-parakeet.md.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pysilero_vad import SileroVoiceActivityDetector
 
+from voiced.audio import VAD_FRAME_SAMPLES
 from voiced.config import STTConfig, load_settings
 from voiced.engines.base import STT_SAMPLE_RATE
 
@@ -52,8 +54,8 @@ __all__ = [
     "create_endpointer",
 ]
 
-FRAME_SAMPLES = 512
-"""Silero's fixed analysis window at 16 kHz (32 ms)."""
+FRAME_SAMPLES = VAD_FRAME_SAMPLES
+"""Silero's fixed analysis window at 16 kHz (32 ms), defined in ``voiced.audio``."""
 
 EventKind = Literal["speech_start", "speech_end"]
 
@@ -118,13 +120,12 @@ class Endpointer:
         silence_ms: int,
         threshold: float = 0.5,
         min_speech_ms: int = 96,
-        sample_rate: int = STT_SAMPLE_RATE,
     ) -> None:
         if silence_ms < 0 or min_speech_ms < 0:
             raise ValueError("durations must not be negative")
         self._detector: SpeechDetector = detector if detector is not None else SileroDetector()
         self._frame = self._detector.frame_samples
-        self._rate = sample_rate
+        self._rate = STT_SAMPLE_RATE
         self._threshold = threshold
         self._silence_frames = self._frames_for(silence_ms)
         self._min_speech_frames = self._frames_for(min_speech_ms)
