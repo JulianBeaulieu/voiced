@@ -93,10 +93,26 @@ sample width or rate is a client error on every transport.
   exception, so a failure followed by cleanup records `ok` and clears
   `last_error`, and an idle teardown records a 30-second success.
 - **Streaming HTTP responses** must surface `QueueFull` and pre-audio
-  `EngineError` before the response starts: write the body as an async
-  generator wrapping `async with inference(...)` and prime it with one
-  `anext()` in the route.
-  The session task has three more obligations. It reports its own outcome:
+  `EngineError` before the response starts, and must count a client that
+  hangs up while the engine is still producing. (A hang-up after synthesis
+  finished records `ok`: the audio was produced, only its delivery failed.)
+  Run the engine inside `async with inference(...)` in its own task that
+  hands chunks to the body through a queue; the body is an async generator
+  the route primes with one `anext()`. When the body stops early it sets a
+  flag, and the task raises a disconnect (`ClientDisconnect`) at the next
+  chunk, which `inference()` counts. Do not put `inference()` in the body
+  generator itself: a server stops a response by cancelling its task, and
+  that `CancelledError` lands inside the block, which records nothing (see
+  Cancellation). The protocol between the two: the task forwards its
+  exception through the queue (so priming still raises `QueueFull` or a
+  pre-audio `EngineError` before the headers) and always queues an end
+  marker last, in a `finally`; the route keeps a strong reference to the
+  task, since asyncio keeps only weak ones; and the body's `finally` only
+  sets the flag and never awaits the task, because anyio re-cancels every
+  await in a cancelled scope. Every `send` of the response is bounded by
+  `server.write_timeout_s`, so a client that stops reading counts as gone.
+  The multi-event session task (previous bullet) has three more
+  obligations. It reports its own outcome:
   on any exception it maps `classify` through the transport's table, closes
   the connection and ends, instead of leaving the error for the connection
   handler to re-raise on the next event (a client waiting for the result
@@ -134,8 +150,10 @@ released once any `run_blocking` thread has finished.
 ### Timing
 
 `inference()` times the block while the slot is held, excluding the wait for
-the slot. For streaming (an STT session, a TTS sentence loop) the block is the
-whole stream, so `last_inference_ms` and the p50/p95 are full-session numbers.
+the slot. For streaming (an STT session, a Wyoming TTS sentence loop) the
+block is the whole stream, so `last_inference_ms` and the p50/p95 are
+full-session numbers. For HTTP speech the block is the synthesis only, since
+the response is delivered from the queue after the slot is released.
 Time to first audio is a benchmark concern and is measured by the benchmark,
 not by the server.
 

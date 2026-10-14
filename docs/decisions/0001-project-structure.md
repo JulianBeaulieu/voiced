@@ -31,7 +31,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.engines.sentence` | `SentenceTTSEngine`: `load()`, the loaded, voice and speed checks, and the split-synthesize-yield loop shared by sentence-at-a-time TTS engines. |
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
 | `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |
-| `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies. |
+| `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies; `api.ffmpeg` decodes uploads and encodes mp3/opus through ffmpeg; `api.formats` renders transcripts (json, text, verbose_json, srt, vtt); `api.foreign_models` rejects a `model` that names another installed engine; `api.responses` holds `ClosingStreamingResponse`; `api.status_page` serves `/` and `/metrics.json`. |
 | `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app; see ADR 0011. |
 | `voiced.stt`, `voiced.tts` | Wire a configured engine into an app. |
 | `voiced.launchd` | `plist` rendering, `control` (launchctl argv builders and runners), `install` (the installer plan, scripts, uninstall safety), `metal_probe`. |

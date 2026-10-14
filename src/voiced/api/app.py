@@ -14,20 +14,30 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import NoReturn
 
 from fastapi import Depends, FastAPI, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocket
 
 from voiced import __version__
-from voiced.api import routes_stt, routes_tts
-from voiced.api.context import WS_CLOSE, APIError, Ctx, require_api_key, require_loaded
+from voiced.api import routes_stt, routes_tts, status_page
+from voiced.api.context import (
+    WS_CLOSE,
+    APIError,
+    Ctx,
+    close_ws,
+    require_api_key,
+    require_loaded,
+)
+from voiced.api.foreign_models import foreign_model_map
 from voiced.config import Settings
 from voiced.context import ServiceContext
+from voiced.engines import registry
 from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
 from voiced.inference import classify
@@ -93,10 +103,7 @@ async def _error(
             close_code = WS_CLOSE[Outcome.FAILURE]
         else:
             close_code = WS_CLOSE[Outcome.CLIENT_ERROR]
-        # Close reasons are capped at 123 bytes by the protocol.
-        reason = message.encode()[:123].decode(errors="ignore")
-        with suppress(RuntimeError):  # already closed
-            await conn.close(close_code, reason)
+        await close_ws(conn, close_code, message)
         return None
     return JSONResponse(
         status_code=code, content={"error": {"message": message, "type": type}}, headers=headers
@@ -139,6 +146,14 @@ def _build(ctx: ServiceContext) -> FastAPI:
         headers = {"Retry-After": "1"} if code == status.HTTP_503_SERVICE_UNAVAILABLE else None
         return await _error(conn, code, f"{type(exc).__name__}: {exc}", kind, headers)
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(conn: HTTPConnection, exc: StarletteHTTPException) -> Response | None:
+        # Starlette's own 4xx/5xx (malformed multipart, 404, 405) in the shared
+        # envelope instead of FastAPI's {"detail": ...}.
+        kind = "invalid_request_error" if exc.status_code < 500 else "server_error"
+        headers = dict(exc.headers) if exc.headers else None
+        return await _error(conn, exc.status_code, str(exc.detail), kind, headers)
+
     @app.exception_handler(RequestValidationError)
     async def _invalid(conn: HTTPConnection, exc: RequestValidationError) -> Response | None:
         # 400 rather than FastAPI's 422, as OpenAI does, so the openai client
@@ -154,7 +169,16 @@ def _build(ctx: ServiceContext) -> FastAPI:
         # inference() already marked health degraded if this came from an
         # engine; a bug outside a slot is not an engine failure. uvicorn logs
         # the traceback after this response, so log one line here.
-        log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)
+        if classify(exc) is Outcome.DISCONNECT:
+            # A client hang-up is not an error, so it is not logged as one here.
+            # This only quiets our own line: ServerErrorMiddleware re-raises after
+            # this handler and the server logs its traceback anyway, so routes
+            # stop disconnects themselves (ClosingStreamingResponse, the upload
+            # route). The middleware still needs a response object if none
+            # started; the server drops it for a closed connection.
+            log.debug("client went away on %s: %r", conn.url.path, exc)
+        else:
+            log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)
         code, kind = _HTTP[Outcome.FAILURE]
         return await _error(conn, code, f"internal error ({type(exc).__name__})", kind)
 
@@ -187,18 +211,10 @@ def _build(ctx: ServiceContext) -> FastAPI:
             ],
         }
 
-    @app.get("/", include_in_schema=False)
-    async def status_page() -> JSONResponse:
-        return _not_implemented("status page")
+    # GET / (the status page) and GET /metrics.json. Unauthenticated like /health.
+    app.include_router(status_page.router)
 
     return app
-
-
-def _not_implemented(what: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        content={"error": {"message": f"{what} is not implemented yet", "type": "not_implemented"}},
-    )
 
 
 def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
@@ -216,6 +232,7 @@ def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
+    app.state.foreign_models = foreign_model_map(registry.list_stt_engines(), engine.name)
     app.include_router(routes_stt.router, dependencies=V1_DEPENDENCIES)
     return app
 
@@ -235,5 +252,6 @@ def create_tts_app(settings: Settings, engine: TTSEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
+    app.state.foreign_models = foreign_model_map(registry.list_tts_engines(), engine.name)
     app.include_router(routes_tts.router, dependencies=V1_DEPENDENCIES)
     return app

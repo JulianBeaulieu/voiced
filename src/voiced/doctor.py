@@ -117,7 +117,11 @@ def check_ffmpeg(which: Which = _which) -> Check:
     found = which("ffmpeg")
     if found:
         return Check("ffmpeg", "pass", found)
-    return Check("ffmpeg", "warn", "not found; only WAV uploads will decode: brew install ffmpeg")
+    return Check(
+        "ffmpeg",
+        "fail",
+        "not found; required to decode uploads and encode mp3/opus: brew install ffmpeg",
+    )
 
 
 # Memory -------------------------------------------------------------------

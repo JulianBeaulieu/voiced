@@ -61,7 +61,8 @@ def test_external_programs() -> None:
     assert doctor.check_espeak(lambda n: "/opt/homebrew/bin/espeak-ng").result == "pass"
     missing = doctor.check_espeak(lambda n: None)
     assert missing.result == "warn" and "brew install espeak-ng" in missing.detail
-    assert doctor.check_ffmpeg(lambda n: None).result == "warn"
+    no_ffmpeg = doctor.check_ffmpeg(lambda n: None)
+    assert no_ffmpeg.result == "fail" and "brew install ffmpeg" in no_ffmpeg.detail
     assert doctor.check_ffmpeg(lambda n: "/usr/local/bin/ffmpeg").result == "pass"
 
 

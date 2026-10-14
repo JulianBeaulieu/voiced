@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -38,26 +37,6 @@ async def test_models_lists_engine_metadata(tts_client: AsyncClient) -> None:
     assert model["languages"] == ["en"]
     assert model["license"] == "MIT"
     assert model["task"] == "speech"
-
-
-@pytest.mark.parametrize(
-    ("service", "method", "path"),
-    [
-        ("stt", "POST", "/v1/audio/transcriptions"),
-        ("tts", "POST", "/v1/audio/speech"),
-        ("tts", "GET", "/v1/audio/voices"),
-        ("tts", "GET", "/"),
-        ("stt", "GET", "/"),
-    ],
-)
-async def test_unimplemented_routes_return_501(
-    service: str, method: str, path: str, stt_app: FastAPI, tts_app: FastAPI
-) -> None:
-    app = stt_app if service == "stt" else tts_app
-    async with lifespan_client(app) as c:
-        r = await c.request(method, path)
-    assert r.status_code == 501
-    assert r.json()["error"]["type"] == "not_implemented"
 
 
 async def test_api_key_guards_v1_but_not_health(stt_app: FastAPI) -> None:
