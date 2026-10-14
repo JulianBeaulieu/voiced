@@ -20,7 +20,7 @@ merge, and this index is updated when a record lands on `main`.
 | [0011](0011-wyoming.md) | Wyoming listeners | In-process listeners, STT utterance bounds, per-sentence TTS slots, error codes, zeroconf only when reachable, what Home Assistant expects. |
 | [0012](0012-watchdog.md) | Watchdog design | Stdlib-only third daemon, the decision rules, stall detection, restart by SIGKILL plus `kickstart` as a non-root user. |
 | [0013](0013-local-control-channel.md) | Local control channel | The watchdog serves a 0600 Unix socket with a peer uid check; settable keys, comment-preserving atomic config writes, restart-required rules, the opt-in browser form, protocol versioning. |
-| [0013](0013-menu-bar-app.md) | Menu bar app | Native SwiftUI `MenuBarExtra` in `menubar/`, speaks only the control socket, macOS 14 floor, a Swift fake control server for tests. |
+| [0014](0014-menu-bar-app.md) | Menu bar app | Native SwiftUI `MenuBarExtra` plus a Settings window in `menubar/`, speaks only the control socket, how it finds it, macOS 14 floor, a Swift fake control server for tests. |
 
 ## Writing one
 

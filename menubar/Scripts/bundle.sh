@@ -10,12 +10,17 @@ repo_dir="$(cd "$package_dir/.." && pwd)"
 out_dir="${1:-$package_dir/build}"
 app="$out_dir/voiced.app"
 
-# The app's version is the Python package's version, so both always ship as one.
-version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_dir/pyproject.toml" | head -n 1)"
-if [[ -z "$version" ]]; then
+# The app's version is the Python package's version, so both always ship as one. That is a
+# PEP 440 version ("0.1.0rc1", "1.2.dev3"), but the bundle versions must be three numbers,
+# so the release part is used, padded to X.Y.Z ("0.1.0", "1.2.0").
+pep440="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo_dir/pyproject.toml" | head -n 1)"
+release="$(printf '%s' "$pep440" | sed -E 's/^([0-9]+(\.[0-9]+)*).*/\1/')"
+if [[ ! "$release" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
     echo "bundle.sh: no version found in $repo_dir/pyproject.toml" >&2
     exit 1
 fi
+IFS=. read -r major minor patch _ <<<"$release.0.0"
+version="$major.${minor:-0}.${patch:-0}"
 
 swift build -c release --package-path "$package_dir" --product voiced-menubar
 bin_dir="$(swift build -c release --package-path "$package_dir" --show-bin-path)"
@@ -64,4 +69,4 @@ plutil -lint -s "$app/Contents/Info.plist"
 # the bundle so it launches, and it is replaced when the bundle is signed for real.
 codesign --force --sign - --timestamp=none "$app"
 
-echo "$app (version $version, ad-hoc signed, not notarized)"
+echo "$app (version $version from $pep440, ad-hoc signed, not notarized)"

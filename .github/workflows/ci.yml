@@ -47,8 +47,10 @@ jobs:
   menubar:
     # The macOS menu bar app in menubar/: a Swift 6 package. macos-15 ships
     # Xcode 16, the first with Swift 6. No signing here; see
-    # menubar/Scripts/SIGNING.md.
+    # menubar/Scripts/SIGNING.md. The bundle step reuses the release build
+    # (incremental, nothing recompiles).
     runs-on: macos-15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: menubar
