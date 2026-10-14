@@ -99,7 +99,7 @@ The engine reads private parts of mlx-audio's Soprano model
 `>=0.5.8,<0.5.10`, the releases this was checked against; a model test
 asserts the penalized loop is installed.
 
-## Resampling (outside engine ownership)
+## Resampling, outside the engine
 
 Soprano produces 32 kHz and the TTS contract is 24 kHz. The conversion is
 `resample(samples, src_rate, dst_rate)` in `voiced.audio`, not in the engine:

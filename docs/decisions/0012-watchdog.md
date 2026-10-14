@@ -1,6 +1,7 @@
-# 0005: Watchdog design
+# 0012: Watchdog design
 
-Date: 2026-10-14. Status: accepted.
+Date: 2026-10-14. Status: accepted. Numbered 0005 when it was written; renumbered
+because ADR 0005 is the shared inference and audio primitives record.
 
 ## Context
 

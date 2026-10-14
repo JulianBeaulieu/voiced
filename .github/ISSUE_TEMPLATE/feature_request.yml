@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a change or an addition.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New models, languages and engines are plugins: a separate package with a `voiced.stt_engines` or `voiced.tts_engines` entry point. If that is what you want, say so and we can help with the interface, but the engine itself may not need to live in this repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change. Config keys, endpoints, CLI commands, behaviour.
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - New engine or model
+        - New language
+        - HTTP API
+        - Wyoming / Home Assistant
+        - Installer, launchd, watchdog, CLI
+        - Status page
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What you tried or considered instead, including other projects.

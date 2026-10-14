@@ -92,7 +92,7 @@ and emits `AudioStart`, `AudioChunk`s, `AudioStop` at 24 kHz 16-bit mono.
 The streaming form (`SynthesizeStart`, `SynthesizeChunk`..., `SynthesizeStop`)
 accumulates text in `SentenceAccumulator`, which runs `voiced.text.split_sentences`
 over the buffer and releases every sentence but the last, which may still be
-growing ("Call Dr." before "Smith"); a newline releases it too. A worker
+growing ("Call Dr." before "Smith"); a newline releases it too. A synthesis
 task synthesizes each sentence while the handler keeps reading text, so the
 first audio goes out while the conversation agent is still generating.
 
@@ -123,7 +123,7 @@ request/response events; `disconnect`
 (`DISCONNECT_ERRORS`, including a `ClientTimeout` from a bounded read or write)
 is cleaned up quietly with no `Error`; `failure` sends `Error(engine_error)`.
 The error text starts with the exception type. For the streaming paths the
-session/worker task is that one place, reporting immediately rather than
+session or synthesis task is that one place, reporting immediately rather than
 waiting for the next client event (which a client blocked on a read never
 sends), and a broken stream always closes the connection. Requests that arrive
 before the model has loaded get `server_busy` (`check_loaded()`); that includes

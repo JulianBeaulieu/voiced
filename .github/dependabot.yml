@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      dev-tools:
+        patterns: ["ruff", "mypy", "pytest*", "httpx"]
+      mlx:
+        patterns: ["mlx*", "parakeet-mlx", "kokoro-onnx"]

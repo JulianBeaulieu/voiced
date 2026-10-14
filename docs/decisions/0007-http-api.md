@@ -79,6 +79,16 @@ would wait for it indefinitely. `voiced serve` therefore gives uvicorn a 10 s
 graceful-shutdown timeout, below launchd's ExitTimeOut, so stalled clients
 cannot turn a stop into a SIGKILL.
 
+Operational note: uvicorn logs that line at ERROR level, as
+`ASGI callable returned without completing response`, once per speech
+client cut off at `write_timeout_s`. It records a client that stopped
+reading, which is a disconnect, not a server error: nothing failed on the
+server side and health is untouched. (A client that closes the connection
+itself does not produce the line; uvicorn only logs it for a connection
+that is still open.) Do not alert on it. Alert on
+`/health` turning `degraded` or on the `failure` count on the status page
+instead.
+
 The queue is unbounded: synthesis runs at GPU speed and frees the slot as
 soon as it finishes, however slowly the client reads. `tts.max_input_chars`
 bounds what can pile up (a few minutes of 24 kHz audio, about 13 MB).

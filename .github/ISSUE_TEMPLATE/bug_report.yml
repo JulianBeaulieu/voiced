@@ -1,0 +1,72 @@
+name: Bug report
+description: Something does not work the way the docs say.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `voiced doctor` first; it answers most of the questions below. Replace hostnames and addresses with placeholders before pasting anything.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. voiced install
+        2. curl -s http://127.0.0.1:8880/v1/audio/speech ...
+        3. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Speech-to-text (HTTP)
+        - Text-to-speech (HTTP)
+        - Streaming WebSocket
+        - Wyoming / Home Assistant
+        - Installer, launchd, watchdog
+        - CLI (doctor, status, logs)
+        - Status page
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: voiced version
+      description: Output of `voiced --version`.
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Mac and macOS
+      placeholder: M1 Max 32 GB, macOS 15.7
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: voiced doctor output
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Output of `voiced config`, with any `api_key` removed.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `voiced logs stt` or `voiced logs tts`, or the files under `~/Library/Logs/voiced/`.
+      render: text
