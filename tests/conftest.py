@@ -13,6 +13,19 @@ from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
 
+MODEL_TESTS_ENV = "VOICED_MODEL_TESTS"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Tests marked ``model`` need real weights and Metal; skip them unless
+    ``VOICED_MODEL_TESTS=1`` so the default run passes on CI."""
+    if os.environ.get(MODEL_TESTS_ENV) == "1":
+        return
+    skip = pytest.mark.skip(reason=f"needs real models; set {MODEL_TESTS_ENV}=1")
+    for item in items:
+        if item.get_closest_marker("model") is not None:
+            item.add_marker(skip)
+
 
 @pytest.fixture
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:

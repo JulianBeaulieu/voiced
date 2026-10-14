@@ -28,6 +28,8 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.metrics` | `Operation`, `Outcome`; per-operation p50/p95 latency, outcome counts, recent errors, resident memory. |
 | `voiced.audio` | PCM conversion (`PCMConverter`, int16 and float32) and WAV headers. No transport imports. |
 | `voiced.engines` | Frozen engine interfaces and the entry-point registry. |
+| `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
+| `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |
 | `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies. |
 | `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app. |
 | `voiced.stt`, `voiced.tts` | Wire a configured engine into an app. |

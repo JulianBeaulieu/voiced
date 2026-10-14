@@ -1924,6 +1924,7 @@ stt = [
     { name = "parakeet-mlx" },
 ]
 tts = [
+    { name = "huggingface-hub" },
     { name = "kokoro-onnx" },
     { name = "mlx-audio" },
 ]
@@ -1942,8 +1943,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=0.23" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
-    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.2" },
+    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5,<0.6" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "parakeet-mlx", marker = "extra == 'stt'", specifier = ">=0.5" },
     { name = "psutil", specifier = ">=5.9" },
