@@ -77,13 +77,17 @@ M1 Max Mac Studio.
 ## Model licenses
 
 Model weights are not vendored; they are downloaded from Hugging Face on
-first run.
+first run, except Silero VAD, which ships inside the `pysilero-vad` wheel.
 
 | Model | License |
 |---|---|
 | Parakeet TDT 0.6B v3 | CC-BY-4.0 |
 | Kokoro-82M | Apache-2.0 |
+| Silero VAD v6.2 via pysilero-vad, bundled | MIT |
 | Soprano-80M | to be verified before release |
+
+CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
+weights.
 
 Kokoro's phonemizer depends on espeak-ng, which is GPL-3. voiced uses it as
 an external program (`brew install espeak-ng`) and does not include its

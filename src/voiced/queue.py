@@ -1,7 +1,8 @@
 """Serialized, bounded inference queue.
 
-MLX runs one kernel stream per process and model objects are not thread-safe,
-so each service serializes GPU work: exactly one inference runs at a time and
+Model objects are not thread-safe and share one GPU, so each service
+serializes GPU work (and MLX engines run every call for one model on one
+thread, see :mod:`voiced.threads`): exactly one inference runs at a time and
 the rest wait in FIFO order. Waiting is bounded; when ``capacity`` requests are
 already queued or running, new ones fail immediately with :class:`QueueFull`,
 which the API layer maps to HTTP 503. Callers are never blocked indefinitely.

@@ -55,6 +55,34 @@ def float32_to_pcm16(samples: NDArray[np.float32]) -> bytes:
     return np.rint(clipped).astype("<i2").tobytes()
 
 
+VAD_FRAME_SAMPLES = 512
+"""One 32 ms analysis frame at 16 kHz: the unit both the VAD and the STT silence gate use."""
+
+
+def dbfs_to_amplitude(dbfs: float) -> float:
+    """A level in dBFS as a linear amplitude in [0, 1]. ``-60`` is ``0.001``."""
+    return float(10 ** (dbfs / 20))
+
+
+def frame_rms(samples: NDArray[np.float32], frame: int = VAD_FRAME_SAMPLES) -> NDArray[np.float32]:
+    """Per-frame root-mean-square amplitude. The last partial frame is zero-padded.
+
+    Returns one value per ``frame`` samples; ``frame_rms(x).max()`` is the
+    loudest frame, which the STT silence gate compares against a threshold so
+    that long quiet stretches cannot average a burst of speech away.
+    """
+    arr = np.ascontiguousarray(samples, dtype=np.float32)
+    if arr.ndim != 1:
+        raise ValueError(f"expected mono 1-D samples, got shape {arr.shape}")
+    if len(arr) == 0:
+        return np.zeros(0, dtype=np.float32)
+    pad = (-len(arr)) % frame
+    if pad:
+        arr = np.concatenate([arr, np.zeros(pad, dtype=np.float32)])
+    frames = arr.reshape(-1, frame)
+    return np.sqrt(np.mean(np.square(frames), axis=1)).astype(np.float32)
+
+
 def wav_header(
     sample_rate: int = TTS_SAMPLE_RATE,
     channels: int = 1,

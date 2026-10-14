@@ -33,11 +33,13 @@ dependencies = [
     # for a handshake refused before accept) do not work.
     "websockets>=13",
     "zeroconf>=0.132",
+    # Silero VAD as a ggml build: no torch, no onnxruntime, about 4.8 MB installed.
+    "pysilero-vad>=3.4,<4",
 ]
 
 [project.optional-dependencies]
 # Real inference engines. Apple Silicon only; not installed in CI.
-stt = ["parakeet-mlx>=0.5"]
+stt = ["parakeet-mlx>=0.5,<0.6"]
 # mlx-audio is pinned to a minor: the Kokoro engine relies on its internals
 # (load_voice_tensor, model(..., return_output=True)).
 tts = ["mlx-audio>=0.5,<0.6", "kokoro-onnx>=0.4", "huggingface-hub>=0.23"]
@@ -65,6 +67,7 @@ voiced = "voiced.cli:main"
 # entry points in these two groups; see docs/decisions/0002-engine-interfaces.md.
 [project.entry-points."voiced.stt_engines"]
 fake = "voiced.testing.fakes:FakeSTTEngine"
+parakeet = "voiced.engines.parakeet:ParakeetEngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"
