@@ -1,22 +1,17 @@
-"""Argument parsing for every subcommand."""
+"""Argument parsing: every subcommand, every flag, one table."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from voiced.cli import LIFECYCLE, build_parser
 
-
-def test_every_lifecycle_command_parses() -> None:
-    parser = build_parser()
-    for cmd in LIFECYCLE:
-        assert parser.parse_args([cmd]).command == cmd
-
-
-def test_install_options() -> None:
-    args = build_parser().parse_args(
+CASES: list[tuple[list[str], dict[str, Any]]] = [
+    (["install"], {"dry_run": False, "venv": None, "python": None, "source": None}),
+    (
         [
             "install",
             "--dry-run",
@@ -32,65 +27,54 @@ def test_install_options() -> None:
             "/tmp/stage",
             "--skip-models",
             "--no-uv",
-        ]
-    )
-    assert args.dry_run and args.skip_models and args.no_uv
-    assert args.venv == Path("/opt/v")
-    assert args.python == "3.12"
-    assert args.source == "voiced==1.0"
-    assert args.user == "someone"
-    assert args.staging_dir == Path("/tmp/stage")
+        ],
+        {
+            "dry_run": True,
+            "venv": Path("/opt/v"),
+            "python": "3.12",
+            "source": "voiced==1.0",
+            "user": "someone",
+            "staging_dir": Path("/tmp/stage"),
+            "skip_models": True,
+            "no_uv": True,
+        },
+    ),
+    (["start"], {"service": "all"}),
+    (["start", "stt"], {"service": "stt"}),
+    (["stop", "watchdog"], {"service": "watchdog"}),
+    (["status"], {"json": False}),
+    (["status", "--json"], {"json": True}),
+    (["logs"], {"service": "all", "lines": 50, "follow": False, "stderr": False}),
+    (["logs", "tts", "-n", "10", "-f", "--stderr"], {"lines": 10, "follow": True, "stderr": True}),
+    (["uninstall"], {"yes": False, "remove_config": False, "remove_models": False}),
+    (
+        ["uninstall", "--yes", "--remove-config", "--remove-models", "--remove-logs"],
+        {"yes": True, "remove_config": True, "remove_models": True, "remove_logs": True},
+    ),
+    (["doctor"], {"json": False, "metal_probe": False}),
+    (["doctor", "--json", "--metal-probe"], {"json": True, "metal_probe": True}),
+    (["watchdog"], {"once": False}),
+    (["watchdog", "--once"], {"once": True}),
+    (["serve", "stt"], {"service": "stt"}),
+    (["config"], {}),
+]
 
 
-def test_install_defaults() -> None:
-    args = build_parser().parse_args(["install"])
-    assert args.venv is None and args.python is None and args.source is None
-    assert not args.dry_run
+@pytest.mark.parametrize(("argv", "expected"), CASES, ids=[" ".join(c[0]) for c in CASES])
+def test_parses(argv: list[str], expected: dict[str, Any]) -> None:
+    args = build_parser().parse_args(argv)
+    assert args.command == argv[0]
+    for key, value in expected.items():
+        assert getattr(args, key) == value, key
 
 
-@pytest.mark.parametrize("cmd", ["start", "stop", "logs"])
-def test_service_argument(cmd: str) -> None:
+def test_every_lifecycle_command_is_registered() -> None:
     parser = build_parser()
-    assert parser.parse_args([cmd]).service == "all"
-    assert parser.parse_args([cmd, "stt"]).service == "stt"
-    assert parser.parse_args([cmd, "watchdog"]).service == "watchdog"
+    for cmd in LIFECYCLE:
+        assert parser.parse_args([cmd]).command == cmd
+
+
+@pytest.mark.parametrize("argv", [["start", "bogus"], ["logs", "nope"], ["start", "--kill"]])
+def test_rejects(argv: list[str]) -> None:
     with pytest.raises(SystemExit):
-        parser.parse_args([cmd, "bogus"])
-
-
-def test_start_kill_flag() -> None:
-    assert build_parser().parse_args(["start", "tts", "--kill"]).kill is True
-
-
-def test_status_and_doctor_json() -> None:
-    parser = build_parser()
-    assert parser.parse_args(["status", "--json"]).json is True
-    assert parser.parse_args(["doctor", "--json"]).json is True
-    assert parser.parse_args(["doctor", "--metal-probe"]).metal_probe is True
-
-
-def test_logs_options() -> None:
-    args = build_parser().parse_args(["logs", "stt", "-n", "10", "-f", "--stderr"])
-    assert args.lines == 10 and args.follow and args.stderr
-    assert build_parser().parse_args(["logs"]).lines == 50
-
-
-def test_uninstall_flags() -> None:
-    args = build_parser().parse_args(
-        ["uninstall", "--yes", "--remove-config", "--remove-models", "--remove-logs", "--force"]
-    )
-    assert args.yes and args.remove_config and args.remove_models and args.remove_logs
-    assert args.force
-    plain = build_parser().parse_args(["uninstall"])
-    assert not plain.yes and not plain.remove_config
-
-
-def test_watchdog_once() -> None:
-    assert build_parser().parse_args(["watchdog", "--once"]).once is True
-    assert build_parser().parse_args(["watchdog"]).once is False
-
-
-def test_serve_and_config_still_parse() -> None:
-    parser = build_parser()
-    assert parser.parse_args(["serve", "stt"]).service == "stt"
-    assert parser.parse_args(["config"]).command == "config"
+        build_parser().parse_args(argv)

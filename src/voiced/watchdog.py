@@ -2,13 +2,13 @@
 
 Runs as its own LaunchDaemon (``voiced watchdog``). Every ``interval_s`` it
 polls each service's ``/health`` and decides, per service, whether to restart
-it. Restarts go through ``launchctl kickstart -k`` with a kill-the-pid
-fallback (ADR 0005). The decision logic is a pure function of the previous
-state and the new observation so it can be unit-tested without a network.
+it. The decision logic is a pure function of the previous state and the new
+observation so it can be unit-tested without a network (ADR 0005).
 
-This module deliberately imports only the standard library: the watchdog is
-the thing that must keep working when everything else is wedged, and it must
-start fast. Settings are converted to plain values by the CLI.
+This module and ``voiced.launchd.control`` import only the standard library:
+the watchdog is the thing that must keep working when everything else is
+wedged. The CLI converts ``Settings`` to a :class:`Policy` before handing it
+over.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import logging
 import logging.handlers
 import os
 import signal
-import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +25,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+from voiced.launchd.control import (
+    Runner,
+    kickstart_argv,
+    parse_print_output,
+    print_argv,
+    run_command,
+)
 
 log = logging.getLogger("voiced.watchdog")
 
@@ -35,14 +42,17 @@ Action = Literal["none", "restart", "cooldown"]
 
 @dataclass(frozen=True)
 class Policy:
-    interval_s: float = 15.0
-    timeout_s: float = 5.0
-    failures_before_restart: int = 3
-    startup_grace_s: float = 300.0
-    degraded_window_s: float = 120.0
-    restart_cooldown_s: float = 120.0
-    probe: bool = False
-    probe_timeout_s: float = 20.0
+    """Mirror of ``WatchdogConfig``; build with ``Policy(**config.model_dump())``."""
+
+    interval_s: float
+    timeout_s: float
+    failures_before_restart: int
+    startup_grace_s: float
+    degraded_window_s: float
+    restart_cooldown_s: float
+    stall_after_s: float
+    probe: bool
+    probe_timeout_s: float
 
 
 @dataclass(frozen=True)
@@ -77,11 +87,19 @@ class Observation:
 
 @dataclass
 class ServiceState:
+    """Per-service memory between polls.
+
+    ``grace_started_at`` is when the current startup grace period began: the
+    watchdog's own start, or the last restart it issued. While the service is
+    loading its model the socket is not bound yet, so polls are refused; those
+    must not count as failures during the grace period.
+    """
+
+    grace_started_at: float = 0.0
     failures: int = 0
     degraded_since: float | None = None
     last_restart_at: float | None = None
     restarts: int = 0
-    last_kind: Kind | None = None
     awaiting_recovery: bool = False
 
 
@@ -97,22 +115,19 @@ class Decision:
 def decide(state: ServiceState, obs: Observation, now: float, policy: Policy) -> Decision:
     """Update ``state`` with ``obs`` and say what to do.
 
-    Rules:
-
     * ``ok`` resets the failure counter and the degraded timer.
-    * ``starting`` is tolerated while the service's own uptime is below
-      ``startup_grace_s``; beyond that the model load is considered hung.
-    * ``degraded`` (service answers, last inference failed) starts a timer;
-      longer than ``degraded_window_s`` restarts.
-    * ``unreachable``, ``error`` and ``stalled`` count as failures; reaching
-      ``failures_before_restart`` consecutive failures restarts.
+    * ``starting`` (503, model loading) is tolerated while the service's own
+      uptime is below ``startup_grace_s``; beyond that the load is hung.
+    * ``unreachable`` within ``startup_grace_s`` of the watchdog start or of
+      the last restart is the model loading before the socket is bound: not
+      a failure.
+    * ``degraded`` (answers, last inference failed) starts a timer; longer
+      than ``degraded_window_s`` restarts.
+    * ``unreachable``, ``error`` and ``stalled`` otherwise count as failures;
+      ``failures_before_restart`` consecutive ones restart.
     * A restart within ``restart_cooldown_s`` of the previous one is deferred
       (``cooldown``); counters are kept so it fires right after the cooldown.
     """
-    previous = state.last_kind
-    state.last_kind = obs.kind
-    wanted: str | None = None
-
     if obs.kind == "ok":
         recovered = (
             state.failures > 0 or state.degraded_since is not None or state.awaiting_recovery
@@ -120,60 +135,89 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: Policy) ->
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
-        reason = "healthy again" if recovered else "healthy"
-        return Decision("none", reason)
+        return Decision("none", "healthy again" if recovered else "healthy")
+
+    in_grace = now - state.grace_started_at < policy.startup_grace_s
+    if obs.kind == "unreachable" and in_grace:
+        state.failures = 0
+        return Decision("none", f"unreachable during startup grace: {obs.detail}")
 
     if obs.kind == "starting":
         state.failures = 0
         state.degraded_since = None
-        if obs.uptime_s is not None and obs.uptime_s > policy.startup_grace_s:
-            wanted = f"still starting after {obs.uptime_s:.0f}s (grace {policy.startup_grace_s:g}s)"
-        else:
-            return Decision("none", f"starting ({obs.uptime_s or 0:.0f}s)")
-
+        uptime = obs.uptime_s or 0.0
+        if uptime <= policy.startup_grace_s:
+            return Decision("none", f"starting ({uptime:.0f}s)")
+        wanted = f"still starting after {uptime:.0f}s (grace {policy.startup_grace_s:g}s)"
     elif obs.kind == "degraded":
         state.failures = 0
         if state.degraded_since is None:
             state.degraded_since = now
         elapsed = now - state.degraded_since
-        if elapsed > policy.degraded_window_s:
-            wanted = f"degraded for {elapsed:.0f}s (window {policy.degraded_window_s:g}s)"
-        else:
+        if elapsed <= policy.degraded_window_s:
             return Decision("none", f"degraded for {elapsed:.0f}s: {obs.detail}")
-
+        wanted = f"degraded for {elapsed:.0f}s (window {policy.degraded_window_s:g}s)"
     else:  # unreachable, error, stalled
         state.degraded_since = None
         state.failures += 1
-        if state.failures >= policy.failures_before_restart:
-            wanted = f"{obs.kind} {state.failures}x in a row: {obs.detail}"
-        else:
-            return Decision(
-                "none",
-                f"{obs.kind} ({state.failures}/{policy.failures_before_restart}): {obs.detail}",
-            )
+        if state.failures < policy.failures_before_restart:
+            progress = f"{state.failures}/{policy.failures_before_restart}"
+            return Decision("none", f"{obs.kind} ({progress}): {obs.detail}")
+        wanted = f"{obs.kind} {state.failures}x in a row: {obs.detail}"
 
-    assert wanted is not None
     if state.last_restart_at is not None:
         since = now - state.last_restart_at
         if since < policy.restart_cooldown_s:
-            return Decision(
-                "cooldown",
-                f"{wanted}; last restart {since:.0f}s ago, cooldown {policy.restart_cooldown_s:g}s",
-            )
-    if previous != obs.kind:
-        wanted += " (changed)"
+            cooldown = f"last restart {since:.0f}s ago, cooldown {policy.restart_cooldown_s:g}s"
+            return Decision("cooldown", f"{wanted}; {cooldown}")
     return Decision("restart", wanted)
 
 
 def mark_restarted(state: ServiceState, now: float) -> None:
     state.last_restart_at = now
+    state.grace_started_at = now
     state.restarts += 1
     state.failures = 0
     state.degraded_since = None
     state.awaiting_recovery = True
 
 
+def detect_stall(obs: Observation, policy: Policy, now: float) -> Observation:
+    """Turn an ``ok`` observation into ``stalled`` if the queue is stuck.
+
+    The service reports ``queue_depth`` (waiting plus running requests) and
+    ``last_inference_at`` (last completed inference, wall clock). A non-empty
+    queue with no completion for ``stall_after_s`` means the running request
+    never finishes: the GPU is wedged while ``/health`` still answers.
+    """
+    if obs.kind != "ok" or obs.payload is None:
+        return obs
+    depth = obs.payload.get("queue_depth")
+    if not isinstance(depth, int) or depth <= 0:
+        return obs
+    last = obs.payload.get("last_inference_at")
+    if not isinstance(last, int | float):
+        # Nothing has completed yet: measure from process start.
+        last = now - (obs.uptime_s or 0.0)
+    idle = now - float(last)
+    if idle > policy.stall_after_s:
+        return Observation(
+            "stalled",
+            f"queue depth {depth}, no inference completed for {idle:.0f}s",
+            obs.uptime_s,
+            obs.payload,
+        )
+    return obs
+
+
 # Health polling (stdlib urllib) -------------------------------------------
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, TimeoutError)
 
 
 def _request(
@@ -196,10 +240,10 @@ def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation
     """One ``GET /health``. Never raises."""
     try:
         code, body = _request(url, timeout_s=timeout_s, api_key=api_key)
-    except TimeoutError as exc:
-        return Observation("unreachable", f"timeout after {timeout_s:g}s: {exc}")
     except (urllib.error.URLError, OSError) as exc:
-        return Observation("unreachable", str(exc.reason if hasattr(exc, "reason") else exc))
+        if _is_timeout(exc):
+            return Observation("unreachable", f"timed out after {timeout_s:g}s")
+        return Observation("unreachable", str(getattr(exc, "reason", exc)))
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
     except ValueError:
@@ -223,7 +267,6 @@ def run_probe(spec: ServiceSpec, *, timeout_s: float) -> Observation | None:
     if spec.probe is None:
         return None
     url = f"{spec.base_url}{spec.probe.path}"
-    started = time.monotonic()
     try:
         _request(
             url,
@@ -232,20 +275,21 @@ def run_probe(spec: ServiceSpec, *, timeout_s: float) -> Observation | None:
             data=spec.probe.body,
             ctype=spec.probe.content_type,
         )
-    except TimeoutError:
-        return Observation("stalled", f"probe {spec.probe.path} timed out after {timeout_s:g}s")
     except (urllib.error.URLError, OSError) as exc:
-        if "timed out" in str(exc).lower():
-            return Observation("stalled", f"probe {spec.probe.path} timed out: {exc}")
-        return None
-    log.debug("%s probe answered in %.0f ms", spec.name, (time.monotonic() - started) * 1000)
+        if _is_timeout(exc):
+            return Observation("stalled", f"probe {spec.probe.path} timed out after {timeout_s:g}s")
     return None
 
 
-def observe(spec: ServiceSpec, policy: Policy) -> Observation:
-    """Health poll plus, when enabled and the service looks fine, the probe."""
+def observe(spec: ServiceSpec, policy: Policy, now: float | None = None) -> Observation:
+    """Health poll, stall detection from the payload, then the optional probe.
+
+    The probe is only sent while the queue is empty: with requests in flight a
+    probe timeout would just be queueing, and restarting would kill real work.
+    """
     obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
-    if policy.probe and obs.kind == "ok":
+    obs = detect_stall(obs, policy, time.time() if now is None else now)
+    if policy.probe and obs.kind == "ok" and obs.payload and obs.payload.get("queue_depth") == 0:
         stalled = run_probe(spec, timeout_s=policy.probe_timeout_s)
         if stalled is not None:
             return stalled
@@ -258,55 +302,29 @@ Restarter = Callable[[ServiceSpec], str]
 """Restarts a service and returns a one-line description of what it did."""
 
 
-def _run(argv: Sequence[str]) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(list(argv), capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return 1, str(exc)
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
+def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> str:
+    """Restart without root: SIGKILL the pid, then ``launchctl kickstart``.
 
-
-def _pid_from_print(text: str) -> int | None:
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("pid = "):
-            try:
-                return int(line[6:])
-            except ValueError:
-                return None
-    return None
-
-
-def launchctl_restart(
-    spec: ServiceSpec, run: Callable[[Sequence[str]], tuple[int, str]] = _run
-) -> str:
-    """Restart a service without root.
-
-    ``launchctl kickstart -k`` is the clean way, but for a non-root caller it
-    is denied while the service has a running process (observed on macOS 15).
-    Plain ``kickstart`` (start a non-running service, skipping the throttle)
-    is allowed. So: try ``-k``; if that fails, SIGKILL the pid ourselves (the
-    service runs under the same ``UserName`` as the watchdog, so the kill is
-    permitted) and then ``kickstart`` so KeepAlive does not have to wait out
-    ``ThrottleInterval``. See ADR 0005.
+    ``launchctl kickstart -k`` is denied to a non-root caller while the job
+    has a running process (ADR 0004). The service runs under the same
+    ``UserName`` as the watchdog, so killing its pid is permitted; SIGKILL
+    because a wedged Metal process may ignore SIGTERM. The plain ``kickstart``
+    then starts it immediately instead of after ``ThrottleInterval``.
     """
-    target = f"system/{spec.label}"
-    code, out = run(["launchctl", "kickstart", "-k", target])
-    if code == 0:
-        return f"launchctl kickstart -k {target}"
-    steps = [f"kickstart -k denied ({out or code})"]
-    code2, printed = run(["launchctl", "print", target])
-    pid = _pid_from_print(printed) if code2 == 0 else None
-    if pid is not None:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            steps.append(f"sent SIGKILL to pid {pid}")
-        except OSError as exc:
-            steps.append(f"kill {pid} failed: {exc}")
-    else:
+    status = parse_print_output(spec.label, runner(print_argv(spec.label)))
+    steps: list[str] = []
+    if not status.loaded:
+        return f"{spec.label} is not loaded in launchd; nothing to restart"
+    if status.pid is None:
         steps.append("no running pid")
-    code3, out3 = run(["launchctl", "kickstart", target])
-    steps.append(f"kickstart {'ok' if code3 == 0 else 'failed: ' + out3}")
+    else:
+        try:
+            os.kill(status.pid, signal.SIGKILL)
+            steps.append(f"sent SIGKILL to pid {status.pid}")
+        except OSError as exc:
+            steps.append(f"kill {status.pid} failed: {exc}")
+    result = runner(kickstart_argv(spec.label))
+    steps.append("kickstart ok" if result.ok else f"kickstart failed: {result.output}")
     return "; ".join(steps)
 
 
@@ -316,22 +334,24 @@ def launchctl_restart(
 @dataclass
 class Watchdog:
     services: Sequence[ServiceSpec]
-    policy: Policy = field(default_factory=Policy)
+    policy: Policy
     observe: Callable[[ServiceSpec, Policy], Observation] = observe
-    restart: Restarter = launchctl_restart
+    restart: Restarter = restart_service
     clock: Callable[[], float] = time.monotonic
     states: dict[str, ServiceState] = field(default_factory=dict)
 
     def state(self, spec: ServiceSpec) -> ServiceState:
-        return self.states.setdefault(spec.name, ServiceState())
+        if spec.name not in self.states:
+            self.states[spec.name] = ServiceState(grace_started_at=self.clock())
+        return self.states[spec.name]
 
     def tick(self) -> dict[str, Decision]:
         """Observe every service once and act on the decisions."""
         decisions: dict[str, Decision] = {}
         for spec in self.services:
+            state = self.state(spec)
             now = self.clock()
             obs = self.observe(spec, self.policy)
-            state = self.state(spec)
             decision = decide(state, obs, now, self.policy)
             decisions[spec.name] = decision
             if decision.action == "restart":
@@ -347,6 +367,8 @@ class Watchdog:
         return decisions
 
     def run_forever(self, stop: Callable[[], bool] = lambda: False) -> None:
+        for spec in self.services:
+            self.state(spec)  # start every grace period now
         log.info(
             "watchdog started: services=%s interval=%gs failures_before_restart=%d probe=%s",
             [s.name for s in self.services],
@@ -364,23 +386,26 @@ class Watchdog:
             time.sleep(max(0.0, self.policy.interval_s - elapsed))
 
 
-def configure_watchdog_logging(level: str = "info", log_dir: Path | None = None) -> None:
-    """Stdlib-only logging: stderr always, plus a rotating file under ``log_dir``."""
+def configure_watchdog_logging(level: str = "info", log_file: Path | None = None) -> None:
+    """Stdlib-only logging: a rotating file when given, else stderr.
+
+    Under launchd stderr is captured unrotated by the plist, so the file is
+    the only handler there; stderr is for running ``voiced watchdog`` by hand.
+    """
     root = logging.getLogger()
     root.setLevel(level.upper())
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    stream = logging.StreamHandler()
-    stream.setFormatter(formatter)
-    root.addHandler(stream)
-    if log_dir is not None:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_dir / "watchdog.log", maxBytes=10 * 1024 * 1024, backupCount=5
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler: logging.Handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=5
         )
-        file_handler.setFormatter(formatter)
-        root.addHandler(file_handler)
+    else:
+        handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    root.addHandler(handler)
 
 
 def silent_wav(duration_s: float = 0.2, rate: int = 16000) -> bytes:

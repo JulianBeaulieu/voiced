@@ -1,7 +1,8 @@
 """Lifecycle subcommands: install, start, stop, status, logs, uninstall, doctor, watchdog.
 
-Kept apart from ``voiced.cli`` so the command tree there stays small. Nothing
-here runs ``sudo``: steps that need root are printed as commands or scripts.
+Parsing and printing live here; file writes and script generation live in
+``voiced.launchd``. Nothing here runs ``sudo``: steps that need root are
+printed as commands or scripts for the user.
 """
 
 from __future__ import annotations
@@ -9,11 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -21,27 +23,27 @@ from voiced import doctor
 from voiced.config import Settings
 from voiced.launchd.control import (
     Runner,
-    ServiceStatus,
-    bootout,
-    bootout_command,
-    bootstrap,
-    bootstrap_command,
-    kickstart,
+    bootout_argv,
+    bootstrap_argv,
+    kickstart_argv,
     plist_path,
     print_service,
     run_command,
+    run_streaming,
 )
 from voiced.launchd.install import (
     SERVICES,
     InstallError,
-    InstallPlan,
     Service,
     is_root,
     plan_install,
     plan_summary,
+    remove_targets,
     run_install,
+    uninstall_targets,
 )
-from voiced.launchd.plist import render_plist
+from voiced.launchd.plist import log_paths
+from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
     Policy,
@@ -69,9 +71,8 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     install.add_argument("--skip-models", action="store_true", help="do not download models")
     install.add_argument("--no-uv", action="store_true", help="use python -m venv and pip")
 
-    start = sub.add_parser("start", help="start (or restart) the daemons")
+    start = sub.add_parser("start", help="start the daemons")
     start.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
-    start.add_argument("--kill", action="store_true", help="kill a running instance first")
 
     stop = sub.add_parser("stop", help="stop the daemons (prints the sudo command)")
     stop.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
@@ -89,14 +90,11 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     uninstall.add_argument("--venv", type=Path, help="venv location (default: [install] venv_dir)")
     uninstall.add_argument("--yes", action="store_true", help="actually delete files")
     uninstall.add_argument(
-        "--remove-config", action="store_true", help="also delete the config dir"
+        "--remove-config", action="store_true", help="also delete the config file and staging dir"
     )
     uninstall.add_argument("--remove-logs", action="store_true", help="also delete the log dir")
     uninstall.add_argument(
         "--remove-models", action="store_true", help="also delete the configured models' cache"
-    )
-    uninstall.add_argument(
-        "--force", action="store_true", help="remove files even if daemons are still loaded"
     )
 
     doc = sub.add_parser("doctor", help="check this machine")
@@ -115,8 +113,8 @@ def run_lifecycle(
     args: argparse.Namespace, settings: Settings, runner: Runner = run_command, echo: Echo = print
 ) -> int:
     handlers: dict[str, Callable[[], int]] = {
-        "install": lambda: cmd_install(args, settings, runner, echo),
-        "start": lambda: cmd_start(args.service, settings, runner, echo, kill=args.kill),
+        "install": lambda: cmd_install(args, settings, echo),
+        "start": lambda: cmd_start(args.service, settings, runner, echo),
         "stop": lambda: cmd_stop(args.service, settings, runner, echo),
         "status": lambda: cmd_status(settings, runner, echo, as_json=args.json),
         "logs": lambda: cmd_logs(args, settings, echo),
@@ -139,7 +137,9 @@ def _services(name: str) -> tuple[Service, ...]:
 # install ------------------------------------------------------------------
 
 
-def cmd_install(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
+def cmd_install(
+    args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
+) -> int:
     plan = plan_install(
         settings,
         venv_dir=args.venv,
@@ -153,31 +153,26 @@ def cmd_install(args: argparse.Namespace, settings: Settings, runner: Runner, ec
     echo("")
     if args.dry_run:
         echo("dry run: nothing is written. Steps that would run:")
-        config_state = "exists, kept" if plan.config_file.exists() else "would be created"
-        echo(f"  config {plan.config_file}: {config_state}")
-        echo(f"  mkdir -p {plan.log_dir}")
-        for argv in plan.venv_commands():
-            echo("  $ " + " ".join(argv))
-        if not args.skip_models:
-            echo(f"  $ {plan.python_bin} -c '<download configured models>'")
-        for service in SERVICES:
-            echo("")
-            echo(f"--- {plan.staged_plist(service)}")
-            echo(plan.render(service).decode().rstrip())
-        echo("")
-        echo(f"--- {plan.install_script_path}")
-        echo(plan.sudo_install_script().rstrip())
-        return 0
-
     try:
-        run_install(plan, runner=runner, skip_models=args.skip_models, say=echo)
+        run_install(
+            plan, runner=runner, dry_run=args.dry_run, skip_models=args.skip_models, say=echo
+        )
     except InstallError as exc:
         echo(f"install failed: {exc}")
         return 1
+    if args.dry_run:
+        for service in SERVICES:
+            echo("")
+            echo(f"--- {plan.staged_plist(service)} (would be written)")
+            echo(plan.render(service).decode().rstrip())
+        echo("")
+        echo(f"--- {plan.install_script_path} (would be written)")
+        echo(plan.sudo_install_script().rstrip())
+        return 0
     echo("")
     echo("User-level install done. The LaunchDaemons need root. Review and run:")
     echo("")
-    echo(f"  sudo bash {plan.install_script_path}")
+    echo(f"  sudo bash {shlex.quote(str(plan.install_script_path))}")
     echo("")
     echo(plan.sudo_install_script().rstrip())
     echo("")
@@ -188,87 +183,67 @@ def cmd_install(args: argparse.Namespace, settings: Settings, runner: Runner, ec
 # start / stop -------------------------------------------------------------
 
 
-def _privileged(command: str, runner: Runner, echo: Echo, run: Callable[[], Any]) -> bool:
-    """Run ``run()`` when root; otherwise print the sudo command. True if done."""
-    if is_root():
-        result = run()
-        if not result.ok:
-            echo(f"{command}: {result.output}")
-            return False
-        return True
-    echo(f"  sudo {command}")
-    return False
+def as_root_or_print(
+    argv: Sequence[str], runner: Runner, echo: Echo, pending: list[str], done: str
+) -> bool:
+    """Run a root-only launchctl command if we are root, else queue it for printing."""
+    if not is_root():
+        pending.append(f"sudo {shlex.join(argv)}")
+        return False
+    result = runner(argv)
+    echo(done if result.ok else f"{shlex.join(argv)}: {result.output}")
+    return result.ok
 
 
-def cmd_start(
-    service: str, settings: Settings, runner: Runner, echo: Echo, *, kill: bool = False
-) -> int:
+def _print_pending(pending: list[str], echo: Echo, why: str) -> None:
+    echo(f"{why} Run:")
+    for line in pending:
+        echo(f"  {line}")
+
+
+def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
     pending: list[str] = []
     failures = 0
     for name in _services(service):
         label = settings.launchd.label(name)
-        status = print_service(label, runner)
-        if status.loaded:
-            result = kickstart(label, kill=kill, runner=runner)
+        if print_service(label, runner).loaded:
+            result = runner(kickstart_argv(label))
             if result.ok:
                 echo(f"{name}: kickstarted {label}")
             else:
                 failures += 1
                 echo(f"{name}: launchctl kickstart failed: {result.output}")
-                pending.append(f"sudo launchctl kickstart{' -k' if kill else ''} system/{label}")
         elif plist_path(label).is_file():
-            if is_root():
-                result = bootstrap(label, runner)
-                echo(f"{name}: {'bootstrapped' if result.ok else result.output}")
-                failures += 0 if result.ok else 1
-            else:
-                pending.append(f"sudo {bootstrap_command(label)}")
+            if not as_root_or_print(
+                bootstrap_argv(label), runner, echo, pending, f"{name}: bootstrapped {label}"
+            ):
+                failures += 1
         else:
             failures += 1
             echo(f"{name}: {plist_path(label)} is not installed; run voiced install")
     if pending:
-        echo("These need root; run:")
-        for line in pending:
-            echo(f"  {line}")
-        return 1
+        _print_pending(pending, echo, "Loading a LaunchDaemon needs root.")
     return 1 if failures else 0
 
 
 def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
     pending: list[str] = []
+    failures = 0
     for name in _services(service):
         label = settings.launchd.label(name)
         if not print_service(label, runner).loaded:
             echo(f"{name}: not loaded")
             continue
-        if is_root():
-            result = bootout(label, runner)
-            echo(f"{name}: {'stopped' if result.ok else result.output}")
-            if not result.ok:
-                pending.append(bootout_command(label))
-        else:
-            pending.append(f"sudo {bootout_command(label)}")
+        if not as_root_or_print(bootout_argv(label), runner, echo, pending, f"{name}: stopped"):
+            failures += 1
     if pending:
-        echo("Stopping a LaunchDaemon needs root. Run:")
-        for line in pending:
-            echo(f"  {line}")
+        _print_pending(pending, echo, "Stopping a LaunchDaemon needs root.")
         echo("(KeepAlive would otherwise restart the process; bootout unloads it until")
         echo(" the next boot or `voiced start`.)")
-        return 1
-    return 0
+    return 1 if failures else 0
 
 
 # status -------------------------------------------------------------------
-
-
-def _health_host(settings: Settings) -> str:
-    bind = settings.server.bind
-    return "127.0.0.1" if bind in ("0.0.0.0", "") else bind
-
-
-def _service_base_url(settings: Settings, service: str) -> str:
-    port = settings.stt.http_port if service == "stt" else settings.tts.http_port
-    return f"http://{_health_host(settings)}:{port}"
 
 
 def _ago(ts: float | None) -> str:
@@ -304,7 +279,7 @@ def collect_status(
     rows: list[dict[str, Any]] = []
     for service in SERVICES:
         label = settings.launchd.label(service)
-        ls: ServiceStatus = print_service(label, runner)
+        ls = print_service(label, runner)
         row: dict[str, Any] = {
             "service": service,
             "label": label,
@@ -314,7 +289,7 @@ def collect_status(
             "last_exit_code": ls.last_exit_code,
         }
         if service != "watchdog":
-            obs = poll(f"{_service_base_url(settings, service)}/health")
+            obs = poll(f"{settings.http_url(service)}/health")
             row["health"] = obs.kind
             row["health_detail"] = _health_detail(obs)
             row["health_payload"] = obs.payload
@@ -336,7 +311,7 @@ def cmd_status(settings: Settings, runner: Runner, echo: Echo, *, as_json: bool 
             )
             for r in rows
         ]
-        echo(doctor.render_table(("SERVICE", "LAUNCHD", "HEALTH", "DETAIL"), table))
+        echo(render_table(("SERVICE", "LAUNCHD", "HEALTH", "DETAIL"), table))
     healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
     return 0 if healthy else 1
 
@@ -347,9 +322,10 @@ def cmd_status(settings: Settings, runner: Runner, echo: Echo, *, as_json: bool 
 def log_files(settings: Settings, service: str, *, stderr: bool = False) -> list[Path]:
     files: list[Path] = []
     for name in _services(service):
-        files.append(settings.server.log_dir / f"{name}.log")
+        paths = log_paths(settings.server.log_dir, name)
+        files.append(paths.app)
         if stderr:
-            files.append(settings.server.log_dir / f"{name}.stderr.log")
+            files.append(paths.stderr)
     return files
 
 
@@ -390,37 +366,16 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 # uninstall ----------------------------------------------------------------
 
 
-def hf_cache_dirs(settings: Settings) -> list[Path]:
-    """Hugging Face cache directories for the configured models."""
-    home = settings.install.hf_home or Path(
-        os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")
-    )
-    hub = home.expanduser() / "hub"
-    return [
-        hub / f"models--{m.replace('/', '--')}" for m in (settings.stt.model, settings.tts.model)
-    ]
-
-
-def uninstall_targets(
-    args: argparse.Namespace, settings: Settings, plan: InstallPlan
-) -> list[Path]:
-    targets = [plan.venv_dir]
-    if args.remove_logs:
-        targets.append(settings.server.log_dir)
-    if args.remove_models:
-        targets += hf_cache_dirs(settings)
-    if args.remove_config:
-        targets.append(plan.config_file.parent)
-    return targets
-
-
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     plan = plan_install(settings, venv_dir=args.venv)
     script = plan.sudo_uninstall_script()
     try:
         plan.staging_dir.mkdir(parents=True, exist_ok=True)
         plan.uninstall_script_path.write_text(script)
-        echo(f"Root step (stop and remove the daemons): sudo bash {plan.uninstall_script_path}")
+        echo(
+            "Root step (stop and remove the daemons): "
+            f"sudo bash {shlex.quote(str(plan.uninstall_script_path))}"
+        )
     except OSError:
         echo("Root step (stop and remove the daemons):")
     echo("")
@@ -428,25 +383,24 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
     echo("")
 
     loaded = [s for s in SERVICES if print_service(settings.launchd.label(s), runner).loaded]
-    if loaded and not args.force:
+    if loaded:
         echo(f"Daemons still loaded: {', '.join(loaded)}. Run the sudo script first, then")
-        echo("re-run `voiced uninstall --yes` to remove the files (or pass --force).")
+        echo("re-run `voiced uninstall --yes` to remove the files.")
         return 1
 
-    targets = uninstall_targets(args, settings, plan)
-    present = [t for t in targets if t.exists()]
+    targets = uninstall_targets(
+        plan,
+        settings,
+        logs=args.remove_logs,
+        models=args.remove_models,
+        config=args.remove_config,
+    )
     if not args.yes:
         echo("Would remove (pass --yes to do it):")
         for t in targets:
             echo(f"  {t}{'' if t.exists() else '  (absent)'}")
         return 0
-    for t in present:
-        if t.is_dir():
-            shutil.rmtree(t)
-        else:
-            t.unlink()
-        echo(f"removed {t}")
-    if not present:
+    if remove_targets(targets, plan, echo) == 0:
         echo("nothing to remove")
     return 0
 
@@ -454,65 +408,20 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
 # doctor -------------------------------------------------------------------
 
 
-def metal_probe_script(
-    settings: Settings, plan: InstallPlan, python: Path
-) -> tuple[Path, str, bytes]:
-    """A self-cleaning sudo script plus the one-shot plist it bootstraps."""
-    label = f"{settings.launchd.label_prefix}.metalprobe"
-    out = settings.server.log_dir / doctor.METAL_PROBE_FILE
-    plist = render_plist(
-        label=label,
-        program_arguments=[str(python), "-m", "voiced.launchd.metal_probe", "--out", str(out)],
-        log_dir=settings.server.log_dir,
-        user_name=plan.user,
-        working_directory=plan.home,
-        environment=plan.environment(),
-        keep_alive=False,
-    )
-    staged = plan.staging_dir / f"{label}.plist"
-    script = f"""#!/bin/bash
-# voiced: one-shot LaunchDaemon that checks MLX/Metal without a GUI session.
-# Installs the job, waits for its result, then removes it again.
-set -euo pipefail
-LABEL={label}
-DST=/Library/LaunchDaemons/$LABEL.plist
-OUT={out}
-rm -f "$OUT"
-launchctl bootout system/$LABEL 2>/dev/null || true
-cp {staged} "$DST"
-chown root:wheel "$DST"
-chmod 644 "$DST"
-launchctl bootstrap system "$DST"
-for _ in $(seq 1 60); do [ -f "$OUT" ] && break; sleep 1; done
-launchctl bootout system/$LABEL 2>/dev/null || true
-rm -f "$DST"
-if [ -f "$OUT" ]; then cat "$OUT"; else
-  echo "no result after 60 s; see {settings.server.log_dir}/metalprobe.stderr.log"; exit 1
-fi
-"""
-    return staged, script, plist
-
-
 def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     if args.metal_probe:
         plan = plan_install(settings)
         python = plan.python_bin if plan.python_bin.exists() else Path(sys.executable)
-        staged, script, plist = metal_probe_script(settings, plan, python)
-        plan.staging_dir.mkdir(parents=True, exist_ok=True)
-        staged.write_bytes(plist)
-        script_path = plan.staging_dir / "metal-probe.sh"
-        script_path.write_text(script)
-        echo(f"staged {staged}")
-        echo(f"staged {script_path}")
+        probe = plan.metal_probe(python)
+        probe.write()
+        echo(f"staged {probe.plist_path}")
+        echo(f"staged {probe.script_path}")
         echo("")
-        echo(f"Run:  sudo bash {script_path}")
+        echo(f"Run:  sudo bash {shlex.quote(str(probe.script_path))}")
         echo("")
-        echo(script.rstrip())
+        echo(probe.script.rstrip())
         echo("")
-        echo(
-            "Then `voiced doctor` reads the result from "
-            f"{settings.server.log_dir / doctor.METAL_PROBE_FILE}."
-        )
+        echo(f"Then `voiced doctor` reads the result from {probe.result_file}.")
         return 0
 
     checks = doctor.run_all(settings, runner)
@@ -543,14 +452,14 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
         ServiceSpec(
             name="stt",
             label=settings.launchd.label("stt"),
-            base_url=_service_base_url(settings, "stt"),
+            base_url=settings.http_url("stt"),
             api_key=settings.server.api_key,
             probe=ProbeRequest("/v1/audio/transcriptions", stt_body, stt_ctype),
         ),
         ServiceSpec(
             name="tts",
             label=settings.launchd.label("tts"),
-            base_url=_service_base_url(settings, "tts"),
+            base_url=settings.http_url("tts"),
             api_key=settings.server.api_key,
             probe=ProbeRequest("/v1/audio/speech", tts_body, "application/json"),
         ),
@@ -558,21 +467,12 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
 
 
 def watchdog_policy(settings: Settings) -> Policy:
-    w = settings.watchdog
-    return Policy(
-        interval_s=w.interval_s,
-        timeout_s=w.timeout_s,
-        failures_before_restart=w.failures_before_restart,
-        startup_grace_s=w.startup_grace_s,
-        degraded_window_s=w.degraded_window_s,
-        restart_cooldown_s=w.restart_cooldown_s,
-        probe=w.probe,
-        probe_timeout_s=w.probe_timeout_s,
-    )
+    return Policy(**settings.watchdog.model_dump())
 
 
 def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
-    configure_watchdog_logging(settings.server.log_level, settings.server.log_dir)
+    log_file = None if once else log_paths(settings.server.log_dir, "watchdog").app
+    configure_watchdog_logging(settings.server.log_level, log_file)
     dog = Watchdog(services=watchdog_specs(settings), policy=watchdog_policy(settings))
     if once:
         for name, decision in dog.tick().items():

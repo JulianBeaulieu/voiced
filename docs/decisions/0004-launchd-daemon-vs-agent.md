@@ -12,16 +12,15 @@ LaunchAgent would only start once its user logs in.
 The open question was whether MLX can use Metal from a daemon context. GPU
 access on macOS is tied to the window server in some configurations, and
 "it works in my terminal" says nothing about a process whose parent is pid 1
-and that has no Aqua session. The handoff said: test it, do not assume.
+and that has no Aqua session. This had to be measured, not assumed.
 
 ## Evidence
 
 A throwaway one-shot LaunchDaemon (`UserName` set to the installing user,
 `RunAtLoad` true, `KeepAlive` false, `ProcessType Interactive`) ran
-`voiced.launchd.metal_probe` on the development machine (MacBook Pro M1 Max,
-macOS 15.7.4, MLX 0.32.3, Python 3.12). The probe imports `mlx.core`,
-multiplies two 1024x1024 random matrices and records the process context.
-Result:
+`voiced.launchd.metal_probe` on an M1 Max MacBook Pro (macOS 15.7.4, MLX
+0.32.3, Python 3.12). The probe imports `mlx.core`, multiplies two 1024x1024
+random matrices and records the process context. Result:
 
 | Field | Value |
 |---|---|
@@ -35,13 +34,16 @@ Result:
 
 The same probe from an interactive shell (`managername` `Background`)
 reported the same device. So Metal works from a LaunchDaemon that runs as a
-normal user, with no GUI session, on this hardware and OS. Supporting prior
-art: Ollama runs as a LaunchDaemon with GPU acceleration on the author's
-other Mac.
+normal user, with no GUI session, on this hardware and OS. Other GPU
+inference servers (Ollama, for one) ship as LaunchDaemons on macOS, which
+agrees with this result.
 
 The probe is kept in the package (`voiced doctor --metal-probe` stages the
 plist and prints a self-cleaning sudo script) so the check can be repeated on
-any machine, including the deployment target with a newer macOS.
+any machine. `voiced doctor` accepts the recorded result only if it was
+produced under launchd's system manager (`managername` `System`, parent pid
+1) on the macOS version that is running now; a probe run from a shell, or
+left over from before an OS upgrade, does not count.
 
 Also measured while the probe daemon was loaded, as the unprivileged user:
 
@@ -49,12 +51,13 @@ Also measured while the probe daemon was loaded, as the unprivileged user:
 |---|---|
 | `launchctl print system/<label>` | works |
 | `launchctl kickstart system/<label>` | works (starts the job) |
-| `launchctl kickstart -k system/<label>` | denied while a process is running ("Operation not permitted"); succeeds when nothing is running |
+| `launchctl kickstart -k system/<label>` | denied while a process is running ("Operation not permitted"); succeeds when nothing is running, where it is the same as plain `kickstart` |
 | `launchctl bootout system/<label>` | denied |
 
-These shape the watchdog (ADR 0005) and the CLI: `start` can kickstart a
-loaded service without root, but `stop` (bootout) and first-time
-`bootstrap` are printed as `sudo` commands for the user.
+These shape the watchdog (ADR 0005): it never relies on `kickstart -k`. They
+also shape the CLI: `start` can kickstart a loaded service without root, but
+`stop` (bootout) and first-time `bootstrap` are printed as `sudo` commands
+for the user.
 
 ## Decision
 

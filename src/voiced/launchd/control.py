@@ -1,10 +1,11 @@
-"""Thin ``launchctl`` wrappers.
+"""``launchctl`` argv builders and thin wrappers.
 
-Everything goes through a :class:`Runner` so tests can inject canned output.
-Reading (``launchctl print``) works without privileges on the system domain;
-``bootstrap`` and ``bootout`` need root. ``kickstart`` depends on the macOS
-version and the caller's privileges, so :func:`kickstart` reports the failure
-instead of guessing (see ADR 0005 for the watchdog's fallback).
+Standard library only: the watchdog imports this too. Every verb has one
+``*_argv(label)`` builder; the same argv is run through a :data:`Runner`,
+printed for the user with ``shlex.join``, or written into the sudo scripts.
+Reading (``launchctl print``) and plain ``kickstart`` work without root on
+the system domain; ``bootstrap``, ``bootout`` and ``kickstart -k`` of a
+running job do not (ADR 0004).
 """
 
 from __future__ import annotations
@@ -38,8 +39,8 @@ Runner = Callable[[Sequence[str]], CommandResult]
 """Runs a command and returns its result. Must not raise for a missing binary."""
 
 
-def run_command(argv: Sequence[str], timeout_s: float = 30.0) -> CommandResult:
-    """Default :data:`Runner`: ``subprocess.run`` with captured text output."""
+def run_command(argv: Sequence[str], timeout_s: float | None = 30.0) -> CommandResult:
+    """Default :data:`Runner` for short queries: captured output, bounded time."""
     try:
         proc = subprocess.run(
             list(argv), capture_output=True, text=True, timeout=timeout_s, check=False
@@ -47,10 +48,25 @@ def run_command(argv: Sequence[str], timeout_s: float = 30.0) -> CommandResult:
     except FileNotFoundError as exc:
         return CommandResult(127, "", f"{argv[0]}: not found ({exc})")
     except subprocess.TimeoutExpired:
-        return CommandResult(124, "", f"{argv[0]}: timed out after {timeout_s:g}s")
+        return CommandResult(124, "", f"{argv[0]}: timed out after {timeout_s}s")
     except OSError as exc:
         return CommandResult(126, "", f"{argv[0]}: {exc}")
     return CommandResult(proc.returncode, proc.stdout, proc.stderr)
+
+
+def run_streaming(argv: Sequence[str]) -> CommandResult:
+    """:data:`Runner` for long steps (pip, model downloads).
+
+    No timeout and no capture: output streams to the terminal so the user sees
+    progress, and nothing is lost if the step takes ten minutes.
+    """
+    try:
+        proc = subprocess.run(list(argv), check=False)
+    except FileNotFoundError as exc:
+        return CommandResult(127, "", f"{argv[0]}: not found ({exc})")
+    except OSError as exc:
+        return CommandResult(126, "", f"{argv[0]}: {exc}")
+    return CommandResult(proc.returncode)
 
 
 def service_target(label: str) -> str:
@@ -59,6 +75,25 @@ def service_target(label: str) -> str:
 
 def plist_path(label: str) -> Path:
     return LAUNCH_DAEMONS_DIR / f"{label}.plist"
+
+
+def print_argv(label: str) -> list[str]:
+    return ["launchctl", "print", service_target(label)]
+
+
+def kickstart_argv(label: str) -> list[str]:
+    """Start a loaded service now (skips ThrottleInterval). Works without root."""
+    return ["launchctl", "kickstart", service_target(label)]
+
+
+def bootstrap_argv(label: str) -> list[str]:
+    """Load the installed plist. Needs root."""
+    return ["launchctl", "bootstrap", SYSTEM_DOMAIN, str(plist_path(label))]
+
+
+def bootout_argv(label: str) -> list[str]:
+    """Unload the service. Needs root."""
+    return ["launchctl", "bootout", service_target(label)]
 
 
 @dataclass(frozen=True)
@@ -80,9 +115,7 @@ class ServiceStatus:
     def summary(self) -> str:
         if not self.loaded:
             return "not loaded"
-        if self.state:
-            return self.state
-        return "loaded"
+        return self.state or "loaded"
 
 
 _STATE_RE = re.compile(r"^\s*state = (.+?)\s*$", re.MULTILINE)
@@ -109,40 +142,4 @@ def parse_print_output(label: str, result: CommandResult) -> ServiceStatus:
 
 
 def print_service(label: str, runner: Runner = run_command) -> ServiceStatus:
-    return parse_print_output(label, runner(["launchctl", "print", service_target(label)]))
-
-
-def is_loaded(label: str, runner: Runner = run_command) -> bool:
-    return print_service(label, runner).loaded
-
-
-def kickstart(label: str, *, kill: bool = False, runner: Runner = run_command) -> CommandResult:
-    """``launchctl kickstart [-k] system/<label>``: (re)start a loaded service."""
-    argv = ["launchctl", "kickstart"]
-    if kill:
-        argv.append("-k")
-    argv.append(service_target(label))
-    return runner(argv)
-
-
-def bootstrap(label: str, runner: Runner = run_command) -> CommandResult:
-    """``launchctl bootstrap system <plist>``. Needs root."""
-    return runner(["launchctl", "bootstrap", SYSTEM_DOMAIN, str(plist_path(label))])
-
-
-def bootout(label: str, runner: Runner = run_command) -> CommandResult:
-    """``launchctl bootout system/<label>``. Needs root."""
-    return runner(["launchctl", "bootout", service_target(label)])
-
-
-def bootstrap_command(label: str) -> str:
-    return f"launchctl bootstrap {SYSTEM_DOMAIN} {plist_path(label)}"
-
-
-def bootout_command(label: str) -> str:
-    return f"launchctl bootout {service_target(label)}"
-
-
-def kickstart_command(label: str, *, kill: bool = False) -> str:
-    flag = " -k" if kill else ""
-    return f"launchctl kickstart{flag} {service_target(label)}"
+    return parse_print_output(label, runner(print_argv(label)))

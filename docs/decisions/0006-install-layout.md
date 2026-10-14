@@ -12,8 +12,8 @@ silently. Two concrete constraints:
   espeak-ng, whose data-directory handling uses a fixed-size path buffer.
   With the venv under a long directory (a nested project checkout, a
   worktree, anything under `Library/Application Support`) phonemization
-  fails. Observed during the prototype benchmarks (reference notes: "espeak
-  breaks when the venv path is long; keep the venv at a short path").
+  fails. This was reproduced while benchmarking the engines before this
+  project started; a short, fixed venv path avoids it.
 - **The daemons run as the installing user**, so everything they need must be
   readable by that user without root, and the user must be able to update it
   without root.
@@ -48,9 +48,20 @@ the log dir, the venv and the staging directory, then prints the sudo script
 and stops. The user runs `sudo bash ~/.config/voiced/launchd/install-daemons.sh`.
 
 `uninstall` prints the matching bootout-and-remove script first and refuses
-to delete the venv while any label is still loaded (otherwise launchd would
-respawn a missing binary every 10 s), unless `--force`. Deleting anything
-needs `--yes`; models, logs and config each need their own flag.
+to delete anything while any label is still loaded (otherwise launchd would
+respawn a missing binary every 10 s). Deleting needs `--yes`; models, logs
+and config each need their own flag. `--remove-config` deletes the config
+file and the staging directory, never their parent. Every recursive delete
+is guarded: the filesystem root, the home directory and its ancestors, and
+symlinks are refused, and the venv is only removed if it contains
+`pyvenv.cfg`.
+
+Every path that ends up in a generated shell script is quoted with
+`shlex.quote`, and `[launchd] label_prefix` is validated to letters, digits,
+dots and dashes, because those scripts run as root. Re-running the install
+script boots the old instance out and waits for launchd to finish tearing it
+down before bootstrapping again; `bootout` is asynchronous and an immediate
+`bootstrap` fails.
 
 ## Consequences
 

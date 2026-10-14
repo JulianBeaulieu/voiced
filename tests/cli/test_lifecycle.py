@@ -30,59 +30,79 @@ class FakeLaunchctl:
         return CommandResult(0)
 
 
-@pytest.fixture
-def no_root(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True)
+def isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Never read the real /Library/LaunchDaemons or run as root in tests."""
+    daemons = tmp_path / "LaunchDaemons"
+    daemons.mkdir()
+    monkeypatch.setattr(lc, "plist_path", lambda label: daemons / f"{label}.plist")
     monkeypatch.setattr(lc, "is_root", lambda: False)
+    return daemons
 
 
-def test_start_kickstarts_loaded_services(settings: Settings, no_root: None) -> None:
-    fake = FakeLaunchctl({settings.launchd.label("stt"): True, settings.launchd.label("tts"): True})
+def test_start_kickstarts_loaded_services(settings: Settings) -> None:
+    stt = settings.launchd.label("stt")
+    fake = FakeLaunchctl({stt: True})
     out: list[str] = []
-    code = lc.cmd_start("stt", settings, fake, out.append)
-    assert code == 0
-    assert ["launchctl", "kickstart", "system/io.github.julianbeaulieu.voiced.stt"] in fake.calls
-    assert out == ["stt: kickstarted io.github.julianbeaulieu.voiced.stt"]
+    assert lc.cmd_start("stt", settings, fake, out.append) == 0
+    assert ["launchctl", "kickstart", f"system/{stt}"] in fake.calls
+    assert out == [f"stt: kickstarted {stt}"]
 
 
 def test_start_prints_bootstrap_when_installed_but_not_loaded(
-    settings: Settings, no_root: None, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, isolated: Path
 ) -> None:
-    monkeypatch.setattr(lc, "plist_path", lambda label: Path(__file__))  # "exists"
+    tts = settings.launchd.label("tts")
+    (isolated / f"{tts}.plist").write_text("x")
     fake = FakeLaunchctl({})
     out: list[str] = []
     assert lc.cmd_start("tts", settings, fake, out.append) == 1
-    assert out[-1].strip().startswith("sudo launchctl bootstrap system ")
+    assert f"  sudo launchctl bootstrap system /Library/LaunchDaemons/{tts}.plist" in out
     assert not any(c[1] == "bootstrap" for c in fake.calls)
 
 
-def test_start_reports_missing_install(settings: Settings, no_root: None) -> None:
+def test_start_runs_bootstrap_as_root(
+    settings: Settings, isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "is_root", lambda: True)
+    tts = settings.launchd.label("tts")
+    (isolated / f"{tts}.plist").write_text("x")
+    fake = FakeLaunchctl({})
+    out: list[str] = []
+    assert lc.cmd_start("tts", settings, fake, out.append) == 0
+    assert any(c[1] == "bootstrap" for c in fake.calls)
+
+
+def test_start_reports_missing_install(settings: Settings) -> None:
     out: list[str] = []
     assert lc.cmd_start("all", settings, FakeLaunchctl({}), out.append) == 1
     assert all("not installed" in line for line in out)
 
 
-def test_stop_prints_sudo_bootout(settings: Settings, no_root: None) -> None:
-    fake = FakeLaunchctl({settings.launchd.label("stt"): True})
+def test_stop_prints_sudo_bootout(settings: Settings) -> None:
+    stt = settings.launchd.label("stt")
+    fake = FakeLaunchctl({stt: True})
     out: list[str] = []
     assert lc.cmd_stop("all", settings, fake, out.append) == 1
-    assert "  sudo launchctl bootout system/io.github.julianbeaulieu.voiced.stt" in out
+    assert f"  sudo launchctl bootout system/{stt}" in out
     assert "tts: not loaded" in out
     assert not any(c[1] == "bootout" for c in fake.calls)
 
 
 def test_stop_runs_bootout_as_root(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(lc, "is_root", lambda: True)
-    fake = FakeLaunchctl({settings.launchd.label("tts"): True})
+    tts = settings.launchd.label("tts")
+    fake = FakeLaunchctl({tts: True})
     out: list[str] = []
     assert lc.cmd_stop("tts", settings, fake, out.append) == 0
-    assert ["launchctl", "bootout", "system/io.github.julianbeaulieu.voiced.tts"] in fake.calls
+    assert ["launchctl", "bootout", f"system/{tts}"] in fake.calls
 
 
 def test_status_table(settings: Settings) -> None:
     fake = FakeLaunchctl({settings.launchd.label(s): True for s in ("stt", "tts", "watchdog")})
 
     def poll(url: str) -> Observation:
-        if ":8881" in url:
+        if url.startswith(settings.http_url("stt")):
             return Observation(
                 "ok",
                 "",
@@ -104,14 +124,13 @@ def test_status_table(settings: Settings) -> None:
     assert rows[2]["pid"] == 42 and "health" not in rows[2]
 
     out: list[str] = []
-    code = lc.cmd_status(settings, fake, out.append)
-    assert code == 1  # nothing is listening on the test ports
+    assert lc.cmd_status(settings, fake, out.append) == 1  # nothing listens on the test ports
     lines = out[0].splitlines()
     assert lines[0].split() == ["SERVICE", "LAUNCHD", "HEALTH", "DETAIL"]
     assert lines[1].startswith("stt       running (pid 42)")
 
 
-def test_logs_tail_and_missing(settings: Settings, tmp_path: Path) -> None:
+def test_logs_tail_and_missing(settings: Settings) -> None:
     settings.server.log_dir.mkdir()
     (settings.server.log_dir / "stt.log").write_text("\n".join(f"line{i}" for i in range(100)))
     args = argparse.Namespace(service="stt", lines=3, follow=False, stderr=False)
@@ -142,7 +161,6 @@ def _uninstall_args(**overrides: bool) -> argparse.Namespace:
         "remove_config": False,
         "remove_logs": False,
         "remove_models": False,
-        "force": False,
     }
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -151,15 +169,13 @@ def _uninstall_args(**overrides: bool) -> argparse.Namespace:
 def test_uninstall_refuses_while_loaded(settings: Settings, tmp_path: Path) -> None:
     settings.install.venv_dir = tmp_path / "venv"
     settings.install.venv_dir.mkdir()
-    fake = FakeLaunchctl({settings.launchd.label("stt"): True})
+    stt = settings.launchd.label("stt")
+    fake = FakeLaunchctl({stt: True})
     out: list[str] = []
-    code = lc.cmd_uninstall(_uninstall_args(yes=True), settings, fake, out.append)
-    assert code == 1
+    assert lc.cmd_uninstall(_uninstall_args(yes=True), settings, fake, out.append) == 1
     assert settings.install.venv_dir.exists()
     assert any("still loaded: stt" in line for line in out)
-    assert any(
-        "launchctl bootout system/io.github.julianbeaulieu.voiced.stt" in line for line in out
-    )
+    assert any(f"launchctl bootout system/{stt}" in line for line in out)
 
 
 def test_uninstall_dry_then_real(
@@ -167,8 +183,10 @@ def test_uninstall_dry_then_real(
 ) -> None:
     monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "cfg" / "config.toml"))
     (tmp_path / "cfg").mkdir()
+    (tmp_path / "cfg" / "config.toml").write_text("")
     settings.install.venv_dir = tmp_path / "venv"
     settings.install.venv_dir.mkdir()
+    (settings.install.venv_dir / "pyvenv.cfg").write_text("home = /x\n")
     settings.server.log_dir.mkdir()
     settings.install.hf_home = tmp_path / "hf"
     model_dir = tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16"
@@ -176,8 +194,7 @@ def test_uninstall_dry_then_real(
     fake = FakeLaunchctl({})
     out: list[str] = []
 
-    code = lc.cmd_uninstall(_uninstall_args(remove_models=True), settings, fake, out.append)
-    assert code == 0
+    assert lc.cmd_uninstall(_uninstall_args(remove_models=True), settings, fake, out.append) == 0
     assert settings.install.venv_dir.exists() and model_dir.exists()
     assert any("Would remove" in line for line in out)
 
@@ -186,7 +203,7 @@ def test_uninstall_dry_then_real(
     assert not settings.install.venv_dir.exists()
     assert not model_dir.exists()
     assert not settings.server.log_dir.exists()
-    assert (tmp_path / "cfg").exists()  # --remove-config not given
+    assert (tmp_path / "cfg" / "config.toml").exists()  # --remove-config not given
 
 
 def test_watchdog_specs_and_policy(settings: Settings) -> None:
@@ -199,14 +216,17 @@ def test_watchdog_specs_and_policy(settings: Settings) -> None:
     assert specs[1].probe is not None and b'"voice": "af_heart"' in specs[1].probe.body
     policy = lc.watchdog_policy(settings)
     assert policy.interval_s == 15 and policy.failures_before_restart == 3
-    assert policy.probe is False
+    assert policy.probe is False and policy.stall_after_s == 60
 
 
-def test_metal_probe_script(settings: Settings, tmp_path: Path) -> None:
-    plan = lc.plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
-    staged, script, plist = lc.metal_probe_script(settings, plan, Path("/v/bin/python"))
-    assert staged.name == "io.github.julianbeaulieu.voiced.metalprobe.plist"
-    assert b"<false/>" in plist  # KeepAlive off: one-shot
-    assert b"voiced.launchd.metal_probe" in plist
-    assert "launchctl bootstrap system" in script
-    assert 'rm -f "$DST"' in script  # self-cleaning
+def test_doctor_metal_probe_stages_script(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "cfg" / "config.toml"))
+    args = argparse.Namespace(json=False, metal_probe=True)
+    out: list[str] = []
+    assert lc.cmd_doctor(args, settings, FakeLaunchctl({}), out.append) == 0
+    staging = tmp_path / "cfg" / "launchd"
+    assert (staging / "metal-probe.sh").exists()
+    assert (staging / f"{settings.launchd.label_prefix}.metalprobe.plist").exists()
+    assert any(line.startswith("Run:  sudo bash ") for line in out)

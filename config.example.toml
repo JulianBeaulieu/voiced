@@ -74,9 +74,11 @@ startup_grace_s = 300
 degraded_window_s = 120
 # Never restart the same service twice within this many seconds.
 restart_cooldown_s = 120
-# Also send a tiny inference request each poll and treat a timeout as a hang.
-# Off by default; turn on if you have seen the GPU wedge with /health still
-# answering.
+# A service whose queue is not empty but has not completed an inference for
+# this long is treated as hung and restarted.
+stall_after_s = 60
+# Also send a tiny inference request each poll (only while the queue is empty)
+# and treat a timeout as a hang. Off by default.
 probe = false
 probe_timeout_s = 20
 

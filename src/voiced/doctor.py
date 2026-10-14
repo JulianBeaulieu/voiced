@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from voiced.config import Settings
+from voiced.config import ServiceName, Settings
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
+from voiced.launchd.install import METAL_PROBE_FILE, SERVICES
+from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
 
 Result = Literal["pass", "warn", "fail"]
@@ -31,7 +33,6 @@ MIN_MACOS_MAJOR = 14
 MIN_TOTAL_GB = 8
 WARN_TOTAL_GB = 16
 WARN_AVAILABLE_GB = 4
-METAL_PROBE_FILE = "metal-probe.json"
 HOMEBREW_BINS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 
@@ -71,11 +72,15 @@ def check_apple_silicon(runner: Runner, machine: str | None = None) -> Check:
     return Check("Apple Silicon", "fail", f"{machine} ({brand}); MLX needs Apple Silicon")
 
 
+def macos_version(runner: Runner) -> str:
+    return runner(["sw_vers", "-productVersion"]).stdout.strip() or platform.mac_ver()[0]
+
+
 def check_macos_version(runner: Runner, system: str | None = None) -> Check:
     system = system or platform.system()
     if system != "Darwin":
         return Check("macOS version", "fail", f"{system}; voiced runs on macOS only")
-    version = runner(["sw_vers", "-productVersion"]).stdout.strip() or platform.mac_ver()[0]
+    version = macos_version(runner)
     match = re.match(r"(\d+)", version)
     major = int(match.group(1)) if match else 0
     if major >= MIN_MACOS_MAJOR:
@@ -149,25 +154,33 @@ def check_memory(runner: Runner) -> Check:
 # Ports --------------------------------------------------------------------
 
 
+def listener_pids(port: int, runner: Runner) -> list[int] | None:
+    """Pids listening on ``port`` via lsof; None if lsof is unavailable."""
+    result = runner(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"])
+    if result.returncode == 127:
+        return None
+    return [int(line) for line in result.stdout.split() if line.isdigit()]
+
+
 def check_port(name: str, port: int, runner: Runner, venv_dir: Path | None = None) -> Check:
     """Who listens on ``port``? Uses ``lsof``; absence of lsof is reported, not fatal."""
-    result = runner(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fcpn"])
     label = f"Port {port} ({name})"
-    if result.returncode == 127:
+    pids = listener_pids(port, runner)
+    if pids is None:
         return Check(label, "warn", "lsof not available; cannot check")
-    if not result.stdout.strip():
+    if not pids:
         return Check(label, "pass", "free")
-    pids = [line[1:] for line in result.stdout.splitlines() if line.startswith("p")]
-    commands = sorted({line[1:] for line in result.stdout.splitlines() if line.startswith("c")})
-    who = ", ".join(commands) or "unknown"
-    pid_text = f" (pid {', '.join(pids)})" if pids else ""
-    if venv_dir is not None and pids:
-        # If the listener's executable lives in our venv it is a voiced service.
-        for pid in pids:
-            exe = runner(["ps", "-o", "comm=", "-p", pid]).stdout.strip()
-            if exe.startswith(str(venv_dir)):
-                return Check(label, "pass", f"in use by voiced{pid_text}")
-    return Check(label, "warn", f"in use by {who}{pid_text}")
+    commands: list[str] = []
+    ours = False
+    for pid in pids:
+        exe = runner(["ps", "-o", "comm=", "-p", str(pid)]).stdout.strip() or "unknown"
+        commands.append(exe)
+        if venv_dir is not None and Path(exe).is_relative_to(venv_dir):
+            ours = True
+    pid_text = ", ".join(str(p) for p in pids)
+    if ours:
+        return Check(label, "pass", f"in use by voiced (pid {pid_text})")
+    return Check(label, "warn", f"in use by {', '.join(commands)} (pid {pid_text})")
 
 
 def check_ports(settings: Settings, runner: Runner) -> list[Check]:
@@ -216,7 +229,7 @@ def check_daemon(service: str, label: str, runner: Runner, exists: Exists = Path
 def check_daemons(settings: Settings, runner: Runner, exists: Exists = Path.is_file) -> list[Check]:
     return [
         check_daemon(service, settings.launchd.label(service), runner, exists)
-        for service in ("stt", "tts", "watchdog")
+        for service in SERVICES
     ]
 
 
@@ -238,43 +251,83 @@ def check_metal_shell(runner: Runner, python: Path | None) -> Check:
     return Check(name, "fail", result.output.splitlines()[-1] if result.output else "no output")
 
 
+@dataclass(frozen=True)
+class DaemonEvidence:
+    """What a running service tells us, with proof it is the launchd-managed one."""
+
+    service: str
+    health: Observation
+    launchd_pid: int | None  # from launchctl print
+    listener_pids: list[int] | None  # from lsof on the HTTP port
+
+
 def check_metal_daemon(
     probe_file: Path,
-    health: Iterable[tuple[str, Observation]],
+    evidence: Iterable[DaemonEvidence],
     read_text: Callable[[Path], str | None] | None = None,
+    running_macos: str | None = None,
 ) -> Check:
     """Did MLX work from a LaunchDaemon on this machine?
 
-    Evidence, strongest first: a running daemon-managed service that reports
-    its model loaded (real engine, not ``fake``); or the JSON written by
-    ``voiced doctor --metal-probe``. Without either we can only say "unknown".
+    Accepted evidence, strongest first:
+
+    1. A service whose ``/health`` says a real engine (not ``fake``) has its
+       model loaded, where the pid listening on its HTTP port is the pid
+       launchd reports for the daemon. That rules out a ``voiced serve`` run by
+       hand on the same port.
+    2. The JSON written by ``voiced doctor --metal-probe``, if it says ``ok``,
+       was produced under launchd's system manager with pid 1 as parent, and
+       on the macOS version running now.
+
+    Anything else is "unknown", never a pass.
     """
     name = "Metal (daemon)"
-    for service, obs in health:
-        payload = obs.payload or {}
-        if payload.get("model_loaded") and payload.get("engine") not in (None, "fake"):
-            return Check(name, "pass", f"{service} daemon has {payload.get('engine')} loaded")
-    reader = read_text or _read_text
-    text = reader(probe_file)
-    if text is not None:
-        try:
-            data = json.loads(text)
-        except ValueError:
-            return Check(name, "warn", f"{probe_file} is not valid JSON")
-        manager = data.get("context", {}).get("launchd_managername", "?")
-        if data.get("ok"):
+    for item in evidence:
+        payload = item.health.payload or {}
+        if not payload.get("model_loaded") or payload.get("engine") in (None, "fake"):
+            continue
+        if item.launchd_pid is None or not item.listener_pids:
+            continue
+        if item.launchd_pid in item.listener_pids:
             return Check(
                 name,
                 "pass",
-                f"probe ran under launchd ({manager}): {data.get('default_device')}, "
-                f"matmul {data.get('matmul_ms')} ms",
+                f"{item.service} daemon (pid {item.launchd_pid}) has {payload['engine']} loaded",
             )
-        return Check(name, "fail", f"probe under launchd ({manager}): {data.get('error')}")
-    return Check(
-        name,
-        "warn",
-        "unknown; run `voiced doctor --metal-probe` and the printed sudo script",
-    )
+    reader = read_text or _read_text
+    text = reader(probe_file)
+    if text is None:
+        return Check(
+            name, "warn", "unknown; run `voiced doctor --metal-probe` and the printed sudo script"
+        )
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return Check(name, "warn", f"{probe_file} is not valid JSON")
+    ctx = data.get("context") or {}
+    manager = ctx.get("launchd_managername")
+    if manager != "System" or ctx.get("ppid") != 1:
+        return Check(
+            name,
+            "warn",
+            f"{probe_file} was not produced by a LaunchDaemon "
+            f"(managername={manager!r}, ppid={ctx.get('ppid')!r})",
+        )
+    if running_macos and ctx.get("macos") != running_macos:
+        return Check(
+            name,
+            "warn",
+            f"{probe_file} is from macOS {ctx.get('macos')}, now running {running_macos}; "
+            "re-run `voiced doctor --metal-probe`",
+        )
+    if data.get("ok"):
+        return Check(
+            name,
+            "pass",
+            f"probe ran under launchd: {data.get('default_device')}, "
+            f"matmul {data.get('matmul_ms')} ms",
+        )
+    return Check(name, "fail", f"probe under launchd: {data.get('error')}")
 
 
 def _read_text(path: Path) -> str | None:
@@ -287,20 +340,30 @@ def _read_text(path: Path) -> str | None:
 # Everything ---------------------------------------------------------------
 
 
-def fetch_health(settings: Settings, timeout_s: float = 2.0) -> list[tuple[str, Observation]]:
-    host = "127.0.0.1" if settings.server.bind in ("0.0.0.0", "") else settings.server.bind
-    out: list[tuple[str, Observation]] = []
-    for service, port in (("stt", settings.stt.http_port), ("tts", settings.tts.http_port)):
-        url = f"http://{host}:{port}/health"
-        out.append(
-            (service, poll_health(url, timeout_s=timeout_s, api_key=settings.server.api_key))
-        )
+def fetch_health(
+    settings: Settings, timeout_s: float = 2.0
+) -> list[tuple[ServiceName, Observation]]:
+    out: list[tuple[ServiceName, Observation]] = []
+    services: tuple[ServiceName, ...] = ("stt", "tts")
+    for service in services:
+        url = f"{settings.http_url(service)}/health"
+        obs = poll_health(url, timeout_s=timeout_s, api_key=settings.server.api_key)
+        out.append((service, obs))
     return out
+
+
+def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
+    items: list[DaemonEvidence] = []
+    for service, obs in fetch_health(settings):
+        port = settings.stt.http_port if service == "stt" else settings.tts.http_port
+        status = print_service(settings.launchd.label(service), runner)
+        items.append(DaemonEvidence(service, obs, status.pid, listener_pids(port, runner)))
+    return items
 
 
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
     venv_python = settings.install.venv_dir / "bin" / "python"
-    checks: list[Check] = [
+    return [
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
@@ -311,9 +374,12 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_filevault(runner),
         *check_daemons(settings, runner),
         check_metal_shell(runner, venv_python if venv_python.exists() else None),
-        check_metal_daemon(settings.server.log_dir / METAL_PROBE_FILE, fetch_health(settings)),
+        check_metal_daemon(
+            settings.server.log_dir / METAL_PROBE_FILE,
+            daemon_evidence(settings, runner),
+            running_macos=macos_version(runner),
+        ),
     ]
-    return checks
 
 
 def worst(checks: Sequence[Check]) -> Result:
@@ -324,23 +390,6 @@ def worst(checks: Sequence[Check]) -> Result:
     return "pass"
 
 
-def render_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    """Plain-text table: left-aligned columns, two spaces between, no borders."""
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(cell))
-
-    # The last column is not padded so long details do not trail whitespace.
-    def fmt(cells: Sequence[str]) -> str:
-        parts = [c.ljust(widths[i]) for i, c in enumerate(cells[:-1])]
-        parts.append(cells[-1])
-        return "  ".join(parts).rstrip()
-
-    return "\n".join([fmt(headers), *(fmt(r) for r in rows)])
-
-
 def render_checks(checks: Sequence[Check]) -> str:
-    return render_table(
-        ("CHECK", "RESULT", "DETAIL"), [(c.name, c.result, c.detail) for c in checks]
-    )
+    rows = [(c.name, c.result, c.detail) for c in checks]
+    return render_table(("CHECK", "RESULT", "DETAIL"), rows)
