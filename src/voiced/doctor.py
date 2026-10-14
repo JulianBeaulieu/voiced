@@ -13,13 +13,16 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings
+from voiced.control import socket_path
+from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
     ENV_ESPEAK_LIBRARY,
     ESPEAK_INSTALL_HINT,
@@ -363,6 +366,36 @@ def check_metal_daemon(
     return Check(name, "fail", f"probe under launchd: {data.get('error')}")
 
 
+def _ask_status(path: Path) -> dict[str, Any]:
+    return request(path, "status", timeout_s=10.0)
+
+
+def check_control_socket(path: Path, ask: Callable[[Path], dict[str, Any]] = _ask_status) -> Check:
+    """The watchdog's control socket exists, is private, and answers."""
+    name = "Control socket"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return Check(name, "warn", f"{path} does not exist; the watchdog daemon serves it")
+    except OSError as exc:
+        return Check(name, "fail", f"{path}: {exc}")
+    if not stat.S_ISSOCK(info.st_mode):
+        return Check(name, "fail", f"{path} is not a socket")
+    mode = stat.S_IMODE(info.st_mode)
+    if mode != 0o600:
+        return Check(name, "fail", f"{path} has mode {mode:o}, expected 600")
+    if info.st_uid != os.getuid():
+        return Check(name, "fail", f"{path} is owned by uid {info.st_uid}, not {os.getuid()}")
+    try:
+        status = ask(path)
+    except (ControlError, OSError, ValueError) as exc:
+        return Check(name, "fail", f"{path} does not answer status: {exc}")
+    states = ", ".join(
+        f"{svc} {info.get('state', '?')}" for svc, info in (status.get("services") or {}).items()
+    )
+    return Check(name, "pass", f"{path}: {states}")
+
+
 def _read_text(path: Path) -> str | None:
     try:
         return path.read_text()
@@ -405,6 +438,7 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         *check_ports(settings, runner),
         check_filevault(runner),
         *check_daemons(settings, runner),
+        check_control_socket(socket_path(settings)),
         check_metal_shell(runner, venv_python if venv_python.exists() else None),
         check_metal_daemon(
             settings.server.log_dir / METAL_PROBE_FILE,

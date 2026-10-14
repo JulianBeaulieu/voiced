@@ -1,4 +1,5 @@
-"""Lifecycle subcommands: install, start, stop, status, logs, uninstall, doctor, watchdog.
+"""Lifecycle subcommands: install, start, stop, restart, status, settings, logs,
+uninstall, doctor, watchdog.
 
 Parsing and printing live here; file writes and script generation live in
 ``voiced.launchd``. Nothing here runs ``sudo``: steps that need root are
@@ -8,7 +9,9 @@ printed as commands or scripts for the user.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -19,8 +22,21 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from voiced import doctor
-from voiced.config import HTTP_SERVICES, SERVICES, DaemonName, Settings
+from voiced import __version__, doctor
+from voiced.config import (
+    HTTP_SERVICES,
+    SERVICES,
+    SETTABLE,
+    DaemonName,
+    Settings,
+    config_path,
+    load_settings,
+)
+from voiced.control import socket_path
+from voiced.control.client import ControlClient, ControlError, ControlUnavailable
+from voiced.control.logs import tail_lines
+from voiced.control.ops import Operations, change_result, change_settings, settings_view
+from voiced.control.protocol import OpError
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -49,6 +65,7 @@ from voiced.watchdog import (
     configure_watchdog_logging,
     default_probe,
     poll_health,
+    restart_service,
 )
 
 Echo = Callable[[str], None]
@@ -77,8 +94,25 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     stop = sub.add_parser("stop", help="stop the daemons (prints the sudo command)")
     stop.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
 
+    restart = sub.add_parser("restart", help="restart a service now (no root needed)")
+    restart.add_argument("service", nargs="?", choices=(*HTTP_SERVICES, "all"), default="all")
+
     status = sub.add_parser("status", help="launchd state and /health of each service")
     status.add_argument("--json", action="store_true", help="machine-readable output")
+
+    settings = sub.add_parser("settings", help="show or change the common settings")
+    settings.set_defaults(settings_command="get", json=False, pairs=[])
+    settings_sub = settings.add_subparsers(dest="settings_command")
+    get = settings_sub.add_parser("get", help="show the settings (never the API key)")
+    get.add_argument("--json", action="store_true", help="machine-readable output")
+    put = settings_sub.add_parser(
+        "set",
+        help="change settings: KEY=VALUE ...",
+        description=f"Settable keys: {', '.join(SETTABLE)}. "
+        "Use api_key=- to read the key from stdin, api_key= to clear it.",
+    )
+    put.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
+    put.add_argument("--json", action="store_true", help="machine-readable output")
 
     logs = sub.add_parser("logs", help="show the service logs")
     logs.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
@@ -118,7 +152,9 @@ def run_lifecycle(
         "install": lambda: cmd_install(args, settings, echo),
         "start": lambda: cmd_start(args.service, settings, runner, echo),
         "stop": lambda: cmd_stop(args.service, settings, runner, echo),
+        "restart": lambda: cmd_restart(args.service, settings, runner, echo),
         "status": lambda: cmd_status(settings, runner, echo, as_json=args.json),
+        "settings": lambda: cmd_settings(args, settings, echo),
         "logs": lambda: cmd_logs(args, settings, echo),
         "uninstall": lambda: cmd_uninstall(args, settings, runner, echo),
         "doctor": lambda: cmd_doctor(args, settings, runner, echo),
@@ -245,6 +281,38 @@ def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> in
     return 1 if failures else 0
 
 
+# restart ------------------------------------------------------------------
+
+
+def cmd_restart(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
+    """Through the watchdog when its control socket answers (it then knows
+    about the restart and applies its startup grace); otherwise the same
+    SIGKILL-and-kickstart directly."""
+    path = socket_path(settings)
+    try:
+        with ControlClient.connect(path) as client:
+            result = client.request("service.restart", {"service": service})
+    except ControlUnavailable:
+        echo(f"no control socket at {path}; restarting with launchctl directly")
+    except ControlError as exc:
+        echo(f"restart failed: {exc.message}")
+        return 1
+    else:
+        for name, detail in (result.get("detail") or {}).items():
+            echo(f"{name}: {detail}")
+        echo("`voiced status` shows when the model is loaded again.")
+        return 0
+    failures = 0
+    for name in HTTP_SERVICES:
+        if service not in (name, "all"):
+            continue
+        spec = ServiceSpec(name, settings.launchd.label(name), settings.http_url(name))
+        outcome = restart_service(spec, runner)
+        echo(f"{name}: {outcome.detail}")
+        failures += 0 if outcome.done else 1
+    return 1 if failures else 0
+
+
 # status -------------------------------------------------------------------
 
 
@@ -272,10 +340,20 @@ def _health_detail(obs: Observation) -> str:
     return ", ".join(part for part in parts if part)
 
 
+def control_status(settings: Settings) -> dict[str, Any] | None:
+    """The watchdog's ``status`` over the control socket, or None without it."""
+    try:
+        with ControlClient.connect(socket_path(settings), timeout_s=10.0) as client:
+            return client.request("status")
+    except (ControlUnavailable, ControlError, OSError, ValueError):
+        return None
+
+
 def collect_status(
     settings: Settings,
     runner: Runner,
     poll: Callable[[str], Observation] | None = None,
+    control: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     poll = poll or (lambda url: poll_health(url, timeout_s=3.0, api_key=settings.server.api_key))
     rows: list[dict[str, Any]] = []
@@ -296,27 +374,164 @@ def collect_status(
                 row["health"] = obs.kind
                 row["health_detail"] = _health_detail(obs)
                 row["health_payload"] = obs.payload
+        if control is not None:
+            row["control"] = (control.get("services") or {}).get(service)
         rows.append(row)
     return rows
 
 
-def cmd_status(settings: Settings, runner: Runner, echo: Echo, *, as_json: bool = False) -> int:
-    rows = collect_status(settings, runner)
+def _uptime(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def cmd_status(
+    settings: Settings,
+    runner: Runner,
+    echo: Echo,
+    *,
+    as_json: bool = False,
+    control: Callable[[Settings], dict[str, Any] | None] = control_status,
+) -> int:
+    via_socket = control(settings)
+    rows = collect_status(settings, runner, control=via_socket)
     if as_json:
         echo(json.dumps(rows, indent=2))
     else:
-        table = [
-            (
+        headers: tuple[str, ...] = ("SERVICE", "LAUNCHD", "HEALTH", "DETAIL")
+        table: list[tuple[str, ...]] = []
+        for r in rows:
+            cells: tuple[str, ...] = (
                 r["service"],
                 r["launchd"] + (f" (pid {r['pid']})" if r["pid"] else ""),
                 str(r.get("health", "-")),
                 str(r.get("health_detail", "")),
             )
-            for r in rows
-        ]
-        echo(render_table(("SERVICE", "LAUNCHD", "HEALTH", "DETAIL"), table))
+            if via_socket is not None:
+                c = r.get("control") or {}
+                cells += (
+                    str(c.get("state", "-")),
+                    _uptime(c.get("uptime_s")),
+                    str(c.get("restarts", "-")),
+                )
+            table.append(cells)
+        if via_socket is not None:
+            headers += ("STATE", "UPTIME", "RESTARTS")
+        echo(render_table(headers, table))
+        path = socket_path(settings)
+        if via_socket is None:
+            echo(f"control socket: not answering at {path} (watchdog not running)")
+        else:
+            echo(f"control socket: {path}")
     healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
     return 0 if healthy else 1
+
+
+# settings -----------------------------------------------------------------
+
+_TRUE = ("true", "yes", "on", "1")
+_FALSE = ("false", "no", "off", "0")
+
+
+def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
+    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
+    key, sep, raw = pair.partition("=")
+    key = key.strip()
+    if not sep:
+        raise ValueError(f"{pair!r}: expected KEY=VALUE")
+    if key not in SETTABLE:
+        raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
+    if key in ("zeroconf", "browser_settings"):
+        if raw.lower() in _TRUE:
+            return key, True
+        if raw.lower() in _FALSE:
+            return key, False
+        raise ValueError(f"{key}: expected true or false, got {raw!r}")
+    if key == "tts.speed":
+        try:
+            return key, float(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
+    if key == "api_key" and raw == "-":
+        return key, stdin().rstrip("\r\n")
+    return key, raw
+
+
+def _flatten(value: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for key, item in value.items():
+        name = f"{prefix}{key}"
+        if isinstance(item, dict):
+            rows.extend(_flatten(item, f"{name}."))
+        elif isinstance(item, bool):
+            rows.append((name, "true" if item else "false"))
+        else:
+            rows.append((name, str(item)))
+    return rows
+
+
+_WARNINGS = {
+    "lan_without_api_key": "bind is lan and no api_key is set: the HTTP API is open to your "
+    "network. Set one with `voiced settings set api_key=-`.",
+}
+
+
+def _echo_settings(result: dict[str, Any], echo: Echo, *, as_json: bool) -> None:
+    if as_json:
+        echo(json.dumps(result, indent=2))
+        return
+    restart = result.pop("restart_required", None)
+    warnings = result.pop("warnings", None) or []
+    echo(render_table(("SETTING", "VALUE"), _flatten(result)))
+    if restart:
+        echo("")
+        target = restart[0] if len(restart) == 1 else "all"
+        echo(f"Restart to apply: voiced restart {target}")
+    for warning in warnings:
+        echo(f"warning: {_WARNINGS.get(warning, warning)}")
+
+
+def cmd_settings(
+    args: argparse.Namespace, settings: Settings, echo: Echo, stdin: Callable[[], str] | None = None
+) -> int:
+    """Through the control socket when it answers (the watchdog then reads
+    the file it was started with and tells other clients); otherwise the
+    config file is read and changed directly, by the same function."""
+    changes: dict[str, object] = {}
+    if args.settings_command == "set":
+        try:
+            for pair in args.pairs:
+                key, value = parse_setting(pair, stdin or sys.stdin.readline)
+                changes[key] = value
+        except ValueError as exc:
+            echo(str(exc))
+            return 2
+    op, op_args = ("settings.set", changes) if changes else ("settings.get", {})
+    try:
+        with ControlClient.connect(socket_path(settings)) as client:
+            result = client.request(op, op_args)
+    except ControlUnavailable:
+        try:
+            if changes:
+                file = config_path()
+                result = change_result(change_settings(changes, file), file)
+            else:
+                result = settings_view(settings, config_path())
+        except OpError as exc:
+            field = exc.extra.get("field")
+            echo(f"{field}: {exc.message}" if field else exc.message)
+            return 1
+    except ControlError as exc:
+        field = exc.data.get("field")
+        echo(f"{field}: {exc.message}" if field else exc.message)
+        return 1
+    _echo_settings(result, echo, as_json=args.json)
+    return 0
 
 
 # logs ---------------------------------------------------------------------
@@ -330,23 +545,6 @@ def log_files(settings: Settings, service: str, *, stderr: bool = False) -> list
         if stderr:
             files.append(paths.stderr)
     return files
-
-
-def tail_lines(path: Path, n: int) -> list[str]:
-    try:
-        with path.open("rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            block = 8192
-            data = b""
-            while size > 0 and data.count(b"\n") <= n:
-                step = min(block, size)
-                size -= step
-                fh.seek(size)
-                data = fh.read(step) + data
-    except OSError:
-        return []
-    return data.decode("utf-8", "replace").splitlines()[-n:]
 
 
 def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
@@ -471,13 +669,34 @@ def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
         for name, decision in dog.tick().items():
             echo(f"{name}: {decision.action}: {decision.reason}")
         return 0
-    stopping = False
+    return asyncio.run(_run_watchdog(dog, settings))
 
-    def _stop(signum: int, frame: object) -> None:
-        nonlocal stopping
-        stopping = True
 
-    signal.signal(signal.SIGTERM, _stop)
-    signal.signal(signal.SIGINT, _stop)
-    dog.run_forever(stop=lambda: stopping)
+async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
+    """The watchdog loop plus the control socket, until SIGTERM or SIGINT.
+
+    A control socket that cannot start (another watchdog holds it, the state
+    directory is not ours) is logged; the watchdog runs without it.
+    """
+    from voiced.control.server import ControlServer
+    from voiced.control.supervisor import WatchdogSupervisor
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop.set)
+    supervisor = WatchdogSupervisor(dog, settings, specs_for=watchdog_specs)
+    ops = Operations(supervisor, config_path(), load_settings)
+    server = ControlServer(socket_path(settings), ops, version=__version__)
+    try:
+        await server.start()
+        serving = True
+    except (OSError, RuntimeError) as exc:
+        logging.getLogger("voiced.control").error("control socket not started: %s", exc)
+        serving = False
+    try:
+        await dog.run_async(stop)
+    finally:
+        if serving:
+            await server.close()
     return 0

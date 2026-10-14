@@ -13,11 +13,14 @@ settings, typed here under ``TYPE_CHECKING`` only.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import logging.handlers
 import os
 import signal
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -417,6 +420,11 @@ class Watchdog:
     restart: Restarter | None = None
     clock: Callable[[], float] = time.monotonic
     states: dict[str, ServiceState] = field(default_factory=dict)
+    # Last observation per service, for the control channel's status.
+    observations: dict[str, Observation] = field(default_factory=dict)
+    # A tick and a restart asked for over the control socket run in background
+    # threads; they must not interleave on the same ServiceState.
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def _observe(self, spec: ServiceSpec) -> Observation:
         if self.observe is not None:
@@ -433,24 +441,50 @@ class Watchdog:
             self.states[spec.name] = ServiceState(grace_started_at=self.clock())
         return self.states[spec.name]
 
+    def _restart_logged(
+        self, spec: ServiceSpec, state: ServiceState, now: float, reason: str
+    ) -> RestartResult:
+        """The one restart path: watchdog decisions and control requests."""
+        log.warning("%s: restarting: %s", spec.name, reason)
+        result = self._restart(spec)
+        if result.done:
+            mark_restarted(state, now)
+            log.warning("%s: %s (restart #%d)", spec.name, result.detail, state.restarts)
+        else:
+            state.failures = 0
+            log.warning("%s: %s", spec.name, result.detail)
+        return result
+
+    def restart_now(self, name: str, reason: str = "requested") -> RestartResult:
+        """Restart a service on request, outside the poll cycle.
+
+        Goes through the same path as a watchdog decision and records it the
+        same way, so the startup grace period and the cooldown apply to the
+        watchdog's own decisions afterwards. The cooldown does not hold back
+        a requested restart.
+        """
+        spec = next((s for s in self.services if s.name == name), None)
+        if spec is None:
+            raise KeyError(name)
+        with self.lock:
+            return self._restart_logged(spec, self.state(spec), self.clock(), reason)
+
     def tick(self) -> dict[str, Decision]:
         """Observe every service once and act on the decisions."""
+        with self.lock:
+            return self._tick()
+
+    def _tick(self) -> dict[str, Decision]:
         decisions: dict[str, Decision] = {}
         for spec in self.services:
             state = self.state(spec)
             now = self.clock()
             obs = self._observe(spec)
+            self.observations[spec.name] = obs
             decision = decide(state, obs, now, self.policy)
             decisions[spec.name] = decision
             if decision.action == "restart":
-                log.warning("%s: restarting: %s", spec.name, decision.reason)
-                result = self._restart(spec)
-                if result.done:
-                    mark_restarted(state, now)
-                    log.warning("%s: %s (restart #%d)", spec.name, result.detail, state.restarts)
-                else:
-                    state.failures = 0
-                    log.warning("%s: %s", spec.name, result.detail)
+                self._restart_logged(spec, state, now, decision.reason)
             elif decision.action == "cooldown":
                 log.warning("%s: not restarting: %s", spec.name, decision.reason)
             elif decision.quiet:
@@ -461,7 +495,7 @@ class Watchdog:
                 log.debug("%s: %s", spec.name, decision.reason)
         return decisions
 
-    def run_forever(self, stop: Callable[[], bool] = lambda: False) -> None:
+    def _announce(self) -> None:
         for spec in self.services:
             self.state(spec)  # start every grace period now
         log.info(
@@ -471,6 +505,24 @@ class Watchdog:
             self.policy.failures_before_restart,
             self.policy.probe,
         )
+
+    async def run_async(self, stop: asyncio.Event) -> None:
+        """:meth:`run_forever` on an event loop, so the control socket can be
+        served next to it. Each tick runs in a background thread (it blocks on
+        HTTP and ``launchctl``); ``stop`` ends the loop between ticks."""
+        self._announce()
+        while not stop.is_set():
+            started = self.clock()
+            try:
+                await asyncio.to_thread(self.tick)
+            except Exception:
+                log.exception("tick failed")
+            elapsed = self.clock() - started
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), max(0.0, self.policy.interval_s - elapsed))
+
+    def run_forever(self, stop: Callable[[], bool] = lambda: False) -> None:
+        self._announce()
         while not stop():
             started = self.clock()
             try:
