@@ -200,8 +200,14 @@ def test_silero_ignores_noise() -> None:
     assert run(ep, silence(1.0)) == []
 
 
+@pytest.mark.model
 @pytest.mark.skipif(not silero_available(), reason="pysilero-vad not installed")
 def test_silero_is_fast_enough() -> None:
+    """Wall-clock budget, so it runs in the local model tier only.
+
+    An M1 Max does a 32 ms frame in about 0.15 ms; the shared GitHub macOS
+    runner VM measured 80 ms per frame, which says nothing about real machines.
+    """
     import time
 
     detector = SileroDetector()
@@ -210,4 +216,5 @@ def test_silero_is_fast_enough() -> None:
     for _ in range(100):
         detector.probability(frame)
     per_frame = (time.perf_counter() - t0) / 100
+    print(f"\nsilero: {per_frame * 1000:.2f} ms per 32 ms frame")
     assert per_frame < 0.005, f"{per_frame * 1000:.1f} ms per 32 ms frame"
