@@ -10,7 +10,9 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 | `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--user`, `--staging-dir`, `--skip-models`, `--no-uv`. |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
-| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`. |
+| `voiced restart [stt\|tts\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. |
+| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`; with the watchdog running, also each service's state, uptime and restart count from the control socket. |
+| `voiced settings [get] [--json]`, `voiced settings set KEY=VALUE ...` | Shows or changes the common settings (see [Control channel](#control-channel)). `api_key=-` reads the key from stdin. |
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
 | `voiced doctor [--json]` | Checks the machine (see below). |
 | `voiced doctor --metal-probe` | Stages a one-shot LaunchDaemon that tests Metal from a real daemon context and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
@@ -119,6 +121,53 @@ wedge is found at the first real request plus `stall_after_s`.
 
 `voiced watchdog --once` shows what the watchdog thinks of the machine right
 now. The design is in [ADR 0012](decisions/0012-watchdog.md).
+
+## Control channel
+
+The watchdog also serves a Unix socket, `~/.voiced/control.sock` (the
+`[install] venv_dir` directory), for local clients such as a menu bar app, and for the CLI. It speaks
+newline-delimited JSON, accepts only processes of the same user (mode 0600
+in a 0700 directory, and the kernel's peer uid is checked), and listens on no
+network interface whatever `bind` says. No socket means the watchdog is not
+running; `voiced status`, `restart` and `settings` then work without it.
+The design is in [ADR 0013](decisions/0013-local-control-channel.md).
+
+Try it with the watchdog in one terminal and a client in another:
+
+```sh
+voiced watchdog                       # terminal 1 (the daemon does the same)
+voiced settings get                   # terminal 2
+voiced settings set tts.voice=bf_emma tts.speed=1.1
+voiced restart tts
+printf '{"id":1,"op":"status"}\n{"id":2,"op":"engines.list"}\n' | nc -U ~/.voiced/control.sock
+```
+
+The first line from the server is `{"event": "hello", "data": {"protocol":
+1, ...}}`; `status` events follow whenever something changes and at least
+every 10 s.
+
+| Operation | Arguments | Result |
+|---|---|---|
+| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
+| `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
+| `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `restart_required` and `warnings` |
+| `engines.list` | | installed engines with their models, languages and voices, without loading any |
+| `service.restart` | `service`: `stt`, `tts` or `all` | `accepted`; progress follows as `status` events |
+| `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines` |
+| `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
+
+`settings.set` writes the config file atomically and changes only the lines
+of the keys it sets, so comments stay. It never restarts anything:
+`restart_required` says which services need `voiced restart` for the change
+to apply (`tts.*` the tts service, `stt.*` the stt service, `bind`,
+`api_key` and `zeroconf` both; `browser_settings` neither). Invalid values
+are refused with `invalid_setting` and the field name, and the file is left
+as it was. Errors are `not_installed`, `invalid_setting`, `unknown_op`,
+`bad_request`, `service_unavailable` and `internal`.
+
+`[server] browser_settings = true` adds the same settings as a form on each
+status page. It asks for the API key when one is set, and it is refused when
+the server listens on the network without one.
 
 ## Logs
 

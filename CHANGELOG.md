@@ -49,6 +49,13 @@ uses [Semantic Versioning](https://semver.org/).
   `speed`, first audio in about 150 to 220 ms, with a repetition penalty and
   a per-sentence length bound against runaway generation. `scipy` joins the
   `tts` extra for resampling its 32 kHz output.
+- Local control channel: the watchdog serves `~/.voiced/control.sock`
+  (newline-delimited JSON, 0600, peer uid checked, nothing on the network)
+  with status, settings, engine catalogues, restarts and log tails for a
+  menu bar app. New commands `voiced restart` and `voiced settings get|set`;
+  `voiced status` shows state, uptime and restarts when the watchdog answers,
+  and `voiced doctor` checks the socket. Optional settings form on the status
+  page behind the new `[server] browser_settings` key (off by default).
 - Documentation: README with quickstart, architecture diagram, benchmarks
   and troubleshooting; API reference; Home Assistant guide; architecture and
   operations guides; ADR index; contributing guide; issue and pull request
