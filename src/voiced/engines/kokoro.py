@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -31,17 +30,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16
-from voiced.engines.base import (
-    TTS_SAMPLE_RATE,
-    EngineError,
-    EngineNotLoaded,
-    PCMChunk,
-    TTSEngine,
-    UnknownVoice,
-    Voice,
-)
-from voiced.text.sentences import cut_to_length, split_sentences
-from voiced.threads import run_blocking
+from voiced.engines.base import TTS_SAMPLE_RATE, Voice
+from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
+from voiced.text.sentences import cut_to_length
 
 log = logging.getLogger(__name__)
 
@@ -60,9 +51,6 @@ ENV_ESPEAK_DATA = "VOICED_ESPEAK_DATA"
 HOMEBREW_PREFIXES = ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng")
 MAX_PHONEMES = 510
 """Kokoro's context is 512 tokens including the two padding tokens."""
-MIN_SPEED = 0.25
-MAX_SPEED = 4.0
-WARMUP_TEXT = "Warming up."
 
 
 class EspeakNotFound(RuntimeError):
@@ -161,7 +149,7 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
     ]
 
 
-class KokoroEngine(TTSEngine):
+class KokoroEngine(SentenceTTSEngine):
     name = "kokoro"
     model_id = "mlx-community/Kokoro-82M-bf16"
     languages = ["en-US", "en-GB"]
@@ -170,15 +158,11 @@ class KokoroEngine(TTSEngine):
     def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
         self._warmup = warmup
-        self._model: Any = None
         self._tokenizer: Any = None
         self._packs: dict[str, Any] = {}
         self._voices: list[Voice] = []
 
     # -- lifecycle -----------------------------------------------------------
-
-    async def load(self) -> None:
-        await run_blocking(self._load_sync)
 
     def _load_sync(self) -> None:
         """Build everything in locals and assign at the end, so a failure
@@ -242,22 +226,8 @@ class KokoroEngine(TTSEngine):
         self._check_loaded()
         return list(self._voices)
 
-    async def synthesize(
-        self, text: str, voice: str, speed: float = 1.0
-    ) -> AsyncIterator[PCMChunk]:
-        """``text`` is already normalized by the caller; this only splits it
-        into sentences and synthesizes one chunk per sentence. Each model call
-        goes through ``run_blocking`` so a cancelled request (client gone)
-        cannot release the inference slot while the GPU is still busy."""
-        self._check_loaded()
-        if voice not in self._packs:
-            raise UnknownVoice(voice)
-        if not MIN_SPEED <= speed <= MAX_SPEED:
-            raise EngineError(f"speed must be between {MIN_SPEED} and {MAX_SPEED}")
-        for sentence in split_sentences(text):
-            pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)
-            if pcm:
-                yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
+    def _has_voice(self, voice: str) -> bool:
+        return voice in self._packs
 
     def phonemize(self, text: str, voice: str) -> str:
         """espeak-ng phonemes for ``text`` in the language of ``voice``.
@@ -273,10 +243,6 @@ class KokoroEngine(TTSEngine):
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
         """Blocking; runs in a worker thread."""
         return _synth(self._model, self._tokenizer, self._packs[voice], sentence, voice, speed)
-
-    def _check_loaded(self) -> None:
-        if self._model is None:
-            raise EngineNotLoaded(self.name)
 
 
 # -- blocking helpers ----------------------------------------------------------
