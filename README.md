@@ -15,7 +15,10 @@ Home Assistant integration are being built. Do not deploy yet.
 - Speech-to-text with Parakeet TDT 0.6B v3 (`parakeet-mlx`), batch and
   streaming, with silence endpointing.
 - Text-to-speech with Kokoro-82M (`mlx-audio`) as the default engine, with
-  Soprano-80M installed and selectable.
+  Soprano-80M installed and selectable. Soprano is opt-in: its first audio
+  takes about 150 to 220 ms, which can exceed the 200 ms target, it ignores
+  `speed`, and it occasionally runs on and is cut short (see
+  `docs/decisions/0010-tts-soprano.md`).
 - `POST /v1/audio/transcriptions` and `POST /v1/audio/speech`, so the official
   OpenAI clients, LiteLLM and Open WebUI work unmodified.
 - Wyoming STT on TCP 10300 and TTS on TCP 10200, auto-discovered by Home
@@ -84,7 +87,7 @@ first run, except Silero VAD, which ships inside the `pysilero-vad` wheel.
 | Parakeet TDT 0.6B v3 | CC-BY-4.0 |
 | Kokoro-82M | Apache-2.0 |
 | Silero VAD v6.2 via pysilero-vad, bundled | MIT |
-| Soprano-80M | to be verified before release |
+| Soprano-80M | Apache-2.0 |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights.

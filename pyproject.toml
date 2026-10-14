@@ -40,9 +40,12 @@ dependencies = [
 [project.optional-dependencies]
 # Real inference engines. Apple Silicon only; not installed in CI.
 stt = ["parakeet-mlx>=0.5,<0.6"]
-# mlx-audio is pinned to a minor: the Kokoro engine relies on its internals
-# (load_voice_tensor, model(..., return_output=True)).
-tts = ["mlx-audio>=0.5,<0.6", "kokoro-onnx>=0.4", "huggingface-hub>=0.23"]
+# mlx-audio is pinned to the releases the engines were checked against: Kokoro
+# relies on its internals (load_voice_tensor, model(..., return_output=True)),
+# and Soprano replaces its token loop (stream_generate) and reads private model
+# attributes. scipy (also an mlx-audio dependency) is declared because
+# voiced.audio.resample uses it to take Soprano's 32 kHz output to 24 kHz.
+tts = ["mlx-audio>=0.5.8,<0.5.10", "kokoro-onnx>=0.4", "huggingface-hub>=0.23", "scipy>=1.11"]
 
 [dependency-groups]
 dev = [
@@ -72,6 +75,7 @@ parakeet = "voiced.engines.parakeet:ParakeetEngine"
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"
 kokoro = "voiced.engines.kokoro:KokoroEngine"
+soprano = "voiced.engines.soprano:SopranoEngine"
 
 [build-system]
 requires = ["hatchling"]
@@ -101,7 +105,7 @@ mypy_path = "src"
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "mlx.*", "huggingface_hub.*"]
+module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "mlx.*", "huggingface_hub.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

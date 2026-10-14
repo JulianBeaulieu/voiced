@@ -18,3 +18,14 @@ def kokoro_engine() -> Iterator[object]:
     engine = KokoroEngine()
     asyncio.run(engine.load())
     yield engine
+
+
+@pytest.fixture(scope="session")
+def soprano_engine() -> Iterator[object]:
+    """A loaded Soprano engine shared by the model tests. Loaded synchronously
+    so it can be session scoped regardless of the per-test event loop."""
+    from voiced.engines.soprano import SopranoEngine
+
+    engine = SopranoEngine()
+    asyncio.run(engine.load())
+    yield engine
