@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import NoReturn
 
 import openai
@@ -13,11 +14,13 @@ from starlette.websockets import WebSocketDisconnect
 import voiced.api.app as app_module
 from voiced.api.context import APIError, Ctx, require_api_key
 from voiced.config import Settings
+from voiced.context import ServiceContext
 from voiced.engines.base import UnknownVoice
 from voiced.inference import inference
-from voiced.queue import InferenceQueue
+from voiced.metrics import Operation
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, lifespan_client
+from voiced.threads import run_blocking
 
 HEALTH_KEYS = [
     "status",
@@ -50,23 +53,22 @@ def _add_test_routes(app: FastAPI) -> None:
 
     @app.post("/v1/test/engine-error")
     async def engine_error(ctx: Ctx) -> None:
-        async with inference(ctx, "speech"):
+        async with inference(ctx, Operation.SPEECH):
             raise UnknownVoice("zz_nobody")
 
     @app.post("/v1/test/crash")
     async def crash(ctx: Ctx) -> None:
-        async with inference(ctx, "speech"):
+        async with inference(ctx, Operation.SPEECH):
             raise RuntimeError("gpu wedged")
 
     @app.post("/v1/test/bug")
     async def bug() -> None:
         raise KeyError("outside inference")
 
-    @app.post("/v1/test/busy")
-    async def busy(ctx: Ctx) -> None:
-        ctx.queue = InferenceQueue(1)
-        async with inference(ctx, "speech"), inference(ctx, "speech"):
-            pass
+    @app.post("/v1/test/hold")
+    async def hold(ctx: Ctx) -> None:
+        async with inference(ctx, Operation.SPEECH):
+            await app.state.gate.wait()
 
 
 @pytest.fixture
@@ -90,13 +92,22 @@ async def test_error_envelope_and_recording(app: FastAPI) -> None:
         )
 
         r = await c.post("/v1/test/engine-error")
-        assert (r.status_code, r.json()["error"]["type"]) == (400, "UnknownVoice")
+        assert r.status_code == 400
+        assert r.json()["error"] == {
+            "message": "UnknownVoice: zz_nobody",
+            "type": "invalid_request_error",
+        }
         assert ctx.health.status == "ok"
 
-        r = await c.post("/v1/test/busy")
+        app.state.gate = asyncio.Event()
+        holders = [asyncio.create_task(c.post("/v1/test/hold")) for _ in range(2)]
+        await asyncio.sleep(0.02)
+        r = await c.post("/v1/test/hold")  # capacity is 2 in the test settings
         assert r.status_code == 503
         assert r.headers["retry-after"] == "1"
         assert r.json()["error"]["type"] == "server_busy"
+        app.state.gate.set()
+        assert [h.status_code for h in await asyncio.gather(*holders)] == [200, 200]
 
         r = await c.post("/v1/test/crash")
         assert (r.status_code, r.json()["error"]["type"]) == (500, "server_error")
@@ -106,16 +117,16 @@ async def test_error_envelope_and_recording(app: FastAPI) -> None:
         assert r.status_code == 500
 
     ops = ctx.metrics.snapshot()["operations"]
-    # Recorded once, by inference(), under the operation name.
+    # Only inference() writes metrics, once per request, by operation.
+    assert list(ops) == ["speech"]
     assert ops["speech"]["counts"] == {
-        "ok": 0,
+        "ok": 2,
         "busy": 1,
         "client_error": 1,
         "disconnect": 0,
         "failure": 1,
     }
-    # Outside inference(), the last-resort handler records it under the path.
-    assert ops["/v1/test/bug"]["counts"]["failure"] == 1
+    # A bug outside inference() still degrades health via the 500 handler.
     assert ctx.health.last_error == "KeyError: 'outside inference'"
 
 
@@ -161,10 +172,25 @@ async def test_health_answers_starting_while_loading(settings: Settings) -> None
         assert list(r.json()) == HEALTH_KEYS
         r = await c.get("/v1/models")
         assert (r.status_code, r.json()["error"]["type"]) == (503, "starting")
+        assert r.headers["retry-after"] == "1"
         await app.state.load_task
         r = await c.get("/health")
         assert (r.status_code, r.json()["status"]) == (200, "ok")
         assert list(r.json()) == HEALTH_KEYS
+
+
+async def test_blocking_load_in_a_thread_keeps_health_answering(settings: Settings) -> None:
+    class SlowLoad(FakeSTTEngine):
+        async def load(self) -> None:
+            await run_blocking(time.sleep, 0.2)  # the base.py load() rule
+            self.loaded = True
+
+    app = build_stt_app(settings, SlowLoad())
+    async with lifespan_client(app, wait_loaded=False) as c:
+        r = await c.get("/health")
+        assert (r.status_code, r.json()["status"]) == (503, "starting")
+        await app.state.load_task
+        assert (await c.get("/health")).status_code == 200
 
 
 async def test_health_get_does_not_mutate(stt_app: FastAPI) -> None:
@@ -194,3 +220,28 @@ async def test_load_failure_exits_non_zero(
             await app.state.load_task
     assert codes == [1]
     assert app.state.ctx.health.model_loaded is False
+
+
+async def test_shutdown_during_load_exits_without_waiting(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codes: list[int] = []
+
+    def fake_exit(code: int) -> NoReturn:
+        codes.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(app_module, "exit_process", fake_exit)
+    app = build_stt_app(settings, FakeSTTEngine(latency_s=10))
+    with pytest.raises(SystemExit):
+        async with app.router.lifespan_context(app):
+            pass
+    assert codes == [0]
+    app.state.load_task.cancel()
+
+
+async def test_models_lists_configured_languages(app: FastAPI) -> None:
+    ctx: ServiceContext = app.state.ctx
+    ctx.settings.stt.languages = ["de"]
+    async with lifespan_client(app) as c:
+        assert (await c.get("/v1/models")).json()["data"][0]["languages"] == []

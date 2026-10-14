@@ -50,8 +50,8 @@ def pcm16_to_float32(data: bytes) -> NDArray[np.float32]:
 
 
 def float32_to_pcm16(samples: NDArray[np.float32]) -> bytes:
-    """Float samples to int16 little-endian bytes, clipping to [-1, 1]."""
-    clipped = np.clip(samples, -1.0, 1.0) * 32767.0
+    """Float samples to int16 little-endian bytes, clipping to [-1, 1]. NaN becomes 0."""
+    clipped = np.clip(np.nan_to_num(samples, nan=0.0, posinf=1.0, neginf=-1.0), -1.0, 1.0) * 32767.0
     return np.rint(clipped).astype("<i2").tobytes()
 
 
@@ -79,44 +79,48 @@ def wav_header(
 class PCMConverter:
     """Stateful converter from integer PCM chunks to mono float32 at ``target_rate``.
 
-    State is kept across chunks so odd-sized payloads (a partial frame at the
-    end of one chunk) and resampling (fractional read position) are handled
-    without clicks at chunk boundaries. One instance per audio stream; feeding
-    the same audio in any chunking yields the same samples.
+    One instance per audio stream and input format: ``width`` 1 is unsigned
+    8-bit, 2 is int16, 4 is int32 (float32 input is not supported). State is
+    kept across chunks so odd-sized payloads (a partial frame at the end of
+    one chunk) and resampling (fractional read position) are handled without
+    clicks at chunk boundaries; feeding the same audio in any chunking yields
+    the same samples.
     """
 
-    def __init__(self, target_rate: int = STT_SAMPLE_RATE) -> None:
-        self.target_rate = target_rate
-        self._carry = b""
-        self._prev: float | None = None  # last input sample, for interpolation
-        self._pos = 0.0  # fractional read position relative to ``_prev``
-
-    def convert(self, data: bytes, rate: int, width: int, channels: int) -> NDArray[np.float32]:
+    def __init__(
+        self, rate: int, width: int, channels: int, target_rate: int = STT_SAMPLE_RATE
+    ) -> None:
         if channels < 1:
             raise UnsupportedAudioFormat(f"channels must be >= 1, got {channels}")
         if rate < 1:
             raise UnsupportedAudioFormat(f"invalid sample rate {rate}")
         if width not in _INT_DTYPES:
             raise UnsupportedAudioFormat(f"unsupported sample width {width}")
+        self.rate, self.width, self.channels = rate, width, channels
+        self.target_rate = target_rate
+        self._carry = b""
+        self._prev: float | None = None  # last input sample, for interpolation
+        self._pos = 0.0  # fractional read position relative to ``_prev``
 
-        frame = width * channels
+    def convert(self, data: bytes) -> NDArray[np.float32]:
+        frame = self.width * self.channels
         raw = self._carry + data
         usable = len(raw) - len(raw) % frame
         self._carry = raw[usable:]
         if usable == 0:
             return np.zeros(0, dtype=np.float32)
 
-        samples = _to_float32(raw[:usable], width)
-        if channels > 1:
-            samples = samples.reshape(-1, channels).mean(axis=1, dtype=np.float32)
-        return self._resample(samples, rate)
+        samples = _to_float32(raw[:usable], self.width)
+        if self.channels > 1:
+            samples = samples.reshape(-1, self.channels).mean(axis=1, dtype=np.float32)
+        return self._resample(samples)
 
-    def _resample(self, x: NDArray[np.float32], rate: int) -> NDArray[np.float32]:
+    def _resample(self, x: NDArray[np.float32]) -> NDArray[np.float32]:
         """Linear interpolation. Good enough for speech going into an ASR model."""
-        if rate == self.target_rate:
+        if self.rate == self.target_rate:
             return x
         buf = x if self._prev is None else np.concatenate(([self._prev], x))
-        step = rate / self.target_rate
+        step = self.rate / self.target_rate
         last = len(buf) - 1
         positions = np.arange(self._pos, last + 1e-9, step)
         out: NDArray[np.float32] = np.asarray(

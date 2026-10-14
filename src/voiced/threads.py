@@ -27,16 +27,14 @@ async def run_blocking(fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs)
     done. Whatever ``fn`` returned or raised after the cancel is discarded.
     """
     future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
-    try:
-        return await asyncio.shield(future)
-    except asyncio.CancelledError:
-        while not future.done():
-            try:
-                await asyncio.shield(future)
-            except asyncio.CancelledError:
-                continue  # cancelled again; keep waiting for the thread
-            except Exception:
-                break  # fn failed after the cancel; the cancel wins
+    cancelled = False
+    while not future.done():
+        try:
+            await asyncio.wait({future})  # never cancels ``future`` itself
+        except asyncio.CancelledError:
+            cancelled = True  # keep waiting: the thread cannot be stopped
+    if cancelled:
         if not future.cancelled():
-            future.exception()  # mark as retrieved
-        raise
+            future.exception()  # mark as retrieved; the cancel wins
+        raise asyncio.CancelledError
+    return future.result()

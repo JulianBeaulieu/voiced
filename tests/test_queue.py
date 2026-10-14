@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from voiced.api.app import Ctx
+from voiced.api.context import Ctx
 from voiced.queue import InferenceQueue, QueueFull
 
 
@@ -35,9 +35,13 @@ async def test_serializes_and_bounds() -> None:
     assert q.depth == 0
 
 
-async def test_run_in_thread() -> None:
-    q = InferenceQueue(capacity=1)
-    assert await q.run(lambda a, b: a + b, 2, 3) == 5
+async def test_nested_slot_raises_instead_of_deadlocking() -> None:
+    q = InferenceQueue(capacity=2)
+    async with q.slot():
+        with pytest.raises(RuntimeError, match="already holds"):
+            async with q.slot():
+                pass
+        assert q.depth == 1
     assert q.depth == 0
 
 

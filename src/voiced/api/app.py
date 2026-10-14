@@ -2,9 +2,9 @@
 
 Each service process builds exactly one app with :func:`create_stt_app` or
 :func:`create_tts_app`. The app owns a :class:`ServiceContext` (engine, queue,
-health state, settings) available to routes through :func:`get_context`.
-Startup loads the engine inside the lifespan, so ``/health`` reports
-``starting`` until the model is warm.
+health state, settings) available to routes through ``Ctx``. The engine loads
+in a background task so the socket binds first; ``/health`` and ``/v1``
+answer 503 until it is warm (ADR 0005).
 """
 
 from __future__ import annotations
@@ -25,33 +25,36 @@ from starlette.websockets import WebSocket
 
 from voiced import __version__
 from voiced.api import routes_stt, routes_tts
-from voiced.api.context import (
-    APIError,
-    Ctx,
-    ServiceContext,
-    get_context,
-    require_api_key,
-    require_loaded,
-)
+from voiced.api.context import APIError, Ctx, require_api_key, require_loaded
 from voiced.config import Settings
-from voiced.engines.base import EngineError, STTEngine, TTSEngine
+from voiced.context import ServiceContext
+from voiced.engines.base import EngineError, EngineNotLoaded, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
-from voiced.inference import record_exception
+from voiced.inference import classify
 from voiced.metrics import Outcome
 from voiced.queue import InferenceQueue, QueueFull
 
-__all__ = ["APIError", "Ctx", "ServiceContext", "create_stt_app", "create_tts_app", "get_context"]
+# ServiceContext stays importable from here until voiced.wyoming.server
+# (owned by another PR) imports it from voiced.context.
+__all__ = ["ServiceContext", "create_stt_app", "create_tts_app"]
 
 log = logging.getLogger(__name__)
 
 V1_DEPENDENCIES = [Depends(require_api_key), Depends(require_loaded)]
 
+# Outcome -> (HTTP status, error type). Wyoming keeps the same shape of table.
+_HTTP: dict[Outcome, tuple[int, str]] = {
+    Outcome.BUSY: (status.HTTP_503_SERVICE_UNAVAILABLE, "server_busy"),
+    Outcome.CLIENT_ERROR: (status.HTTP_400_BAD_REQUEST, "invalid_request_error"),
+    Outcome.FAILURE: (status.HTTP_500_INTERNAL_SERVER_ERROR, "server_error"),
+}
+
 exit_process: Callable[[int], NoReturn] = os._exit
-"""Called with 1 when the engine fails to load. Replaced in tests."""
+"""Ends the process without waiting for threads. Replaced in tests."""
 
 
 async def _load(ctx: ServiceContext) -> None:
-    """Load the engine in the background; the process dies if that fails.
+    """Load the engine in the background; the process exits 1 if that fails.
 
     Serving ``starting`` forever would hide the failure from launchd, which
     only restarts a process that exits.
@@ -75,7 +78,7 @@ async def _error(
     type: str,
     headers: dict[str, str] | None = None,
 ) -> Response | None:
-    """The one error envelope for HTTP; a close frame for WebSockets."""
+    """The one error envelope for HTTP; a close frame for a WebSocket handshake."""
     if isinstance(conn, WebSocket):
         if code == status.HTTP_503_SERVICE_UNAVAILABLE:
             close_code = status.WS_1013_TRY_AGAIN_LATER
@@ -96,17 +99,15 @@ async def _error(
 def _build(ctx: ServiceContext) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        # Load in the background so the socket binds first: /health answers
-        # 503 "starting" during a long model load instead of refusing
-        # connections, which the watchdog could not tell apart from a crash.
         task = asyncio.create_task(_load(ctx), name=f"voiced-{ctx.service}-load")
         app.state.load_task = task
-        try:
-            yield
-        finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        yield
+        if not task.done():
+            # The load thread cannot be interrupted, and waiting it out could
+            # exceed launchd's ExitTimeOut (about 20 s). Leave now.
+            log.warning("%s: shutdown during engine load; exiting", ctx.service)
+            logging.shutdown()
+            exit_process(0)
 
     app = FastAPI(
         title=f"voiced {ctx.service}",
@@ -117,22 +118,20 @@ def _build(ctx: ServiceContext) -> FastAPI:
     )
     app.state.ctx = ctx
 
-    # Every exception class maps to a status here, never in the routes. The
-    # outcome is recorded through voiced.inference so that an exception that
-    # already passed through an inference() block is not counted twice.
+    # Exceptions map to statuses here, never in routes. Nothing here writes
+    # metrics: inference() already recorded anything raised inside a slot.
     @app.exception_handler(APIError)
     async def _api_error(conn: HTTPConnection, exc: APIError) -> Response | None:
         return await _error(conn, exc.status, exc.message, exc.type)
 
     @app.exception_handler(QueueFull)
-    async def _queue_full(conn: HTTPConnection, exc: QueueFull) -> Response | None:
-        record_exception(ctx, conn.url.path, exc)
-        return await _error(conn, 503, str(exc), "server_busy", {"Retry-After": "1"})
-
     @app.exception_handler(EngineError)
-    async def _engine_error(conn: HTTPConnection, exc: EngineError) -> Response | None:
-        record_exception(ctx, conn.url.path, exc)
-        return await _error(conn, 400, str(exc), type(exc).__name__)
+    async def _classified(conn: HTTPConnection, exc: Exception) -> Response | None:
+        code, kind = _HTTP[classify(exc)]
+        if isinstance(exc, EngineNotLoaded):
+            kind = "starting"
+        headers = {"Retry-After": "1"} if code == status.HTTP_503_SERVICE_UNAVAILABLE else None
+        return await _error(conn, code, f"{type(exc).__name__}: {exc}", kind, headers)
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(conn: HTTPConnection, exc: RequestValidationError) -> Response | None:
@@ -146,9 +145,11 @@ def _build(ctx: ServiceContext) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unexpected(conn: HTTPConnection, exc: Exception) -> Response | None:
-        if record_exception(ctx, conn.url.path, exc) is Outcome.FAILURE:
+        if classify(exc) is Outcome.FAILURE:
+            ctx.health.record_error(exc)
             log.error("unhandled error on %s", conn.url.path, exc_info=exc)
-        return await _error(conn, 500, f"internal error ({type(exc).__name__})", "server_error")
+        code, kind = _HTTP[Outcome.FAILURE]
+        return await _error(conn, code, f"internal error ({type(exc).__name__})", kind)
 
     @app.get("/health", response_model=HealthResponse, tags=["service"])
     async def health(ctx: Ctx) -> JSONResponse:
@@ -173,7 +174,7 @@ def _build(ctx: ServiceContext) -> FastAPI:
                     "owned_by": "voiced",
                     "engine": engine.name,
                     "task": "transcription" if ctx.service == "stt" else "speech",
-                    "languages": engine.languages,
+                    "languages": ctx.languages,
                     "license": engine.license,
                 }
             ],

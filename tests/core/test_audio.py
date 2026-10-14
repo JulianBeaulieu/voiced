@@ -40,9 +40,10 @@ def test_pcm16_round_trip() -> None:
 
 
 def test_float32_to_pcm16_clips_and_pcm16_drops_odd_byte() -> None:
-    pcm = float32_to_pcm16(np.array([2.0, -2.0, 0.0], dtype=np.float32))
-    assert np.frombuffer(pcm, "<i2").tolist() == [32767, -32767, 0]
-    assert len(pcm16_to_float32(pcm + b"\x01")) == 3
+    x = np.array([2.0, -2.0, 0.0, np.nan, np.inf], dtype=np.float32)
+    pcm = float32_to_pcm16(x)
+    assert np.frombuffer(pcm, "<i2").tolist() == [32767, -32767, 0, 0, 32767]
+    assert len(pcm16_to_float32(pcm + b"\x01")) == 5
 
 
 @pytest.mark.parametrize("width", [1, 2, 4])
@@ -50,16 +51,16 @@ def test_float32_to_pcm16_clips_and_pcm16_drops_odd_byte() -> None:
 def test_chunking_does_not_change_output(width: int, sizes: list[int]) -> None:
     x = _tone(3000, 22050)
     data = _encode(x, width)
-    whole = PCMConverter().convert(data, 22050, width, 1)
-    conv = PCMConverter()
-    parts = np.concatenate([conv.convert(c, 22050, width, 1) for c in _chunks(data, sizes)])
+    whole = PCMConverter(22050, width, 1).convert(data)
+    conv = PCMConverter(22050, width, 1)
+    parts = np.concatenate([conv.convert(c) for c in _chunks(data, sizes)])
     np.testing.assert_allclose(parts, whole, atol=1e-6)
 
 
 @pytest.mark.parametrize("rate", [8000, 16000, 22050, 44100, 48000])
 def test_resample_length(rate: int) -> None:
     n = rate  # one second
-    out = PCMConverter().convert(float32_to_pcm16(_tone(n, rate)), rate, 2, 1)
+    out = PCMConverter(rate, 2, 1).convert(float32_to_pcm16(_tone(n, rate)))
     assert abs(len(out) - 16000) <= 1
 
 
@@ -67,24 +68,24 @@ def test_downmix_averages_channels() -> None:
     left = np.full(100, 0.5, dtype=np.float32)
     right = np.full(100, -0.25, dtype=np.float32)
     stereo = float32_to_pcm16(np.stack([left, right], axis=1).reshape(-1))
-    out = PCMConverter().convert(stereo, 16000, 2, 2)
+    out = PCMConverter(16000, 2, 2).convert(stereo)
     assert len(out) == 100
     np.testing.assert_allclose(out, 0.125, atol=1e-4)
 
 
 def test_partial_frames_carry_over() -> None:
-    conv = PCMConverter()
+    conv = PCMConverter(16000, 2, 2)
     pcm = float32_to_pcm16(np.array([0.5, -0.5], dtype=np.float32))
     stereo = pcm + pcm  # two stereo frames
-    assert len(conv.convert(stereo[:3], 16000, 2, 2)) == 0
-    out = conv.convert(stereo[3:], 16000, 2, 2)
+    assert len(conv.convert(stereo[:3])) == 0
+    out = conv.convert(stereo[3:])
     assert len(out) == 2
 
 
 @pytest.mark.parametrize(("rate", "width", "channels"), [(16000, 3, 1), (16000, 2, 0), (0, 2, 1)])
 def test_unsupported_format_is_a_client_error(rate: int, width: int, channels: int) -> None:
     with pytest.raises(UnsupportedAudioFormat) as info:
-        PCMConverter().convert(b"\x00" * 12, rate, width, channels)
+        PCMConverter(rate, width, channels)
     assert isinstance(info.value, EngineError)
 
 

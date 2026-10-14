@@ -32,14 +32,18 @@ async def test_cancel_holds_slot_until_thread_ends() -> None:
         with lock:
             active -= 1
 
-    first = asyncio.create_task(q.run(model_call))
+    async def request() -> None:
+        async with q.slot():
+            await run_blocking(model_call)
+
+    first = asyncio.create_task(request())
     await asyncio.to_thread(started.wait, 5)
     first.cancel()
     await asyncio.sleep(0.02)
     # The caller was cancelled but the thread still runs: the slot is held,
     # so a second request waits instead of starting a concurrent call.
     assert not first.done()
-    second = asyncio.create_task(q.run(model_call))
+    second = asyncio.create_task(request())
     await asyncio.sleep(0.02)
     assert q.depth == 2
     assert active == 1

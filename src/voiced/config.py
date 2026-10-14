@@ -50,8 +50,8 @@ class ServerConfig(_Section):
     api_key: str = ""
     log_dir: Path = Field(default_factory=lambda: Path("~/Library/Logs/voiced").expanduser())
     log_level: LogLevel = "info"
-    # Bounds on socket awaits while a client holds the inference slot, so a
-    # half-open peer cannot pin the GPU. Read by both HTTP and Wyoming.
+    # Bounds on socket awaits for transports holding the inference slot, so a
+    # half-open peer cannot pin the GPU (voiced.inference.bounded).
     session_idle_s: float = Field(default=30.0, gt=0)
     write_timeout_s: float = Field(default=10.0, gt=0)
 

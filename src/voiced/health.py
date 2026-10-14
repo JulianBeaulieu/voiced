@@ -32,8 +32,8 @@ class HealthResponse(BaseModel):
 class HealthState:
     """Mutable per-process health record. One instance per service process.
 
-    The API layer owns it, the engine wrapper updates it after each inference,
-    and ``/health`` serializes it. ``status`` is derived:
+    ``voiced.context.ServiceContext`` owns it, ``voiced.inference.inference``
+    updates it after each inference, and ``/health`` serializes it. ``status`` is derived:
 
     * ``starting`` until the engine's ``load()`` has finished,
     * ``degraded`` if the most recent inference raised,

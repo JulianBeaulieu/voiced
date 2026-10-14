@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import json
 
-from voiced.metrics import Metrics, Outcome, percentile
+from voiced.metrics import Metrics, Operation, Outcome, _percentile
 
 
 def test_percentile_interpolates() -> None:
-    assert percentile([], 0.5) is None
-    assert percentile([7.0], 0.95) == 7.0
-    assert percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 2.5
+    assert _percentile([], 0.5) is None
+    assert _percentile([7.0], 0.95) == 7.0
+    assert _percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 2.5
 
 
 def test_per_operation_latency_and_counts() -> None:
     m = Metrics()
     for ms in range(1, 101):
-        m.record("transcribe", Outcome.OK, float(ms))
-    m.record("transcribe", Outcome.BUSY, 0.0, "queue full")
-    m.record("speech", Outcome.OK, 5.0)
+        m.record(Operation.TRANSCRIBE, Outcome.OK, float(ms))
+    m.record(Operation.TRANSCRIBE, Outcome.BUSY, 0.0, "queue full")
+    m.record(Operation.SPEECH, Outcome.OK, 5.0)
     snap = m.snapshot()
     stt = snap["operations"]["transcribe"]
     assert stt["latency"]["p50_ms"] == 50.5
@@ -36,12 +36,12 @@ def test_per_operation_latency_and_counts() -> None:
 
 def test_error_ring_is_bounded_newest_first_and_skips_disconnects() -> None:
     m = Metrics(window=3, error_window=2)
-    m.record("speech", Outcome.CLIENT_ERROR, 1.0, "first")
-    m.record("speech", Outcome.FAILURE, 1.0, "x" * 1000)
-    m.record("speech", Outcome.FAILURE, 1.0, "third")
-    m.record("speech", Outcome.DISCONNECT, 1.0, "gone")
+    m.record(Operation.SPEECH, Outcome.CLIENT_ERROR, 1.0, "first")
+    m.record(Operation.SPEECH, Outcome.FAILURE, 1.0, "x" * 1000)
+    m.record(Operation.SPEECH, Outcome.FAILURE, 1.0, "third")
+    m.record(Operation.SPEECH, Outcome.DISCONNECT, 1.0, "gone")
     for ms in (1.0, 2.0, 3.0, 100.0):
-        m.record("speech", Outcome.OK, ms)
+        m.record(Operation.SPEECH, Outcome.OK, ms)
     snap = m.snapshot()
     errors = snap["recent_errors"]
     assert [e["detail"][:5] for e in errors] == ["third", "xxxxx"]
