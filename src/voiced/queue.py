@@ -15,8 +15,10 @@ Two entry points:
 
 Cancellation: if the awaiting task is cancelled while waiting, it leaves the
 queue without running. Once ``fn`` has started in its thread it runs to
-completion (threads cannot be interrupted), but the slot is released as soon as
-it returns, so a cancelled client never wedges the queue.
+completion (threads cannot be interrupted) and the slot stays held until it
+returns (see :func:`voiced.threads.run_blocking`), so a cancelled client never
+lets a second inference start on a busy GPU. The cancelled caller sees
+``CancelledError`` after the thread finishes.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import ParamSpec, TypeVar
+
+from voiced.threads import run_blocking
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -64,4 +68,4 @@ class InferenceQueue:
 
     async def run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
         async with self.slot():
-            return await asyncio.to_thread(fn, *args, **kwargs)
+            return await run_blocking(fn, *args, **kwargs)

@@ -13,14 +13,21 @@ if TYPE_CHECKING:
 
 
 @asynccontextmanager
-async def lifespan_client(app: FastAPI) -> AsyncIterator[AsyncClient]:
+async def lifespan_client(
+    app: FastAPI, *, wait_loaded: bool = True, raise_app_exceptions: bool = True
+) -> AsyncIterator[AsyncClient]:
     """``async with lifespan_client(app) as client:`` with the engine loaded.
 
     httpx's ``ASGITransport`` does not trigger startup and shutdown events, so
-    this drives the lifespan by hand. Requires ``httpx`` (a dev dependency).
+    this drives the lifespan by hand. The engine loads in the background (see
+    ``voiced.api.app``); ``wait_loaded=False`` yields while it is still
+    loading. Requires ``httpx`` (a dev dependency).
     """
     from httpx import ASGITransport, AsyncClient
 
     async with app.router.lifespan_context(app):
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://voiced") as c:
+        if wait_loaded:
+            await app.state.load_task
+        transport = ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
+        async with AsyncClient(transport=transport, base_url="http://voiced") as c:
             yield c

@@ -9,74 +9,104 @@ Startup loads the engine inside the lifespan, so ``/health`` reports
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
-from typing import Annotated, Literal
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
+from typing import NoReturn
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from starlette.requests import HTTPConnection
+from starlette.websockets import WebSocket
 
 from voiced import __version__
 from voiced.api import routes_stt, routes_tts
+from voiced.api.context import (
+    APIError,
+    Ctx,
+    ServiceContext,
+    get_context,
+    require_api_key,
+    require_loaded,
+)
 from voiced.config import Settings
 from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
+from voiced.inference import record_exception
+from voiced.metrics import Outcome
 from voiced.queue import InferenceQueue, QueueFull
+
+__all__ = ["APIError", "Ctx", "ServiceContext", "create_stt_app", "create_tts_app", "get_context"]
 
 log = logging.getLogger(__name__)
 
+V1_DEPENDENCIES = [Depends(require_api_key), Depends(require_loaded)]
 
-@dataclass
-class ServiceContext:
-    service: Literal["stt", "tts"]
-    settings: Settings
-    engine: STTEngine | TTSEngine
-    queue: InferenceQueue
-    health: HealthState
-
-    @property
-    def stt_engine(self) -> STTEngine:
-        assert isinstance(self.engine, STTEngine)
-        return self.engine
-
-    @property
-    def tts_engine(self) -> TTSEngine:
-        assert isinstance(self.engine, TTSEngine)
-        return self.engine
+exit_process: Callable[[int], NoReturn] = os._exit
+"""Called with 1 when the engine fails to load. Replaced in tests."""
 
 
-def get_context(request: Request) -> ServiceContext:
-    ctx: ServiceContext = request.app.state.ctx
-    return ctx
+async def _load(ctx: ServiceContext) -> None:
+    """Load the engine in the background; the process dies if that fails.
+
+    Serving ``starting`` forever would hide the failure from launchd, which
+    only restarts a process that exits.
+    """
+    started = time.perf_counter()
+    log.info("loading %s engine %s (%s)", ctx.service, ctx.engine.name, ctx.engine.model_id)
+    try:
+        await ctx.engine.load()
+    except Exception:
+        log.exception("%s engine failed to load; exiting", ctx.service)
+        logging.shutdown()
+        exit_process(1)
+    ctx.health.mark_loaded()
+    log.info("%s ready in %.1fs", ctx.service, time.perf_counter() - started)
 
 
-Ctx = Annotated[ServiceContext, Depends(get_context)]
-"""Route parameter annotation: ``async def route(ctx: Ctx) -> ...``."""
-
-
-async def require_api_key(request: Request, ctx: Ctx) -> None:
-    """Bearer auth for ``/v1`` routes when ``server.api_key`` is set."""
-    expected = ctx.settings.server.api_key
-    if not expected:
-        return
-    header = request.headers.get("authorization", "")
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or token != expected:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or missing API key")
+async def _error(
+    conn: HTTPConnection,
+    code: int,
+    message: str,
+    type: str,
+    headers: dict[str, str] | None = None,
+) -> Response | None:
+    """The one error envelope for HTTP; a close frame for WebSockets."""
+    if isinstance(conn, WebSocket):
+        if code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            close_code = status.WS_1013_TRY_AGAIN_LATER
+        elif code >= 500:
+            close_code = status.WS_1011_INTERNAL_ERROR
+        else:
+            close_code = status.WS_1008_POLICY_VIOLATION
+        # Close reasons are capped at 123 bytes by the protocol.
+        reason = message.encode()[:123].decode(errors="ignore")
+        with suppress(RuntimeError):  # already closed
+            await conn.close(close_code, reason)
+        return None
+    return JSONResponse(
+        status_code=code, content={"error": {"message": message, "type": type}}, headers=headers
+    )
 
 
 def _build(ctx: ServiceContext) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        started = time.perf_counter()
-        log.info("loading %s engine %s (%s)", ctx.service, ctx.engine.name, ctx.engine.model_id)
-        await ctx.engine.load()
-        ctx.health.mark_loaded()
-        log.info("%s ready in %.1fs", ctx.service, time.perf_counter() - started)
-        yield
+        # Load in the background so the socket binds first: /health answers
+        # 503 "starting" during a long model load instead of refusing
+        # connections, which the watchdog could not tell apart from a crash.
+        task = asyncio.create_task(_load(ctx), name=f"voiced-{ctx.service}-load")
+        app.state.load_task = task
+        try:
+            yield
+        finally:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     app = FastAPI(
         title=f"voiced {ctx.service}",
@@ -87,20 +117,38 @@ def _build(ctx: ServiceContext) -> FastAPI:
     )
     app.state.ctx = ctx
 
+    # Every exception class maps to a status here, never in the routes. The
+    # outcome is recorded through voiced.inference so that an exception that
+    # already passed through an inference() block is not counted twice.
+    @app.exception_handler(APIError)
+    async def _api_error(conn: HTTPConnection, exc: APIError) -> Response | None:
+        return await _error(conn, exc.status, exc.message, exc.type)
+
     @app.exception_handler(QueueFull)
-    async def _queue_full(request: Request, exc: QueueFull) -> JSONResponse:
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"error": {"message": str(exc), "type": "server_busy"}},
-            headers={"Retry-After": "1"},
-        )
+    async def _queue_full(conn: HTTPConnection, exc: QueueFull) -> Response | None:
+        record_exception(ctx, conn.url.path, exc)
+        return await _error(conn, 503, str(exc), "server_busy", {"Retry-After": "1"})
 
     @app.exception_handler(EngineError)
-    async def _engine_error(request: Request, exc: EngineError) -> JSONResponse:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": {"message": str(exc), "type": type(exc).__name__}},
+    async def _engine_error(conn: HTTPConnection, exc: EngineError) -> Response | None:
+        record_exception(ctx, conn.url.path, exc)
+        return await _error(conn, 400, str(exc), type(exc).__name__)
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid(conn: HTTPConnection, exc: RequestValidationError) -> Response | None:
+        # 400 rather than FastAPI's 422, as OpenAI does, so the openai client
+        # raises BadRequestError.
+        message = "; ".join(
+            f"{'.'.join(str(p) for p in e.get('loc', ()))}: {e.get('msg', '')}"
+            for e in exc.errors()
         )
+        return await _error(conn, 400, message, "invalid_request_error")
+
+    @app.exception_handler(Exception)
+    async def _unexpected(conn: HTTPConnection, exc: Exception) -> Response | None:
+        if record_exception(ctx, conn.url.path, exc) is Outcome.FAILURE:
+            log.error("unhandled error on %s", conn.url.path, exc_info=exc)
+        return await _error(conn, 500, f"internal error ({type(exc).__name__})", "server_error")
 
     @app.get("/health", response_model=HealthResponse, tags=["service"])
     async def health(ctx: Ctx) -> JSONResponse:
@@ -109,12 +157,11 @@ def _build(ctx: ServiceContext) -> FastAPI:
         ``status`` is ``degraded`` if the last inference failed; the watchdog
         decides what to do with that.
         """
-        ctx.health.queue_depth = ctx.queue.depth
-        snapshot = ctx.health.snapshot()
+        snapshot = ctx.health.snapshot(ctx.queue.depth)
         code = status.HTTP_200_OK if snapshot.model_loaded else status.HTTP_503_SERVICE_UNAVAILABLE
         return JSONResponse(status_code=code, content=snapshot.model_dump())
 
-    @app.get("/v1/models", tags=["discovery"], dependencies=[Depends(require_api_key)])
+    @app.get("/v1/models", tags=["discovery"], dependencies=V1_DEPENDENCIES)
     async def models(ctx: Ctx) -> dict[str, object]:
         engine = ctx.engine
         return {
@@ -161,7 +208,7 @@ def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
-    app.include_router(routes_stt.router, dependencies=[Depends(require_api_key)])
+    app.include_router(routes_stt.router, dependencies=V1_DEPENDENCIES)
     return app
 
 
@@ -180,5 +227,5 @@ def create_tts_app(settings: Settings, engine: TTSEngine) -> FastAPI:
         ),
     )
     app = _build(ctx)
-    app.include_router(routes_tts.router, dependencies=[Depends(require_api_key)])
+    app.include_router(routes_tts.router, dependencies=V1_DEPENDENCIES)
     return app

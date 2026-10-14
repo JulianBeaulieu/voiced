@@ -22,8 +22,12 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.logging` | Stderr plus rotating file under `~/Library/Logs/voiced/`. |
 | `voiced.health` | `HealthState` and the frozen `/health` schema. |
 | `voiced.queue` | `InferenceQueue`: serialized, bounded, 503 on overflow. |
+| `voiced.inference` | `inference()` around every engine call: slot, timing, health, metrics; `classify()` for transports (ADR 0005). |
+| `voiced.threads` | `run_blocking()`: thread calls that keep the slot until the GPU is idle, even on cancel. |
+| `voiced.metrics` | Per-operation p50/p95 latency, outcome counts, recent errors, resident memory. |
+| `voiced.audio` | PCM conversion (`PCMConverter`, int16 and float32) and WAV headers. No transport imports. |
 | `voiced.engines` | Frozen engine interfaces and the entry-point registry. |
-| `voiced.api` | FastAPI app factories, one per modality. |
+| `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `ServiceContext`, `Ctx` and `APIError`. |
 | `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app. |
 | `voiced.stt`, `voiced.tts` | Wire a configured engine into an app. |
 | `voiced.launchd` | Plist rendering. |

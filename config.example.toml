@@ -24,6 +24,13 @@ log_dir = "~/Library/Logs/voiced"
 # debug, info, warning, error
 log_level = "info"
 
+# While a streaming client holds the inference slot (Wyoming STT, the
+# WebSocket stream), drop it after this many seconds without input, and drop
+# any client that does not accept a write within write_timeout_s. Otherwise a
+# half-open connection keeps the GPU busy for everyone else.
+session_idle_s = 30
+write_timeout_s = 10
+
 [stt]
 # OpenAI-compatible HTTP API for transcription.
 http_port = 8881
