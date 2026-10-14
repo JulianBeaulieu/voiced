@@ -31,10 +31,10 @@ log_level = "info"
 zeroconf = true
 
 # Show a settings form on each service's status page (http://<host>:8880/).
-# Off by default. When on, the form asks for api_key if one is set, and it is
-# refused when bind is not a loopback address and no api_key is set. The
-# menu bar app and `voiced settings` use the local control socket instead and
-# do not need this.
+# Off by default. When on, the form always needs api_key: with no key set it
+# is refused, even on loopback, since any web page you open can reach a
+# loopback port. The menu bar app and `voiced settings` use the local control
+# socket instead and do not need this.
 browser_settings = false
 
 # While a streaming client holds the inference slot (Wyoming STT, the

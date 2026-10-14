@@ -55,7 +55,9 @@ uses [Semantic Versioning](https://semver.org/).
   menu bar app. New commands `voiced restart` and `voiced settings get|set`;
   `voiced status` shows state, uptime and restarts when the watchdog answers,
   and `voiced doctor` checks the socket. Optional settings form on the status
-  page behind the new `[server] browser_settings` key (off by default).
+  page behind the new `[server] browser_settings` key (off by default; it
+  always needs the API key). Settings writes keep comments (new dependency:
+  `tomlkit`).
 - Documentation: README with quickstart, architecture diagram, benchmarks
   and troubleshooting; API reference; Home Assistant guide; architecture and
   operations guides; ADR index; contributing guide; issue and pull request

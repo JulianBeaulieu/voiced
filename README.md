@@ -187,9 +187,9 @@ exposes the services to your whole network:
   network you trust.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
 - Settings and restarts go through a Unix socket that only your user can
-  open (`voiced settings`, `voiced restart`). The status
-  page's settings form is off unless `browser_settings = true`, and refuses
-  to work on the LAN without an API key.
+  open (`voiced settings`, `voiced restart`). The status page's settings
+  form is off unless `browser_settings = true`, and even then works only
+  with an API key set.
 
 ## Models and licenses
 

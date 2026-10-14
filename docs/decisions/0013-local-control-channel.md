@@ -17,28 +17,76 @@ and the installer never runs `sudo` (ADR 0006).
 The watchdog (ADR 0012) already runs as the installing user for as long as
 voiced is installed, already supervises both services, and already has the
 only restart path that works without root (SIGKILL plus plain `launchctl
-kickstart`). It serves `<state dir>/control.sock`; the state dir is
-`[install] venv_dir` (`~/.voiced` by default). The watchdog loop moved onto
-asyncio (`Watchdog.run_async`): each tick still runs the same blocking code,
-in a background thread, and a lock keeps a tick and a requested restart from
-interleaving. A requested restart goes through `Watchdog.restart_now`, the
-same code a watchdog decision uses, so it counts towards `restarts`, starts
-the startup grace period and is not followed by an automatic restart while
-the model loads. The cooldown does not hold back a requested restart.
+kickstart`). It serves `<state dir>/control.sock`.
 
-The `voiced.control` package imports only the standard library,
-`voiced.config` (pydantic) and the watchdog; the engine registry is imported
-only for `engines.list` and the engine checks of `settings.set`. The
-watchdog stays importable without FastAPI. If the socket cannot start
-(another watchdog answers on it, the state directory belongs to someone
-else, the path is too long for a Unix socket), the error is logged and the
-watchdog runs without it: supervising the services matters more.
+The state dir is `[install] venv_dir` (`~/.voiced` by default), the one
+per-user directory the install layout already owns. The socket therefore
+moves with the venv: a client looking for it (the menu bar app) must read
+`venv_dir` from the config file, or relocating the venv makes it look in
+the wrong place. `settings.get` reports the directory as `paths.state`.
+
+**One loop, on asyncio.** The watchdog loop is `Watchdog.run_async`, and
+the socket is served on the same event loop. Each tick runs the same
+blocking code as before (urllib, `launchctl`) in a background thread. The
+alternative was to keep the synchronous loop and serve the socket from a
+thread; that needs its own thread per client or a selector loop, plus
+thread-safe fan-out of events, which is what asyncio's Unix server already
+is. There is no second, synchronous loop.
+
+**Locking.** A tick observes each service (`/health`, `launchctl print`,
+the optional probe: up to `timeout_s` plus `probe_timeout_s`) without a
+lock, then takes `Watchdog.lock` only to decide and, if needed, restart. A
+requested restart takes the same lock, so it never interleaves with a
+decision on the same `ServiceState`, and it waits at most for a decision or
+restart in progress, never for a health poll.
+
+**Requested restarts.** `service.restart` checks synchronously that the
+service can be restarted (plist present, else `not_installed`; loaded in
+launchd, else `service_unavailable`), answers `{"accepted": true}` at once
+and runs the restart in a background task; completion shows in `status`
+events. `all` tries both services: it is accepted if either can restart,
+and `detail` gives the outcome per service. The restart goes through
+`Watchdog.restart_now`, the same code a watchdog decision uses, so it counts
+towards `restarts`, starts the startup grace period and is not followed by
+an automatic restart while the model loads. The cooldown does not hold back
+a requested restart.
+
+**What the watchdog believes a service runs.** Each `ServiceSpec` carries
+the engine, model and API key from the config file as they were when the
+service last started. The watchdog re-reads the file for a service only
+when that service starts again: after a restart it issued, or when
+launchd hands it a new pid. Writing the file changes nothing in the
+watchdog, so `status` never reports an engine the running process has not
+loaded, and the health probe uses the key the running process expects.
+
+**No engine code in the watchdog.** ADR 0012 wants the watchdog boring and
+impossible to wedge. Engine plugins are third-party code that import numpy,
+FastAPI (the test engines) and more. So `engines.list`, and the engine and
+voice checks of `settings.set`, run `python -m voiced.engines.catalogue
+--json` in a child process with a 30 s timeout and cache the result for a
+minute; a plugin that hangs or crashes there costs an error answer, not the
+supervisor. The `voiced` entry point imports the installer and `doctor`
+(which import the engine modules) only inside the commands that use them.
+What `voiced watchdog` does import: the standard library, `voiced.config`
+and `voiced.settings_store` (pydantic, tomlkit) and `voiced.control`. A test
+starts the watchdog's modules in a fresh interpreter and fails if FastAPI,
+numpy or any `voiced.engines` module is loaded.
+
+If the socket cannot start (another watchdog answers on it, the state
+directory belongs to someone else, the path is too long for a Unix socket),
+the error is logged to `watchdog.log` and printed to stderr, and the
+watchdog runs without it: supervising the services matters more. `voiced
+status` and `voiced doctor` then see the watchdog's pid in launchd with no
+answering socket and say "watchdog running but control socket not served;
+see `voiced logs watchdog`" instead of "not running".
 
 When nothing answers on the socket, clients treat that as "voiced is not
 running or not installed". The CLI then falls back: `voiced restart` runs
-the same SIGKILL-and-kickstart itself, `voiced settings` reads and writes the
-config file directly with the same function, and `voiced status` shows
-launchd and `/health` only.
+the same SIGKILL-and-kickstart itself, `voiced settings` runs the same
+`Operations` in-process against the config file (no supervisor), and
+`voiced status` shows launchd and `/health` only. A watchdog that accepts a
+connection and then stops answering is reported as "watchdog did not
+answer", not as a traceback.
 
 ### A Unix socket, not loopback HTTP
 
@@ -48,7 +96,9 @@ when someone sets `bind = "0.0.0.0"`. A Unix socket has a filesystem
 permission and a kernel-reported peer:
 
 - the state directory is created (or tightened) to 0700, and the socket is
-  0600; a directory owned by another uid is refused;
+  0600; a directory owned by another uid is refused. The socket is chmodded
+  right after `bind`, so for a moment it has the umask's mode; the 0700 parent
+  keeps other users out of that window;
 - every connection's peer uid (`LOCAL_PEERCRED` on macOS, `SO_PEERCRED` on
   Linux) must equal the server's uid; anything else, including a platform
   that cannot say, is closed before the `hello` is sent;
@@ -58,7 +108,7 @@ permission and a kernel-reported peer:
 
 The framing is newline-delimited JSON with request ids and server-pushed
 events, so a Swift client needs nothing beyond Foundation and a shell user
-can try it with `nc -U`. Lines are limited to 64 KiB.
+can try it with `nc -U`.
 
 ### What is settable
 
@@ -70,33 +120,50 @@ needs the plists re-staged or the daemons re-installed, which is a root
 step. `bind = "lan"` writes `0.0.0.0`, unless the file already has a
 specific non-loopback address, which is kept.
 
-`voiced.config.apply_settings` is the only writer, for the socket, the CLI
-fallback and the status page form:
+`voiced.settings_store.apply_settings` is the only writer, for the socket,
+the CLI fallback and the status page form. `voiced.config` stays the schema
+and the loader.
 
-- the would-be file contents are validated with the `Settings` section
+- The would-be file contents are validated with the `Settings` section
   models, without environment overrides (an invalid file value must not
-  hide behind a variable), plus a check that an engine being selected is
-  installed and that the voice exists in its catalogue; an invalid value
-  never reaches the file;
-- the file is changed line by line: only the lines for changed keys are
-  rewritten, so comments, key order and every other key stay as they were.
-  The tree has `tomllib` (read only) and no TOML writer, so this is a small
-  purpose-built editor for plain `[section]` tables of scalar keys. If the
-  file uses another layout (dotted keys, inline tables, multi-line values)
-  or the edit does not parse back to exactly the intended data, the file is
-  rewritten from the parsed data instead and its comments are lost; the
-  documented copy is still `config.example.toml`;
-- it is written to a temporary file in the same directory, fsynced, given
-  the old file's mode (0600 for a new file, which may hold the key) and
-  renamed over the old one;
+  hide behind a variable); an invalid value never reaches the file.
+- An engine being selected must be in the registry, and a voice must be in
+  the engine's catalogue. The registry lists entry points; an engine whose
+  extra is not installed is still listed (a `voiced install` always has the
+  extras). A new `stt.engine` or `tts.engine` without its `model` gets the
+  engine's first catalogue model, since the old engine's model would not
+  load and launchd would restart the service forever; a new `tts.engine`
+  without `tts.voice` keeps the voice if the new engine has it, else gets
+  its first voice. The derived keys appear in the result's `changed`. An
+  engine with no catalogue model must be given `model` in the same change.
+- The file is edited with `tomlkit`: only the changed values are
+  rewritten; comments, key order, dotted keys, inline tables and every
+  other key stay as they were. The edited text must parse back (with
+  `tomllib`) to exactly the intended data or nothing is written. This is
+  the one write path: there is no fallback that rewrites the file and drops
+  comments. The trade is one runtime dependency (pure Python, no
+  dependencies of its own) against a purpose-built line editor with a lossy
+  fallback, which was about 120 lines and still lost comments silently for
+  some layouts.
+- It is written to a temporary file in the target's directory, fsynced,
+  and renamed over it. A symlinked config file is followed, so the link
+  stays and its target is replaced. The old mode is kept (0600 for a new
+  file), except that a file holding a non-empty `api_key` is always made
+  0600: the daemons run as the user, so nobody else needs to read it.
 - `api_key` is written but never read back out: `settings.get` reports
   `api_key_set` only.
 
-Engine catalogues come from an optional `catalogue()` classmethod on the
-engine class (`voiced.engines.catalogue`): Kokoro returns its static voice
-table, Soprano its one voice. It is not part of the frozen interface in
-`voiced.engines.base`; engines without it are described by `model_id` and
-`languages`, and the running service's `voices()` remains the authority.
+Engine catalogues come from `voiced.engines.catalogue`: models and
+languages from each engine's `model_id` and `languages`, voices from an
+optional `catalogue_voices()` classmethod returning `Voice` values without
+loading weights (Kokoro returns its static voice table, Soprano its one
+voice). It is not part of the frozen interface in `voiced.engines.base`, and
+the running service's `voices()` remains the authority. Display labels are
+built there, in one place: an engine's `label` is its name capitalised;
+`voice_labels` maps each voice id to `Name (Language, gender)` when the
+engine gives a gender (Kokoro's names, languages and genders come from its
+voice id convention, `kokoro_voices()`), else to the voice's name (Soprano:
+"Default").
 
 ### Restart rules
 
@@ -108,13 +175,24 @@ derived from which keys actually changed value:
 | `[server]` keys: `bind`, `api_key`, `zeroconf` | `stt`, `tts` |
 | `stt.*` | `stt` |
 | `tts.*` | `tts` |
-| `browser_settings` | none: the status page reads it from the file on each request |
+| `browser_settings` | none: the status page reads it from the file |
 
 A value equal to the current one changes nothing and needs no restart.
 Warnings: `lan_without_api_key` when `bind` or `api_key` was part of the
 change and the result is a LAN bind with no key, and `env_override:<key>`
-when a `VOICED_*` variable shadows the key just written. The watchdog
-refreshes its own service specs (probe API key) after a change.
+when a `VOICED_*` variable shadows the key just written.
+
+A `bind` change to `lan` also turns on the zeroconf announcement of the
+Wyoming listeners when `zeroconf` is on (ADR 0011), after the restart.
+
+### Settings events
+
+The watchdog watches the config file (modification time, size and inode,
+checked on every status poll while a client is connected, and right after
+a `settings.set`). Whenever it changes, by `settings.set`, the status page
+form or an editor, every connected client gets a `settings` event with the
+`settings.get` payload. A `settings.set` that changes nothing writes nothing
+and sends no event.
 
 ### The browser form
 
@@ -123,26 +201,47 @@ The status page can show a settings form, off by default
 socket. Rules, enforced on the server:
 
 - off: `GET /settings.json` and `POST /settings` answer 404 with how to turn
-  it on; the switch is read from the file on every request, so turning it
-  off takes effect at once;
-- a LAN bind and no API key: refused (403) with an explanation, whether the
-  LAN bind is in the file or in what the running process was started with;
-- an API key set: required as a bearer token; while a key change waits for
-  a restart, either the old or the new key is accepted;
-- `POST` must be `application/json`, and a request whose `Origin` does not
-  match `Host` is refused, so another web page cannot submit it.
+  it on; the switch is read from the file (re-read when the file changes),
+  so turning it off takes effect at once;
+- **the API key is always required**, as a bearer token. With no key set
+  the form is refused (403) with an explanation, on loopback too. A page
+  the operator opens in their own browser can reach a loopback port, and
+  with DNS rebinding it can make its requests same-origin, so neither the
+  bind address nor an `Origin` check tells the operator from that page;
+  only a secret does. While a key change waits for a restart, either the
+  old or the new key is accepted;
+- `POST` must be `application/json`.
+
+The menu bar app and `voiced settings` use the socket and need no key.
 
 ### Protocol version policy
 
-The `hello` event carries `protocol: 1`. Adding operations, result fields,
-event types, error codes or warnings is compatible: clients ignore unknown
-fields and events. Removing or renaming anything, or changing a type or a
-meaning, increments the version, and the server then speaks only the new
-one. A client that sees a version it does not know should say so instead of
-guessing. Additions in this first version beyond the contract: `detail` in
-the `service.restart` result, `path` in `logs.tail`, `languages` on TTS
-engines in `engines.list`, an optional `service` for `open status_page`,
-`field` in `invalid_setting` errors and the `env_override:<key>` warning.
+The `hello` event carries `protocol: 1`.
+
+- Compatible (no version change): new operations, new optional arguments,
+  new result fields, new event types, new warnings, new error codes. Clients
+  ignore unknown fields and events. `warnings` and `error.code` are open
+  sets: a client shows an unknown warning as plain text and treats an
+  unknown error code as `internal`.
+- Breaking (the version goes up): removing or renaming anything, changing
+  a type or a meaning, a new required argument, and a new value in a
+  closed set: `state`, `bind`, the members of `restart_required`, and
+  `open.what`. The server then speaks only the new version.
+- A client that sees a newer `protocol` than it knows refuses with a clear
+  message telling the user to update the app, instead of guessing.
+
+Behaviour outside the request/response shapes: a request whose `id`
+cannot be read is answered with `"id": null`; a line over 64 KiB, or an
+incomplete line at end of stream, gets a `bad_request` answer with `"id":
+null` and the connection is closed. A client that does not take a message
+within 5 s is dropped.
+
+Additions in this version beyond the original contract, all compatible:
+`detail` in the `service.restart` result, `changed` in the `settings.set`
+result, `path` in `logs.tail`, `languages` on TTS engines in
+`engines.list`, `label` on every engine and `voice_labels` on TTS engines,
+an optional `service` for `open status_page`, `field` in `invalid_setting`
+errors and the `env_override:<key>` warning.
 
 ## Alternatives considered
 
@@ -150,19 +249,26 @@ engines in `engines.list`, an optional `service` for `open status_page`,
   pages, changes with `bind`, and dies with the service it should restart.
 - **A separate control daemon.** One more LaunchDaemon and one more root
   install step for what the watchdog already is.
-- **`tomlkit` to keep comments.** A new runtime dependency for ten scalar
-  keys; the line editor plus a verified fallback covers the files voiced
-  writes and documents.
+- **A line editor over `tomllib` instead of `tomlkit`.** No new dependency,
+  but it only handles plain `[section]` tables, needs a lossy fallback for
+  everything else, and was more code than the dependency it avoids.
+- **Engine catalogues in the watchdog process.** Simpler and faster, but it
+  runs every installed plugin's import-time code inside the supervisor.
+- **The browser form without a key on loopback.** Convenient, but DNS
+  rebinding makes loopback reachable from any page the operator visits.
 - **Restart on `settings.set`.** A change that needs a model reload should
   not happen as a side effect; the UI can ask for it with `service.restart`.
 
 ## Consequences
 
 - No root and nothing on a network interface. Nothing here listens on TCP.
+- `tomlkit` is a new runtime dependency.
 - The socket path must fit a Unix socket path (about 100 bytes), another
-  reason to keep `venv_dir` short.
+  reason to keep `venv_dir` short; moving the venv moves the socket.
 - The state directory becomes 0700. It is the user's own service
   environment, so nothing else needs to read it.
+- `engines.list` and engine changes cost a child process (about a second,
+  then cached for a minute).
 - `voiced status` gains state, uptime and restart counts when the watchdog
   answers; `voiced doctor` checks that the socket exists, is 0600, belongs
   to the user and answers `status`.

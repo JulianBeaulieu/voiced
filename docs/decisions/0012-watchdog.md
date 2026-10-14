@@ -126,3 +126,14 @@ or itself, whatever `launchctl print` says.
   (`tests/launchd/test_watchdog.py`); no network or models needed.
 - `voiced watchdog --once` runs one poll cycle and prints the decisions,
   which is the quickest way to see what the watchdog thinks of a machine.
+
+## Amendment (ADR 0013)
+
+The watchdog process also serves the local control socket. Its loop runs on
+asyncio (`Watchdog.run_async`, each tick in a background thread) and a tick
+holds `Watchdog.lock` only to decide and restart, not while observing. The
+process now imports `voiced.settings_store` (pydantic, tomlkit) and
+`voiced.control` besides the standard library; it still imports no engine
+code, FastAPI or numpy: the engine catalogue is read in a child process, and
+the CLI imports the installer and `doctor` only in the commands that need
+them. A test enforces this.
