@@ -1,7 +1,7 @@
 """``POST /v1/audio/transcriptions`` through the official openai client and raw httpx.
 
 Only the tests that really decode audio need ffmpeg; the rest stub
-``audio.decode`` through the ``fake_decode`` fixture so they run anywhere.
+``ffmpeg.decode`` through the ``fake_decode`` fixture so they run anywhere.
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ from tests.api.conftest import (
     sine_wav,
     wait_for_depth,
 )
+from voiced.api import ffmpeg
 from voiced.config import Settings
+from voiced.engines import registry
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, lifespan_client
 
@@ -156,8 +158,6 @@ async def test_configured_languages_are_enforced(
 async def test_model_is_ignored_unless_it_names_another_engine(
     settings: Settings, fake_decode: list[int]
 ) -> None:
-    from voiced.engines import registry
-
     class OtherSTT(FakeSTTEngine):
         name = "other"
         model_id = "someone/other-stt"
@@ -167,7 +167,12 @@ async def test_model_is_ignored_unless_it_names_another_engine(
         app = build_stt_app(settings, FakeSTTEngine())  # the map is built here, once
     finally:
         registry._local_stt.pop("other", None)
-    assert app.state.foreign_models == {"other": "other", "someone/other-stt": "other"}
+    # Other installed engines (the real ones, when present) are in the map too.
+    assert {
+        "other": "other",
+        "someone/other-stt": "other",
+    }.items() <= app.state.foreign_models.items()
+    assert "fake" not in app.state.foreign_models
 
     async with loaded(app):
         client = _openai_client(app)
@@ -201,14 +206,31 @@ async def test_invalid_audio_is_400(
 async def test_missing_ffmpeg_is_500(
     stt_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from voiced.api import audio
-
-    monkeypatch.setattr(audio, "ffmpeg_path", lambda: None)
+    monkeypatch.setattr(ffmpeg, "ffmpeg_path", lambda: None)
     r = await stt_client.post(
         "/v1/audio/transcriptions", files={"file": ("tone.wav", sine_wav(), "audio/wav")}
     )
     assert r.status_code == 500
     assert r.json()["error"]["type"] == "ffmpeg_missing"
+    assert "brew install ffmpeg" in r.json()["error"]["message"]
+
+
+async def test_malformed_multipart_is_400_in_the_envelope(stt_client: AsyncClient) -> None:
+    """Starlette's own HTTPException(400) for a broken body uses the shared envelope."""
+    r = await stt_client.post(
+        "/v1/audio/transcriptions",
+        content=b"--xyz\r\nnot a part header\r\n",
+        headers={"Content-Type": "multipart/form-data"},  # no boundary
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "invalid_request_error"
+    assert set(r.json()) == {"error"}
+
+
+async def test_unknown_route_uses_the_envelope(stt_client: AsyncClient) -> None:
+    r = await stt_client.get("/v1/nope")
+    assert r.status_code == 404
+    assert r.json() == {"error": {"message": "Not Found", "type": "invalid_request_error"}}
 
 
 async def test_bad_response_format_and_missing_file(stt_client: AsyncClient) -> None:
@@ -253,6 +275,24 @@ async def test_oversize_upload_is_413_before_decoding(
         assert r.status_code == 413
     assert fake_decode == []
     assert engine.calls == 0
+
+
+async def test_file_size_limit_is_exact(settings: Settings, fake_decode: list[int]) -> None:
+    """The body cap allows multipart framing slack; the file itself is checked exactly."""
+    settings.stt.max_upload_mb = 1
+    app = build_stt_app(settings, FakeSTTEngine())
+    limit = 1024 * 1024
+    async with lifespan_client(app) as c:
+        over = await c.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"\x01" * (limit + 1000), "audio/wav")},
+        )
+        assert over.status_code == 413, "within the body slack, but the file is too big"
+        at = await c.post(
+            "/v1/audio/transcriptions", files={"file": ("a.wav", b"\x01" * limit, "audio/wav")}
+        )
+        assert at.status_code == 200
+    assert fake_decode == [limit]
 
 
 async def test_queue_full_is_503(settings: Settings, fake_decode: list[int]) -> None:

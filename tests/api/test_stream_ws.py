@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
+import numpy as np
 import pytest
 from fastapi import FastAPI
+from numpy.typing import NDArray
 from starlette.testclient import WebSocketDisconnect
+from starlette.websockets import WebSocket
 
 from tests.api.conftest import pcm16, sync_client
+from voiced.api import routes_stt
+from voiced.audio import pcm16_to_float32
 from voiced.config import Settings
 from voiced.engines.base import STTStreamSession
 from voiced.stt import build_stt_app
@@ -91,17 +97,46 @@ def test_bad_frames_are_client_errors_1008(stt_app: FastAPI) -> None:
     assert stream["counts"]["client_error"] == 3
 
 
-def test_odd_sized_frames_carry_the_trailing_byte(stt_app: FastAPI) -> None:
+class _RecordingSession(FakeSTTStreamSession):
+    def __init__(self, engine: FakeSTTEngine, language: str | None) -> None:
+        super().__init__(engine, language)
+        self.received: list[NDArray[np.float32]] = []
+
+    async def add_audio(self, samples: NDArray[np.float32]) -> None:
+        self.received.append(samples.copy())
+        await super().add_audio(samples)
+
+
+class _Recording(FakeSTTEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sessions: list[_RecordingSession] = []
+
+    async def stream(self, language: str | None = None) -> STTStreamSession:
+        session = _RecordingSession(self, language)
+        self.sessions.append(session)
+        return session
+
+
+def test_odd_sized_frames_carry_the_trailing_byte(settings: Settings) -> None:
+    """Every sample reaches the engine intact, whatever the frame boundaries.
+
+    Dropping the odd byte of a frame would lose a sample and swap the byte
+    order of every later one, so the samples would no longer match.
+    """
     audio = pcm16(0.5)  # 16000 bytes
     frames = [audio[:1001], audio[1001:1002], audio[1002:7777], audio[7777:]]
     assert [len(f) % 2 for f in frames] == [1, 1, 1, 1]
-    with sync_client(stt_app) as client, client.websocket_connect(PATH) as ws:
+    engine = _Recording()
+    app = build_stt_app(settings, engine)
+    with sync_client(app) as client, client.websocket_connect(PATH) as ws:
         for frame in frames:
             ws.send_bytes(frame)
         ws.send_text(json.dumps({"type": "end"}))
-        ws.receive_json()  # partial
-        final = ws.receive_json()
-        assert final["duration"] == 0.5, "no sample lost or misaligned"
+        while ws.receive_json()["type"] != "final":
+            pass
+    (session,) = engine.sessions
+    np.testing.assert_array_equal(np.concatenate(session.received), pcm16_to_float32(audio))
 
 
 def test_idle_session_is_a_disconnect(stt_app: FastAPI) -> None:
@@ -204,3 +239,23 @@ def _wait_for_depth(app: FastAPI, depth: int, timeout: float = 2.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError(f"queue depth {app.state.ctx.queue.depth}, expected {depth}")
         time.sleep(0.01)
+
+
+async def test_safe_close_tolerates_a_dropped_connection() -> None:
+    """After a TCP drop the server's send fails; Starlette turns that into
+    WebSocketDisconnect(1006). Closing must swallow it, or uvicorn logs a traceback."""
+    sent: list[str] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "websocket.connect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message["type"])
+        if message["type"] == "websocket.close":
+            raise OSError("connection lost")
+
+    scope = {"type": "websocket", "path": PATH, "headers": [], "query_string": b""}
+    ws = WebSocket(scope, receive, send)
+    await ws.accept()
+    await routes_stt._safe_close(ws, 1011, "internal error")  # must not raise
+    assert sent == ["websocket.accept", "websocket.close"]

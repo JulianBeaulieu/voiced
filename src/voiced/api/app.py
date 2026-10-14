@@ -20,8 +20,9 @@ from typing import NoReturn
 from fastapi import Depends, FastAPI, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import HTTPConnection
-from starlette.websockets import WebSocket
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from voiced import __version__
 from voiced.api import routes_stt, routes_tts, status_page
@@ -97,7 +98,9 @@ async def _error(
             close_code = WS_CLOSE[Outcome.CLIENT_ERROR]
         # Close reasons are capped at 123 bytes by the protocol.
         reason = message.encode()[:123].decode(errors="ignore")
-        with suppress(RuntimeError):  # already closed
+        # RuntimeError: already closed. WebSocketDisconnect: the peer dropped
+        # the connection and the server's send failed.
+        with suppress(RuntimeError, WebSocketDisconnect):
             await conn.close(close_code, reason)
         return None
     return JSONResponse(
@@ -141,6 +144,14 @@ def _build(ctx: ServiceContext) -> FastAPI:
         headers = {"Retry-After": "1"} if code == status.HTTP_503_SERVICE_UNAVAILABLE else None
         return await _error(conn, code, f"{type(exc).__name__}: {exc}", kind, headers)
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _http(conn: HTTPConnection, exc: StarletteHTTPException) -> Response | None:
+        # Starlette's own 4xx/5xx (malformed multipart, 404, 405) in the shared
+        # envelope instead of FastAPI's {"detail": ...}.
+        kind = "invalid_request_error" if exc.status_code < 500 else "server_error"
+        headers = dict(exc.headers) if exc.headers else None
+        return await _error(conn, exc.status_code, str(exc.detail), kind, headers)
+
     @app.exception_handler(RequestValidationError)
     async def _invalid(conn: HTTPConnection, exc: RequestValidationError) -> Response | None:
         # 400 rather than FastAPI's 422, as OpenAI does, so the openai client
@@ -156,7 +167,13 @@ def _build(ctx: ServiceContext) -> FastAPI:
         # inference() already marked health degraded if this came from an
         # engine; a bug outside a slot is not an engine failure. uvicorn logs
         # the traceback after this response, so log one line here.
-        log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)
+        if classify(exc) is Outcome.DISCONNECT:
+            # The client hung up (Starlette raises ClientDisconnect under ASGI
+            # 2.4). Not an error. The middleware still needs a response object
+            # if none started; the server drops it for a closed connection.
+            log.debug("client went away on %s: %r", conn.url.path, exc)
+        else:
+            log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)
         code, kind = _HTTP[Outcome.FAILURE]
         return await _error(conn, code, f"internal error ({type(exc).__name__})", kind)
 

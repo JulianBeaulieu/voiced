@@ -86,7 +86,7 @@
     <div class="tile"><div class="label"><svg class="icon"><use href="#i-cpu"/></svg>Engine</div><div class="value small" id="engine">-</div><div class="hint" id="languages"></div></div>
     <div class="tile"><div class="label"><svg class="icon"><use href="#i-file"/></svg>Model</div><div class="value small" id="model">-</div><div class="hint" id="license"></div></div>
     <div class="tile"><div class="label"><svg class="icon"><use href="#i-clock"/></svg>Uptime</div><div class="value" id="uptime">-</div><div class="hint" id="version"></div></div>
-    <div class="tile"><div class="label"><svg class="icon"><use href="#i-memory"/></svg>Resident memory</div><div class="value" id="memory">-</div><div class="hint" id="memory-kind"></div></div>
+    <div class="tile"><div class="label"><svg class="icon"><use href="#i-memory"/></svg>Resident memory</div><div class="value" id="memory">-</div></div>
     <div class="tile"><div class="label"><svg class="icon"><use href="#i-layers"/></svg>Queue</div><div class="value" id="queue">-</div><div class="hint">waiting or running / capacity</div></div>
     <div class="tile"><div class="label"><svg class="icon"><use href="#i-activity"/></svg>Last inference</div><div class="value" id="last-ms">-</div><div class="hint" id="last-inference"></div></div>
   </div>
@@ -226,7 +226,6 @@
     $("version").textContent = "voiced " + h.version;
     var m = d.metrics;
     $("memory").textContent = fmtBytes(m.memory.rss_bytes);
-    $("memory-kind").textContent = "current RSS";
     $("queue").textContent = h.queue_depth + " / " + h.queue_capacity;
     $("last-ms").textContent = h.last_inference_ms == null ? "-" : fmtMs(h.last_inference_ms);
     $("last-inference").textContent = h.last_inference_at

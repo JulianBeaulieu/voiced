@@ -41,7 +41,8 @@ def foreign_model_map(
 
 
 def get_foreign_models(conn: HTTPConnection) -> dict[str, str]:
-    found: dict[str, str] = getattr(conn.app.state, "foreign_models", {})
+    """The map ``voiced.api.app`` built at startup."""
+    found: dict[str, str] = conn.app.state.foreign_models
     return found
 
 

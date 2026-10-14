@@ -9,7 +9,7 @@ Engines without timing information produce one cue spanning the whole input.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, get_args
 
 from voiced.engines.base import Segment, Transcript
@@ -17,30 +17,11 @@ from voiced.engines.base import Segment, Transcript
 ResponseFormat = Literal["json", "text", "verbose_json", "srt", "vtt"]
 RESPONSE_FORMATS: tuple[str, ...] = get_args(ResponseFormat)
 
-MEDIA_TYPES: dict[str, str] = {
-    "json": "application/json",
-    "verbose_json": "application/json",
-    "text": "text/plain; charset=utf-8",
-    "srt": "text/plain; charset=utf-8",  # srt has no registered media type
-    "vtt": "text/vtt; charset=utf-8",
-}
-
 
 def render(transcript: Transcript, fmt: ResponseFormat) -> tuple[str, str]:
     """Return ``(body, media_type)`` for ``fmt``."""
-    if fmt == "json":
-        body = json.dumps({"text": transcript.text})
-    elif fmt == "verbose_json":
-        body = json.dumps(verbose_json(transcript))
-    elif fmt == "text":
-        body = transcript.text + "\n" if transcript.text else ""
-    elif fmt == "srt":
-        body = srt(transcript)
-    elif fmt == "vtt":
-        body = vtt(transcript)
-    else:  # pragma: no cover - callers validate first
-        raise ValueError(f"unknown response_format {fmt!r}")
-    return body, MEDIA_TYPES[fmt]
+    renderer, media_type = _FORMATS[fmt]
+    return renderer(transcript), media_type
 
 
 def verbose_json(transcript: Transcript) -> dict[str, Any]:
@@ -75,17 +56,35 @@ def verbose_json(transcript: Transcript) -> dict[str, Any]:
 
 
 def srt(transcript: Transcript) -> str:
-    out = []
-    for i, seg in enumerate(_cues(transcript), start=1):
-        out.append(f"{i}\n{_stamp(seg.start, ',')} --> {_stamp(seg.end, ',')}\n{seg.text}\n")
-    return "\n".join(out)
+    """Numbered cues, ``HH:MM:SS,mmm`` timestamps, no header."""
+    return _subtitles(transcript, sep=",", header=None, numbered=True)
 
 
 def vtt(transcript: Transcript) -> str:
-    out = ["WEBVTT\n"]
-    for seg in _cues(transcript):
-        out.append(f"{_stamp(seg.start, '.')} --> {_stamp(seg.end, '.')}\n{seg.text}\n")
-    return "\n".join(out)
+    """``WEBVTT`` header, unnumbered cues, ``HH:MM:SS.mmm`` timestamps."""
+    return _subtitles(transcript, sep=".", header="WEBVTT\n", numbered=False)
+
+
+def _subtitles(transcript: Transcript, *, sep: str, header: str | None, numbered: bool) -> str:
+    blocks = [] if header is None else [header]
+    for i, seg in enumerate(_cues(transcript), start=1):
+        number = f"{i}\n" if numbered else ""
+        blocks.append(f"{number}{_stamp(seg.start, sep)} --> {_stamp(seg.end, sep)}\n{seg.text}\n")
+    return "\n".join(blocks)
+
+
+def _text(transcript: Transcript) -> str:
+    return transcript.text + "\n" if transcript.text else ""
+
+
+_FORMATS: dict[str, tuple[Callable[[Transcript], str], str]] = {
+    "json": (lambda t: json.dumps({"text": t.text}), "application/json"),
+    "verbose_json": (lambda t: json.dumps(verbose_json(t)), "application/json"),
+    "text": (_text, "text/plain; charset=utf-8"),
+    "srt": (srt, "text/plain; charset=utf-8"),  # srt has no registered media type
+    "vtt": (vtt, "text/vtt; charset=utf-8"),
+}
+assert set(_FORMATS) == set(RESPONSE_FORMATS)
 
 
 def _cues(transcript: Transcript) -> Sequence[Segment]:

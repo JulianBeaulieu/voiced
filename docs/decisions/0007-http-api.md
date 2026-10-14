@@ -19,13 +19,14 @@ Uploads are decoded by spawning `ffmpeg` (`-f f32le -ac 1 -ar 16000`), and
 `mp3` / `opus` speech responses are encoded by piping PCM through it. The
 alternatives were Python bindings (`av`, `pydub`, `soundfile`): they either
 bundle their own ffmpeg builds (large wheels, licensing surface) or cover far
-fewer formats. ffmpeg is one `brew install` away on every Mac, `voiced
-doctor` checks for it, and the API fails predictably without it: uploads get a clear 500
-`ffmpeg_missing` and `mp3`/`opus` responses are refused with the same error.
-There is deliberately no second decoder in Python for the "ffmpeg missing"
-case. Uploads are written to a temporary file before decoding because
-containers such as `.m4a` keep their index at the end and cannot be decoded
-from a pipe.
+fewer formats. ffmpeg is one `brew install` away on every Mac, and
+`voiced doctor` reports a missing ffmpeg as a failure. Without it the API
+fails predictably: uploads and `mp3`/`opus` requests get a 500
+`ffmpeg_missing` (`voiced.api.ffmpeg.FFmpegMissing`, an `APIError`, so one
+handler renders it for every route). There is deliberately no second decoder
+in Python for the "ffmpeg missing" case. Uploads are written to a temporary
+file before decoding because containers such as `.m4a` keep their index at
+the end and cannot be decoded from a pipe.
 
 ### Every speech response streams
 
@@ -37,22 +38,33 @@ stream through an ffmpeg pipe with a writer task feeding it, so the first
 encoded bytes leave before the last sentence is synthesized. `audio/pcm` is
 raw int16 little-endian mono at 24 kHz, matching OpenAI.
 
+`voice` must be one of the voices `/v1/audio/voices` lists, which are the
+engine's voices in the configured languages (ADR 0005). The route checks
+this before taking the slot, so a voice the engine knows but whose language
+is not configured is a 400 `UnknownVoice`, and so is a `tts.default_voice`
+outside the configured languages.
+
 The body is an async generator wrapping `inference()` (ADR 0005); the route
 primes it with one `anext()` *before* the response starts. That keeps the
-status codes honest: a full queue is still a 503 and an unknown voice is
+status codes honest: a full queue is still a 503 and an engine error is
 still a 400 instead of a truncated stream. The response class
 (`ClosingStreamingResponse`) always calls `aclose()` on the body generator,
 so a client that disconnects mid-stream frees the slot and any ffmpeg pipe
-immediately rather than when the garbage collector gets to it.
+immediately rather than when the garbage collector gets to it. A hang-up is
+not an error: the response class absorbs it, so neither the app nor the
+server logs a traceback for it.
 
 ### Limits
 
-`stt.max_upload_mb` (default 50) bounds the transcription body. The
-`Content-Length` header is checked first, and the ASGI `receive` channel is
-wrapped so a chunked body that exceeds the limit is cut off while it is
-still being read, before multipart parsing and before ffmpeg. Both paths
-return 413 `payload_too_large`. `tts.max_input_chars` (default 4096, the
-OpenAI limit) bounds `input`, also with 413.
+`stt.max_upload_mb` (default 50) bounds the transcription upload in two
+steps. The ASGI `receive` channel is wrapped so the request body is cut off
+while it is being read, before multipart parsing finishes and before ffmpeg,
+whether or not the client sent `Content-Length`; the cap allows 64 KB of
+multipart framing on top of the limit. The parsed file is then held to the
+exact limit. Both return 413 `payload_too_large`. A malformed multipart body
+is Starlette's own 400, rendered in the shared envelope.
+`tts.max_input_chars` (default 4096, the OpenAI limit) bounds `input`, also
+with 413.
 
 ### The `model` field
 
@@ -71,17 +83,30 @@ then binary frames of int16 little-endian mono PCM (16 kHz unless `config`
 says otherwise; other rates are resampled server-side), then `{"type":
 "end"}`. The sample rate is per session on purpose: browsers and phones
 capture at 44.1 or 48 kHz and should not have to resample client-side.
-Frames may be any size; an odd trailing byte is carried into the next frame
-rather than dropped, which would misalign every later sample. It sends `partial` events when the hypothesis changes, at most every
-250 ms, then one `final` event and a normal close. One session holds one
-inference slot for its whole life, so `queue_depth` also bounds concurrent
-streams; overflow closes with 1013 (try again later). A session that receives
-nothing for 30 s is closed with 1008 `idle` so a silent client cannot hold a
-slot forever. Bad frames close with 1007, request-level engine errors with
-1008, engine failures with 1011. A
-bad API key is refused at the handshake (HTTP 403). The API key dependency
-uses Starlette's `HTTPConnection` so the same check covers HTTP and
-WebSocket routes.
+Frames may be any size. They go through `voiced.audio.PCMConverter`, which
+carries a partial sample and the resampling position into the next frame;
+dropping an odd trailing byte would misalign every later sample.
+
+The server sends `partial` events when the hypothesis changes, at most every
+250 ms, then one `final` event and a normal close (1000). The whole session
+runs inside one `inference()` block, so `queue_depth` also bounds concurrent
+streams, and the close code follows the outcome table in ADR 0005: busy
+1013, client error 1008 (a bad frame, an unsupported language or sample
+rate), failure 1011, disconnect 1001. Every socket read is bounded by
+`server.session_idle_s` (default 30) and every write by
+`server.write_timeout_s`, so a silent or half-open client cannot hold a slot.
+
+An idle session therefore closes with 1001, as a disconnect that leaves
+health alone. The first version of this API closed it with 1008 `idle`; that
+changed when the WebSocket route adopted ADR 0005's rule that a transport
+does not convert timeouts itself. Likewise a malformed frame closes with
+1008 (a client error) rather than the 1007 of that first version.
+
+Closing a socket whose peer already dropped the TCP connection raises in the
+server; the route swallows that, since the outcome is already recorded and a
+traceback would be noise. A bad API key is refused at the handshake (HTTP
+403). The API key dependency uses Starlette's `HTTPConnection`, so the same
+check covers HTTP and WebSocket routes.
 
 ### Status page
 
@@ -100,9 +125,10 @@ the page call the `/v1` routes and send the API key the operator types in.
 - `ffmpeg` joins `espeak-ng` as a documented external dependency.
 - `python-multipart`, `websockets` (uvicorn's WebSocket backend) and `psutil`
   are core dependencies.
-- Error bodies on `/v1` routes share one shape, `{"error": {"message",
-  "type"}}`, which the OpenAI clients surface as `BadRequestError`,
-  `AuthenticationError` and so on (handlers in `voiced.api.app`, ADR 0005).
+- Error bodies share one shape, `{"error": {"message", "type"}}`, which the
+  OpenAI clients surface as `BadRequestError`, `AuthenticationError` and so
+  on (handlers in `voiced.api.app`, ADR 0005). That includes Starlette's own
+  errors such as a malformed multipart body, 404 and 405.
 - Metrics live in process memory and reset on restart; the watchdog's
   restarts therefore also clear the error log. Persisting them is out of
   scope for v1.

@@ -24,12 +24,12 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 import voiced.api.app as app_module
-from voiced.api import audio
+from voiced.api import ffmpeg
 from voiced.engines.base import AudioInput, PCMChunk, Transcript
 from voiced.testing import FakeSTTEngine, FakeTTSEngine
 
 requires_ffmpeg = pytest.mark.skipif(
-    not audio.ffmpeg_available(), reason="ffmpeg is not installed (brew install ffmpeg)"
+    not ffmpeg.ffmpeg_available(), reason="ffmpeg is not installed (brew install ffmpeg)"
 )
 
 
@@ -156,7 +156,7 @@ def fake_decode(monkeypatch: pytest.MonkeyPatch) -> list[int]:
         seen.append(len(data))
         return np.ones(sample_rate, dtype=np.float32) * 0.1
 
-    monkeypatch.setattr(audio, "decode", decode)
+    monkeypatch.setattr(ffmpeg, "decode", decode)
     return seen
 
 

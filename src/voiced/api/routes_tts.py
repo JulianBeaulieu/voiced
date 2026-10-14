@@ -12,55 +12,46 @@ Every format streams. ``pcm`` is raw int16 little-endian mono at 24 kHz.
 sentence is synthesized. ``mp3`` and ``opus`` (Ogg) are encoded by ffmpeg
 through a pipe while the engine is still producing audio.
 
+``voice`` must be one of ``/v1/audio/voices``, the engine's voices whose
+language is configured; anything else, including a ``tts.default_voice``
+outside the configured languages, is 400 ``UnknownVoice``.
+
 The body is an async generator that runs ``inference()`` around the engine
 call; the route primes it with one ``anext()`` so a full queue is still a
-503 and an unknown voice still a 400 before any header is sent (ADR 0005).
+503 and an engine error still a 400 before any header is sent (ADR 0005).
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from voiced import audio as pcm
-from voiced.api import audio
+from voiced import audio
+from voiced.api import ffmpeg
 from voiced.api.context import APIError, Ctx
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.api.responses import ClosingStreamingResponse
 from voiced.context import ServiceContext
-from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk
+from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk, UnknownVoice
 from voiced.inference import inference
 from voiced.metrics import Operation
+from voiced.text import normalize
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/audio", tags=["tts"])
 
-
-def _load_normalizer() -> Callable[[str], str]:
-    """``voiced.text.normalize`` if that module exists, else identity.
-
-    The text pipeline is written by the TTS engine workstream; this guarded
-    import lets the HTTP layer work on its own and pick the normalizer up once
-    it lands.
-    """
-    try:
-        module = importlib.import_module("voiced.text")
-    except ImportError:
-        return lambda text: text
-    fn = getattr(module, "normalize", None)
-    if not callable(fn):
-        return lambda text: text
-    return cast(Callable[[str], str], fn)
-
-
-normalize_text: Callable[[str], str] = _load_normalizer()
+MEDIA_TYPES: dict[str, str] = {
+    "wav": "audio/wav",
+    "pcm": "audio/pcm",  # raw int16 LE, 24 kHz mono; what the OpenAI endpoint returns
+    "mp3": "audio/mpeg",
+    "opus": "audio/ogg",  # Opus in an Ogg container, like the OpenAI endpoint
+}
 
 
 class SpeechRequest(BaseModel):
@@ -101,9 +92,9 @@ async def voices(ctx: Ctx) -> dict[str, Any]:
     responses={
         200: {
             "description": "Audio stream in response_format",
-            "content": {media: {} for media in audio.MEDIA_TYPES.values()},
+            "content": {media: {} for media in MEDIA_TYPES.values()},
         },
-        400: {"description": "Bad parameters or unknown voice"},
+        400: {"description": "Bad parameters, or a voice that is not served"},
         413: {"description": "input longer than tts.max_input_chars"},
         503: {"description": "Inference queue full; retry later"},
     },
@@ -120,29 +111,30 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
             type="payload_too_large",
         )
     reject_foreign_model(ctx, foreign, body.model)
-    if body.response_format in ("mp3", "opus") and not audio.ffmpeg_available():
-        raise APIError(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"ffmpeg is required for {body.response_format} output (brew install ffmpeg)",
-            type="ffmpeg_missing",
-        )
+    fmt = body.response_format
+    if fmt in ("mp3", "opus"):
+        ffmpeg.require_ffmpeg(f"{fmt} output")
 
     voice = body.voice or settings.default_voice
+    served = {v.id for v in await ctx.voices()}
+    if voice not in served:
+        # The engine may know the voice, but its language is not configured.
+        source = "" if body.voice else " (tts.default_voice)"
+        raise UnknownVoice(f"voice {voice!r}{source} is not served; see /v1/audio/voices")
     speed = body.speed if body.speed is not None else settings.speed
-    text = normalize_text(body.input)
-    fmt = body.response_format
+    text = normalize(body.input)
 
     # Prime the body so QueueFull and a pre-audio EngineError surface as
     # 503 / 400 through the app's handlers instead of a broken stream.
-    body_pcm = _synthesize(ctx, text, voice, speed)
-    first = await anext(body_pcm)
-    stream: AsyncIterator[bytes] = _chain(first, body_pcm)
+    pcm = _synthesize(ctx, text, voice, speed)
+    await anext(pcm)
+    stream: AsyncIterator[bytes] = pcm
     if fmt == "wav":
-        stream = _chain(pcm.wav_header(TTS_SAMPLE_RATE), stream)
+        stream = _prefixed(audio.wav_header(TTS_SAMPLE_RATE), pcm)
     elif fmt in ("mp3", "opus"):
-        stream = audio.encode_stream(stream, fmt, TTS_SAMPLE_RATE)
+        stream = ffmpeg.encode_stream(pcm, fmt, TTS_SAMPLE_RATE)
     return ClosingStreamingResponse(
-        stream, media_type=audio.MEDIA_TYPES[fmt], headers={"Cache-Control": "no-store"}
+        stream, media_type=MEDIA_TYPES[fmt], headers={"Cache-Control": "no-store"}
     )
 
 
@@ -151,8 +143,8 @@ async def _synthesize(
 ) -> AsyncGenerator[bytes, None]:
     """PCM bytes from the engine, inside one ``inference()`` block.
 
-    Yields ``b""`` once the first chunk is in hand (that is the priming
-    value), then the audio. Closing the generator early (client disconnect)
+    Yields ``b""`` once the first chunk is in hand (the route consumes that
+    priming value with ``anext()``), then the audio. Closing the generator early (client disconnect)
     passes ``GeneratorExit`` through ``inference()`` and frees the slot.
     """
     async with inference(ctx, Operation.SPEECH):
@@ -167,9 +159,9 @@ async def _synthesize(
                     yield chunk.data
 
 
-async def _chain(head: bytes, rest: AsyncIterator[bytes]) -> AsyncGenerator[bytes, None]:
-    async with aclosing(cast(AsyncGenerator[bytes, None], rest)):
-        if head:
-            yield head
+async def _prefixed(head: bytes, rest: AsyncGenerator[bytes, None]) -> AsyncGenerator[bytes, None]:
+    """``head`` then ``rest``; closing this generator closes ``rest``."""
+    async with aclosing(rest):
+        yield head
         async for chunk in rest:
             yield chunk

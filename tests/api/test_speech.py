@@ -12,7 +12,6 @@ import openai
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
-from starlette.requests import ClientDisconnect
 
 from tests.api.conftest import (
     GatedTTSEngine,
@@ -21,8 +20,9 @@ from tests.api.conftest import (
     requires_ffmpeg,
     wait_for_depth,
 )
-from voiced.api import audio
+from voiced.api import ffmpeg
 from voiced.config import Settings
+from voiced.engines import registry
 from voiced.testing import FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
 
@@ -132,12 +132,14 @@ async def test_unknown_voice_is_400(
 ) -> None:
     with pytest.raises(openai.BadRequestError) as exc:
         await openai_tts.audio.speech.create(model="tts-1", voice="nobody", input="Hi.")
-    assert exc.value.body["type"] == "invalid_request_error"  # type: ignore[index]
-    assert exc.value.body["message"] == "UnknownVoice: nobody"  # type: ignore[index]
+    assert exc.value.body == {  # type: ignore[comparison-overlap]
+        "message": "UnknownVoice: voice 'nobody' is not served; see /v1/audio/voices",
+        "type": "invalid_request_error",
+    }
     health = (await tts_client.get("/health")).json()
     assert health["status"] == "ok"  # client error, not an engine failure
-    errors = (await tts_client.get("/metrics.json")).json()["metrics"]["recent_errors"]
-    assert errors and errors[0]["outcome"] == "client_error" and errors[0]["operation"] == "speech"
+    # Checked before the slot is taken: request validation, not inference (ADR 0005).
+    assert (await tts_client.get("/metrics.json")).json()["metrics"]["operations"] == {}
 
 
 async def test_input_too_long_is_413(openai_tts: openai.AsyncOpenAI, settings: Settings) -> None:
@@ -160,8 +162,6 @@ async def test_empty_input_and_bad_format(tts_client: AsyncClient) -> None:
 
 
 async def test_model_naming_other_engine_is_400(settings: Settings) -> None:
-    from voiced.engines import registry
-
     class OtherTTS(FakeTTSEngine):
         name = "other"
         model_id = "someone/other-tts"
@@ -171,7 +171,10 @@ async def test_model_naming_other_engine_is_400(settings: Settings) -> None:
         app = build_tts_app(settings, FakeTTSEngine())  # the map is built here, once
     finally:
         registry._local_tts.pop("other", None)
-    assert app.state.foreign_models == {"other": "other", "someone/other-tts": "other"}
+    # Other installed engines (Kokoro on main) are in the map too.
+    expected = {"other": "other", "someone/other-tts": "other"}
+    assert expected.items() <= app.state.foreign_models.items()
+    assert "fake" not in app.state.foreign_models
     async with loaded(app):
         client = _openai_client(app)
         ok = await client.audio.speech.create(model="tts-1-hd", voice="af_heart", input="Hi.")
@@ -212,11 +215,12 @@ async def test_queue_full_is_503(settings: Settings) -> None:
 @pytest.mark.parametrize("spec_version", ["2.0", "2.4"])
 @pytest.mark.parametrize("fmt", ["pcm", "mp3"])
 async def test_client_disconnect_mid_stream_releases_slot(
-    settings: Settings, spec_version: str, fmt: str
+    settings: Settings, spec_version: str, fmt: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Under spec 2.4 Starlette leaves the body loop through ClientDisconnect without
-    aclose(); ClosingStreamingResponse must still release the slot (and ffmpeg)."""
-    if fmt == "mp3" and not audio.ffmpeg_available():
+    aclose(); ClosingStreamingResponse must still release the slot (and ffmpeg), and
+    a hang-up is not an error: nothing escapes the app and nothing is logged at ERROR."""
+    if fmt == "mp3" and not ffmpeg.ffmpeg_available():
         pytest.skip("ffmpeg is not installed")
     engine = FakeTTSEngine(latency_s=0.05)
     app = build_tts_app(settings, engine)
@@ -243,12 +247,10 @@ async def test_client_disconnect_mid_stream_releases_slot(
         await asyncio.wait_for(got_first.wait(), 2.0)
         assert app.state.ctx.queue.depth == 1
         disconnect.set()
-        try:
-            run = await asyncio.wait_for(task, 2.0)
-            assert len([b for b in run.bodies if b]) < 6, "stopped early"
-        except ClientDisconnect:
-            pass  # the spec 2.4 path raises it from send()
+        run = await asyncio.wait_for(task, 2.0)  # ClientDisconnect no longer escapes
+        assert len([b for b in run.bodies if b]) < 6, "stopped early"
         assert app.state.ctx.queue.depth == 0
+        assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
         # The next request gets the slot immediately.
         assert (await _asgi_post(app, {"input": "Hi."})).status == 200
 
@@ -358,6 +360,16 @@ async def test_voices_and_models_follow_configured_languages(settings: Settings)
         assert (await c.get("/v1/audio/voices")).json()["data"] == []
         (model,) = (await c.get("/v1/models")).json()["data"]
         assert model["languages"] == []
+        # The engine knows af_heart, but English is not configured.
+        r = await c.post("/v1/audio/speech", json={"input": "Hi.", "voice": "af_heart"})
+        assert r.status_code == 400
+        assert r.json()["error"]["message"] == (
+            "UnknownVoice: voice 'af_heart' is not served; see /v1/audio/voices"
+        )
+        # The configured default voice is held to the same rule.
+        r = await c.post("/v1/audio/speech", json={"input": "Hi."})
+        assert r.status_code == 400
+        assert "'af_heart' (tts.default_voice) is not served" in r.json()["error"]["message"]
     settings.tts.languages = ["en-US", "de"]
     app = build_tts_app(settings, FakeTTSEngine())
     async with lifespan_client(app) as c:
@@ -365,6 +377,8 @@ async def test_voices_and_models_follow_configured_languages(settings: Settings)
         assert ids == ["af_heart", "am_adam", "bf_emma"], "en-GB voices match en too"
         (model,) = (await c.get("/v1/models")).json()["data"]
         assert model["languages"] == ["en-US"], "the narrower tag of the matching pair"
+        r = await c.post("/v1/audio/speech", json={"input": "Hi.", "voice": "bf_emma"})
+        assert r.status_code == 200
 
 
 async def test_api_key_on_tts(tts_app: FastAPI) -> None:

@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 
+from fastapi import FastAPI
 from httpx import AsyncClient
 
 from voiced import __version__
+from voiced.config import Settings
+from voiced.engines.base import EngineError, PCMChunk
+from voiced.testing import FakeTTSEngine, lifespan_client
+from voiced.tts import build_tts_app
 
 _EMOJI = re.compile(f"[{chr(0x1F000)}-{chr(0x1FAFF)}{chr(0x2600)}-{chr(0x27BF)}]")
 
@@ -25,9 +31,7 @@ async def test_status_page_is_self_contained_html(any_client: AsyncClient) -> No
     assert not _EMOJI.search(html)
 
 
-async def test_status_page_is_not_behind_api_key(stt_app) -> None:  # type: ignore[no-untyped-def]
-    from voiced.testing import lifespan_client
-
+async def test_status_page_is_not_behind_api_key(stt_app: FastAPI) -> None:
     stt_app.state.ctx.settings.server.api_key = "s3cret"
     async with lifespan_client(stt_app) as c:
         assert (await c.get("/")).status_code == 200
@@ -54,12 +58,25 @@ async def test_metrics_json_shape(tts_client: AsyncClient) -> None:
     assert doc["api_key_required"] is False
 
 
-async def test_metrics_json_tracks_requests_and_errors(tts_client: AsyncClient) -> None:
-    assert (await tts_client.post("/v1/audio/speech", json={"input": "Hi."})).status_code == 200
-    assert (
-        await tts_client.post("/v1/audio/speech", json={"input": "Hi.", "voice": "nobody"})
-    ).status_code == 400
-    doc = (await tts_client.get("/metrics.json")).json()
+class _Refuses(FakeTTSEngine):
+    """Raises a client error from inside synthesis, so it happens within the slot."""
+
+    async def synthesize(
+        self, text: str, voice: str, speed: float = 1.0
+    ) -> AsyncIterator[PCMChunk]:
+        if "refuse" in text:
+            raise EngineError("this engine refuses that text")
+        async for chunk in super().synthesize(text, voice, speed):
+            yield chunk
+
+
+async def test_metrics_json_tracks_requests_and_errors(settings: Settings) -> None:
+    app = build_tts_app(settings, _Refuses())
+    async with lifespan_client(app) as c:
+        assert (await c.post("/v1/audio/speech", json={"input": "Hi."})).status_code == 200
+        refused = await c.post("/v1/audio/speech", json={"input": "Please refuse this."})
+        assert refused.status_code == 400
+        doc = (await c.get("/metrics.json")).json()
     speech = doc["metrics"]["operations"]["speech"]
     assert speech["counts"]["ok"] == 1 and speech["counts"]["client_error"] == 1
     assert speech["latency"]["samples"] == 1
@@ -67,5 +84,6 @@ async def test_metrics_json_tracks_requests_and_errors(tts_client: AsyncClient) 
     assert speech["latency"]["p50_ms"] >= 0
     (err,) = doc["metrics"]["recent_errors"]
     assert err["operation"] == "speech" and err["outcome"] == "client_error"
-    assert "nobody" in err["detail"]
+    assert "refuses that text" in err["detail"]
     assert doc["health"]["last_inference_ms"] is not None
+    assert doc["health"]["status"] == "ok", "client errors leave health alone"

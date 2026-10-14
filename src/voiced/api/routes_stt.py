@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import suppress
 from dataclasses import asdict
 from typing import Any, cast
 
@@ -42,7 +43,7 @@ from fastapi.responses import Response
 from starlette.datastructures import FormData, UploadFile
 from starlette.types import Message, Receive
 
-from voiced.api import audio, formats
+from voiced.api import ffmpeg, formats
 from voiced.api.context import WS_CLOSE, APIError, Ctx
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.audio import PCMConverter
@@ -57,6 +58,8 @@ router = APIRouter(prefix="/v1/audio", tags=["stt"])
 
 PARTIAL_INTERVAL_S = 0.25
 """Minimum time between two ``partial`` events on the WebSocket."""
+
+MB = 1024 * 1024
 
 UPLOAD_SLACK_BYTES = 64 * 1024
 """Multipart framing allowance on top of ``stt.max_upload_mb``."""
@@ -142,29 +145,21 @@ def _parse_format(value: str | None) -> formats.ResponseFormat:
 )
 async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> Response:
     limit_mb = ctx.settings.stt.max_upload_mb
-    limit = limit_mb * 1024 * 1024
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > limit + UPLOAD_SLACK_BYTES:
-        raise _too_large(limit_mb)
-
+    # The body is capped while it is read, before and during multipart parsing.
+    # Malformed multipart raises Starlette's HTTPException(400), which the app
+    # renders in the shared error envelope.
     bounded_request = Request(
-        request.scope, _bounded_receive(request.receive, limit + UPLOAD_SLACK_BYTES)
+        request.scope, _bounded_receive(request.receive, limit_mb * MB + UPLOAD_SLACK_BYTES)
     )
     try:
         async with bounded_request.form() as form:
-            data, fmt, language = await _parse_upload(ctx, foreign, form, limit)
+            data, fmt, language = await _parse_upload(ctx, foreign, form)
     except _PayloadTooLarge:
         raise _too_large(limit_mb) from None
-    except (APIError, EngineError):
-        raise
-    except Exception as exc:  # multipart syntax errors
-        raise APIError(status.HTTP_400_BAD_REQUEST, f"invalid multipart body: {exc}") from exc
 
     try:
-        samples = await audio.decode(data, STT_SAMPLE_RATE)
-    except audio.FFmpegMissing as exc:
-        raise APIError(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc), "ffmpeg_missing") from exc
-    except audio.AudioDecodeError as exc:
+        samples = await ffmpeg.decode(data, STT_SAMPLE_RATE)
+    except ffmpeg.AudioDecodeError as exc:
         raise APIError(status.HTTP_400_BAD_REQUEST, str(exc), "invalid_audio") from exc
 
     async with inference(ctx, Operation.TRANSCRIBE):
@@ -174,33 +169,21 @@ async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> 
 
 
 async def _parse_upload(
-    ctx: ServiceContext, foreign: dict[str, str], form: FormData, limit: int
+    ctx: ServiceContext, foreign: dict[str, str], form: FormData
 ) -> tuple[bytes, formats.ResponseFormat, str | None]:
-    """Validate the form fields and read the upload (bounded by ``limit``)."""
+    """Validate the form fields and read the upload."""
     upload = form.get("file")
     if not isinstance(upload, UploadFile):
         raise APIError(status.HTTP_400_BAD_REQUEST, "multipart field 'file' is required")
     fmt = _parse_format(_str_field(form, "response_format"))
     language = ctx.check_language(_str_field(form, "language"))
     reject_foreign_model(ctx, foreign, _str_field(form, "model"))
-    data = await _read_upload(upload, limit)
-    if len(data) > limit:
-        raise _too_large(ctx.settings.stt.max_upload_mb)
-    return data, fmt, language
-
-
-async def _read_upload(upload: UploadFile, limit: int) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await upload.read(1024 * 1024)
-        if not chunk:
-            break
-        total += len(chunk)
-        chunks.append(chunk)
-        if total > limit:
-            break  # caller compares against limit
-    return b"".join(chunks)
+    limit_mb = ctx.settings.stt.max_upload_mb
+    # The receive cap allows UPLOAD_SLACK_BYTES of multipart framing, so the
+    # file itself can still be a little over the limit.
+    if (upload.size or 0) > limit_mb * MB:
+        raise _too_large(limit_mb)
+    return await upload.read(), fmt, language
 
 
 def _str_field(form: FormData, key: str) -> str | None:
@@ -313,7 +296,11 @@ async def _stream_session(ws: WebSocket, ctx: ServiceContext) -> None:
 
 
 async def _safe_close(ws: WebSocket, code: int, reason: str | None = None) -> None:
-    try:
+    """Close unless the connection is already gone.
+
+    ``RuntimeError``: the socket was already closed. ``WebSocketDisconnect``:
+    Starlette's translation of the server's send error after a TCP drop.
+    Neither is news; letting them escape makes uvicorn log a traceback.
+    """
+    with suppress(RuntimeError, WebSocketDisconnect):
         await ws.close(code=code, reason=reason)
-    except RuntimeError:
-        pass  # already closed by the client

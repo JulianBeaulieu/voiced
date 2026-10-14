@@ -1,4 +1,4 @@
-"""Audio decoding and encoding for the HTTP layer.
+"""ffmpeg decoding and encoding for the HTTP layer.
 
 Decoding (uploads to STT) goes through ``ffmpeg`` as an external program:
 any container or codec ffmpeg knows becomes mono float32 at 16 kHz. The
@@ -30,19 +30,12 @@ from typing import Literal, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from voiced.api.context import APIError
 from voiced.engines.base import STT_SAMPLE_RATE, TTS_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
 EncodedFormat = Literal["mp3", "opus"]
-OutputFormat = Literal["wav", "pcm", "mp3", "opus"]
-
-MEDIA_TYPES: dict[str, str] = {
-    "wav": "audio/wav",
-    "pcm": "audio/pcm",  # raw int16 LE, 24 kHz mono; what the OpenAI endpoint returns
-    "mp3": "audio/mpeg",
-    "opus": "audio/ogg",  # Opus in an Ogg container, like the OpenAI endpoint
-}
 
 # ffmpeg output flags per encoded format. Low-latency settings: no bitstream
 # buffering the encoder can avoid, so the first bytes leave as soon as possible.
@@ -55,11 +48,28 @@ _DECODE_TIMEOUT_S = 120.0
 
 
 class AudioDecodeError(Exception):
-    """The upload could not be decoded. Mapped to HTTP 400."""
+    """ffmpeg ran but could not decode the upload. The route maps it to 400."""
 
 
-class FFmpegMissing(AudioDecodeError):
-    """ffmpeg is not installed."""
+class FFmpegMissing(APIError):
+    """ffmpeg is not installed. A server-side problem: 500 ``ffmpeg_missing``.
+
+    An :class:`APIError` so the app's one ``APIError`` handler renders it for
+    every route; ``voiced doctor`` reports the same condition as a failure.
+    """
+
+    def __init__(self, purpose: str) -> None:
+        super().__init__(
+            500, f"ffmpeg is required for {purpose} (brew install ffmpeg)", "ffmpeg_missing"
+        )
+
+
+def require_ffmpeg(purpose: str) -> str:
+    """Path of the ffmpeg binary; raises :class:`FFmpegMissing` if it is not installed."""
+    path = ffmpeg_path()
+    if path is None:
+        raise FFmpegMissing(purpose)
+    return path
 
 
 def ffmpeg_path() -> str | None:
@@ -75,9 +85,7 @@ async def decode(data: bytes, sample_rate: int = STT_SAMPLE_RATE) -> NDArray[np.
     """Decode any audio file ``data`` to mono float32 at ``sample_rate`` with ffmpeg."""
     if not data:
         raise AudioDecodeError("empty upload")
-    ffmpeg = ffmpeg_path()
-    if ffmpeg is None:
-        raise FFmpegMissing("ffmpeg is not installed (brew install ffmpeg)")
+    ffmpeg = require_ffmpeg("decoding uploads")
     fd, path = tempfile.mkstemp(prefix="voiced-upload-", suffix=".bin")
     try:
         await asyncio.to_thread(_write_and_close, fd, data)
@@ -143,9 +151,7 @@ async def encode_stream(
     the first sentence before the last one is synthesized. Stopping the
     generator early (client disconnect) kills ffmpeg and closes ``pcm``.
     """
-    ffmpeg = ffmpeg_path()
-    if ffmpeg is None:
-        raise FFmpegMissing(f"ffmpeg is required for {fmt} output (brew install ffmpeg)")
+    ffmpeg = require_ffmpeg(f"{fmt} output")
     proc = await asyncio.create_subprocess_exec(
         ffmpeg,
         "-nostdin",
@@ -170,7 +176,7 @@ async def encode_stream(
     )
     assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
     stdin, stdout, stderr = proc.stdin, proc.stdout, proc.stderr
-    producer_error: list[BaseException] = []
+    producer_error: list[Exception] = []
 
     async def feed() -> None:
         try:
@@ -180,9 +186,7 @@ async def encode_stream(
                     await stdin.drain()
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:
+        except Exception as exc:  # CancelledError is a BaseException and passes through
             producer_error.append(exc)
         finally:
             if not stdin.is_closing():

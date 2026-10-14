@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 
 from tests.api.conftest import requires_ffmpeg, sine_wav
-from voiced.api import audio
+from voiced.api import ffmpeg
 
 
 @requires_ffmpeg
 async def test_ffmpeg_decodes_wav_to_16k_float32_mono() -> None:
-    samples = await audio.decode(sine_wav(seconds=0.5, sample_rate=16_000))
+    samples = await ffmpeg.decode(sine_wav(seconds=0.5, sample_rate=16_000))
     assert samples.dtype == np.float32
     assert samples.ndim == 1
     assert abs(len(samples) - 8000) <= 16
@@ -18,26 +18,29 @@ async def test_ffmpeg_decodes_wav_to_16k_float32_mono() -> None:
 
 @requires_ffmpeg
 async def test_ffmpeg_resamples_and_downmixes() -> None:
-    samples = await audio.decode(sine_wav(seconds=0.5, sample_rate=44_100, channels=2))
+    samples = await ffmpeg.decode(sine_wav(seconds=0.5, sample_rate=44_100, channels=2))
     assert abs(len(samples) - 8000) <= 32
     assert samples.dtype == np.float32
 
 
 @requires_ffmpeg
 async def test_ffmpeg_rejects_garbage() -> None:
-    with pytest.raises(audio.AudioDecodeError):
-        await audio.decode(b"this is not audio" * 100)
+    with pytest.raises(ffmpeg.AudioDecodeError):
+        await ffmpeg.decode(b"this is not audio" * 100)
 
 
 async def test_empty_upload_rejected() -> None:
-    with pytest.raises(audio.AudioDecodeError):
-        await audio.decode(b"")
+    with pytest.raises(ffmpeg.AudioDecodeError):
+        await ffmpeg.decode(b"")
 
 
 async def test_without_ffmpeg_decode_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(audio, "ffmpeg_path", lambda: None)
-    with pytest.raises(audio.FFmpegMissing):
-        await audio.decode(sine_wav())
+    monkeypatch.setattr(ffmpeg, "ffmpeg_path", lambda: None)
+    with pytest.raises(ffmpeg.FFmpegMissing) as exc:
+        await ffmpeg.decode(sine_wav())
+    # An APIError, rendered by the app's one handler for every route.
+    assert (exc.value.status, exc.value.type) == (500, "ffmpeg_missing")
+    assert not isinstance(exc.value, ffmpeg.AudioDecodeError)
 
 
 @requires_ffmpeg
@@ -50,7 +53,7 @@ async def test_encode_stream_round_trips_through_ffmpeg(fmt: str) -> None:
         for c in pcm_chunks:
             yield c
 
-    encoded = b"".join([c async for c in audio.encode_stream(produce(), fmt)])  # type: ignore[arg-type]
+    encoded = b"".join([c async for c in ffmpeg.encode_stream(produce(), fmt)])  # type: ignore[arg-type]
     assert encoded.startswith(b"ID3" if fmt == "mp3" else b"OggS")
-    decoded = await audio.decode(encoded, 16_000)
+    decoded = await ffmpeg.decode(encoded, 16_000)
     assert abs(len(decoded) - 16_000) < 16_000 * 0.15  # codec priming and padding
