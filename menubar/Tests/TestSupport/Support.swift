@@ -3,12 +3,29 @@ import Foundation
 import VoicedControl
 
 /// A short, unique socket path; `sun_path` holds 104 bytes.
-func temporarySocketPath() -> String {
-    let name = "vt-\(UUID().uuidString.prefix(8)).sock"
-    return FileManager.default.temporaryDirectory.appendingPathComponent(name).path
+public func temporarySocketPath() -> String {
+    "/tmp/vt-\(UUID().uuidString.prefix(8)).sock"
 }
 
-func startServer(
+/// A stand-in /Library/LaunchDaemons. With `watchdogUser`, it holds a watchdog plist for
+/// that user, shaped like the ones `voiced install` writes.
+public func launchDaemonsDirectory(watchdogUser: String? = nil, label: String = "io.github.julianbeaulieu.voiced") throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    if let watchdogUser {
+        try writePlist(
+            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"], "UserName": watchdogUser],
+            to: directory.appendingPathComponent("\(label).watchdog.plist"))
+    }
+    return directory
+}
+
+public func writePlist(_ plist: [String: Any], to url: URL) throws {
+    let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    try data.write(to: url)
+}
+
+public func startServer(
     _ scenario: FakeScenario = .running, configure: (inout FakeControlServer.Options) -> Void = { _ in }
 ) throws -> FakeControlServer {
     var options = FakeControlServer.Options()
@@ -19,14 +36,14 @@ func startServer(
     return server
 }
 
-func connectedClient(_ server: FakeControlServer) async throws -> ControlClient {
+public func connectedClient(_ server: FakeControlServer) async throws -> ControlClient {
     let client = ControlClient(socketPath: server.socketPath, requestTimeout: .seconds(2))
     try await client.connect()
     return client
 }
 
 /// Waits for the next event matching `predicate`, failing after `timeout`.
-func nextEvent(
+public func nextEvent(
     _ client: ControlClient, timeout: Duration = .seconds(3),
     where predicate: @escaping @Sendable (ControlEvent) -> Bool
 ) async -> ControlEvent? {
@@ -47,7 +64,7 @@ func nextEvent(
 
 /// Polls `condition` on the main actor until it holds or `timeout` passes.
 @MainActor
-func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+public func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if condition() { return true }
@@ -56,6 +73,6 @@ func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async 
     return condition()
 }
 
-func decodeJSON<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
+public func decodeJSON<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
     try JSONDecoder().decode(type, from: Data(text.utf8))
 }

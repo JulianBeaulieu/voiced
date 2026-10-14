@@ -28,7 +28,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case degraded
     /// Both services stopped; the watchdog is up.
     case stopped
-    /// The watchdog answers but reports voiced as not installed.
+    /// The watchdog answers (run by hand) but the LaunchDaemons are not installed.
     case notInstalled = "not-installed"
     /// Running, bound to the LAN, no API key: the settings warning.
     case lanWithoutKey = "lan-without-key"
@@ -45,7 +45,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .starting: "text to speech loading its model"
         case .degraded: "text to speech degraded, restarted once"
         case .stopped: "both services stopped"
-        case .notInstalled: "status reports installed = false"
+        case .notInstalled: "watchdog run by hand: installed = false, services running"
         case .lanWithoutKey: "bound to the LAN with no API key"
         case .newerProtocol: "hello with protocol 2"
         case .cycle: "cycles through the states every few seconds"
@@ -64,6 +64,10 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .degraded:
             state[.tts].state = .degraded
             state[.tts].restarts = 1
+            state[.tts].health = [
+                "status": "degraded",
+                "last_error": "RuntimeError: [METAL] Command buffer execution failed",
+            ]
         case .stopped:
             for kind in ServiceKind.allCases {
                 state[kind] = ServiceStatus(
@@ -71,7 +75,6 @@ public enum FakeScenario: String, CaseIterable, Sendable {
             }
         case .notInstalled:
             state.installed = false
-            for kind in ServiceKind.allCases { state[kind] = ServiceStatus(state: .stopped) }
         case .lanWithoutKey:
             state.settings.bind = .lan
             state.settings.apiKeySet = false

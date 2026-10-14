@@ -18,14 +18,24 @@ let package = Package(
         // A scripted control server for tests and for running the app without voiced.
         .target(name: "FakeControlServerKit", dependencies: ["VoicedControl"]),
         .executableTarget(name: "FakeControlServer", dependencies: ["FakeControlServerKit"]),
-        // Renders the popover in each state to PNG files, for documentation.
+        // Renders both windows in each state to PNG files; UI pull requests attach these.
         .executableTarget(
             name: "MenuBarSnapshots",
             dependencies: ["VoicedMenuBarUI", "FakeControlServerKit"]
         ),
+        // Helpers shared by both test targets.
+        .target(
+            name: "TestSupport",
+            dependencies: ["VoicedControl", "FakeControlServerKit"],
+            path: "Tests/TestSupport"
+        ),
         .testTarget(
             name: "VoicedControlTests",
-            dependencies: ["VoicedControl", "VoicedMenuBarUI", "FakeControlServerKit"]
+            dependencies: ["VoicedControl", "FakeControlServerKit", "TestSupport"]
+        ),
+        .testTarget(
+            name: "VoicedMenuBarUITests",
+            dependencies: ["VoicedControl", "VoicedMenuBarUI", "FakeControlServerKit", "TestSupport"]
         ),
     ]
 )

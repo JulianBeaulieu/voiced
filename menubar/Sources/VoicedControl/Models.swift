@@ -300,3 +300,18 @@ public enum RestartTarget: Sendable, Equatable {
         }
     }
 }
+
+/// The keys `settings.set` accepts (the contract's list). The app and the fake server both
+/// use this enum, so neither can drift from the other.
+public enum SettingKey: String, Sendable, CaseIterable {
+    case bind
+    case apiKey = "api_key"
+    case zeroconf
+    case sttEngine = "stt.engine"
+    case sttModel = "stt.model"
+    case ttsEngine = "tts.engine"
+    case ttsModel = "tts.model"
+    case ttsVoice = "tts.voice"
+    case ttsSpeed = "tts.speed"
+    case browserSettings = "browser_settings"
+}

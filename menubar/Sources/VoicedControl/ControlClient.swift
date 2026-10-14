@@ -6,10 +6,14 @@ import Network
 /// A client is single use: `connect()` opens the Unix socket and waits for `hello`, requests
 /// are matched to answers by id, and server events arrive on `events` until the connection
 /// ends, when the stream finishes. Reconnecting means making a new client; `AppModel` does
-/// that with a backoff. All mutable state is confined to `queue`.
+/// that with a backoff. All mutable state is confined to `queue`. Cancelling the task that
+/// awaits `connect()` or `request()` closes the connection.
 public final class ControlClient: @unchecked Sendable {
     /// The control protocol version this client speaks.
     public static let supportedProtocol = 1
+    /// `service.restart` may take a while when the service it restarts is hung, which is
+    /// exactly when people press Restart.
+    public static let restartTimeout: Duration = .seconds(30)
 
     public let socketPath: String
     public let requestTimeout: Duration
@@ -37,12 +41,17 @@ public final class ControlClient: @unchecked Sendable {
         eventSink.finish()
     }
 
-    /// Opens the socket and waits for the server's `hello`. Throws `cannotConnect` when there
-    /// is nothing listening, and `unsupportedProtocol` when the server's protocol differs.
+    /// Opens the socket and waits for the server's `hello`. Throws `cannotConnect` with the
+    /// reason when there is no usable server, and `unsupportedProtocol` when the server's
+    /// protocol differs.
     @discardableResult
     public func connect(timeout: Duration = .seconds(3)) async throws -> Hello {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async { self.start(continuation, timeout: timeout) }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { self.start(continuation, timeout: timeout) }
+            }
+        } onCancel: {
+            close()
         }
     }
 
@@ -51,8 +60,12 @@ public final class ControlClient: @unchecked Sendable {
         _ op: String, _ args: [String: JSONValue] = [:], timeout: Duration? = nil
     ) async throws -> JSONValue {
         let limit = timeout ?? requestTimeout
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { self.send(op, args, limit, continuation) }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { self.send(op, args, limit, continuation) }
+            }
+        } onCancel: {
+            close()
         }
     }
 
@@ -65,7 +78,14 @@ public final class ControlClient: @unchecked Sendable {
 
     private func start(_ continuation: CheckedContinuation<Hello, Error>, timeout: Duration) {
         guard connection == nil, !finished else {
-            continuation.resume(throwing: ControlError.protocolViolation("client already used"))
+            continuation.resume(throwing: finished ? ControlError.connectionClosed : ControlError.protocolViolation("client already used"))
+            return
+        }
+        // NWEndpoint traps on a path that does not fit in sockaddr_un.
+        guard socketPath.utf8.count <= SocketLocation.maximumPathLength else {
+            finished = true
+            eventSink.finish()
+            continuation.resume(throwing: ControlError.cannotConnect(.pathTooLong))
             return
         }
         helloWaiter = continuation
@@ -78,7 +98,7 @@ public final class ControlClient: @unchecked Sendable {
         connection.start(queue: queue)
         queue.asyncAfter(deadline: .now() + timeout.timeInterval) { [weak self] in
             guard let self, self.hello == nil, !self.finished else { return }
-            self.finish(with: .timedOut(operation: "hello"))
+            self.finish(with: .cannotConnect(.noHello))
         }
     }
 
@@ -87,9 +107,9 @@ public final class ControlClient: @unchecked Sendable {
         case .ready:
             receive()
         case .waiting(let error), .failed(let error):
-            // For a Unix socket, `waiting` means nothing is listening (ENOENT, ECONNREFUSED);
-            // the app retries on its own schedule, so give up on this attempt.
-            finish(with: hello == nil ? .cannotConnect(Self.describe(error)) : .connectionClosed)
+            // For a Unix socket, `waiting` means nothing usable is there; the app retries on
+            // its own schedule, so give up on this attempt.
+            finish(with: hello == nil ? .cannotConnect(Self.failure(error)) : .connectionClosed)
         case .cancelled:
             finish(with: .connectionClosed)
         default:
@@ -113,7 +133,7 @@ public final class ControlClient: @unchecked Sendable {
                 }
             }
             if isComplete || error != nil {
-                self.finish(with: .connectionClosed)
+                self.finish(with: self.hello == nil ? .cannotConnect(.closedBeforeHello) : .connectionClosed)
             } else {
                 self.receive()
             }
@@ -143,10 +163,12 @@ public final class ControlClient: @unchecked Sendable {
     }
 
     private func handleFirst(_ message: JSONValue) {
-        guard message["event"] == "hello",
-            let greeting = try? message["data"]?.decode(Hello.self)
-        else {
+        guard message["event"] == "hello" else {
             finish(with: .protocolViolation("the first message was not hello"))
+            return
+        }
+        guard let greeting = try? message["data"]?.decode(Hello.self) else {
+            finish(with: .protocolViolation("malformed hello"))
             return
         }
         guard greeting.protocol == Self.supportedProtocol else {
@@ -206,16 +228,21 @@ public final class ControlClient: @unchecked Sendable {
         eventSink.finish()
     }
 
-    private static func describe(_ error: NWError) -> String {
+    private static func failure(_ error: NWError) -> ConnectFailure {
         if case .posix(let code) = error {
             switch code {
-            case .ENOENT: return "the control socket does not exist"
-            case .ECONNREFUSED: return "nothing is listening on the control socket"
-            case .EACCES: return "permission denied on the control socket"
+            case .ENOENT: return .noSocket
+            case .ECONNREFUSED: return .notListening
+            case .EACCES, .EPERM: return .permissionDenied
+            case .ENOTSOCK: return .notASocket
+            case .ENAMETOOLONG: return .pathTooLong
+            // The server hung up while the connection was being set up; Network reports a
+            // Unix socket closed that early as "network is down".
+            case .ENETDOWN, .ECONNRESET, .EPIPE: return .closedBeforeHello
             default: break
             }
         }
-        return error.localizedDescription
+        return .other(error.localizedDescription)
     }
 }
 
@@ -245,23 +272,16 @@ extension ControlClient {
         try await request("engines.list").decode(EnginesPayload.self)
     }
 
-    public func restart(_ target: RestartTarget) async throws {
-        _ = try await request("service.restart", ["service": .string(target.argument)])
+    public func restart(_ target: RestartTarget, timeout: Duration = ControlClient.restartTimeout) async throws {
+        _ = try await request("service.restart", ["service": .string(target.argument)], timeout: timeout)
     }
 
-    /// Asks the server where something lives; the caller opens it.
+    /// Asks the server where something lives; the caller checks and opens it.
     public func openTarget(_ what: OpenTarget) async throws -> String {
         let result = try await request("open", ["what": .string(what.rawValue)])
         guard let target = result["target"]?.stringValue else {
             throw ControlError.protocolViolation("open returned no target")
         }
         return target
-    }
-
-    public func tailLogs(service: String, lines: Int = 200) async throws -> [String] {
-        let result = try await request(
-            "logs.tail", ["service": .string(service), "lines": .number(Double(min(lines, 1000)))])
-        guard case .array(let values)? = result["lines"] else { return [] }
-        return values.compactMap(\.stringValue)
     }
 }

@@ -1,9 +1,9 @@
 import FakeControlServerKit
 import Foundation
+import TestSupport
 import XCTest
 
 @testable import VoicedControl
-@testable import VoicedMenuBarUI
 
 final class SettingsEditTests: XCTestCase {
     private let current = FakeState.sample.settings
@@ -18,9 +18,16 @@ final class SettingsEditTests: XCTestCase {
         XCTAssertEqual(args(.zeroconf(false)), ["zeroconf": false])
         XCTAssertEqual(args(.browserSettings(true)), ["browser_settings": true])
         XCTAssertEqual(args(.ttsVoice("bf_emma")), ["tts.voice": "bf_emma"])
-        XCTAssertEqual(args(.ttsSpeed(1.25)), ["tts.speed": 1.25])
-        XCTAssertEqual(args(.sttModel("other")), ["stt.model": "other"])
-        XCTAssertEqual(args(.ttsModel("other")), ["tts.model": "other"])
+    }
+
+    func testEveryEmittedKeyIsASettingKey() {
+        let edits: [SettingsEdit] = [
+            .bind(.lan), .apiKey("k"), .clearAPIKey, .zeroconf(false), .browserSettings(true),
+            .sttEngine("fake"), .ttsEngine("soprano"), .ttsVoice("bf_emma"),
+        ]
+        for edit in edits {
+            for key in args(edit).keys { XCTAssertNotNil(SettingKey(rawValue: key), key) }
+        }
     }
 
     func testUnchangedValuesSendNothing() {
@@ -81,12 +88,5 @@ final class SettingsEditTests: XCTestCase {
         XCTAssertEqual(settings.tts.engine, "kokoro")
         XCTAssertEqual(settings.tts.voice, "af_heart")
         XCTAssertEqual(settings.stt.engine, "fake")
-    }
-
-    func testVoiceNames() {
-        XCTAssertEqual(VoiceName.display("af_heart"), "Heart (American English, female)")
-        XCTAssertEqual(VoiceName.display("bm_george"), "George (British English, male)")
-        XCTAssertEqual(VoiceName.display("default"), "default")
-        XCTAssertEqual(VoiceName.display("xx_thing"), "xx_thing")
     }
 }

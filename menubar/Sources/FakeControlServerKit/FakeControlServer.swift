@@ -19,6 +19,14 @@ public final class FakeControlServer: @unchecked Sendable {
         public var firstLine: String?
         /// Requests with these ops are recorded but never answered, to test timeouts.
         public var unansweredOps: Set<String> = []
+        /// Requests with these ops are answered with an `internal` error.
+        public var failingOps: Set<String> = []
+        /// Close every connection right after accepting it, as the peer check does for
+        /// another user.
+        public var closeOnAccept = false
+        /// Settings a `VOICED_*` environment variable overrides, reported as
+        /// `env_override:<key>` warnings when they are set, as the real server does.
+        public var environmentOverrides: Set<SettingKey> = []
 
         public init() {}
     }
@@ -105,7 +113,7 @@ public final class FakeControlServer: @unchecked Sendable {
 
     private func listen() throws {
         guard listenFD < 0 else { return }
-        unlink(socketPath)
+        try removeStaleSocket()
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
         var address = sockaddr_un()
@@ -146,6 +154,28 @@ public final class FakeControlServer: @unchecked Sendable {
         }
     }
 
+    /// Removes a socket file nobody listens on, like the real server, and refuses to touch
+    /// anything else: a live socket or a file that is not a socket.
+    private func removeStaleSocket() throws {
+        var info = stat()
+        guard lstat(socketPath, &info) == 0 else { return }
+        guard info.st_mode & S_IFMT == S_IFSOCK else { throw POSIXError(.EEXIST) }
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        defer { close(probe) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: socketPath.utf8.prefix(buffer.count - 1))
+        }
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connected != 0 else { throw POSIXError(.EADDRINUSE) }
+        unlink(socketPath)
+    }
+
     private func shutdown() {
         timers.forEach { $0.cancel() }
         timers.removeAll()
@@ -175,14 +205,20 @@ public final class FakeControlServer: @unchecked Sendable {
             var credentials = xucred()
             var length = socklen_t(MemoryLayout<xucred>.size)
             guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &credentials, &length) == 0,
-                credentials.cr_uid == getuid()
+                credentials.cr_uid == getuid(), !options.closeOnAccept
             else {
                 close(fd)
                 continue
             }
-            _ = fcntl(fd, F_SETFL, O_NONBLOCK)
+            // Without SO_NOSIGPIPE a write to a peer that left kills the process. macOS
+            // refuses the option (EINVAL) on a socket whose peer is already gone, such as a
+            // stale-socket probe; such a connection has nobody to talk to anyway.
             var on: Int32 = 1
-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+                close(fd)
+                continue
+            }
+            _ = fcntl(fd, F_SETFL, O_NONBLOCK)
 
             let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
             let client = Client(fd: fd, source: source)
@@ -240,12 +276,15 @@ public final class FakeControlServer: @unchecked Sendable {
     private func write(_ data: Data, to client: Client) {
         var offset = 0
         data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
             while offset < bytes.count {
-                let written = Darwin.write(client.fd, bytes.baseAddress! + offset, bytes.count - offset)
+                let written = Darwin.write(client.fd, base + offset, bytes.count - offset)
                 if written > 0 {
                     offset += written
                 } else if written < 0 && (errno == EAGAIN || errno == EINTR) {
-                    usleep(1_000)
+                    // The client is slow to read: wait until the socket can take more.
+                    var ready = pollfd(fd: client.fd, events: Int16(POLLOUT), revents: 0)
+                    if poll(&ready, 1, 1_000) <= 0 { break }
                 } else {
                     break
                 }
@@ -266,17 +305,21 @@ public final class FakeControlServer: @unchecked Sendable {
 
     private func handle(_ line: Data, from client: Client) {
         guard let message = try? JSONValue(data: line), let fields = message.objectValue else {
-            send(error(nil, "bad_request", "Not a JSON object."), to: client)
+            send(failure(.null, RemoteError(code: "bad_request", message: "not a JSON object")), to: client)
             return
         }
         let id = fields["id"] ?? .null
         guard let number = id.intValue, let op = fields["op"]?.stringValue else {
-            send(error(id, "bad_request", "A request needs an integer id and an op."), to: client)
+            send(failure(id, RemoteError(code: "bad_request", message: "a request needs an integer id and an op")), to: client)
             return
         }
         let args = fields["args"]?.objectValue ?? [:]
         received.append(Received(id: number, op: op, args: args))
         if options.unansweredOps.contains(op) { return }
+        if options.failingOps.contains(op) {
+            send(failure(id, RemoteError(code: "internal", message: "\(op) failed")), to: client)
+            return
+        }
 
         let answer: Result<JSONValue, RemoteError>
         switch op {
@@ -293,15 +336,15 @@ public final class FakeControlServer: @unchecked Sendable {
         case .success(let result):
             send(["id": id, "ok": true, "result": result], to: client)
             if op == "settings.set" { broadcast(event: "settings", data: json(state.settings)) }
-        case .failure(let failure):
-            var body: [String: JSONValue] = ["code": .string(failure.code), "message": .string(failure.message)]
-            if let field = failure.field { body["field"] = .string(field) }
-            send(["id": id, "ok": false, "error": .object(body)], to: client)
+        case .failure(let error):
+            send(failure(id, error), to: client)
         }
     }
 
-    private func error(_ id: JSONValue?, _ code: String, _ message: String) -> JSONValue {
-        ["id": id ?? .null, "ok": false, "error": ["code": .string(code), "message": .string(message)]]
+    private func failure(_ id: JSONValue, _ error: RemoteError) -> JSONValue {
+        var body: [String: JSONValue] = ["code": .string(error.code), "message": .string(error.message)]
+        if let field = error.field { body["field"] = .string(field) }
+        return ["id": id, "ok": false, "error": .object(body)]
     }
 
     private func json<T: Encodable>(_ value: T) -> JSONValue {
@@ -319,38 +362,35 @@ public final class FakeControlServer: @unchecked Sendable {
         return json(status)
     }
 
-    private static let settingKeys: Set<String> = [
-        "bind", "api_key", "zeroconf", "stt.engine", "stt.model", "tts.engine", "tts.model",
-        "tts.voice", "tts.speed", "browser_settings",
-    ]
-
     private func setSettings(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {
+        // Like the real server: the message does not repeat the field, `field` names it.
         func invalid(_ field: String, _ message: String) -> Result<JSONValue, RemoteError> {
-            .failure(RemoteError(code: "invalid_setting", message: "\(field): \(message)", field: field))
+            .failure(RemoteError(code: "invalid_setting", message: message, field: field))
         }
         var next = state
-        for key in args.keys.sorted() {
-            let value = args[key]!
-            guard Self.settingKeys.contains(key) else { return invalid(key, "not a setting") }
+        var keys: [SettingKey] = []
+        for (name, value) in args.sorted(by: { $0.key < $1.key }) {
+            guard let key = SettingKey(rawValue: name) else { return invalid(name, "not a settable key") }
+            keys.append(key)
             switch (key, value) {
-            case ("bind", .string(let raw)):
-                guard let mode = BindMode(rawValue: raw) else { return invalid(key, "loopback or lan") }
+            case (.bind, .string(let raw)):
+                guard let mode = BindMode(rawValue: raw) else { return invalid(name, "must be loopback or lan") }
                 next.settings.bind = mode
-            case ("api_key", .string(let key)):
-                next.apiKey = key
-                next.settings.apiKeySet = !key.isEmpty
-            case ("zeroconf", .bool(let on)): next.settings.zeroconf = on
-            case ("browser_settings", .bool(let on)): next.settings.browserSettings = on
-            case ("stt.engine", .string(let name)): next.settings.stt.engine = name
-            case ("stt.model", .string(let model)): next.settings.stt.model = model
-            case ("tts.engine", .string(let name)): next.settings.tts.engine = name
-            case ("tts.model", .string(let model)): next.settings.tts.model = model
-            case ("tts.voice", .string(let voice)): next.settings.tts.voice = voice
-            case ("tts.speed", .number(let speed)):
-                guard (0.5...2.0).contains(speed) else { return invalid(key, "between 0.5 and 2.0") }
+            case (.apiKey, .string(let apiKey)):
+                next.apiKey = apiKey
+                next.settings.apiKeySet = !apiKey.isEmpty
+            case (.zeroconf, .bool(let on)): next.settings.zeroconf = on
+            case (.browserSettings, .bool(let on)): next.settings.browserSettings = on
+            case (.sttEngine, .string(let engine)): next.settings.stt.engine = engine
+            case (.sttModel, .string(let model)): next.settings.stt.model = model
+            case (.ttsEngine, .string(let engine)): next.settings.tts.engine = engine
+            case (.ttsModel, .string(let model)): next.settings.tts.model = model
+            case (.ttsVoice, .string(let voice)): next.settings.tts.voice = voice
+            case (.ttsSpeed, .number(let speed)):
+                guard speed > 0, speed <= 4 else { return invalid(name, "must be greater than 0 and at most 4") }
                 next.settings.tts.speed = speed
             default:
-                return invalid(key, "wrong type")
+                return invalid(name, "wrong type")
             }
         }
         // Validate the result as a whole, as the real server does through `Settings`.
@@ -372,16 +412,24 @@ public final class FakeControlServer: @unchecked Sendable {
         state = next
 
         var restart = Set<String>()
-        for key in args.keys {
-            if key.hasPrefix("stt.") { restart.insert("stt") }
-            if key.hasPrefix("tts.") { restart.insert("tts") }
-            if ["bind", "api_key", "zeroconf"].contains(key) { restart.formUnion(["stt", "tts"]) }
+        for key in keys {
+            switch key {
+            case .sttEngine, .sttModel: restart.insert("stt")
+            case .ttsEngine, .ttsModel, .ttsVoice, .ttsSpeed: restart.insert("tts")
+            case .bind, .apiKey, .zeroconf: restart.formUnion(["stt", "tts"])
+            case .browserSettings: break  // read live by the status page
+            }
         }
         guard case .object(var result) = json(state.settings) else { return .success(.null) }
         result["restart_required"] = .array(restart.sorted().map { .string($0) })
-        if state.settings.isLANWithoutAPIKey {
-            result["warnings"] = ["lan_without_api_key"]
+        var warnings: [JSONValue] = []
+        if keys.contains(.bind) || keys.contains(.apiKey), state.settings.isLANWithoutAPIKey {
+            warnings.append("lan_without_api_key")
         }
+        for key in keys where options.environmentOverrides.contains(key) {
+            warnings.append(.string("env_override:\(key.rawValue)"))
+        }
+        result["warnings"] = .array(warnings)
         return .success(.object(result))
     }
 

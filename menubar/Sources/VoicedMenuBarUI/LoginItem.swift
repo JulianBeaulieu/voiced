@@ -9,7 +9,7 @@ import ServiceManagement
 public final class LoginItem {
     public private(set) var isEnabled = false
     public private(set) var needsApproval = false
-    public private(set) var errorMessage: String?
+    public var errorMessage: String?
 
     public let isAvailable: Bool
 

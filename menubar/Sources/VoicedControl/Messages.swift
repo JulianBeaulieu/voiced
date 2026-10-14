@@ -3,9 +3,10 @@ import Foundation
 /// The first message the server sends on every connection.
 public struct Hello: Codable, Sendable, Equatable {
     public var `protocol`: Int
-    public var version: String
+    /// The voiced version; nil when the server leaves it out.
+    public var version: String?
 
-    public init(protocol: Int, version: String) {
+    public init(protocol: Int, version: String?) {
         self.protocol = `protocol`
         self.version = version
     }
@@ -34,10 +35,28 @@ public struct RemoteError: Error, Sendable, Equatable, Decodable {
     enum CodingKeys: String, CodingKey { case code, message, field }
 }
 
+/// Why a connection could not be set up. Each case has its own explanation in the UI.
+public enum ConnectFailure: Sendable, Equatable {
+    /// No file at the socket path: the watchdog is not running (or voiced is not installed).
+    case noSocket
+    /// A socket file nobody listens on: left over from a watchdog that stopped.
+    case notListening
+    /// The socket belongs to another user.
+    case permissionDenied
+    /// Something that is not a socket sits at the path.
+    case notASocket
+    /// The path does not fit in a Unix socket address (104 bytes on macOS).
+    case pathTooLong
+    /// Something accepted the connection but never said hello.
+    case noHello
+    /// The server closed the connection before hello, as its peer check does for another user.
+    case closedBeforeHello
+    case other(String)
+}
+
 /// Everything that can go wrong on the client side.
 public enum ControlError: Error, Sendable, Equatable {
-    /// The socket could not be opened: voiced is not running or not installed.
-    case cannotConnect(String)
+    case cannotConnect(ConnectFailure)
     /// The server speaks a protocol version this app does not.
     case unsupportedProtocol(server: Int, supported: Int)
     /// The server sent something that is not the protocol.
@@ -51,8 +70,8 @@ public enum ControlError: Error, Sendable, Equatable {
 extension ControlError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .cannotConnect(let reason):
-            "Cannot connect to voiced: \(reason)"
+        case .cannotConnect(let failure):
+            "Cannot connect to voiced: \(failure)."
         case .unsupportedProtocol(let server, let supported) where server > supported:
             "This voiced uses control protocol \(server); this menu bar app only knows "
                 + "protocol \(supported). Update the menu bar app."
@@ -60,7 +79,7 @@ extension ControlError: LocalizedError {
             "This voiced uses control protocol \(server), older than protocol \(supported) "
                 + "which this app needs. Update voiced."
         case .protocolViolation(let reason):
-            "voiced sent an unexpected message: \(reason)"
+            "voiced sent an unexpected message: \(reason)."
         case .timedOut(let operation):
             "voiced did not answer \(operation) in time."
         case .notConnected:
@@ -68,8 +87,18 @@ extension ControlError: LocalizedError {
         case .connectionClosed:
             "The connection to voiced closed."
         case .remote(let error):
-            error.message.isEmpty ? error.code : error.message
+            error.displayMessage
         }
+    }
+}
+
+extension RemoteError {
+    /// The message, led by the setting it is about when the server names one and the
+    /// message does not already start with it.
+    public var displayMessage: String {
+        let text = message.isEmpty ? code : message
+        guard let field, !field.isEmpty, !text.hasPrefix(field) else { return text }
+        return "\(field): \(text)"
     }
 }
 

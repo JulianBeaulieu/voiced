@@ -1,4 +1,5 @@
 import Foundation
+import TestSupport
 import XCTest
 
 @testable import VoicedControl
@@ -25,7 +26,7 @@ final class DashboardTests: XCTestCase {
         """
 
     private func connected(_ payload: StatusPayload?) -> Dashboard {
-        DashboardReducer.reduce(connection: .connected(version: "0.0.1"), status: payload)
+        DashboardReducer.reduce(connection: .connected(version: "0.0.1"), status: payload, socketPath: "/s")
     }
 
     func testBothWarmIsRunning() throws {
@@ -34,8 +35,9 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.headline, "Running")
         XCTAssertEqual(dashboard.rows.map(\.kind), [.stt, .tts])
         XCTAssertEqual(dashboard.rows[0].engineLine, "parakeet · parakeet-tdt-0.6b-v3")
-        XCTAssertEqual(dashboard.rows[0].detailLine, "Warm · up 1 h 2 min")
-        XCTAssertEqual(dashboard.rows[1].detailLine, "Warm · up 59 s · 2 restarts")
+        XCTAssertEqual(dashboard.rows[0].detailLine, "up 1 h 2 min")
+        XCTAssertEqual(dashboard.rows[1].detailLine, "up 59 s · 2 restarts")
+        XCTAssertNil(dashboard.notice)
         XCTAssertEqual(dashboard.rows[1].tone, .good)
     }
 
@@ -46,7 +48,7 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.headline, "Starting")
         XCTAssertEqual(dashboard.rows[1].stateLabel, "Loading model")
         XCTAssertEqual(dashboard.rows[1].tone, .busy)
-        XCTAssertEqual(dashboard.rows[1].detailLine, "Cold · up 3 s")
+        XCTAssertEqual(dashboard.rows[1].detailLine, "up 3 s")
     }
 
     func testDegradedWinsOverStarting() throws {
@@ -57,6 +59,17 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.headline, "Degraded")
         XCTAssertEqual(dashboard.rows[1].tone, .bad)
         XCTAssertEqual(dashboard.rows[1].engineLine, nil)
+        XCTAssertEqual(dashboard.rows[1].problem, "Not passing health checks.")
+        XCTAssertNil(dashboard.rows[0].problem)
+    }
+
+    func testDegradedShowsTheLastError() throws {
+        let degraded = """
+            {"state": "degraded", "pid": 12, "warm": true, "uptime_s": 10, "restarts": 0,
+             "health": {"status": "degraded", "last_error": "RuntimeError: boom"}}
+            """
+        let dashboard = connected(try status(stt: runningSTT, tts: degraded))
+        XCTAssertEqual(dashboard.rows[1].problem, "Last error: RuntimeError: boom")
     }
 
     func testBothStoppedIsOff() throws {
@@ -88,30 +101,57 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.rows.map(\.stateLabel), ["Unknown", "Unknown"])
     }
 
-    func testNotInstalledFromStatusShowsInstallHelp() throws {
-        let stopped = #"{"state": "stopped", "pid": null, "warm": false, "uptime_s": null, "restarts": 0}"#
-        let dashboard = connected(try status(stt: stopped, tts: stopped, installed: false))
-        XCTAssertEqual(dashboard.health, .off)
-        XCTAssertTrue(dashboard.showsInstallHelp)
-        XCTAssertFalse(dashboard.isControllable)
+    func testConnectedButNotInstalledKeepsTheControls() throws {
+        let dashboard = connected(try status(stt: runningSTT, tts: runningTTS, installed: false))
+        XCTAssertEqual(dashboard.health, .running)
+        XCTAssertFalse(dashboard.showsInstallHelp)
+        XCTAssertTrue(dashboard.isControllable)
+        XCTAssertTrue(dashboard.notice?.contains("not installed as LaunchDaemons") ?? false)
     }
 
-    func testUnreachableDependsOnTheInstall() {
-        let missing = DashboardReducer.reduce(connection: .unreachable(installed: false), status: nil)
+    private func unreachable(_ failure: ConnectFailure, installed: Bool = true) -> Dashboard {
+        DashboardReducer.reduce(
+            connection: .unreachable(installed: installed, reason: .cannotConnect(failure)), status: nil,
+            socketPath: "/Users/someone/.voiced/control.sock")
+    }
+
+    func testMissingSocketDependsOnTheInstall() {
+        let missing = unreachable(.noSocket, installed: false)
         XCTAssertTrue(missing.showsInstallHelp)
         XCTAssertEqual(missing.headline, "Not installed")
 
-        let down = DashboardReducer.reduce(connection: .unreachable(installed: true), status: nil)
+        let down = unreachable(.noSocket)
         XCTAssertFalse(down.showsInstallHelp)
         XCTAssertEqual(down.health, .off)
         XCTAssertEqual(down.headline, "Not running")
         XCTAssertEqual(down.command, "voiced start watchdog")
     }
 
+    func testEachConnectFailureHasItsOwnExplanation() {
+        XCTAssertEqual(unreachable(.notListening).command, "voiced start watchdog")
+        XCTAssertTrue(unreachable(.notListening).message?.contains("left over") ?? false)
+        for failure: ConnectFailure in [.permissionDenied, .notASocket, .pathTooLong, .noHello, .closedBeforeHello, .other("x")] {
+            let dashboard = unreachable(failure)
+            XCTAssertNil(dashboard.command, "only a missing or stale socket is fixed by starting the watchdog")
+            XCTAssertFalse(dashboard.showsInstallHelp)
+            XCTAssertNotNil(dashboard.message)
+        }
+        XCTAssertTrue(unreachable(.permissionDenied).message?.contains("/Users/someone/.voiced/control.sock") ?? false)
+        // Not installed but something odd at the path: explain the oddity, not the install.
+        XCTAssertFalse(unreachable(.notASocket, installed: false).showsInstallHelp)
+    }
+
+    func testStoppedAnsweringAndDisconnected() {
+        let silent = DashboardReducer.reduce(
+            connection: .unreachable(installed: true, reason: .stoppedAnswering), status: nil, socketPath: "/s")
+        XCTAssertEqual(silent.headline, "Not answering")
+        XCTAssertEqual(silent.health, .off)
+    }
+
     func testConnectingAndIncompatible() {
-        XCTAssertEqual(DashboardReducer.reduce(connection: .connecting, status: nil).health, .attention)
+        XCTAssertEqual(DashboardReducer.reduce(connection: .connecting, status: nil, socketPath: "/s").health, .attention)
         XCTAssertEqual(connected(nil).headline, "Connecting")
-        let incompatible = DashboardReducer.reduce(connection: .incompatible(message: "nope"), status: nil)
+        let incompatible = DashboardReducer.reduce(connection: .incompatible(message: "nope"), status: nil, socketPath: "/s")
         XCTAssertEqual(incompatible.health, .off)
         XCTAssertEqual(incompatible.message, "nope")
     }

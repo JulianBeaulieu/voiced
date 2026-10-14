@@ -1,4 +1,5 @@
 import Foundation
+import TestSupport
 import XCTest
 
 @testable import VoicedControl
@@ -7,11 +8,24 @@ final class FramingTests: XCTestCase {
     func testSplitsLinesAcrossReads() throws {
         var framer = LineFramer()
         XCTAssertEqual(try framer.append(Data(#"{"a":"#.utf8)), [])
-        XCTAssertEqual(framer.pendingByteCount, 5)
         let lines = try framer.append(Data("1}\n{\"b\":2}\n{\"c\"".utf8))
         XCTAssertEqual(lines.map { String(decoding: $0, as: UTF8.self) }, [#"{"a":1}"#, #"{"b":2}"#])
         XCTAssertEqual(try framer.append(Data(":3}\n".utf8)).count, 1)
-        XCTAssertEqual(framer.pendingByteCount, 0)
+    }
+
+    func testALongLineArrivingInPiecesIsScannedOnce() throws {
+        var framer = LineFramer()
+        let chunk = Data(repeating: 0x61, count: 64 * 1024)
+        let start = ContinuousClock.now
+        for _ in 0..<15 { XCTAssertEqual(try framer.append(chunk), []) }
+        let lines = try framer.append(Data("\n".utf8))
+        XCTAssertEqual(lines.first?.count, 15 * 64 * 1024)
+        XCTAssertLessThan(ContinuousClock.now - start, .seconds(1))
+    }
+
+    func testDefaultLimitIsOneMebibyte() {
+        var framer = LineFramer()
+        XCTAssertThrowsError(try framer.append(Data(repeating: 0x61, count: 1024 * 1024 + 1)))
     }
 
     func testDropsCarriageReturnsAndBlankLines() throws {
@@ -25,7 +39,7 @@ final class FramingTests: XCTestCase {
         XCTAssertThrowsError(try framer.append(Data("0123456789".utf8))) { error in
             XCTAssertEqual(error as? LineFramer.FramingError, .lineTooLong(10))
         }
-        XCTAssertEqual(framer.pendingByteCount, 0)
+        XCTAssertEqual(try framer.append(Data("{}\n".utf8)).count, 1, "usable after the error")
     }
 
     func testFrameIsOneLineOfCompactJSON() throws {
@@ -62,6 +76,16 @@ final class FramingTests: XCTestCase {
             .event(name: "something_new", data: ["x": 1]))
         XCTAssertNil(IncomingMessage(["id": "not-an-int", "ok": true]))
         XCTAssertNil(IncomingMessage([1, 2]))
+    }
+
+    func testRemoteErrorsLeadWithTheField() {
+        XCTAssertEqual(
+            RemoteError(code: "invalid_setting", message: "must be greater than 0", field: "tts.speed").displayMessage,
+            "tts.speed: must be greater than 0")
+        XCTAssertEqual(
+            RemoteError(code: "invalid_setting", message: "tts.speed: too fast", field: "tts.speed").displayMessage,
+            "tts.speed: too fast")
+        XCTAssertEqual(RemoteError(code: "internal", message: "").displayMessage, "internal")
     }
 
     func testUnknownEventsAndUndecodableKnownEventsAreKeptAsOther() {

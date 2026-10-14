@@ -19,6 +19,12 @@ let usage = """
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
+/// Bad arguments: usage on stderr, exit status 2.
+func fail() -> Never {
+    FileHandle.standardError.write(Data((usage + "\n").utf8))
+    exit(2)
+}
+
 var socketPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("voiced-fake.sock")
 var scenario = FakeScenario.running
 var options = FakeControlServer.Options()
@@ -27,26 +33,19 @@ var arguments = CommandLine.arguments.dropFirst().makeIterator()
 while let argument = arguments.next() {
     switch argument {
     case "--socket":
-        guard let value = arguments.next() else { fatalError(usage) }
+        guard let value = arguments.next() else { fail() }
         socketPath = value
     case "--scenario":
-        guard let value = arguments.next(), let parsed = FakeScenario(rawValue: value) else {
-            print(usage)
-            exit(2)
-        }
+        guard let value = arguments.next(), let parsed = FakeScenario(rawValue: value) else { fail() }
         scenario = parsed
     case "--status-interval":
-        guard let value = arguments.next().flatMap(Double.init), value > 0 else {
-            print(usage)
-            exit(2)
-        }
+        guard let value = arguments.next().flatMap(Double.init), value > 0 else { fail() }
         options.statusInterval = value
     case "-h", "--help":
         print(usage)
         exit(0)
     default:
-        print(usage)
-        exit(2)
+        fail()
     }
 }
 

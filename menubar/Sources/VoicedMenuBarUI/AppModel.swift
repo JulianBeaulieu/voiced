@@ -1,32 +1,30 @@
 import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 import VoicedControl
 
-/// Owns the connection to voiced and everything the popover shows. It keeps one client
+/// Owns the connection to voiced and everything the window shows. It keeps one client
 /// connected, reconnecting with a backoff, applies `status` and `settings` events as they
 /// arrive, and turns user actions into requests.
 @MainActor
 @Observable
 public final class AppModel {
-    public enum Tab: Hashable, Sendable {
-        case status, settings
-    }
-
     public private(set) var connection: ConnectionState = .connecting
     public private(set) var status: StatusPayload?
     public private(set) var settings: SettingsPayload?
     public private(set) var engines: EnginesPayload?
-    /// Services whose settings changed and that have not been restarted since.
+    /// Services whose settings changed and that have not restarted since.
     public private(set) var restartRequired: Set<ServiceKind> = []
     public private(set) var restarting: Set<ServiceKind> = []
     /// Warnings from the last `settings.set`, such as `lan_without_api_key`.
     public private(set) var warnings: [String] = []
     public private(set) var isSaving = false
     public var errorMessage: String?
-    public var tab: Tab = .status
 
-    public var dashboard: Dashboard { DashboardReducer.reduce(connection: connection, status: status) }
+    public var dashboard: Dashboard {
+        DashboardReducer.reduce(connection: connection, status: status, socketPath: socketPath)
+    }
 
     public var serverVersion: String? {
         if case .connected(let version) = connection { return version }
@@ -39,22 +37,36 @@ public final class AppModel {
         return settings.isLANWithoutAPIKey || warnings.contains("lan_without_api_key")
     }
 
+    /// Warnings other than the LAN one, described for people.
+    public var otherWarnings: [String] {
+        warnings.filter { $0 != "lan_without_api_key" }.map(SettingsWarning.describe)
+    }
+
     public let socketPath: String
     private let installProbe: InstallProbe
     private var backoff: Backoff
-    private let opener: @MainActor (String) -> Bool
+    private let livenessTimeout: Duration
+    private let restartTimeout: Duration
+    private let opener: @MainActor (OpenAction) -> Bool
     private var client: ControlClient?
     private var loop: Task<Void, Never>?
+    private var lastHeard = ContinuousClock.now
 
+    /// `livenessTimeout`: the contract pushes `status` at least every 10 s, so a connection
+    /// silent for longer than this is treated as dead.
     public init(
         socketPath: String = SocketLocation.resolve(),
         installProbe: InstallProbe = InstallProbe(),
         backoff: Backoff = Backoff(),
-        opener: @escaping @MainActor (String) -> Bool = AppModel.openWithWorkspace
+        livenessTimeout: Duration = .seconds(25),
+        restartTimeout: Duration = ControlClient.restartTimeout,
+        opener: @escaping @MainActor (OpenAction) -> Bool = AppModel.openWithWorkspace
     ) {
         self.socketPath = socketPath
         self.installProbe = installProbe
         self.backoff = backoff
+        self.livenessTimeout = livenessTimeout
+        self.restartTimeout = restartTimeout
         self.opener = opener
     }
 
@@ -62,65 +74,106 @@ public final class AppModel {
 
     public func start() {
         guard loop == nil else { return }
-        loop = Task { [weak self] in await self?.run() }
+        loop = Task { await run() }
     }
 
     public func stop() {
         loop?.cancel()
         loop = nil
         client?.close()
+        client = nil
     }
 
     private func run() async {
         while !Task.isCancelled {
             let client = ControlClient(socketPath: socketPath)
-            do {
-                let hello = try await client.connect()
-                self.client = client
-                backoff.reset()
-                connection = .connected(version: hello.version)
-                let refresh = Task { await self.refresh(using: client) }
-                for await event in client.events { apply(event) }
-                refresh.cancel()
-                connection = .unreachable(installed: installProbe.isInstalled())
-            } catch let error as ControlError {
-                if case .unsupportedProtocol = error {
-                    connection = .incompatible(message: error.localizedDescription)
-                } else {
-                    connection = .unreachable(installed: installProbe.isInstalled())
-                }
-            } catch {
-                connection = .unreachable(installed: installProbe.isInstalled())
-            }
+            // Set before connecting so `stop()` can interrupt the attempt.
+            self.client = client
+            let reason = await session(with: client)
+            // A cancelled loop belongs to an earlier `start()`; it must not touch the state.
+            guard !Task.isCancelled else { return }
             if self.client === client { self.client = nil }
             status = nil
             restarting = []
-            if Task.isCancelled { break }
+            if let reason {
+                connection = .unreachable(installed: installProbe.isInstalled(), reason: reason)
+            }
             try? await Task.sleep(for: backoff.next())
         }
     }
 
-    /// Fetches status, settings and the engine list after connecting.
-    public func refresh() async {
-        guard let client else { return }
-        await refresh(using: client)
+    /// One connection from connect to close. Returns why it ended, or nil when the protocol
+    /// was refused (the state is already set).
+    private func session(with client: ControlClient) async -> UnreachableReason? {
+        do {
+            let hello = try await client.connect()
+            guard !Task.isCancelled else { return .disconnected }
+            connection = .connected(version: hello.version)
+            lastHeard = .now
+        } catch ControlError.unsupportedProtocol(let server, let supported) {
+            connection = .incompatible(
+                message: ControlError.unsupportedProtocol(server: server, supported: supported)
+                    .localizedDescription)
+            return nil
+        } catch ControlError.cannotConnect(let failure) {
+            return .cannotConnect(failure)
+        } catch ControlError.protocolViolation(let detail) {
+            return .protocolError("voiced sent an unexpected message: \(detail).")
+        } catch {
+            return .cannotConnect(.other(error.localizedDescription))
+        }
+
+        var stalled = false
+        var setupError: String?
+        let liveness = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: livenessTimeout / 5)
+                if ContinuousClock.now - lastHeard > livenessTimeout {
+                    stalled = true
+                    client.close()
+                    return
+                }
+            }
+        }
+        let setup = Task {
+            if let failure = await refresh(using: client) {
+                setupError = failure
+                client.close()
+            }
+        }
+        for await event in client.events { handle(event) }
+        liveness.cancel()
+        setup.cancel()
+        if stalled { return .stoppedAnswering }
+        if let setupError { return .setupFailed(setupError) }
+        return .disconnected
     }
 
-    private func refresh(using client: ControlClient) async {
-        async let status = try? client.status()
-        async let settings = try? client.settings()
-        async let engines = try? client.engines()
-        let (newStatus, newSettings, newEngines) = await (status, settings, engines)
-        guard self.client === client else { return }
-        if let newStatus { self.status = newStatus }
-        if let newSettings { self.settings = newSettings }
-        if let newEngines { self.engines = newEngines }
+    /// Fetches status, settings and the engine list after connecting. Returns a description
+    /// of the failure, if any; a half-filled model is worse than a reconnect.
+    private func refresh(using client: ControlClient) async -> String? {
+        do {
+            async let status = client.status()
+            async let settings = client.settings()
+            async let engines = client.engines()
+            let (newStatus, newSettings, newEngines) = try await (status, settings, engines)
+            guard self.client === client else { return nil }
+            handleStatus(newStatus)
+            self.settings = newSettings
+            self.engines = newEngines
+            return nil
+        } catch {
+            return "voiced did not answer the first requests: \(Self.describe(error))"
+        }
     }
 
-    func apply(_ event: ControlEvent) {
+    func handle(_ event: ControlEvent) {
+        lastHeard = .now
         switch event {
-        case .status(let payload): status = payload
-        case .settings(let payload): settings = payload
+        case .status(let payload):
+            handleStatus(payload)
+        case .settings(let payload):
+            settings = payload
         case .other(name: "settings", _):
             // The contract does not fix this event's payload; fetch when it is not the
             // `settings.get` shape.
@@ -130,8 +183,23 @@ public final class AppModel {
                     settings = fresh
                 }
             }
-        case .other: break
+        case .other:
+            break
         }
+    }
+
+    private func handleStatus(_ payload: StatusPayload) {
+        // A service that restarted, whoever restarted it, has picked up the changes.
+        for kind in restartRequired {
+            guard let old = status?[kind], let new = payload[kind] else { continue }
+            let newProcess = new.pid != nil && new.pid != old.pid
+            let uptimeDropped = (new.uptime ?? 0) < (old.uptime ?? 0)
+            if newProcess || uptimeDropped { restartRequired.remove(kind) }
+        }
+        status = payload
+        // Only a connection that delivers status has proved itself; a watchdog that says
+        // hello and dies keeps backing off.
+        backoff.reset()
     }
 
     // MARK: - Actions
@@ -142,9 +210,13 @@ public final class AppModel {
         restarting.formUnion(kinds)
         defer { restarting.subtract(kinds) }
         do {
-            try await client.restart(target)
+            try await client.restart(target, timeout: restartTimeout)
             restartRequired.subtract(kinds)
             errorMessage = nil
+        } catch ControlError.timedOut {
+            // The request went out; a hung service can take longer to kill than the timeout.
+            // Status events show how it turns out.
+            restartRequired.subtract(kinds)
         } catch {
             errorMessage = Self.describe(error)
         }
@@ -185,37 +257,37 @@ public final class AppModel {
         guard let client else { return }
         do {
             let location = try await client.openTarget(target)
-            if !opener(location) { errorMessage = "Cannot open \(location)." }
+            guard let action = OpenPolicy.action(for: target, location: location) else {
+                errorMessage = "Not opening \(location): it is not the kind of thing asked for."
+                return
+            }
+            if !opener(action) { errorMessage = "Cannot open \(location)." }
         } catch {
             errorMessage = Self.describe(error)
         }
     }
 
     static func describe(_ error: Error) -> String {
-        if case ControlError.remote(let remote) = error, remote.code == "invalid_setting" {
-            return "Not saved. \(remote.message)"
+        if case ControlError.remote(let remote) = error {
+            return remote.code == "invalid_setting" ? "Not saved. \(remote.displayMessage)" : remote.displayMessage
         }
         return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
-    /// Opens a URL from `open`: web pages in the browser, folders in Finder, files in their
-    /// default app (or TextEdit when nothing claims them, as for `.toml`).
-    public static func openWithWorkspace(_ target: String) -> Bool {
+    /// Opens a checked target: web pages in the browser, folders in Finder, the config file
+    /// in the default plain-text editor.
+    public static func openWithWorkspace(_ action: OpenAction) -> Bool {
         let workspace = NSWorkspace.shared
-        if let url = URL(string: target), let scheme = url.scheme?.lowercased(),
-            scheme == "http" || scheme == "https"
-        {
+        switch action {
+        case .webPage(let url), .folder(let url):
             return workspace.open(url)
-        }
-        let path = target.hasPrefix("file://") ? URL(string: target)?.path ?? target : target
-        guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else { return false }
-        let url = URL(fileURLWithPath: path)
-        if workspace.urlForApplication(toOpen: url) == nil,
-            let textEdit = workspace.urlForApplication(withBundleIdentifier: "com.apple.TextEdit")
-        {
-            workspace.open([url], withApplicationAt: textEdit, configuration: NSWorkspace.OpenConfiguration())
+        case .textFile(let url):
+            guard let editor = workspace.urlForApplication(toOpen: .plainText) else {
+                workspace.activateFileViewerSelecting([url])
+                return true
+            }
+            workspace.open([url], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration())
             return true
         }
-        return workspace.open(url)
     }
 }
