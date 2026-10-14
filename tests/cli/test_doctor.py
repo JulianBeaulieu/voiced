@@ -10,6 +10,7 @@ import pytest
 
 from voiced import doctor
 from voiced.config import Settings
+from voiced.engines import kokoro
 from voiced.engines.kokoro import ENV_ESPEAK_LIBRARY
 from voiced.launchd.control import CommandResult
 from voiced.watchdog import Observation
@@ -60,25 +61,29 @@ def test_python_version() -> None:
     assert doctor.check_python((3, 14, 0)).result == "fail"
 
 
-KEG = "/opt/homebrew/opt/espeak-ng"
+def _keg(root: Path) -> Path:
+    """A Homebrew espeak-ng keg under ``root``: the library and its data directory."""
+    (root / "lib").mkdir(parents=True)
+    (root / "lib" / "libespeak-ng.dylib").write_bytes(b"")
+    (root / "share" / "espeak-ng-data").mkdir(parents=True)
+    return root
 
 
-def test_espeak_unlinked_keg_passes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The keg is what the engine loads, linked or not; no binary on PATH needed."""
-    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
-    keg_lib = f"{KEG}/lib/libespeak-ng.dylib"
-    monkeypatch.setattr(Path, "is_file", lambda self: str(self) == keg_lib)
-    monkeypatch.setattr("shutil.which", lambda name: None)
+def test_espeak_unlinked_keg_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The engine loads the keg under opt/, linked or not, so that is what passes.
+    Whether an ``espeak-ng`` binary is on PATH is not looked at."""
+    keg = _keg(tmp_path / "opt" / "espeak-ng")
+    monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"), str(keg)))
     check = doctor.check_espeak()
-    assert check.result == "pass"
-    assert check.detail == f"{keg_lib} (Homebrew), data {KEG}/share/espeak-ng-data"
+    assert check == doctor.Check(
+        "espeak-ng",
+        "pass",
+        f"found {keg}/lib/libespeak-ng.dylib (Homebrew), data {keg}/share/espeak-ng-data",
+    )
 
 
-def test_espeak_binary_on_path_without_library_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An espeak-ng binary the engine cannot load is not enough."""
-    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
-    monkeypatch.setattr(Path, "is_file", lambda self: False)
-    monkeypatch.setattr("shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+def test_espeak_missing_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
     check = doctor.check_espeak()
     assert check.result == "fail"
     assert "brew install espeak-ng" in check.detail and ENV_ESPEAK_LIBRARY in check.detail
@@ -90,10 +95,16 @@ def test_espeak_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     lib.write_bytes(b"")
     monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
     check = doctor.check_espeak()
-    assert check == doctor.Check("espeak-ng", "pass", f"{lib} ({ENV_ESPEAK_LIBRARY})")
+    assert check == doctor.Check("espeak-ng", "pass", f"found {lib} ({ENV_ESPEAK_LIBRARY})")
+
+
+def test_espeak_stale_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A stale override breaks Kokoro, but only Kokoro: warn when it is not the engine."""
     monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(tmp_path / "missing.dylib"))
     broken = doctor.check_espeak()
     assert broken.result == "fail" and "missing.dylib" in broken.detail
+    relaxed = doctor.check_espeak(required=False)
+    assert relaxed.result == "warn" and relaxed.detail == broken.detail
 
 
 def test_espeak_required_follows_tts_engine(
@@ -177,9 +188,10 @@ def test_check_ports_uses_all_four(settings: Settings) -> None:
 
     checks = doctor.check_ports(settings, runner)
     assert [c.result for c in checks] == ["pass"] * 4
-    # The shared fixture moves the Wyoming ports to free ones; compare with it.
-    stt_wyoming, tts_wyoming = settings.stt.wyoming_port, settings.tts.wyoming_port
-    assert seen == ["-iTCP:8881", f"-iTCP:{stt_wyoming}", "-iTCP:8880", f"-iTCP:{tts_wyoming}"]
+    # The shared fixture moves every port to a free one; compare with it.
+    stt, tts = settings.stt, settings.tts
+    ports = [stt.http_port, stt.wyoming_port, tts.http_port, tts.wyoming_port]
+    assert seen == [f"-iTCP:{port}" for port in ports]
 
 
 def test_filevault() -> None:

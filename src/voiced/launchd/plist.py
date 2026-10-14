@@ -12,6 +12,12 @@ import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
+# The rotating application log, shared by voiced.logging and the stdlib-only
+# watchdog so both rotate the same way.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
+
 
 @dataclass(frozen=True)
 class LogPaths:

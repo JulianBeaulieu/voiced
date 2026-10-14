@@ -8,10 +8,11 @@ import sys
 from pathlib import Path
 
 from voiced.config import LogLevel
+from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
 
-FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-MAX_BYTES = 10 * 1024 * 1024
-BACKUP_COUNT = 5
+FORMAT = LOG_FORMAT
+MAX_BYTES = LOG_MAX_BYTES
+BACKUP_COUNT = LOG_BACKUP_COUNT
 
 
 def configure_logging(

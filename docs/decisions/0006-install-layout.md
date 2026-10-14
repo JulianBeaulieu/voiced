@@ -76,7 +76,9 @@ stderr is a terminal (`voiced serve` run by hand, which shows every line).
 Under launchd stderr is a file, so no log records go there; the stderr file
 keeps only what bypasses logging: a traceback from a crash during import or
 before logging is configured, and errors raised by the logging system
-itself. The watchdog follows the same rule (ADR 0012). `voiced logs` reads
+itself. The watchdog decides by mode instead (ADR 0012): as a daemon it
+writes only its rotating file, and with `--once` only stderr; both
+configurers share the size and backup count from `voiced.launchd.plist`. `voiced logs` reads
 the rotated `<service>.log`; `voiced logs --stderr` adds the stderr file
 when looking for a crash.
 

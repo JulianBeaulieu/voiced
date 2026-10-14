@@ -32,8 +32,8 @@ sudo bash ~/.config/voiced/launchd/install-daemons.sh
 espeak-ng library Kokoro would load (the Homebrew keg or
 `VOICED_ESPEAK_LIBRARY`), ffmpeg, memory, the four ports (and which process
 holds them), FileVault, whether the daemons are installed and loaded, Metal
-from the service environment, and the last `--metal-probe` result. It exits non-zero only on
-a failed check, not on a warning.
+from the service environment, and the last `--metal-probe` result. It exits
+non-zero only on a failed check, not on a warning.
 
 ## launchd
 

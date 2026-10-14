@@ -34,6 +34,7 @@ from voiced.launchd.control import (
     print_service,
     run_command,
 )
+from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
 
 if TYPE_CHECKING:
     from voiced.config import WatchdogConfig
@@ -490,11 +491,11 @@ def configure_watchdog_logging(level: str = "info", log_file: Path | None = None
     root.setLevel(level.upper())
     for existing in list(root.handlers):
         root.removeHandler(existing)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    formatter = logging.Formatter(LOG_FORMAT)
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         handler: logging.Handler = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+            log_file, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
         )
     else:
         handler = logging.StreamHandler()
