@@ -39,6 +39,16 @@ uses [Semantic Versioning](https://semver.org/).
   `/v1/audio/speech` with every format streaming (wav, pcm, mp3, opus),
   `/v1/audio/voices`, the status page at `/` and `/metrics.json`. ffmpeg is
   now a documented dependency.
+- Parakeet TDT 0.6B v3 speech-to-text engine (#7), the default: batch
+  transcription in overlapping 20 s chunks, streaming with partial
+  transcripts and a finalize within milliseconds of the end of speech, and
+  Silero VAD through `pysilero-vad` (new core dependency) in `voiced.vad`.
+  Known limits: partials trail by about 0.7 s, and a pause of about one
+  second can repeat a short word in a streamed transcript.
+- Soprano-80M text-to-speech engine (#8), opt-in: one voice, ignores
+  `speed`, first audio in about 150 to 220 ms, with a repetition penalty and
+  a per-sentence length bound against runaway generation. `scipy` joins the
+  `tts` extra for resampling its 32 kHz output.
 - Documentation: README with quickstart, architecture diagram, benchmarks
   and troubleshooting; API reference; Home Assistant guide; architecture and
   operations guides; ADR index; contributing guide; issue and pull request
@@ -48,5 +58,5 @@ uses [Semantic Versioning](https://semver.org/).
 
 - CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.0`, installs
   ffmpeg, and cancels superseded runs of the same branch.
-
-<!-- TODO(phase2): add the Parakeet and Soprano entries when they merge -->
+- `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to
+  `>=0.5.8,<0.5.10`, the releases the engines were checked against.

@@ -49,8 +49,8 @@ Dependencies are split so CI and non-Apple machines can install the core:
 the MLX engines are optional extras (`stt`, `tts`), the tools are a `dev`
 dependency group.
 
-Ports: the TTS HTTP API takes 8880 because the prototype and other
-Kokoro-serving projects use it; STT takes the next one, 8881. Wyoming uses the
+Ports: the TTS HTTP API takes 8880 because other Kokoro-serving
+projects use it; STT takes the next one, 8881. Wyoming uses the
 conventional 10300 (STT) and 10200 (TTS). All four are configurable.
 
 Python: `>=3.11,<3.14`, pinned to 3.12 for development. The upper bound comes

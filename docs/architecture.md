@@ -89,7 +89,9 @@ rather than waiting for a load thread that cannot be interrupted.
 4. Blocking MLX work runs through `voiced.threads.run_blocking`, which keeps
    the event loop free and, unlike `asyncio.to_thread`, holds the slot until
    the thread finishes even when the caller is cancelled. A cancelled client
-   therefore cannot start a second MLX call next to a running one.
+   therefore cannot start a second MLX call next to a running one. Parakeet
+   uses `voiced.threads.ModelThread`, the same rule on one dedicated thread,
+   because an MLX stream belongs to the thread that created it.
 5. The transport maps the outcome to its wire format with one table: the
    HTTP status and error type, the WebSocket close code, or the Wyoming
    `Error` code.
@@ -174,21 +176,18 @@ entry points on every lookup, so a newly installed plugin package is visible
 without a reinstall of voiced. An `engine` name that is not installed stops
 the service at startup with the list of installed names.
 
-Registered on `main` today:
+Registered engines:
 
 | Name | Group | Engine |
 |---|---|---|
-| `kokoro` | `voiced.tts_engines` | Kokoro-82M via MLX with espeak-ng phonemes ([ADR 0009](decisions/0009-tts-kokoro-espeak-tokens.md)) |
+| `parakeet` | `voiced.stt_engines` | Parakeet TDT 0.6B v3 via `parakeet-mlx`, batch and streaming, the default ([ADR 0008](decisions/0008-stt-engine-parakeet.md)) |
+| `kokoro` | `voiced.tts_engines` | Kokoro-82M via MLX with espeak-ng phonemes, the default ([ADR 0009](decisions/0009-tts-kokoro-espeak-tokens.md)) |
+| `soprano` | `voiced.tts_engines` | Soprano-80M via mlx-audio, opt-in, with a repetition penalty and a per-sentence length bound against runaway generation ([ADR 0010](decisions/0010-tts-soprano.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
-
-The default config also names `parakeet` for speech-to-text; that engine,
-and the optional `soprano` voice, are still in review.
-
-<!-- TODO(phase2): add the parakeet and soprano rows when their engines are on main -->
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
 which provides `load()`, the loaded, voice and speed checks and the
-split-synthesize-yield loop; Kokoro does.
+split-synthesize-yield loop; Kokoro and Soprano do.
 
 The MLX engines live in the optional extras `stt` and `tts`, so the core
 package installs on any machine and CI runs against the fakes.
@@ -221,7 +220,9 @@ class TTSEngine:
 Rules every engine follows:
 
 - All methods are `async`. Every blocking model call, including the ones in
-  `load()`, goes through `voiced.threads.run_blocking`. The server never
+  `load()`, goes through `voiced.threads.run_blocking`, or through a
+  `voiced.threads.ModelThread` when the engine keeps MLX streams, which are
+  tied to the thread that created them. The server never
   calls two inference methods on one engine at once, so engines need no
   locking.
 - `load()` is called once, before anything else, and must warm the model.

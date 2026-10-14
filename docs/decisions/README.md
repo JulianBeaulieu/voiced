@@ -14,11 +14,11 @@ merge, and this index is updated when a record lands on `main`.
 | [0005](0005-shared-inference-and-audio-primitives.md) | Shared inference and audio primitives | `inference()` as the one way into an engine, the outcome taxonomy, timeouts on every socket await, rules for streaming transports, background model load. |
 | [0006](0006-install-layout.md) | Install layout | `~/.voiced` for the service environment, staged plists and printed sudo scripts, uninstall safety rules. |
 | [0007](0007-http-api.md) | HTTP API layer | ffmpeg as an external dependency, every speech format streaming, upload and input limits, the `model` field, the WebSocket protocol, the status page. |
+| [0008](0008-stt-engine-parakeet.md) | Parakeet speech-to-text engine | `parakeet-mlx` streaming with a (64, 64) context and 0.8 s calls, the speech-start gate and speculative final call, Silero VAD via `pysilero-vad`, measured latency, memory and known limits. |
 | [0009](0009-tts-kokoro-espeak-tokens.md) | Kokoro pronounces espeak-ng phonemes | espeak-ng phonemes into the MLX model instead of misaki, how espeak-ng is found, the GPL-3 implication. |
+| [0010](0010-tts-soprano.md) | Soprano, selectable and not default | Apache-2.0 license check, the repetition penalty and per-sentence bound against runaway generation, 32 to 24 kHz resampling, first-audio and runaway measurements. |
 | [0011](0011-wyoming.md) | Wyoming listeners | In-process listeners, STT utterance bounds, per-sentence TTS slots, error codes, zeroconf only when reachable, what Home Assistant expects. |
 | [0012](0012-watchdog.md) | Watchdog design | Stdlib-only third daemon, the decision rules, stall detection, restart by SIGKILL plus `kickstart` as a non-root user. |
-
-<!-- TODO(phase2): add 0008 (Parakeet) and 0010 (Soprano) when their PRs merge -->
 
 ## Writing one
 

@@ -153,14 +153,21 @@ reboots need a person. voiced does not change this setting.
 
 ## Memory budget
 
-| Service | Model | Peak resident |
+| Service | Model | Memory |
 |---|---|---|
-| tts | Kokoro-82M | 469 MB, measured on an M1 Max |
-| stt | Parakeet TDT 0.6B v3 | pending |
+| tts | Kokoro-82M (default) | 469 MB peak resident |
+| tts | Soprano-80M (opt-in) | 392 MB resident |
+| stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 
-<!-- TODO(phase2): fill in the stt figure when the Parakeet engine is on main -->
+All figures were measured on an M1 Max. Parakeet's are MLX allocations
+(`mx.get_peak_memory()`). Batch input longer than 20 s is transcribed in
+overlapping 20 s chunks and MLX's buffer cache is emptied after each request,
+so the serving peak holds for any input length. The load peak is a transient:
+parakeet-mlx reads the fp32 weights and then casts them to bf16
+([ADR 0008](decisions/0008-stt-engine-parakeet.md)).
 
-Plan for the two services together to stay under 3 GB. On a Mac that also
+Plan for the two services together to stay under 3 GB while serving, and
+for about 4.5 GB while the stt service starts. On a Mac that also
 runs an LLM server, add up what each resident model needs on top of the few
 gigabytes macOS itself uses, and leave headroom. Apple Silicon shares memory
 between CPU and GPU, so there is no separate VRAM to run out of, but the GPU

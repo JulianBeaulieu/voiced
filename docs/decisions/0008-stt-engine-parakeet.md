@@ -8,8 +8,8 @@ The STT engine behind the frozen `STTEngine` interface is Parakeet TDT 0.6B
 v3 (`mlx-community/parakeet-tdt-0.6b-v3`, 25 European languages) via
 `parakeet-mlx` 0.5. The interface requires that `add_audio` returns within
 tens of milliseconds, that `partial()` never blocks, and that `finalize()`
-is fast after the last `add_audio`. The acceptance target (DECISIONS.md,
-2026-10-14) is a finalize within 50 ms of the end of the endpointer's silence
+is fast after the last `add_audio`. The acceptance target, set on
+2026-10-14, is a finalize within 50 ms of the end of the endpointer's silence
 window if a simple design reaches it, otherwise a worst case of 150 ms across
 chunk sizes, alignments and a -55 dBFS noise floor. End of speech is decided
 outside the engine.

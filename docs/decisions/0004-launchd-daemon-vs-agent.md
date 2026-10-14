@@ -18,7 +18,7 @@ and that has no Aqua session. This had to be measured, not assumed.
 
 A throwaway one-shot LaunchDaemon (`UserName` set to the installing user,
 `RunAtLoad` true, `KeepAlive` false, `ProcessType Interactive`) ran
-`voiced.launchd.metal_probe` on an M1 Max MacBook Pro (macOS 15.7.4, MLX
+`voiced.launchd.metal_probe` on an M1 Max (macOS 15.7.4, MLX
 0.32.3, Python 3.12). The probe imports `mlx.core`, multiplies two 1024x1024
 random matrices and records the process context. Result:
 

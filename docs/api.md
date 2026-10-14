@@ -148,7 +148,18 @@ a model that is still loading, refuses the handshake with HTTP `403`.
 | text | `{"type": "end"}` | End of the utterance. The server finalizes, sends `final` and closes. |
 
 The server does not detect end of speech on this endpoint; the client
-decides and sends `end`.
+decides and sends `end`. Inside the engine, Parakeet runs the Silero speech
+detector to skip silence and to start its last encoder call during a pause,
+so `final` usually arrives within a few milliseconds of `end`. The config key
+`stt.vad_silence_ms` (default 200) is the silence window for server-side end
+of speech, which neither this endpoint nor Wyoming uses yet; changing it has
+no effect in this version.
+
+Partial transcripts trail the speaker by about 0.7 s, because the engine
+encodes audio in 0.8 s steps. A pause of about one second inside an
+utterance can repeat a short word in the streamed transcript; batch
+transcription of the same audio does not. See
+[ADR 0008](decisions/0008-stt-engine-parakeet.md).
 
 ### Messages from the server
 
@@ -211,7 +222,7 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 | `input` | yes | Text to speak, not empty, at most `tts.max_input_chars` (default 4096). Numbers, times, units and acronyms are spelled out before synthesis and Markdown is stripped. |
 | `model` | no | See [The `model` field](#the-model-field). |
 | `voice` | no | An id from [`/v1/audio/voices`](#get-v1audiovoices). Defaults to `tts.default_voice` (`af_heart`). |
-| `speed` | no | Multiplier above 0 and up to 4. Defaults to `tts.speed` (1.0). |
+| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano has no rate control and ignores it. |
 | `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
 
 | Format | `Content-Type` | Body |
@@ -290,6 +301,7 @@ curl -s http://127.0.0.1:8880/v1/audio/voices
 Only voices in a configured language are listed. Kokoro voice ids start with
 a language and gender code: `af_` and `am_` are American English female and
 male, `bf_` and `bm_` British. Version 1 serves the 28 English voices.
+Soprano, when selected, has one voice, `default`.
 
 ## GET /v1/models
 

@@ -47,7 +47,8 @@ engine = "parakeet"
 model = "mlx-community/parakeet-tdt-0.6b-v3"
 # Languages advertised to clients. Must be a subset of what the engine supports.
 languages = ["en"]
-# End-of-speech detection: how much trailing silence ends an utterance.
+# Silence window for server-side end-of-speech detection. Reserved: no
+# transport ends an utterance on it yet, so changing it has no effect.
 vad_silence_ms = 200
 # Requests waiting for the GPU beyond this number get HTTP 503.
 queue_depth = 8

@@ -2,19 +2,18 @@
 
 Run speech-to-text and text-to-speech on your Mac for Home Assistant voice
 control or any app that speaks the OpenAI audio API. Models stay loaded on
-the Apple Silicon GPU, so replies start in about 100 ms. voiced runs as two
+the Apple Silicon GPU, so spoken replies start in about 100 ms with the
+default voice. voiced runs as two
 services, one for each direction, under launchd plus a watchdog: they start
 at boot without anyone logging in and restart themselves after a crash or a
 hang. Home Assistant talks to it over
 Wyoming, the protocol its Assist pipelines use for local speech services.
 
-**Status:** pre-alpha. The HTTP API, the Wyoming listeners, the installer,
-the watchdog, `voiced doctor` and the Kokoro text-to-speech engine are in
-place. The Parakeet speech-to-text engine and the optional Soprano voice are
-still in review; until Parakeet lands, the stt service cannot start with the
-default config. Do not deploy yet.
-
-<!-- TODO(phase2): update the status line once the Parakeet and Soprano engines are on main -->
+**Status:** pre-alpha. Speech-to-text with Parakeet TDT 0.6B v3,
+text-to-speech with Kokoro-82M and the optional Soprano-80M voice, the HTTP
+API, the Wyoming listeners, the installer, the watchdog and `voiced doctor`
+are in place. Nothing has been released yet, and the numbers below come from
+one machine. Expect breaking changes.
 
 ## Quickstart
 
@@ -190,18 +189,18 @@ exposes the services to your whole network:
 ## Models and licenses
 
 Weights are not vendored. Each engine downloads its model from Hugging Face
-into the local cache, during `voiced install` or on first start.
+into the local cache, during `voiced install` or on first start. Silero VAD
+is the exception: it ships inside the `pysilero-vad` wheel.
 
-| Model | Role | Default | Weights license |
+| Model | Role | Default | License |
 |---|---|---|---|
 | [Parakeet TDT 0.6B v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | STT | yes | CC-BY-4.0 |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
-| Soprano-80M | TTS | no, selectable | see model card |
+| [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
+| Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 
-<!-- TODO(phase2): confirm the Parakeet and Soprano rows when their engines are on main -->
-
-CC-BY-4.0 covers the Parakeet weights: attribute NVIDIA if you redistribute
-them. It says nothing about the transcripts you produce.
+CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
+weights. It says nothing about the transcripts you produce.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -212,25 +211,57 @@ also pulls in the `espeakng-loader` wheel as a dependency of `kokoro-onnx`;
 that wheel carries its own GPL-3 copy of espeak-ng, which voiced does not
 use.
 
+### Using Soprano
+
+Soprano-80M is installed with the `tts` extra but is opt-in. To use it, set
+all three keys under `[tts]` in `~/.config/voiced/config.toml`:
+
+```toml
+[tts]
+engine = "soprano"
+model = "mlx-community/Soprano-80M-bf16"
+default_voice = "default"
+```
+
+Then run `voiced install` again, which downloads the model, and the
+install script, which restarts the daemons. Know its limits before you
+switch. Its first audio takes about 150 to
+220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
+accepted and ignored. It has one voice, `default`. It sometimes runs on past
+the end of a sentence; voiced cuts each sentence at a length bound with a
+short fade and logs `soprano: runaway generation`, which can clip the last
+word, most often on one- and two-word replies. The details are in
+[ADR 0010](docs/decisions/0010-tts-soprano.md).
+
 ## Benchmarks
 
-M1 Max MacBook Pro with 64 GB, macOS 15.7, warm model, local request.
-Pre-release measurements: the engine rows come from the Kokoro engine
-running alone in a process, the others from benchmark scripts written
-before this package.
-"First audio" is the time to the first PCM chunk of a multi-sentence text.
+M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
+alone in its process. These are pre-release measurements from one machine;
+the round trip comes from a benchmark script written before this package.
+"First audio" is the time to the first PCM chunk.
 
 | Metric | Measured | Source |
 |---|---|---|
-| Kokoro first audio | 106 ms median | Kokoro engine, 2026-10-14 |
+| Kokoro first audio, multi-sentence text | 106 ms median | Kokoro engine, 2026-10-14 |
 | Kokoro real-time factor | 0.046 | Kokoro engine, 2026-10-14 |
 | Kokoro load including warm-up | 1.9 s | Kokoro engine, 2026-10-14 |
-| Kokoro engine process, peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
-| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms | pre-release script, 2026-10-13 |
+| Kokoro peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
+| Soprano first audio | 156 to 223 ms median | Soprano engine, 2026-10-14 |
+| Soprano resident memory | 392 MB | Soprano engine, 2026-10-14 |
+| Parakeet batch, 9.4 s clip | 163 ms | Parakeet engine, 2026-10-14 |
+| Parakeet streaming finalize after the silence window | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
+| Parakeet first partial after the first word | about 0.7 s | Parakeet engine, 2026-10-14 |
+| Parakeet load including warm-up, warm disk cache | 1.2 s | Parakeet engine, 2026-10-14 |
+| Parakeet memory: after load, serving peak, load peak | 1.28 GB, 2.46 GB, 3.6 to 4.1 GB | Parakeet engine, 2026-10-14 |
 | Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median | pre-release script, 2026-10-13 |
 
-Numbers measured on the installed services follow with the speech-to-text
-engine.
+Parakeet's figures are MLX allocations; its load peak happens once, while
+the fp32 weights are cast to bf16, and is over the 3 GB the two services
+need while serving. Known limits of streaming transcription: partial
+transcripts trail the speaker by about 0.7 s, and a pause of about one second
+inside an utterance can repeat a short word ("set the the thermostat").
+Batch transcription is not affected. The measurements are in
+[ADR 0008](docs/decisions/0008-stt-engine-parakeet.md).
 
 ## Troubleshooting
 
@@ -248,6 +279,8 @@ daemons and Metal access, including from a real daemon context with
 | tts exits at startup with `EspeakNotFound` | espeak-ng is missing: `brew install espeak-ng`. If Homebrew's old `espeak` formula is installed, `brew unlink espeak` first. |
 | HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg: `brew install ffmpeg`. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
+| Soprano clips the last word; the log shows `soprano: runaway generation` | The model ran past the sentence and was cut at its length bound. Expected now and then, mostly on one- and two-word replies; Kokoro does not do this. |
+| Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
 | `voiced stop` prints a `sudo` command | Unloading a LaunchDaemon needs root; run the printed command. |

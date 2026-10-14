@@ -1,6 +1,6 @@
 # 0002: Engine interfaces
 
-Date: 2026-10-14. Status: accepted (frozen for Phase 1).
+Date: 2026-10-14. Status: accepted (frozen).
 
 ## Context
 
@@ -66,8 +66,8 @@ reference implementations and ship registered as `fake`.
 
 ## Consequences
 
-- Changing these signatures after Phase 1 starts means coordinating three
-  workstreams; treat them as frozen.
+- Changing these signatures means changing every engine, the HTTP layer
+  and the Wyoming layer together; treat them as frozen.
 - Engines that natively produce a different sample rate must resample
   themselves.
 - Language lists are per engine and advertised through `/v1/models` and the

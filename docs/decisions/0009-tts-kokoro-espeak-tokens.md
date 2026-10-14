@@ -12,7 +12,7 @@ in other ways. The ONNX port of Kokoro (`kokoro-onnx`) uses espeak-ng for
 everything and pronounced the same sentences correctly, at the cost of
 running on the CPU. Feeding espeak-ng's phonemes into the MLX model gave the
 ONNX pronunciation at MLX speed: 92 ms per sentence, real-time factor 0.04,
-in the prototype.
+in a standalone benchmark script.
 
 Using `KokoroPipeline.generate_from_tokens` for that turned out to require
 constructing a `KokoroPipeline`, which imports misaki (and with `misaki[en]`,
@@ -91,6 +91,6 @@ installed.
   characters per chunk) and, because acronym-heavy text phonemizes to more
   than 1.7 characters per character, by cutting the phoneme string at spaces
   with the same `cut_to_length` helper.
-- Measured 2026-10-14 on an M1 Max laptop, one engine per process, warm:
+- Measured 2026-10-14 on an M1 Max, one engine per process, warm:
   load 1.9 s including warm-up, first chunk 106 ms median, real-time factor
   0.046, 469 MB maximum resident set size, 326 MB active MLX memory.
