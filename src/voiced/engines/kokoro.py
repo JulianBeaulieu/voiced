@@ -19,7 +19,6 @@ without the ``tts`` extra.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import time
@@ -31,6 +30,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from voiced.audio import float32_to_pcm16
 from voiced.engines.base import (
     TTS_SAMPLE_RATE,
     EngineError,
@@ -41,6 +41,7 @@ from voiced.engines.base import (
     Voice,
 )
 from voiced.text.sentences import cut_to_length, split_sentences
+from voiced.threads import run_blocking
 
 log = logging.getLogger(__name__)
 
@@ -160,15 +161,6 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
     ]
 
 
-def _float32_to_pcm16(samples: NDArray[np.floating]) -> bytes:
-    """Mono float audio in [-1, 1] to int16 little-endian bytes. NaN becomes
-    silence, out-of-range values clip, and rounding is to nearest. Temporary:
-    replaced by ``voiced.audio.float32_to_pcm16`` once the core primitives
-    land."""
-    flat = np.nan_to_num(np.asarray(samples, dtype=np.float32).reshape(-1))
-    return np.rint(np.clip(flat, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
-
-
 class KokoroEngine(TTSEngine):
     name = "kokoro"
     model_id = "mlx-community/Kokoro-82M-bf16"
@@ -186,7 +178,7 @@ class KokoroEngine(TTSEngine):
     # -- lifecycle -----------------------------------------------------------
 
     async def load(self) -> None:
-        await asyncio.to_thread(self._load_sync)
+        await run_blocking(self._load_sync)
 
     def _load_sync(self) -> None:
         """Build everything in locals and assign at the end, so a failure
@@ -253,14 +245,16 @@ class KokoroEngine(TTSEngine):
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
         """``text`` is already normalized by the caller; this only splits it
-        into sentences and synthesizes one chunk per sentence."""
+        into sentences and synthesizes one chunk per sentence. Each model call
+        goes through ``run_blocking`` so a cancelled request (client gone)
+        cannot release the inference slot while the GPU is still busy."""
         self._check_loaded()
         if voice not in self._packs:
             raise UnknownVoice(voice)
         if not MIN_SPEED <= speed <= MAX_SPEED:
             raise EngineError(f"speed must be between {MIN_SPEED} and {MAX_SPEED}")
         for sentence in split_sentences(text):
-            pcm = await asyncio.to_thread(self._synth_sentence, sentence, voice, speed)
+            pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)
             if pcm:
                 yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
 
@@ -324,4 +318,4 @@ def _synth(model: Any, tokenizer: Any, pack: Any, sentence: str, voice: str, spe
         out = model(chunk, pack[len(chunk) - 1], speed, return_output=True)
         parts.append(np.array(out.audio, copy=False).reshape(-1))
     audio = np.concatenate(parts) if len(parts) > 1 else parts[0]
-    return _float32_to_pcm16(audio)
+    return float32_to_pcm16(audio)

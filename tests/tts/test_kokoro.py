@@ -3,6 +3,7 @@ Metal; everything else runs on CI."""
 
 from __future__ import annotations
 
+import asyncio
 import statistics
 import threading
 import time
@@ -23,10 +24,10 @@ from voiced.engines.kokoro import (
     MIN_SPEED,
     EspeakNotFound,
     KokoroEngine,
-    _float32_to_pcm16,
     espeak_candidates,
     kokoro_voices,
 )
+from voiced.queue import InferenceQueue
 from voiced.text import normalize
 
 # -- registry, metadata, voice table -----------------------------------------
@@ -215,10 +216,68 @@ async def test_synthesis_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch
     assert threads and all(t != threading.get_ident() for t in threads)
 
 
-def test_float32_to_pcm16_rounds_clips_and_silences_nan() -> None:
-    pcm = _float32_to_pcm16(np.array([[0.0, 0.5, -0.5, 1.0, -1.0, 2.0, np.nan]], dtype=np.float32))
-    assert np.frombuffer(pcm, dtype="<i2").tolist() == [0, 16384, -16384, 32767, -32767, 32767, 0]
-    assert _float32_to_pcm16(np.zeros((1, 0), dtype=np.float32)) == b""
+class _Overlap:
+    """Counts concurrent model calls through a slow fake synthesizer."""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+
+    def synth(self, sentence: str, voice: str, speed: float) -> bytes:
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(0.15)
+        with self.lock:
+            self.active -= 1
+        return bytes(2)
+
+
+async def _cancel_mid_call_then_start_next(engine: KokoroEngine) -> None:
+    """The server's shape: each request holds the inference slot while it
+    iterates the engine. Cancel the first inside its model call and start the
+    second immediately."""
+    queue = InferenceQueue(capacity=2)
+
+    async def request(text: str) -> None:
+        async with queue.slot():
+            async for _ in engine.synthesize(text, "af_heart"):
+                pass
+
+    first = asyncio.create_task(request("One. Two."))
+    await asyncio.sleep(0.05)  # first is inside its model call
+    first.cancel()
+    second = asyncio.create_task(request("Three."))
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await second
+
+
+async def test_cancelled_request_never_overlaps_the_next_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client disconnect cancels the awaiting task. ``run_blocking`` keeps
+    the slot until the model thread returns, so the next request cannot start
+    a second concurrent model call (review item 1)."""
+    engine = KokoroEngine()
+    _stub_loaded(engine, monkeypatch)
+    overlap = _Overlap()
+    monkeypatch.setattr(engine, "_synth_sentence", overlap.synth)
+    await _cancel_mid_call_then_start_next(engine)
+    assert overlap.peak == 1
+
+
+async def test_overlap_control_with_plain_to_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control for the test above: with ``asyncio.to_thread`` the slot is
+    released while the thread still runs and two model calls overlap."""
+    engine = KokoroEngine()
+    _stub_loaded(engine, monkeypatch)
+    overlap = _Overlap()
+    monkeypatch.setattr(engine, "_synth_sentence", overlap.synth)
+    monkeypatch.setattr("voiced.engines.kokoro.run_blocking", asyncio.to_thread)
+    await _cancel_mid_call_then_start_next(engine)
+    assert overlap.peak == 2
 
 
 # -- model tests --------------------------------------------------------------
