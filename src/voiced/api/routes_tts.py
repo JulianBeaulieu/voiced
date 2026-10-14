@@ -5,7 +5,7 @@ Planned (see HANDOFF section 5):
 
 * ``POST /v1/audio/speech``: JSON ``{model, input, voice, speed,
   response_format}`` with wav, pcm, mp3, opus. ``pcm`` streams chunks from
-  ``ctx.tts_engine.synthesize`` inside ``ctx.queue.slot()``; the others
+  ``ctx.tts_engine.synthesize`` inside ``inference()``; the others
   collect and encode.
 * ``GET /v1/audio/voices``: ``ctx.tts_engine.voices()``.
 """

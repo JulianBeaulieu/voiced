@@ -17,7 +17,9 @@ Cancellation: if the awaiting task is cancelled while waiting, it leaves the
 queue without running.
 
 Re-entering ``slot()`` from the task that already holds it would wait on
-itself forever, so it raises ``RuntimeError`` instead.
+itself forever, so it raises ``RuntimeError`` instead. A task spawned inside
+a slot is a different task and is not caught by that check: never take a
+slot from a child task while its parent holds one, or both wait forever.
 """
 
 from __future__ import annotations

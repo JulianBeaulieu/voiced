@@ -37,7 +37,8 @@ TTS output is mono int16 little-endian PCM at 24 kHz as bytes. Decoding
 uploads and encoding responses is the API layer's job, never the engine's.
 
 All engine methods are `async`. Engines wrap their blocking MLX calls in
-`asyncio.to_thread`. The server guarantees that calls on one engine never
+`asyncio.to_thread` (amended by ADR 0005: use `voiced.threads.run_blocking`,
+which keeps the slot held until the thread finishes even on cancellation). The server guarantees that calls on one engine never
 overlap by routing every request through `InferenceQueue`, so engines do not
 need their own locking. Cancellation follows asyncio: a disconnected client
 cancels the awaiting task, and engines must clean up in `finally` and never

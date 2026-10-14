@@ -33,7 +33,7 @@ shared enum so HTTP and Wyoming report the same rows.
 | `ok` | nothing | `record_success(ms)` | latency sample | 200 | result event |
 | `busy` | `QueueFull`, `EngineNotLoaded` | untouched | count + error log | 503 + `Retry-After` | `Error`, disconnect |
 | `client_error` | other `EngineError` | untouched | count + error log | 400 | `Error`, keep connection |
-| `disconnect` | `DISCONNECT_ERRORS` | untouched | count only, debug log | none (peer gone) | none (peer gone) |
+| `disconnect` | `DISCONNECT_ERRORS` | untouched | count only, debug log | close if still open (WebSocket 1001) | close if still open (handler returns `False`) |
 | `failure` | any other `Exception` | `record_error` (degraded) | count + error log | 500 | `Error`, disconnect |
 
 `client_error` leaves health alone because `voiced.engines.base` defines an
@@ -51,6 +51,14 @@ counts as a disconnect; engines should wrap those in their own error.
 `ServiceContext.check_loaded()` raises `EngineNotLoaded` until `load()` has
 finished. Classifying it as `busy` tells clients to retry, on every
 transport, without a separate "starting" code path.
+
+`ServiceContext.languages` is the engine's languages intersected with the
+configured ones, matched on the primary subtag in either direction (`_` is
+read as `-`), reporting the narrower tag of each pair. `voices()` filters by
+the same predicate, and `check_language(hint)` resolves a client's hint to
+the engine's own code or raises `UnsupportedLanguage`. Both transports use
+these three and never match language tags themselves. The `languages`
+settings may not be empty.
 
 `voiced.audio.UnsupportedAudioFormat` subclasses `EngineError`, so a bad
 sample width or rate is a client error on every transport.
@@ -82,8 +90,15 @@ sample width or rate is a client error on every transport.
   `EngineError` before the response starts: write the body as an async
   generator wrapping `async with inference(...)` and prime it with one
   `anext()` in the route.
+  The session task's consumer has two more obligations: on every event it
+  checks `task.done()` and, if the session already ended, re-raises its
+  exception rather than queueing into a dead session; and it compares each
+  chunk's rate, width and channels with the `PCMConverter` it built from
+  `AudioStart`, raising an `EngineError` if they change.
 - **Never nest `inference()` in one task.** The second call would wait for
-  the slot its own task holds; `slot()` raises `RuntimeError` instead.
+  the slot its own task holds; `slot()` raises `RuntimeError` instead. A
+  child task spawned inside a slot is not caught by that check and would
+  deadlock the same way: never take a slot from one.
 - Transports do not convert PCM themselves; they use `voiced.audio`.
 
 ### Blocking calls and cancellation
@@ -113,26 +128,32 @@ not by the server.
   reads `_HTTP[classify(exc)]`, plus handlers for `APIError` (its own
   status), `RequestValidationError` (400, as OpenAI does, so the `openai`
   client raises `BadRequestError` instead of a generic 422 error) and
-  `Exception` (500; marks health degraded unless the exception is a
-  disconnect). All use `{"error": {"message", "type"}}`; `/v1` returns type
-  `starting` while the engine loads.
-- Starlette runs these handlers for errors raised during a WebSocket
-  handshake (the API-key dependency) but never for errors after `accept()`,
-  and its 500 handler is HTTP-only. A WebSocket route therefore follows the
-  transport rule above with its own close-code table. A close before
-  `accept()` reaches the client as HTTP 403, not as close code 1008.
+  `Exception` (500, logged; it does not touch health, because
+  `inference()` already recorded any engine failure and a bug outside a
+  slot is not one). All use `{"error": {"message", "type"}}`.
+- Starlette runs the class-specific handlers for WebSocket routes too, both
+  during the handshake and after `accept()`; they close the socket with
+  `voiced.api.context.WS_CLOSE`, the same table a WebSocket route uses for
+  in-session errors. Only the catch-all `Exception` handler is HTTP-only, so
+  a WebSocket route still ends with its own `except Exception` +
+  `classify`. A close before `accept()` reaches the client as HTTP 403, not
+  as close code 1008; uvicorn needs the `websockets` package for this.
 - `require_api_key` takes an `HTTPConnection`, so the same dependency guards
   HTTP routes and WebSocket handshakes, and compares with
   `hmac.compare_digest`.
 - Route modules import from `voiced.api.context` and `voiced.context`, never
   from `voiced.api.app`, so `app.py` imports routes at module level.
+- Checks that raise `APIError` (such as rejecting a model name that belongs
+  to another installed engine) stay in `voiced.api`; they are HTTP request
+  validation, not inference policy.
 
 ### Startup: bind first, load in the background
 
 The lifespan starts `engine.load()` as a background task and yields at once,
 so uvicorn binds immediately. Until the load finishes, `/health` answers 503
 with `status: "starting"` (schema unchanged) and `/v1` answers 503 through
-`check_loaded()`. This only works if `load()` does its blocking work through
+`check_loaded()` (type `server_busy`, message `EngineNotLoaded: model is still
+loading`). This only works if `load()` does its blocking work through
 `run_blocking`; a `load()` that blocks the event loop stalls `/health` as
 well. If `load()` raises, the process logs the traceback and exits with
 status 1, so launchd restarts it. If the process is asked to stop (SIGTERM)
@@ -153,5 +174,5 @@ the watchdog could not tell apart from a crash.
 - Metrics are keyed by `Operation`, not route or status code, so the status
   page shows STT and TTS the same way whichever transport served them.
 - Errors raised outside any `inference()` block (request validation, auth, a
-  bug in a route) never reach metrics. Only an unexpected exception touches
-  health, through the HTTP 500 handler.
+  bug in a route) reach neither metrics nor health; Wyoming follows the same
+  rule.

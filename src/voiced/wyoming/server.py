@@ -5,7 +5,7 @@ Planned (HANDOFF section 5):
 
 * STT: ``Describe`` -> ``Info`` with the model and languages; ``AudioStart``,
   ``AudioChunk``, ``AudioStop`` fed into an ``STTStreamSession`` inside
-  ``ctx.queue.slot()``, returning ``Transcript``.
+  ``voiced.inference.inference()``, returning ``Transcript``.
 * TTS: ``Describe`` -> ``Info`` listing voices; ``Synthesize`` and the
   streaming ``SynthesizeStart`` / ``SynthesizeChunk`` / ``SynthesizeStop``
   (HA >= 2025.7) driven by ``TTSEngine.synthesize``.
@@ -15,7 +15,7 @@ Planned (HANDOFF section 5):
 
 from __future__ import annotations
 
-from voiced.api.app import ServiceContext
+from voiced.context import ServiceContext
 
 
 async def serve_stt(ctx: ServiceContext, host: str, port: int) -> None:

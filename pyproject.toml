@@ -28,6 +28,9 @@ dependencies = [
     "numpy>=1.26",
     "wyoming>=1.6",
     "psutil>=5.9",
+    # uvicorn's WebSocket backend; without it WebSocket routes (and the 403
+    # for a handshake refused before accept) do not work.
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]

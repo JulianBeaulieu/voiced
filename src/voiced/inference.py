@@ -76,12 +76,16 @@ async def bounded(aw: Awaitable[T], timeout_s: float) -> T:
 
     Use it for every socket await made while holding a slot, with
     ``server.session_idle_s`` for reads and ``server.write_timeout_s`` for
-    writes, so a half-open peer cannot pin the GPU.
+    writes, so a half-open peer cannot pin the GPU. A ``TimeoutError`` that
+    ``aw`` raises on its own is re-raised unchanged.
     """
+    timeout = asyncio.timeout(timeout_s)
     try:
-        async with asyncio.timeout(timeout_s):
+        async with timeout:
             return await aw
     except TimeoutError:
+        if not timeout.expired():
+            raise  # raised by ``aw`` itself: not ours to reinterpret
         raise ClientTimeout(f"no progress from the client in {timeout_s:g} s") from None
 
 

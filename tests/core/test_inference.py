@@ -4,13 +4,14 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
+from pydantic import ValidationError
 from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocketDisconnect
 from uvicorn.protocols.utils import ClientDisconnected
 
 from voiced.config import Settings
 from voiced.context import ServiceContext
-from voiced.engines.base import EngineNotLoaded, UnknownVoice
+from voiced.engines.base import EngineNotLoaded, UnknownVoice, UnsupportedLanguage
 from voiced.health import HealthState
 from voiced.inference import ClientTimeout, bounded, classify, inference
 from voiced.metrics import Operation, Outcome
@@ -66,6 +67,15 @@ async def test_bounded_raises_client_timeout() -> None:
     assert await bounded(asyncio.sleep(0, "x"), 1) == "x"
     with pytest.raises(ClientTimeout):
         await bounded(asyncio.Event().wait(), 0.01)
+
+
+async def test_bounded_keeps_the_awaitables_own_timeout() -> None:
+    async def engine_side() -> None:
+        raise TimeoutError("inner")
+
+    with pytest.raises(TimeoutError, match="inner") as info:
+        await bounded(engine_side(), 10)
+    assert not isinstance(info.value, ClientTimeout)
 
 
 async def test_success_records_health_and_latency(ctx: ServiceContext) -> None:
@@ -198,21 +208,52 @@ async def test_event_driven_session_records_failure_then_cleanup(ctx: ServiceCon
     assert ctx.queue.depth == 0
 
 
-async def test_context_languages_and_voices(settings: Settings) -> None:
-    engine = FakeTTSEngine()
-    await engine.load()
-    settings.tts.languages = ["en-gb"]
-    c = ServiceContext(
+def _tts_ctx(settings: Settings, engine: FakeTTSEngine) -> ServiceContext:
+    return ServiceContext(
         service="tts",
         settings=settings,
         engine=engine,
         queue=InferenceQueue(1),
         health=HealthState(service="tts", engine="f", model="m", version="0", queue_capacity=1),
     )
-    assert c.languages == []  # engine declares "en", config narrows to en-GB only
-    assert [v.id for v in await c.voices()] == ["bf_emma"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "engine_langs", "languages"),
+    [
+        (["en"], ["en"], ["en"]),
+        (["en-gb"], ["en"], ["en-gb"]),  # narrower configured tag wins
+        (["en"], ["en-US", "en-GB"], ["en-US", "en-GB"]),  # narrower engine tags win
+        (["en_GB"], ["en"], ["en-GB"]),
+        (["de"], ["en"], []),
+    ],
+)
+async def test_context_languages(
+    settings: Settings, configured: list[str], engine_langs: list[str], languages: list[str]
+) -> None:
+    engine = FakeTTSEngine()
+    engine.languages = engine_langs
+    await engine.load()
+    settings.tts.languages = configured
+    c = _tts_ctx(settings, engine)
+    assert c.languages == languages
+    # A voice is served exactly when a language is advertised.
+    assert bool(await c.voices()) == bool(languages)
+
+
+async def test_check_language(settings: Settings) -> None:
+    engine = FakeTTSEngine()
+    settings.tts.languages = ["en-gb"]
+    c = _tts_ctx(settings, engine)
+    assert c.check_language(None) is None
+    assert c.check_language("en") == "en"
+    assert c.check_language("EN_us") == "en"  # returns the engine's own code
+    with pytest.raises(UnsupportedLanguage):
+        c.check_language("de")
     with pytest.raises(EngineNotLoaded):
         c.check_loaded()
-    settings.tts.languages = ["en"]
-    assert c.languages == ["en"]
-    assert len(await c.voices()) == 3
+
+
+def test_languages_setting_may_not_be_empty() -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"tts": {"languages": []}})

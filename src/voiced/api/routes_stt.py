@@ -4,10 +4,10 @@ Planned (see HANDOFF section 5):
 
 * ``POST /v1/audio/transcriptions``: multipart ``file``, ``model``,
   ``language``, ``response_format`` in json, text, verbose_json, srt, vtt.
-  Decode with ffmpeg to 16 kHz float32 mono, then ``ctx.queue.run`` around
-  ``ctx.stt_engine.transcribe``.
+  Decode with ffmpeg to 16 kHz float32 mono, then ``voiced.inference.inference()``
+  around ``ctx.stt_engine.transcribe``.
 * ``WS /v1/audio/transcriptions/stream``: live streaming with partial and
-  final events over an ``STTStreamSession`` held inside ``ctx.queue.slot()``.
+  final events over an ``STTStreamSession`` held inside ``inference()``.
 """
 
 from __future__ import annotations

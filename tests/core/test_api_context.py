@@ -12,12 +12,12 @@ from pydantic import BaseModel
 from starlette.websockets import WebSocketDisconnect
 
 import voiced.api.app as app_module
-from voiced.api.context import APIError, Ctx, require_api_key
+from voiced.api.context import WS_CLOSE, APIError, Ctx, require_api_key
 from voiced.config import Settings
 from voiced.context import ServiceContext
 from voiced.engines.base import UnknownVoice
 from voiced.inference import inference
-from voiced.metrics import Operation
+from voiced.metrics import Operation, Outcome
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, lifespan_client
 from voiced.threads import run_blocking
@@ -126,8 +126,9 @@ async def test_error_envelope_and_recording(app: FastAPI) -> None:
         "disconnect": 0,
         "failure": 1,
     }
-    # A bug outside inference() still degrades health via the 500 handler.
-    assert ctx.health.last_error == "KeyError: 'outside inference'"
+    # Health reflects the engine failure only; the bug outside a slot is a 500
+    # but not an engine failure.
+    assert ctx.health.last_error == "RuntimeError: gpu wedged"
 
 
 async def test_openai_client_gets_bad_request(app: FastAPI) -> None:
@@ -164,6 +165,18 @@ def test_api_key_refuses_websocket_handshake(stt_app: FastAPI) -> None:
             assert s.receive_text() == "hi"
 
 
+def test_engine_error_after_accept_closes_with_ws_close_code(stt_app: FastAPI) -> None:
+    @stt_app.websocket("/v1/test/ws-error")
+    async def ws(websocket: WebSocket) -> None:
+        await websocket.accept()
+        raise UnknownVoice("zz_nobody")
+
+    with TestClient(stt_app) as c, c.websocket_connect("/v1/test/ws-error") as s:
+        with pytest.raises(WebSocketDisconnect) as info:
+            s.receive_text()
+    assert info.value.code == WS_CLOSE[Outcome.CLIENT_ERROR] == 1008
+
+
 async def test_health_answers_starting_while_loading(settings: Settings) -> None:
     app = build_stt_app(settings, FakeSTTEngine(latency_s=0.2))
     async with lifespan_client(app, wait_loaded=False) as c:
@@ -171,7 +184,8 @@ async def test_health_answers_starting_while_loading(settings: Settings) -> None
         assert (r.status_code, r.json()["status"]) == (503, "starting")
         assert list(r.json()) == HEALTH_KEYS
         r = await c.get("/v1/models")
-        assert (r.status_code, r.json()["error"]["type"]) == (503, "starting")
+        assert (r.status_code, r.json()["error"]["type"]) == (503, "server_busy")
+        assert r.json()["error"]["message"] == "EngineNotLoaded: model is still loading"
         assert r.headers["retry-after"] == "1"
         await app.state.load_task
         r = await c.get("/health")

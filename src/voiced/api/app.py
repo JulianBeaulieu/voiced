@@ -25,18 +25,16 @@ from starlette.websockets import WebSocket
 
 from voiced import __version__
 from voiced.api import routes_stt, routes_tts
-from voiced.api.context import APIError, Ctx, require_api_key, require_loaded
+from voiced.api.context import WS_CLOSE, APIError, Ctx, require_api_key, require_loaded
 from voiced.config import Settings
 from voiced.context import ServiceContext
-from voiced.engines.base import EngineError, EngineNotLoaded, STTEngine, TTSEngine
+from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
 from voiced.inference import classify
 from voiced.metrics import Outcome
 from voiced.queue import InferenceQueue, QueueFull
 
-# ServiceContext stays importable from here until voiced.wyoming.server
-# (owned by another PR) imports it from voiced.context.
-__all__ = ["ServiceContext", "create_stt_app", "create_tts_app"]
+__all__ = ["create_stt_app", "create_tts_app"]
 
 log = logging.getLogger(__name__)
 
@@ -81,11 +79,11 @@ async def _error(
     """The one error envelope for HTTP; a close frame for a WebSocket handshake."""
     if isinstance(conn, WebSocket):
         if code == status.HTTP_503_SERVICE_UNAVAILABLE:
-            close_code = status.WS_1013_TRY_AGAIN_LATER
+            close_code = WS_CLOSE[Outcome.BUSY]
         elif code >= 500:
-            close_code = status.WS_1011_INTERNAL_ERROR
+            close_code = WS_CLOSE[Outcome.FAILURE]
         else:
-            close_code = status.WS_1008_POLICY_VIOLATION
+            close_code = WS_CLOSE[Outcome.CLIENT_ERROR]
         # Close reasons are capped at 123 bytes by the protocol.
         reason = message.encode()[:123].decode(errors="ignore")
         with suppress(RuntimeError):  # already closed
@@ -119,7 +117,8 @@ def _build(ctx: ServiceContext) -> FastAPI:
     app.state.ctx = ctx
 
     # Exceptions map to statuses here, never in routes. Nothing here writes
-    # metrics: inference() already recorded anything raised inside a slot.
+    # metrics or health: inference() already recorded anything raised inside
+    # a slot.
     @app.exception_handler(APIError)
     async def _api_error(conn: HTTPConnection, exc: APIError) -> Response | None:
         return await _error(conn, exc.status, exc.message, exc.type)
@@ -128,8 +127,6 @@ def _build(ctx: ServiceContext) -> FastAPI:
     @app.exception_handler(EngineError)
     async def _classified(conn: HTTPConnection, exc: Exception) -> Response | None:
         code, kind = _HTTP[classify(exc)]
-        if isinstance(exc, EngineNotLoaded):
-            kind = "starting"
         headers = {"Retry-After": "1"} if code == status.HTTP_503_SERVICE_UNAVAILABLE else None
         return await _error(conn, code, f"{type(exc).__name__}: {exc}", kind, headers)
 
@@ -145,9 +142,10 @@ def _build(ctx: ServiceContext) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unexpected(conn: HTTPConnection, exc: Exception) -> Response | None:
-        if classify(exc) is Outcome.FAILURE:
-            ctx.health.record_error(exc)
-            log.error("unhandled error on %s", conn.url.path, exc_info=exc)
+        # inference() already marked health degraded if this came from an
+        # engine; a bug outside a slot is not an engine failure. uvicorn logs
+        # the traceback after this response, so log one line here.
+        log.error("unhandled %s on %s: %s", type(exc).__name__, conn.url.path, exc)
         code, kind = _HTTP[Outcome.FAILURE]
         return await _error(conn, code, f"internal error ({type(exc).__name__})", kind)
 

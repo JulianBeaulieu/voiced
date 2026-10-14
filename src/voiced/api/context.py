@@ -19,6 +19,15 @@ from fastapi import Depends, status
 from starlette.requests import HTTPConnection
 
 from voiced.context import ServiceContext
+from voiced.metrics import Outcome
+
+WS_CLOSE: dict[Outcome, int] = {
+    Outcome.BUSY: status.WS_1013_TRY_AGAIN_LATER,
+    Outcome.CLIENT_ERROR: status.WS_1008_POLICY_VIOLATION,
+    Outcome.DISCONNECT: status.WS_1001_GOING_AWAY,  # only if the socket is still open
+    Outcome.FAILURE: status.WS_1011_INTERNAL_ERROR,
+}
+"""WebSocket close code per outcome, for the handshake and in-session alike."""
 
 
 def get_context(conn: HTTPConnection) -> ServiceContext:
@@ -40,9 +49,9 @@ class APIError(Exception):
     machine-readable tag. Raise it only outside an ``inference()`` block;
     inside one, client mistakes must be ``EngineError`` subclasses.
 
-    During a WebSocket handshake it closes the socket instead (1008 for 4xx,
-    1013 for 503, 1011 for other 5xx); a close before ``accept()`` reaches the
-    client as HTTP 403.
+    On a WebSocket it closes the socket with :data:`WS_CLOSE` (a 4xx is a
+    client error, 503 is busy, any other 5xx a failure); a close before
+    ``accept()`` reaches the client as HTTP 403.
     """
 
     def __init__(self, status: int, message: str, type: str = "invalid_request_error") -> None:
