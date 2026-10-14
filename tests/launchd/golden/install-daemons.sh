@@ -4,28 +4,28 @@
 set -euo pipefail
 
 # stt
-launchctl bootout system/io.github.julianbeaulieu.voiced.stt 2>/dev/null || true
-for _ in $(seq 1 30); do launchctl print system/io.github.julianbeaulieu.voiced.stt >/dev/null 2>&1 || break; sleep 1; done
-cp /Users/someone/.config/voiced/launchd/io.github.julianbeaulieu.voiced.stt.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist
-chown root:wheel /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist
-chmod 644 /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist
-launchctl bootstrap system /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist
+launchctl bootout system/org.example.voiced.stt 2>/dev/null || true
+for _ in $(seq 1 30); do launchctl print system/org.example.voiced.stt >/dev/null 2>&1 || break; sleep 1; done
+cp /Users/someone/.config/voiced/launchd/org.example.voiced.stt.plist /Library/LaunchDaemons/org.example.voiced.stt.plist
+chown root:wheel /Library/LaunchDaemons/org.example.voiced.stt.plist
+chmod 644 /Library/LaunchDaemons/org.example.voiced.stt.plist
+launchctl bootstrap system /Library/LaunchDaemons/org.example.voiced.stt.plist
 
 # tts
-launchctl bootout system/io.github.julianbeaulieu.voiced.tts 2>/dev/null || true
-for _ in $(seq 1 30); do launchctl print system/io.github.julianbeaulieu.voiced.tts >/dev/null 2>&1 || break; sleep 1; done
-cp /Users/someone/.config/voiced/launchd/io.github.julianbeaulieu.voiced.tts.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist
-chown root:wheel /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist
-chmod 644 /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist
-launchctl bootstrap system /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist
+launchctl bootout system/org.example.voiced.tts 2>/dev/null || true
+for _ in $(seq 1 30); do launchctl print system/org.example.voiced.tts >/dev/null 2>&1 || break; sleep 1; done
+cp /Users/someone/.config/voiced/launchd/org.example.voiced.tts.plist /Library/LaunchDaemons/org.example.voiced.tts.plist
+chown root:wheel /Library/LaunchDaemons/org.example.voiced.tts.plist
+chmod 644 /Library/LaunchDaemons/org.example.voiced.tts.plist
+launchctl bootstrap system /Library/LaunchDaemons/org.example.voiced.tts.plist
 
 # watchdog
-launchctl bootout system/io.github.julianbeaulieu.voiced.watchdog 2>/dev/null || true
-for _ in $(seq 1 30); do launchctl print system/io.github.julianbeaulieu.voiced.watchdog >/dev/null 2>&1 || break; sleep 1; done
-cp /Users/someone/.config/voiced/launchd/io.github.julianbeaulieu.voiced.watchdog.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist
-chown root:wheel /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist
-chmod 644 /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist
-launchctl bootstrap system /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist
+launchctl bootout system/org.example.voiced.watchdog 2>/dev/null || true
+for _ in $(seq 1 30); do launchctl print system/org.example.voiced.watchdog >/dev/null 2>&1 || break; sleep 1; done
+cp /Users/someone/.config/voiced/launchd/org.example.voiced.watchdog.plist /Library/LaunchDaemons/org.example.voiced.watchdog.plist
+chown root:wheel /Library/LaunchDaemons/org.example.voiced.watchdog.plist
+chmod 644 /Library/LaunchDaemons/org.example.voiced.watchdog.plist
+launchctl bootstrap system /Library/LaunchDaemons/org.example.voiced.watchdog.plist
 
 echo 'voiced daemons installed. Check with:'
 echo '  /Users/someone/.voiced/bin/voiced status'

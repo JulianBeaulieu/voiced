@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 import voiced
-from voiced.config import Settings, config_path
+from voiced.config import SERVICES, DaemonName, Settings, config_path
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -29,12 +29,14 @@ from voiced.launchd.control import (
     print_argv,
     run_streaming,
 )
-from voiced.launchd.plist import render_plist
+from voiced.launchd.plist import log_paths, render_plist
 
-Service = Literal["stt", "tts", "watchdog"]
-SERVICES: tuple[Service, ...] = ("stt", "tts", "watchdog")
+Service = DaemonName
 EXTRAS: tuple[str, ...] = ("stt", "tts")
 METAL_PROBE_FILE = "metal-probe.json"
+# espeak-ng (Kokoro's phonemizer) uses a fixed-size buffer for its data path;
+# the venv path plus site-packages/espeakng_loader/espeak-ng-data must fit.
+MAX_COMFORTABLE_VENV_PATH = 80
 
 # Label prefixes used by earlier releases. ``uninstall`` boots these out too
 # (ADR 0003). Empty until the prefix changes for the first time.
@@ -109,7 +111,7 @@ class InstallPlan:
     config_file: Path
     log_dir: Path
     staging_dir: Path
-    labels: dict[str, str]
+    labels: dict[str, str]  # every DaemonName including "metalprobe"
     source: str
     python: str = ""
     uv: str | None = None
@@ -246,8 +248,7 @@ class InstallPlan:
 
     def metal_probe(self, python: Path) -> MetalProbe:
         """A self-removing one-shot daemon that runs ``voiced.launchd.metal_probe``."""
-        prefix = next(iter(self.labels.values())).rsplit(".", 1)[0]
-        label = f"{prefix}.metalprobe"
+        label = self.labels["metalprobe"]
         out = self.log_dir / METAL_PROBE_FILE
         plist = render_plist(
             label=label,
@@ -265,8 +266,12 @@ class InstallPlan:
             keep_alive=False,
         )
         staged = self.staging_dir / f"{label}.plist"
-        cleanup = f"{shlex.join(bootout_argv(label))} 2>/dev/null; rm -f {q(plist_path(label))}"
-        no_result = f"no result after 60 s; see {self.log_dir}/metalprobe.stderr.log"
+        # Under `set -e` a failing bootout inside the trap would abort before rm.
+        cleanup = (
+            f"{shlex.join(bootout_argv(label))} 2>/dev/null || true; rm -f {q(plist_path(label))}"
+        )
+        stderr_log = log_paths(self.log_dir, "metalprobe").stderr
+        no_result = f"no result after 60 s; see {stderr_log}"
         lines = [
             "#!/bin/bash",
             "# voiced: one-shot LaunchDaemon that checks MLX/Metal without a GUI session.",
@@ -381,6 +386,8 @@ def plan_install(
 ) -> InstallPlan:
     """Resolve CLI flags, config and defaults into an :class:`InstallPlan`."""
     config_file = config_file or config_path()
+    env_hf_home = os.environ.get("HF_HOME")
+    hf_home = settings.install.hf_home or (Path(env_hf_home).expanduser() if env_hf_home else None)
     return InstallPlan(
         user=user or getpass.getuser(),
         home=home or Path.home(),
@@ -388,11 +395,11 @@ def plan_install(
         config_file=config_file,
         log_dir=settings.server.log_dir,
         staging_dir=(staging_dir or config_file.parent / "launchd").expanduser(),
-        labels={service: settings.launchd.label(service) for service in SERVICES},
+        labels={name: settings.launchd.label(name) for name in (*SERVICES, "metalprobe")},
         source=source or default_source(),
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
-        hf_home=settings.install.hf_home,
+        hf_home=hf_home,
         extras=tuple(extras),
     )
 
@@ -412,6 +419,11 @@ def plan_summary(plan: InstallPlan) -> str:
     ]
     for service in SERVICES:
         lines.append(f"label {service:<9}{plan.labels[service]}")
+    if len(str(plan.venv_dir)) > MAX_COMFORTABLE_VENV_PATH:
+        lines.append(
+            f"warning: venv path is {len(str(plan.venv_dir))} characters; espeak-ng fails with "
+            f"long data paths, keep it under {MAX_COMFORTABLE_VENV_PATH} (for example ~/.voiced)"
+        )
     return "\n".join(lines)
 
 
@@ -457,9 +469,8 @@ def run_install(
     """
     would = "would " if dry_run else ""
 
-    def step(argv: Sequence[str], what: str) -> None:
-        shown = f"{argv[-3]} -c <model download>" if what == "model download" else shlex.join(argv)
-        say(f"$ {shown}")
+    def step(argv: Sequence[str], what: str, shown: str | None = None) -> None:
+        say(f"$ {shown or shlex.join(argv)}")
         if dry_run:
             return
         result = runner(argv)
@@ -488,7 +499,11 @@ def run_install(
     if skip_models:
         say("skipping model download (--skip-models)")
     else:
-        step(plan.model_download_command(), "model download")
+        step(
+            plan.model_download_command(),
+            "model download",
+            shown=f"{plan.python_bin} -c <model download>",
+        )
 
     for service in SERVICES:
         say(f"{would}write {plan.staged_plist(service)}")
@@ -505,13 +520,11 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     """Why ``path`` must not be deleted recursively, or None if it is fine.
 
     Refuses the filesystem root, the home directory and every ancestor of it,
-    symlinks (so a link into the wrong place cannot be followed), and anything
-    that does not exist.
+    and symlinks (so a link into the wrong place cannot be followed). The
+    caller checks existence first.
     """
     if path.is_symlink():
         return "is a symlink"
-    if not path.exists():
-        return "does not exist"
     real = path.resolve()
     real_home = home.resolve()
     if real == Path(real.anchor):
@@ -523,47 +536,83 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     return None
 
 
-def hf_cache_dirs(settings: Settings) -> list[Path]:
+def hf_cache_dirs(settings: Settings, hf_home: Path | None) -> list[Path]:
     """Hugging Face cache directories for the configured models."""
-    home = settings.install.hf_home or Path(
-        os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")
-    )
-    hub = home.expanduser() / "hub"
+    hub = (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
     models = (settings.stt.model, settings.tts.model)
     return [hub / f"models--{m.replace('/', '--')}" for m in models]
 
 
+@dataclass(frozen=True)
+class UninstallTargets:
+    """Directories deleted recursively, and individual files; never a shared parent."""
+
+    trees: list[Path]
+    files: list[Path]
+    prune_dirs: list[Path]  # removed afterwards only if empty
+
+    def all(self) -> list[Path]:
+        return [*self.trees, *self.files]
+
+
 def uninstall_targets(
     plan: InstallPlan, settings: Settings, *, logs: bool, models: bool, config: bool
-) -> list[Path]:
-    """What ``uninstall`` deletes. The config *file* and staging dir, never a parent."""
-    targets = [plan.venv_dir]
+) -> UninstallTargets:
+    """What ``uninstall`` deletes.
+
+    The log dir and the staging dir may be shared with other things
+    (``log_dir = "~/Library/Logs"`` is a legal config), so only the files
+    voiced wrote are removed there, and the directory itself only if that
+    leaves it empty.
+    """
+    trees = [plan.venv_dir]
+    files: list[Path] = []
+    prune: list[Path] = []
     if logs:
-        targets.append(settings.server.log_dir)
+        for name in (*SERVICES, "metalprobe"):
+            paths = log_paths(plan.log_dir, name)
+            files += [paths.app, paths.stdout, paths.stderr]
+            files += sorted(plan.log_dir.glob(f"{name}.log.*"))  # rotated app logs
+        files.append(plan.log_dir / METAL_PROBE_FILE)
+        prune.append(plan.log_dir)
     if models:
-        targets += hf_cache_dirs(settings)
+        trees += hf_cache_dirs(settings, plan.hf_home)
     if config:
-        targets += [plan.config_file, plan.staging_dir]
-    return targets
+        files.append(plan.config_file)
+        files += [plan.staged_plist(name) for name in plan.labels]
+        files += [
+            plan.install_script_path,
+            plan.uninstall_script_path,
+            plan.staging_dir / "metal-probe.sh",
+        ]
+        prune.append(plan.staging_dir)
+    return UninstallTargets(trees=trees, files=files, prune_dirs=prune)
 
 
-def remove_targets(targets: Sequence[Path], plan: InstallPlan, say: Say) -> int:
-    """Delete ``targets`` with the safety rules; returns how many were removed."""
+def remove_targets(targets: UninstallTargets, plan: InstallPlan, say: Say) -> int:
+    """Delete the targets with the safety rules; returns how many were removed."""
     removed = 0
-    for target in targets:
-        reason = removal_refusal(target, plan.home)
-        if reason == "does not exist":
+    for tree in targets.trees:
+        if not tree.exists() and not tree.is_symlink():
             continue
+        reason = removal_refusal(tree, plan.home)
         if reason is not None:
-            say(f"refusing to remove {target}: {reason}")
+            say(f"refusing to remove {tree}: {reason}")
             continue
-        if target == plan.venv_dir and not (target / "pyvenv.cfg").is_file():
-            say(f"refusing to remove {target}: not a virtual environment (no pyvenv.cfg)")
+        if tree == plan.venv_dir and not (tree / "pyvenv.cfg").is_file():
+            say(f"refusing to remove {tree}: not a virtual environment (no pyvenv.cfg)")
             continue
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-        say(f"removed {target}")
+        shutil.rmtree(tree)
+        say(f"removed {tree}")
         removed += 1
+    for file in targets.files:
+        if file.is_symlink() or file.is_file():
+            file.unlink()
+            say(f"removed {file}")
+            removed += 1
+    for directory in targets.prune_dirs:
+        if directory.is_dir() and not any(directory.iterdir()):
+            if removal_refusal(directory, plan.home) is None:
+                directory.rmdir()
+                say(f"removed empty {directory}")
     return removed

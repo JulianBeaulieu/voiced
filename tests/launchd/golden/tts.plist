@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>io.github.julianbeaulieu.voiced.tts</string>
+	<string>org.example.voiced.tts</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Users/someone/.voiced/bin/voiced</string>

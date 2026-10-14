@@ -50,11 +50,22 @@ and stops. The user runs `sudo bash ~/.config/voiced/launchd/install-daemons.sh`
 `uninstall` prints the matching bootout-and-remove script first and refuses
 to delete anything while any label is still loaded (otherwise launchd would
 respawn a missing binary every 10 s). Deleting needs `--yes`; models, logs
-and config each need their own flag. `--remove-config` deletes the config
-file and the staging directory, never their parent. Every recursive delete
-is guarded: the filesystem root, the home directory and its ancestors, and
-symlinks are refused, and the venv is only removed if it contains
-`pyvenv.cfg`.
+and config each need their own flag. Only two kinds of directory are deleted
+recursively: the venv (only if it contains `pyvenv.cfg`) and the models'
+Hugging Face cache entries. Everything else is deleted file by file, because
+the directories may be shared: `log_dir = "~/Library/Logs"` and
+`VOICED_CONFIG=~/config.toml` (staging dir `~/launchd`) are legal
+configurations. `--remove-logs` removes the per-service log files, their
+rotations and the Metal probe result; `--remove-config` removes the config
+file, the staged plists and the generated scripts. A directory is removed
+afterwards only if that left it empty. Every recursive delete is also
+guarded against the filesystem root, the home directory and its ancestors,
+and symlinks.
+
+`HF_HOME` is resolved once when the plan is built (`[install] hf_home`,
+else the installing shell's `HF_HOME`, else unset) and written identically
+into the plists and the model download command, so the daemons find the
+weights the installer fetched.
 
 Every path that ends up in a generated shell script is quoted with
 `shlex.quote`, and `[launchd] label_prefix` is validated to letters, digits,

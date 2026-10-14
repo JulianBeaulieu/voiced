@@ -5,10 +5,10 @@ polls each service's ``/health`` and decides, per service, whether to restart
 it. The decision logic is a pure function of the previous state and the new
 observation so it can be unit-tested without a network (ADR 0005).
 
-This module and ``voiced.launchd.control`` import only the standard library:
-the watchdog is the thing that must keep working when everything else is
-wedged. The CLI converts ``Settings`` to a :class:`Policy` before handing it
-over.
+This module and ``voiced.launchd.control`` import only the standard library
+at runtime: the watchdog is the thing that must keep working when everything
+else is wedged. The policy object is the ``WatchdogConfig`` section of the
+settings, typed here under ``TYPE_CHECKING`` only.
 """
 
 from __future__ import annotations
@@ -24,35 +24,17 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from voiced.launchd.control import (
-    Runner,
-    kickstart_argv,
-    parse_print_output,
-    print_argv,
-    run_command,
-)
+from voiced.launchd.control import Runner, kickstart_argv, print_service, run_command
+
+if TYPE_CHECKING:
+    from voiced.config import WatchdogConfig
 
 log = logging.getLogger("voiced.watchdog")
 
 Kind = Literal["ok", "starting", "degraded", "unreachable", "error", "stalled"]
 Action = Literal["none", "restart", "cooldown"]
-
-
-@dataclass(frozen=True)
-class Policy:
-    """Mirror of ``WatchdogConfig``; build with ``Policy(**config.model_dump())``."""
-
-    interval_s: float
-    timeout_s: float
-    failures_before_restart: int
-    startup_grace_s: float
-    degraded_window_s: float
-    restart_cooldown_s: float
-    stall_after_s: float
-    probe: bool
-    probe_timeout_s: float
 
 
 @dataclass(frozen=True)
@@ -62,6 +44,15 @@ class ProbeRequest:
     path: str
     body: bytes
     content_type: str
+
+
+def default_probe(service: str, model: str, voice: str = "af_heart") -> ProbeRequest:
+    """The smallest real request each service accepts."""
+    if service == "stt":
+        body, ctype = multipart({"model": model}, "probe.wav", silent_wav())
+        return ProbeRequest("/v1/audio/transcriptions", body, ctype)
+    payload = {"model": model, "input": "ok", "voice": voice, "response_format": "pcm"}
+    return ProbeRequest("/v1/audio/speech", json.dumps(payload).encode(), "application/json")
 
 
 @dataclass(frozen=True)
@@ -83,6 +74,9 @@ class Observation:
     detail: str = ""
     uptime_s: float | None = None
     payload: dict[str, Any] | None = None
+    # From ``launchctl print``: is the job loaded, and which pid runs it now.
+    loaded: bool | None = None
+    pid: int | None = None
 
 
 @dataclass
@@ -90,9 +84,15 @@ class ServiceState:
     """Per-service memory between polls.
 
     ``grace_started_at`` is when the current startup grace period began: the
-    watchdog's own start, or the last restart it issued. While the service is
-    loading its model the socket is not bound yet, so polls are refused; those
-    must not count as failures during the grace period.
+    watchdog's own start, the last restart it issued, or the moment launchd
+    gave the service a new pid (crash restart under ``KeepAlive``). While the
+    service loads its model the socket is not bound yet, so polls are
+    refused; those must not count as failures during the grace period.
+
+    ``busy_since`` is when the queue was first seen non-empty without a
+    completed inference since; the stall timer measures from there, not from
+    the last completion, so the first long request after an idle period is
+    not mistaken for a hang.
     """
 
     grace_started_at: float = 0.0
@@ -101,33 +101,87 @@ class ServiceState:
     last_restart_at: float | None = None
     restarts: int = 0
     awaiting_recovery: bool = False
+    last_pid: int | None = None
+    busy_since: float | None = None
+    last_completion: float | None = None
+    not_loaded_reported: bool = False
 
 
 @dataclass(frozen=True)
 class Decision:
     action: Action
     reason: str
+    recovered: bool = False
 
 
 # Pure decision logic ------------------------------------------------------
 
 
-def decide(state: ServiceState, obs: Observation, now: float, policy: Policy) -> Decision:
+def classify_stall(
+    state: ServiceState, obs: Observation, policy: WatchdogConfig, now: float
+) -> Observation:
+    """Turn an ``ok`` observation into ``stalled`` if the queue is stuck.
+
+    ``/health`` reports ``queue_depth`` (waiting plus running) and
+    ``last_inference_at`` (last completed inference). The queue is stuck when
+    it has been non-empty for ``stall_after_s`` with no completion in that
+    time. Progress (a newer ``last_inference_at``) or an empty queue resets
+    the timer.
+    """
+    if obs.kind != "ok" or obs.payload is None:
+        state.busy_since = None
+        return obs
+    depth = obs.payload.get("queue_depth")
+    completion = obs.payload.get("last_inference_at")
+    completion_f = float(completion) if isinstance(completion, int | float) else None
+    if not isinstance(depth, int) or depth <= 0:
+        state.busy_since = None
+        state.last_completion = completion_f
+        return obs
+    if state.busy_since is None or (
+        completion_f is not None and completion_f != state.last_completion
+    ):
+        state.busy_since = now
+    state.last_completion = completion_f
+    stuck_for = now - state.busy_since
+    if stuck_for > policy.stall_after_s:
+        return Observation(
+            "stalled",
+            f"queue depth {depth}, no inference completed for {stuck_for:.0f}s",
+            obs.uptime_s,
+            obs.payload,
+            obs.loaded,
+            obs.pid,
+        )
+    return obs
+
+
+def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogConfig) -> Decision:
     """Update ``state`` with ``obs`` and say what to do.
 
+    * A new pid from launchd (crash restart under KeepAlive) restarts the
+      grace period: the new process is loading its model.
     * ``ok`` resets the failure counter and the degraded timer.
+    * ``unreachable`` within ``startup_grace_s`` of the grace start is the
+      model loading before the socket is bound: not a failure.
     * ``starting`` (503, model loading) is tolerated while the service's own
       uptime is below ``startup_grace_s``; beyond that the load is hung.
-    * ``unreachable`` within ``startup_grace_s`` of the watchdog start or of
-      the last restart is the model loading before the socket is bound: not
-      a failure.
     * ``degraded`` (answers, last inference failed) starts a timer; longer
       than ``degraded_window_s`` restarts.
     * ``unreachable``, ``error`` and ``stalled`` otherwise count as failures;
       ``failures_before_restart`` consecutive ones restart.
+    * A service that launchd does not have loaded (after ``voiced stop``) is
+      never restarted; this is reported once.
     * A restart within ``restart_cooldown_s`` of the previous one is deferred
       (``cooldown``); counters are kept so it fires right after the cooldown.
     """
+    if obs.pid is not None and obs.pid != state.last_pid:
+        if state.last_pid is not None:
+            state.grace_started_at = now
+            state.failures = 0
+        state.last_pid = obs.pid
+    obs = classify_stall(state, obs, policy, now)
+
     if obs.kind == "ok":
         recovered = (
             state.failures > 0 or state.degraded_since is not None or state.awaiting_recovery
@@ -135,7 +189,16 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: Policy) ->
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
-        return Decision("none", "healthy again" if recovered else "healthy")
+        state.not_loaded_reported = False
+        return Decision("none", "healthy again" if recovered else "healthy", recovered)
+
+    if obs.loaded is False:
+        state.failures = 0
+        reason = f"{obs.kind} and not loaded in launchd (stopped?); not restarting"
+        if state.not_loaded_reported:
+            reason = "not loaded in launchd"
+        state.not_loaded_reported = True
+        return Decision("none", reason)
 
     in_grace = now - state.grace_started_at < policy.startup_grace_s
     if obs.kind == "unreachable" and in_grace:
@@ -179,50 +242,18 @@ def mark_restarted(state: ServiceState, now: float) -> None:
     state.restarts += 1
     state.failures = 0
     state.degraded_since = None
+    state.busy_since = None
     state.awaiting_recovery = True
-
-
-def detect_stall(obs: Observation, policy: Policy, now: float) -> Observation:
-    """Turn an ``ok`` observation into ``stalled`` if the queue is stuck.
-
-    The service reports ``queue_depth`` (waiting plus running requests) and
-    ``last_inference_at`` (last completed inference, wall clock). A non-empty
-    queue with no completion for ``stall_after_s`` means the running request
-    never finishes: the GPU is wedged while ``/health`` still answers.
-    """
-    if obs.kind != "ok" or obs.payload is None:
-        return obs
-    depth = obs.payload.get("queue_depth")
-    if not isinstance(depth, int) or depth <= 0:
-        return obs
-    last = obs.payload.get("last_inference_at")
-    if not isinstance(last, int | float):
-        # Nothing has completed yet: measure from process start.
-        last = now - (obs.uptime_s or 0.0)
-    idle = now - float(last)
-    if idle > policy.stall_after_s:
-        return Observation(
-            "stalled",
-            f"queue depth {depth}, no inference completed for {idle:.0f}s",
-            obs.uptime_s,
-            obs.payload,
-        )
-    return obs
 
 
 # Health polling (stdlib urllib) -------------------------------------------
 
 
-def _is_timeout(exc: BaseException) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    reason = getattr(exc, "reason", None)
-    return isinstance(reason, TimeoutError)
-
-
 def _request(
     url: str, *, timeout_s: float, api_key: str = "", data: bytes | None = None, ctype: str = ""
 ) -> tuple[int, bytes]:
+    """One HTTP request. Raises ``TimeoutError`` for any kind of timeout,
+    ``OSError`` (including ``URLError``) for other transport failures."""
     headers = {"User-Agent": "voiced-watchdog"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -234,15 +265,21 @@ def _request(
             return int(resp.status), bytes(resp.read())
     except urllib.error.HTTPError as exc:
         return int(exc.code), bytes(exc.read())
+    except TimeoutError as exc:  # socket timeout while reading the body
+        raise TimeoutError(f"timed out after {timeout_s:g}s") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):  # timeout while connecting
+            raise TimeoutError(f"timed out after {timeout_s:g}s") from exc
+        raise
 
 
 def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation:
     """One ``GET /health``. Never raises."""
     try:
         code, body = _request(url, timeout_s=timeout_s, api_key=api_key)
-    except (urllib.error.URLError, OSError) as exc:
-        if _is_timeout(exc):
-            return Observation("unreachable", f"timed out after {timeout_s:g}s")
+    except TimeoutError as exc:
+        return Observation("unreachable", str(exc))
+    except OSError as exc:
         return Observation("unreachable", str(getattr(exc, "reason", exc)))
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
@@ -266,43 +303,52 @@ def run_probe(spec: ServiceSpec, *, timeout_s: float) -> Observation | None:
     """Send the probe request. Only a timeout is a finding; anything else is None."""
     if spec.probe is None:
         return None
-    url = f"{spec.base_url}{spec.probe.path}"
     try:
         _request(
-            url,
+            f"{spec.base_url}{spec.probe.path}",
             timeout_s=timeout_s,
             api_key=spec.api_key,
             data=spec.probe.body,
             ctype=spec.probe.content_type,
         )
-    except (urllib.error.URLError, OSError) as exc:
-        if _is_timeout(exc):
-            return Observation("stalled", f"probe {spec.probe.path} timed out after {timeout_s:g}s")
+    except TimeoutError as exc:
+        return Observation("stalled", f"probe {spec.probe.path} {exc}")
+    except OSError:
+        return None
     return None
 
 
-def observe(spec: ServiceSpec, policy: Policy, now: float | None = None) -> Observation:
-    """Health poll, stall detection from the payload, then the optional probe.
+def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_command) -> Observation:
+    """Health poll, launchd pid, then the optional probe.
 
     The probe is only sent while the queue is empty: with requests in flight a
     probe timeout would just be queueing, and restarting would kill real work.
     """
     obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
-    obs = detect_stall(obs, policy, time.time() if now is None else now)
+    status = print_service(spec.label, runner)
+    obs = Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, status.loaded, status.pid)
     if policy.probe and obs.kind == "ok" and obs.payload and obs.payload.get("queue_depth") == 0:
         stalled = run_probe(spec, timeout_s=policy.probe_timeout_s)
         if stalled is not None:
-            return stalled
+            return Observation(
+                stalled.kind, stalled.detail, obs.uptime_s, obs.payload, obs.loaded, obs.pid
+            )
     return obs
 
 
 # Restarting ---------------------------------------------------------------
 
-Restarter = Callable[[ServiceSpec], str]
-"""Restarts a service and returns a one-line description of what it did."""
+
+@dataclass(frozen=True)
+class RestartResult:
+    done: bool
+    detail: str
 
 
-def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> str:
+Restarter = Callable[[ServiceSpec], RestartResult]
+
+
+def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> RestartResult:
     """Restart without root: SIGKILL the pid, then ``launchctl kickstart``.
 
     ``launchctl kickstart -k`` is denied to a non-root caller while the job
@@ -311,21 +357,24 @@ def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> str:
     because a wedged Metal process may ignore SIGTERM. The plain ``kickstart``
     then starts it immediately instead of after ``ThrottleInterval``.
     """
-    status = parse_print_output(spec.label, runner(print_argv(spec.label)))
-    steps: list[str] = []
+    status = print_service(spec.label, runner)
     if not status.loaded:
-        return f"{spec.label} is not loaded in launchd; nothing to restart"
-    if status.pid is None:
+        return RestartResult(False, f"{spec.label} is not loaded in launchd; nothing to restart")
+    steps: list[str] = []
+    pid = status.pid
+    if pid is None:
         steps.append("no running pid")
+    elif pid <= 1 or pid == os.getpid():
+        steps.append(f"refusing to kill pid {pid}")
     else:
         try:
-            os.kill(status.pid, signal.SIGKILL)
-            steps.append(f"sent SIGKILL to pid {status.pid}")
+            os.kill(pid, signal.SIGKILL)
+            steps.append(f"sent SIGKILL to pid {pid}")
         except OSError as exc:
-            steps.append(f"kill {status.pid} failed: {exc}")
+            steps.append(f"kill {pid} failed: {exc}")
     result = runner(kickstart_argv(spec.label))
     steps.append("kickstart ok" if result.ok else f"kickstart failed: {result.output}")
-    return "; ".join(steps)
+    return RestartResult(True, "; ".join(steps))
 
 
 # The loop -----------------------------------------------------------------
@@ -334,11 +383,22 @@ def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> str:
 @dataclass
 class Watchdog:
     services: Sequence[ServiceSpec]
-    policy: Policy
-    observe: Callable[[ServiceSpec, Policy], Observation] = observe
-    restart: Restarter = restart_service
+    policy: WatchdogConfig
+    runner: Runner = run_command
+    observe: Callable[[ServiceSpec, WatchdogConfig], Observation] | None = None
+    restart: Restarter | None = None
     clock: Callable[[], float] = time.monotonic
     states: dict[str, ServiceState] = field(default_factory=dict)
+
+    def _observe(self, spec: ServiceSpec) -> Observation:
+        if self.observe is not None:
+            return self.observe(spec, self.policy)
+        return observe(spec, self.policy, self.runner)
+
+    def _restart(self, spec: ServiceSpec) -> RestartResult:
+        if self.restart is not None:
+            return self.restart(spec)
+        return restart_service(spec, self.runner)
 
     def state(self, spec: ServiceSpec) -> ServiceState:
         if spec.name not in self.states:
@@ -351,16 +411,23 @@ class Watchdog:
         for spec in self.services:
             state = self.state(spec)
             now = self.clock()
-            obs = self.observe(spec, self.policy)
+            obs = self._observe(spec)
             decision = decide(state, obs, now, self.policy)
             decisions[spec.name] = decision
             if decision.action == "restart":
                 log.warning("%s: restarting: %s", spec.name, decision.reason)
-                mark_restarted(state, now)
-                log.warning("%s: %s (restart #%d)", spec.name, self.restart(spec), state.restarts)
+                result = self._restart(spec)
+                if result.done:
+                    mark_restarted(state, now)
+                    log.warning("%s: %s (restart #%d)", spec.name, result.detail, state.restarts)
+                else:
+                    state.failures = 0
+                    log.warning("%s: %s", spec.name, result.detail)
             elif decision.action == "cooldown":
                 log.warning("%s: not restarting: %s", spec.name, decision.reason)
-            elif obs.kind != "ok" or decision.reason == "healthy again":
+            elif decision.reason == "not loaded in launchd":
+                log.debug("%s: %s", spec.name, decision.reason)
+            elif obs.kind != "ok" or decision.recovered:
                 log.info("%s: %s", spec.name, decision.reason)
             else:
                 log.debug("%s: %s", spec.name, decision.reason)

@@ -24,14 +24,21 @@ from typing import Any
 MATRIX_SIZE = 1024
 
 
-def _managername() -> str:
+def _run(argv: list[str]) -> str:
     try:
-        out = subprocess.run(
-            ["launchctl", "managername"], capture_output=True, text=True, timeout=5, check=False
-        )
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         return f"error: {exc}"
     return out.stdout.strip() or out.stderr.strip()
+
+
+def macos_version(sw_vers_output: str = "") -> str:
+    """The macOS version from ``sw_vers -productVersion`` output.
+
+    ``platform.mac_ver()`` is only the fallback: under some Python builds it
+    reports the compatibility version (10.16) instead of the real one.
+    """
+    return sw_vers_output.strip() or platform.mac_ver()[0]
 
 
 def context() -> dict[str, Any]:
@@ -40,12 +47,12 @@ def context() -> dict[str, Any]:
         "python": sys.executable,
         "python_version": platform.python_version(),
         "machine": platform.machine(),
-        "macos": platform.mac_ver()[0],
+        "macos": macos_version(_run(["sw_vers", "-productVersion"])),
         "uid": os.getuid(),
         "euid": os.geteuid(),
         "pid": os.getpid(),
         "ppid": os.getppid(),
-        "launchd_managername": _managername(),
+        "launchd_managername": _run(["launchctl", "managername"]),
         "home": os.environ.get("HOME"),
         "user": os.environ.get("USER"),
         "timestamp": time.time(),

@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import inspect
 import plistlib
 import shlex
+import stat
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
 from voiced.cli import main
-from voiced.config import Settings
-from voiced.launchd.control import CommandResult
+from voiced.config import SERVICES, Settings
+from voiced.launchd.control import CommandResult, run_streaming
 from voiced.launchd.install import (
-    SERVICES,
     InstallError,
     InstallPlan,
     daemon_install_lines,
@@ -31,7 +33,9 @@ HOME = Path("/Users/someone")
 
 
 def golden_plan(settings: Settings) -> InstallPlan:
-    """Fixed user, home and paths so the rendered artifacts are reproducible."""
+    """Fixed user, home, label prefix and paths so the artifacts are reproducible."""
+    settings.launchd.label_prefix = "org.example.voiced"
+    settings.install.hf_home = None
     return plan_install(
         settings,
         venv_dir=HOME / ".voiced",
@@ -45,7 +49,8 @@ def golden_plan(settings: Settings) -> InstallPlan:
 
 
 @pytest.fixture
-def plan(settings: Settings) -> InstallPlan:
+def plan(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> InstallPlan:
+    monkeypatch.delenv("HF_HOME", raising=False)
     settings.server.log_dir = HOME / "Library/Logs/voiced"
     return golden_plan(settings)
 
@@ -82,7 +87,42 @@ def test_metal_probe_matches_golden(plan: InstallPlan) -> None:
     _compare(probe.script, "metal-probe.sh")
     _compare(probe.plist.decode(), "metalprobe.plist")
     assert plistlib.loads(probe.plist)["KeepAlive"] is False
+    assert probe.label == "org.example.voiced.metalprobe"
     assert "trap " in probe.script and "EXIT" in probe.script
+
+
+def _stub(directory: Path, name: str, body: str) -> None:
+    path = directory / name
+    path.write_text(f"#!/bin/bash\n{body}\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def test_metal_probe_script_cleans_up_when_bootstrap_fails(
+    plan: InstallPlan, tmp_path: Path
+) -> None:
+    """Run the generated script with stubbed tools: a failed bootstrap must still rm the plist."""
+    probe = plan.metal_probe(HOME / ".voiced/bin/python")
+    script = tmp_path / "metal-probe.sh"
+    script.write_text(probe.script)
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    log = tmp_path / "calls.log"
+    _stub(
+        stubs,
+        "launchctl",
+        f'echo "launchctl $*" >> {log}\ncase "$1" in bootstrap) exit 5;; esac\nexit 113',
+    )
+    for tool in ("cp", "chown", "chmod"):
+        _stub(stubs, tool, f'echo "{tool} $*" >> {log}')
+    _stub(stubs, "rm", f'echo "rm $*" >> {log}')
+    env = {"PATH": f"{stubs}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    proc = subprocess.run(["/bin/bash", str(script)], env=env, capture_output=True, text=True)
+    assert proc.returncode != 0  # bootstrap failed under set -e
+    calls = log.read_text().splitlines()
+    dst = f"/Library/LaunchDaemons/{probe.label}.plist"
+    assert f"launchctl bootstrap system {dst}" in calls
+    assert calls[-2] == f"launchctl bootout system/{probe.label}"  # the trap's bootout
+    assert calls[-1] == f"rm -f {dst}"  # ran even though that bootout failed
 
 
 def test_scripts_never_escalate(plan: InstallPlan) -> None:
@@ -105,6 +145,10 @@ def test_paths_with_spaces_are_quoted(settings: Settings, tmp_path: Path) -> Non
     ]
 
 
+def test_default_install_runner_streams() -> None:
+    assert inspect.signature(run_install).parameters["runner"].default is run_streaming
+
+
 def test_reinstall_waits_for_bootout() -> None:
     lines = daemon_install_lines("a.b", Path("/s/a.b.plist"))
     assert lines[0] == "launchctl bootout system/a.b 2>/dev/null || true"
@@ -112,13 +156,26 @@ def test_reinstall_waits_for_bootout() -> None:
     assert lines.index(next(line for line in lines if "bootstrap" in line)) > 1
 
 
-def test_no_hf_home_means_no_env_key(settings: Settings, tmp_path: Path) -> None:
-    p = plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
+def test_hf_home_resolved_once_for_plist_and_download(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def make() -> InstallPlan:
+        return plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
+
+    monkeypatch.delenv("HF_HOME", raising=False)
+    p = make()
     assert "HF_HOME" not in p.environment()
-    settings.install.hf_home = tmp_path / "hf"
-    p = plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
-    assert p.environment()["HF_HOME"] == str(tmp_path / "hf")
-    assert f"HF_HOME={tmp_path / 'hf'}" in p.model_download_command()
+    assert not any(a.startswith("HF_HOME=") for a in p.model_download_command())
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "from-env"))
+    p = make()  # the shell's HF_HOME reaches the daemons and the download alike
+    assert p.environment()["HF_HOME"] == str(tmp_path / "from-env")
+    assert f"HF_HOME={tmp_path / 'from-env'}" in p.model_download_command()
+
+    settings.install.hf_home = tmp_path / "from-config"
+    p = make()  # the config key wins over the environment
+    assert p.environment()["HF_HOME"] == str(tmp_path / "from-config")
+    assert f"HF_HOME={tmp_path / 'from-config'}" in p.model_download_command()
 
 
 def test_venv_commands_with_uv(plan: InstallPlan) -> None:
@@ -291,7 +348,6 @@ def test_removal_refusals(tmp_path: Path) -> None:
     assert removal_refusal(Path("/"), home) == "is the filesystem root"
     assert removal_refusal(home, home) == "is the home directory"
     assert removal_refusal(tmp_path, home) == "contains the home directory"
-    assert removal_refusal(home / "nothing", home) == "does not exist"
     link = tmp_path / "link"
     link.symlink_to(home)
     assert removal_refusal(link, home) == "is a symlink"
@@ -304,12 +360,13 @@ def test_remove_targets_requires_pyvenv_cfg(settings: Settings, tmp_path: Path) 
     home = tmp_path / "home"
     (home / ".voiced").mkdir(parents=True)
     p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
     said: list[str] = []
-    assert remove_targets([p.venv_dir], p, said.append) == 0
+    assert remove_targets(targets, p, said.append) == 0
     assert (home / ".voiced").exists()
     assert "no pyvenv.cfg" in said[0]
     (home / ".voiced" / "pyvenv.cfg").write_text("home = /x\n")
-    assert remove_targets([p.venv_dir], p, said.append) == 1
+    assert remove_targets(targets, p, said.append) == 1
     assert not (home / ".voiced").exists()
 
 
@@ -317,22 +374,71 @@ def test_remove_targets_never_deletes_home(settings: Settings, tmp_path: Path) -
     home = tmp_path / "home"
     home.mkdir()
     (home / "keep.txt").write_text("x")
+    (home / "pyvenv.cfg").write_text("x")  # even if it looks like a venv
     p = plan_install(
         settings, venv_dir=home, user="u", home=home, config_file=home / "config.toml", uv=None
     )
     said: list[str] = []
     targets = uninstall_targets(p, settings, logs=False, models=False, config=True)
-    assert targets[0] == home and p.staging_dir == home / "launchd"
+    assert targets.trees == [home] and p.staging_dir == home / "launchd"
     remove_targets(targets, p, said.append)
     assert (home / "keep.txt").exists()
     assert any("is the home directory" in line for line in said)
 
 
-def test_uninstall_targets_config_is_file_and_staging(settings: Settings, tmp_path: Path) -> None:
-    p = plan_install(settings, user="u", home=tmp_path, config_file=tmp_path / "c/config.toml")
-    targets = uninstall_targets(p, settings, logs=True, models=True, config=True)
-    assert tmp_path / "c/config.toml" in targets
-    assert tmp_path / "c/launchd" in targets
-    assert tmp_path / "c" not in targets
-    assert settings.server.log_dir in targets
-    assert any(t.name == "models--mlx-community--Kokoro-82M-bf16" for t in targets)
+def test_remove_logs_only_touches_voiced_files(settings: Settings, tmp_path: Path) -> None:
+    """``log_dir = ~/Library/Logs`` is legal; other apps' logs must survive."""
+    home = tmp_path / "home"
+    logs = home / "Library" / "Logs"
+    logs.mkdir(parents=True)
+    (logs / "OtherApp.log").write_text("keep")
+    for name in ("stt.log", "stt.log.1", "tts.stderr.log", "watchdog.log", "metal-probe.json"):
+        (logs / name).write_text("x")
+    settings.server.log_dir = logs
+    p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    targets = uninstall_targets(p, settings, logs=True, models=False, config=False)
+    assert logs not in targets.trees and logs in targets.prune_dirs
+    remove_targets(targets, p, lambda _: None)
+    assert sorted(x.name for x in logs.iterdir()) == ["OtherApp.log"]
+
+
+def test_remove_logs_prunes_empty_dir(settings: Settings, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    logs = home / "Library" / "Logs" / "voiced"
+    logs.mkdir(parents=True)
+    (logs / "stt.log").write_text("x")
+    settings.server.log_dir = logs
+    p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    remove_targets(
+        uninstall_targets(p, settings, logs=True, models=False, config=False), p, lambda _: None
+    )
+    assert not logs.exists()
+
+
+def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path: Path) -> None:
+    """``VOICED_CONFIG=~/config.toml`` makes the staging dir ``~/launchd``; keep the rest."""
+    home = tmp_path / "home"
+    staging = home / "launchd"
+    staging.mkdir(parents=True)
+    (home / "config.toml").write_text("x")
+    (staging / "mine.plist").write_text("keep")
+    p = plan_install(
+        settings, venv_dir=home / ".voiced", user="u", home=home, config_file=home / "config.toml"
+    )
+    for name in p.labels:
+        p.staged_plist(name).write_text("x")
+    p.install_script_path.write_text("x")
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=True)
+    assert home not in targets.trees and staging not in targets.trees
+    remove_targets(targets, p, lambda _: None)
+    assert not (home / "config.toml").exists()
+    assert sorted(x.name for x in staging.iterdir()) == ["mine.plist"]
+    assert home.exists()
+
+
+def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
+    settings.install.hf_home = tmp_path / "hf"
+    p = plan_install(settings, user="u", home=tmp_path)
+    targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
+    assert tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16" in targets.trees
+    assert tmp_path / "hf" / "hub" / "models--mlx-community--parakeet-tdt-0.6b-v3" in targets.trees

@@ -35,6 +35,11 @@ DEFAULT_LAUNCHD_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 ServiceName = Literal["stt", "tts"]
+DaemonName = Literal["stt", "tts", "watchdog", "metalprobe"]
+
+# The two inference services, and the daemons the installer manages.
+HTTP_SERVICES: tuple[ServiceName, ...] = ("stt", "tts")
+SERVICES: tuple[DaemonName, ...] = ("stt", "tts", "watchdog")
 
 # Labels end up in launchd plists and in shell scripts the user runs with sudo.
 _LABEL_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
@@ -91,11 +96,11 @@ class LaunchdConfig(_Section):
     @field_validator("label_prefix", mode="after")
     @classmethod
     def _safe_label(cls, value: str) -> str:
-        if not _LABEL_PREFIX_RE.match(value):
+        if not _LABEL_PREFIX_RE.fullmatch(value):
             raise ValueError("label_prefix may contain only letters, digits, '.' and '-'")
         return value
 
-    def label(self, service: Literal["stt", "tts", "watchdog"]) -> str:
+    def label(self, service: DaemonName) -> str:
         return f"{self.label_prefix}.{service}"
 
 
@@ -151,6 +156,9 @@ class Settings(BaseSettings):
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     install: InstallConfig = Field(default_factory=InstallConfig)
 
+    def http_port(self, service: ServiceName) -> int:
+        return self.stt.http_port if service == "stt" else self.tts.http_port
+
     def http_url(self, service: ServiceName) -> str:
         """Base URL for talking to a service from this machine.
 
@@ -158,8 +166,7 @@ class Settings(BaseSettings):
         address a client can connect to, so loopback is used instead.
         """
         host = "127.0.0.1" if self.server.bind in ("0.0.0.0", "") else self.server.bind
-        port = self.stt.http_port if service == "stt" else self.tts.http_port
-        return f"http://{host}:{port}"
+        return f"http://{host}:{self.http_port(service)}"
 
     @classmethod
     def settings_customise_sources(

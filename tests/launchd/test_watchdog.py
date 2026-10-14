@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -18,18 +19,17 @@ from voiced.launchd.control import CommandResult
 from voiced.watchdog import (
     Decision,
     Observation,
-    Policy,
+    RestartResult,
     ServiceSpec,
     ServiceState,
     Watchdog,
     decide,
-    detect_stall,
     mark_restarted,
     poll_health,
     restart_service,
 )
 
-POLICY = Policy(
+POLICY = WatchdogConfig(
     interval_s=1,
     timeout_s=0.5,
     failures_before_restart=3,
@@ -44,22 +44,18 @@ POLICY = Policy(
 T0 = 1000.0
 
 
-def ok(uptime: float = 10, **payload: Any) -> Observation:
-    return Observation("ok", "", uptime, {"status": "ok", "queue_depth": 0, **payload})
+def ok(uptime: float = 10, pid: int | None = 500, **payload: Any) -> Observation:
+    return Observation(
+        "ok", "", uptime, {"status": "ok", "queue_depth": 0, **payload}, loaded=True, pid=pid
+    )
 
 
-def down(detail: str = "connection refused") -> Observation:
-    return Observation("unreachable", detail)
+def down(detail: str = "connection refused", pid: int | None = 500) -> Observation:
+    return Observation("unreachable", detail, loaded=True, pid=pid)
 
 
 def fresh() -> ServiceState:
-    return ServiceState(grace_started_at=0.0)
-
-
-def test_policy_mirrors_watchdog_config() -> None:
-    policy = Policy(**WatchdogConfig().model_dump())
-    assert policy.failures_before_restart == 3
-    assert set(Policy.__dataclass_fields__) == set(WatchdogConfig.model_fields)
+    return ServiceState(grace_started_at=0.0, last_pid=500)
 
 
 # decide() ------------------------------------------------------------------
@@ -67,7 +63,7 @@ def test_policy_mirrors_watchdog_config() -> None:
 
 def test_healthy_is_a_no_op() -> None:
     state = fresh()
-    assert decide(state, ok(), T0, POLICY) == Decision("none", "healthy")
+    assert decide(state, ok(), T0, POLICY) == Decision("none", "healthy", False)
     assert state.failures == 0
 
 
@@ -82,13 +78,12 @@ def test_consecutive_failures_restart() -> None:
 
 def test_refused_during_startup_grace_is_not_a_failure() -> None:
     """The socket is not bound while the model loads; polls are refused."""
-    state = ServiceState(grace_started_at=T0)
+    state = ServiceState(grace_started_at=T0, last_pid=500)
     for t in range(0, 99, 7):
         d = decide(state, down(), T0 + t, POLICY)
         assert d.action == "none", t
         assert "startup grace" in d.reason
     assert state.failures == 0
-    # Grace over: now they count.
     for t in (101, 102):
         assert decide(state, down(), T0 + t, POLICY).action == "none"
     assert decide(state, down(), T0 + 103, POLICY).action == "restart"
@@ -100,18 +95,47 @@ def test_grace_restarts_after_a_restart() -> None:
         d = decide(state, down(), T0 + t, POLICY)
     assert d.action == "restart"
     mark_restarted(state, T0 + 2)
-    # Refused polls right after the restart are the new instance loading.
     for t in (10, 20, 30):
         d = decide(state, down(), T0 + t, POLICY)
         assert d.action == "none" and "startup grace" in d.reason
     assert state.failures == 0
 
 
+def test_new_pid_from_launchd_restarts_grace() -> None:
+    """A KeepAlive restart after a crash reloads the model; do not count it."""
+    state = fresh()
+    decide(state, ok(pid=500), T0, POLICY)
+    decide(state, down(pid=None), T0 + 15, POLICY)  # crashed, launchd respawning
+    # New pid appears, still refused while loading: grace restarts at T0 + 30.
+    for t in (30, 45, 60, 100, 120):
+        d = decide(state, down(pid=501), T0 + t, POLICY)
+        assert d.action == "none", t
+    assert state.last_pid == 501
+    # Grace from the pid change (T0 + 30) ends at T0 + 130.
+    for t in (131, 132):
+        assert decide(state, down(pid=501), T0 + t, POLICY).action == "none"
+    assert decide(state, down(pid=501), T0 + 133, POLICY).action == "restart"
+
+
+def test_unloaded_service_is_never_restarted_and_reported_once() -> None:
+    state = fresh()
+    stopped = Observation("unreachable", "refused", loaded=False, pid=None)
+    first = decide(state, stopped, T0, POLICY)
+    assert first.action == "none" and "not loaded in launchd (stopped?)" in first.reason
+    for t in range(1, 50):
+        d = decide(state, stopped, T0 + t, POLICY)
+        assert d == Decision("none", "not loaded in launchd")
+    assert state.failures == 0
+    assert decide(state, ok(), T0 + 60, POLICY).recovered is False
+    assert decide(state, stopped, T0 + 61, POLICY).reason.endswith("not restarting")
+
+
 def test_recovery_resets_the_counter() -> None:
     state = fresh()
     decide(state, down(), T0, POLICY)
     decide(state, down(), T0 + 1, POLICY)
-    assert decide(state, ok(), T0 + 2, POLICY) == Decision("none", "healthy again")
+    d = decide(state, ok(), T0 + 2, POLICY)
+    assert d.recovered and d.reason == "healthy again"
     assert state.failures == 0
     decide(state, down(), T0 + 3, POLICY)
     assert decide(state, down(), T0 + 4, POLICY).action == "none"
@@ -119,7 +143,7 @@ def test_recovery_resets_the_counter() -> None:
 
 def test_degraded_restarts_only_after_window() -> None:
     state = fresh()
-    degraded = Observation("degraded", "RuntimeError: metal", 50, {"status": "degraded"})
+    degraded = Observation("degraded", "RuntimeError: metal", 50, {"status": "degraded"}, True, 500)
     assert decide(state, degraded, T0, POLICY).action == "none"
     assert decide(state, degraded, T0 + 30, POLICY).action == "none"
     d = decide(state, degraded, T0 + 61, POLICY)
@@ -129,7 +153,7 @@ def test_degraded_restarts_only_after_window() -> None:
 
 def test_ok_clears_degraded_timer() -> None:
     state = fresh()
-    degraded = Observation("degraded", "x", 1, {})
+    degraded = Observation("degraded", "x", 1, {}, True, 500)
     decide(state, degraded, T0, POLICY)
     decide(state, ok(), T0 + 10, POLICY)
     assert state.degraded_since is None
@@ -138,18 +162,12 @@ def test_ok_clears_degraded_timer() -> None:
 
 def test_starting_within_grace_is_fine_but_hung_load_restarts() -> None:
     state = fresh()
-    assert decide(state, Observation("starting", "", 50), T0, POLICY).action == "none"
-    d = decide(state, Observation("starting", "", 500), T0 + 1, POLICY)
+    assert (
+        decide(state, Observation("starting", "", 50, None, True, 500), T0, POLICY).action == "none"
+    )
+    d = decide(state, Observation("starting", "", 500, None, True, 500), T0 + 1, POLICY)
     assert d.action == "restart"
     assert "still starting" in d.reason
-
-
-def test_stalled_counts_as_failure() -> None:
-    state = fresh()
-    stalled = Observation("stalled", "queue stuck")
-    decide(state, stalled, T0, POLICY)
-    decide(state, stalled, T0 + 1, POLICY)
-    assert decide(state, stalled, T0 + 2, POLICY).action == "restart"
 
 
 def test_restart_rate_limit() -> None:
@@ -159,7 +177,6 @@ def test_restart_rate_limit() -> None:
     assert d.action == "restart"
     mark_restarted(state, T0 + 2)
     assert state.restarts == 1 and state.failures == 0
-    # After the new grace period, failures again: cooldown holds them back.
     for t in (110, 111, 112):
         d = decide(state, down(), T0 + t, POLICY)
     assert d.action == "cooldown"
@@ -168,26 +185,56 @@ def test_restart_rate_limit() -> None:
     assert d.action == "restart"
 
 
-# detect_stall() ----------------------------------------------------------------
+# Stall detection ---------------------------------------------------------------
 
 
-def test_stall_from_queue_depth_and_last_inference() -> None:
-    now = 10_000.0
-    busy = ok(queue_depth=2, last_inference_at=now - 5)
-    assert detect_stall(busy, POLICY, now).kind == "ok"
-    stuck = ok(queue_depth=2, last_inference_at=now - 31)
-    obs = detect_stall(stuck, POLICY, now)
-    assert obs.kind == "stalled" and "queue depth 2" in obs.detail
-    idle = ok(queue_depth=0, last_inference_at=now - 999)
-    assert detect_stall(idle, POLICY, now).kind == "ok"
+def busy(
+    now: float, depth: int = 1, last: float | None = None, uptime: float = 5000
+) -> Observation:
+    return ok(uptime=uptime, queue_depth=depth, last_inference_at=last)
 
 
-def test_stall_without_any_inference_uses_uptime() -> None:
-    now = 10_000.0
-    first_request = ok(uptime=10, queue_depth=1, last_inference_at=None)
-    assert detect_stall(first_request, POLICY, now).kind == "ok"
-    stuck_first = ok(uptime=100, queue_depth=1, last_inference_at=None)
-    assert detect_stall(stuck_first, POLICY, now).kind == "stalled"
+def test_first_long_request_after_idle_is_not_a_stall() -> None:
+    """Idle 600 s, then one request arrives: ok for stall_after_s, then stalled."""
+    state = fresh()
+    idle_since = T0 - 600
+    assert decide(state, busy(T0, last=idle_since), T0, POLICY).action == "none"
+    assert state.busy_since == T0
+    for t in (10, 20, 30):
+        d = decide(state, busy(T0 + t, last=idle_since), T0 + t, POLICY)
+        assert d.action == "none" and "stalled" not in d.reason, t
+    d = decide(state, busy(T0 + 31, last=idle_since), T0 + 31, POLICY)
+    assert "stalled (1/3)" in d.reason
+    assert "queue depth 1" in d.reason
+
+
+def test_very_first_request_on_long_running_server_is_not_a_stall() -> None:
+    state = fresh()
+    assert decide(state, busy(T0, last=None, uptime=99_999), T0, POLICY).action == "none"
+    d = decide(state, busy(T0 + 29, last=None, uptime=99_999), T0 + 29, POLICY)
+    assert "stalled" not in d.reason
+
+
+def test_progress_resets_the_stall_timer() -> None:
+    state = fresh()
+    decide(state, busy(T0, depth=3, last=T0 - 100), T0, POLICY)
+    # One request completes at T0 + 25: the timer restarts.
+    decide(state, busy(T0 + 25, depth=2, last=T0 + 25), T0 + 25, POLICY)
+    assert state.busy_since == T0 + 25
+    d = decide(state, busy(T0 + 50, depth=2, last=T0 + 25), T0 + 50, POLICY)
+    assert "stalled" not in d.reason
+    d = decide(state, busy(T0 + 56, depth=2, last=T0 + 25), T0 + 56, POLICY)
+    assert "stalled" in d.reason
+
+
+def test_empty_queue_clears_busy_timer_and_stall_counts_as_failure() -> None:
+    state = fresh()
+    decide(state, busy(T0, last=T0 - 1), T0, POLICY)
+    decide(state, ok(), T0 + 10, POLICY)
+    assert state.busy_since is None
+    for t in (100, 140, 180, 220):  # busy from 100; stalled at 140, 180, 220
+        d = decide(state, busy(T0 + t, last=T0 - 1), T0 + t, POLICY)
+    assert d.action == "restart" and "stalled 3x" in d.reason
 
 
 # Watchdog.tick ---------------------------------------------------------------
@@ -197,12 +244,17 @@ def test_tick_calls_restarter_and_records() -> None:
     spec = ServiceSpec(name="tts", label="a.b.tts", base_url="http://127.0.0.1:1")
     observations = iter([down(), down(), down(), ok()])
     restarted: list[str] = []
+
+    def restart(s: ServiceSpec) -> RestartResult:
+        restarted.append(s.label)
+        return RestartResult(True, "restarted")
+
     clock = iter(range(1000, 2000))
     dog = Watchdog(
         services=[spec],
         policy=POLICY,
         observe=lambda s, p: next(observations),
-        restart=lambda s: restarted.append(s.label) or "restarted",
+        restart=restart,
         clock=lambda: float(next(clock)),
     )
     dog.states["tts"] = fresh()
@@ -211,7 +263,26 @@ def test_tick_calls_restarter_and_records() -> None:
     assert dog.tick()["tts"].action == "restart"
     assert restarted == ["a.b.tts"]
     assert dog.states["tts"].restarts == 1
-    assert dog.tick()["tts"] == Decision("none", "healthy again")
+    assert dog.tick()["tts"] == Decision("none", "healthy again", True)
+
+
+def test_tick_does_not_count_a_restart_that_found_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    spec = ServiceSpec(name="tts", label="a.b.tts", base_url="")
+    dog = Watchdog(
+        services=[spec],
+        policy=POLICY,
+        observe=lambda s, p: down(pid=None),
+        restart=lambda s: RestartResult(False, "not loaded"),
+        clock=lambda: 5000.0,
+    )
+    dog.states["tts"] = fresh()
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            dog.tick()
+    assert dog.states["tts"].restarts == 0
+    assert "not loaded" in caplog.text
 
 
 def test_tick_starts_grace_at_first_sight() -> None:
@@ -230,10 +301,10 @@ def test_tick_starts_grace_at_first_sight() -> None:
 def test_tick_survives_observer_bug(caplog: pytest.LogCaptureFixture) -> None:
     spec = ServiceSpec(name="stt", label="x", base_url="http://127.0.0.1:1")
 
-    def boom(s: ServiceSpec, p: Policy) -> Observation:
+    def boom(s: ServiceSpec, p: WatchdogConfig) -> Observation:
         raise RuntimeError("bug")
 
-    dog = Watchdog(services=[spec], policy=POLICY, observe=boom, restart=lambda s: "")
+    dog = Watchdog(services=[spec], policy=POLICY, observe=boom)
     stops = iter([False, True])
     with caplog.at_level("ERROR"):
         dog.run_forever(stop=lambda: next(stops))
@@ -254,9 +325,9 @@ def test_restart_kills_pid_then_kickstarts(monkeypatch: pytest.MonkeyPatch) -> N
             return CommandResult(0, "system/a.stt = {\n\tstate = running\n\tpid = 777\n}")
         return CommandResult(0)
 
-    msg = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
+    result = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
     assert killed == [(777, 9)]
-    assert msg == "sent SIGKILL to pid 777; kickstart ok"
+    assert result == RestartResult(True, "sent SIGKILL to pid 777; kickstart ok")
     assert calls == [
         ["launchctl", "print", "system/a.stt"],
         ["launchctl", "kickstart", "system/a.stt"],
@@ -271,15 +342,28 @@ def test_restart_without_pid_just_kickstarts(monkeypatch: pytest.MonkeyPatch) ->
             return CommandResult(0, "system/a.stt = {\n\tstate = waiting\n}")
         return CommandResult(0)
 
-    msg = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
-    assert msg == "no running pid; kickstart ok"
+    result = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
+    assert result == RestartResult(True, "no running pid; kickstart ok")
+
+
+@pytest.mark.parametrize("pid", [0, 1])
+def test_restart_never_kills_pid_0_or_1(monkeypatch: pytest.MonkeyPatch, pid: int) -> None:
+    monkeypatch.setattr(wd.os, "kill", lambda p, sig: pytest.fail("must not kill"))
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        if argv[1] == "print":
+            return CommandResult(0, f"system/a.stt = {{\n\tstate = running\n\tpid = {pid}\n}}")
+        return CommandResult(0)
+
+    result = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
+    assert f"refusing to kill pid {pid}" in result.detail
 
 
 def test_restart_of_unloaded_service_does_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(wd.os, "kill", lambda pid, sig: pytest.fail("must not kill"))
     runner = lambda argv: CommandResult(113, "", "not found")  # noqa: E731
-    msg = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
-    assert "not loaded" in msg
+    result = restart_service(ServiceSpec(name="stt", label="a.stt", base_url=""), runner)
+    assert result.done is False and "not loaded" in result.detail
 
 
 # poll_health against a real local HTTP server ------------------------------------
@@ -375,42 +459,41 @@ def test_poll_health_garbage(server: str) -> None:
     assert obs.kind == "error"
 
 
-def test_probe_answer_is_not_a_stall_and_busy_queue_skips_probe(server: str) -> None:
+def test_observe_adds_launchd_pid_and_skips_probe_when_busy(server: str) -> None:
     _Handler.responses = {"/health": (200, _health("ok"))}
-    spec = ServiceSpec(
-        name="tts",
-        label="x",
-        base_url=server,
-        probe=wd.ProbeRequest("/v1/audio/speech", b"{}", "application/json"),
-    )
-    probing = Policy(**{**POLICY.__dict__, "probe": True})
+    spec = ServiceSpec(name="tts", label="x", base_url=server, probe=wd.default_probe("tts", "m"))
+    probing = POLICY.model_copy(update={"probe": True})
+    launchctl = lambda argv: CommandResult(0, "system/x = {\n\tstate = running\n\tpid = 9\n}")  # noqa: E731
     # The handler has no do_POST, so the probe gets a 501 immediately: not a stall.
     assert wd.run_probe(spec, timeout_s=1) is None
-    assert wd.observe(spec, probing, now=time.time()).kind == "ok"
+    obs = wd.observe(spec, probing, launchctl)
+    assert obs.kind == "ok" and obs.loaded is True and obs.pid == 9
     # With requests in flight the probe is not sent at all.
     _Handler.responses = {"/health": (200, _health("ok", queue_depth=3))}
-    calls: list[str] = []
     original = wd.run_probe
-    wd.run_probe = lambda s, timeout_s: calls.append(s.name)  # type: ignore[assignment]
+    wd.run_probe = lambda s, timeout_s: pytest.fail("probe must be skipped")  # type: ignore[assignment]
     try:
-        obs = wd.observe(spec, probing, now=time.time())
+        assert wd.observe(spec, probing, launchctl).kind == "ok"
     finally:
         wd.run_probe = original
-    assert obs.kind == "ok" and calls == []
 
 
-def test_multipart_and_silent_wav() -> None:
-    wav = wd.silent_wav(0.1)
-    assert wav[:4] == b"RIFF" and len(wav) > 44
-    body, ctype = wd.multipart({"model": "m"}, "probe.wav", wav)
-    assert ctype.startswith("multipart/form-data; boundary=")
-    assert b'name="file"; filename="probe.wav"' in body
-    assert body.endswith(b"--\r\n")
+def test_default_probe_bodies() -> None:
+    stt = wd.default_probe("stt", "m/stt")
+    assert stt.path == "/v1/audio/transcriptions"
+    assert stt.content_type.startswith("multipart/form-data; boundary=")
+    assert b'name="file"; filename="probe.wav"' in stt.body and b"RIFF" in stt.body
+    tts = wd.default_probe("tts", "m/tts", "bf_emma")
+    assert tts.path == "/v1/audio/speech" and tts.content_type == "application/json"
+    assert json.loads(tts.body) == {
+        "model": "m/tts",
+        "input": "ok",
+        "voice": "bf_emma",
+        "response_format": "pcm",
+    }
 
 
 def test_logging_file_only_when_configured(tmp_path: Path) -> None:
-    import logging
-
     wd.configure_watchdog_logging("info", tmp_path / "watchdog.log")
     handlers = logging.getLogger().handlers
     assert len(handlers) == 1

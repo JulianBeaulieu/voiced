@@ -28,10 +28,11 @@ pure function `decide(state, observation, now, policy)`:
 | Observation | Rule |
 |---|---|
 | `ok` | reset the failure counter and the degraded timer |
-| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start or of its last restart of this service | not a failure: the service is loading its model and has not bound its socket yet |
+| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start, of its last restart of this service, or of launchd handing the service a new pid | not a failure: the service is loading its model and has not bound its socket yet |
 | `starting` (503, model loading) | tolerated while the service's own `uptime_s` is below `startup_grace_s`; beyond that the load is considered hung and the service is restarted |
 | `degraded` (answers, last inference failed) | start a timer; restart once it exceeds `degraded_window_s` (120 s) |
-| `stalled`: `/health` is `ok` but `queue_depth > 0` and no inference has completed for `stall_after_s` (60 s), or the optional probe timed out | one failure |
+| `stalled`: `/health` is `ok` but the queue has been non-empty for `stall_after_s` (60 s) with no inference completing in that time, or the optional probe timed out | one failure |
+| anything while launchd reports the job not loaded (after `voiced stop`) | never a restart; logged once |
 | `unreachable` (after the grace period), `error` (non-health answer) | one failure |
 | any failure | restart at `failures_before_restart` (3) consecutive failures |
 
@@ -41,20 +42,30 @@ cold start (first model download can take minutes) `/health` is not
 `starting`, it is connection-refused. Without the rule three refused polls
 would SIGKILL a service that is 40 s into loading a model, then again after
 every cooldown. The rule keys off the watchdog's own clock, not the
-service's, because there is nothing to ask yet.
+service's, because there is nothing to ask yet. Every poll also reads the
+pid from `launchctl print`; a new pid means launchd restarted the service
+itself (crash, out of memory) and the new process is loading, so the grace
+period starts again from that moment.
 
 Restarts are rate limited: a second restart of the same service within
 `restart_cooldown_s` (120 s) is deferred and logged as `cooldown`; counters
 are kept so it fires right after the cooldown. Every restart and every
 non-healthy observation is logged at INFO or WARNING; healthy polls are
-DEBUG. Logs go to `<log_dir>/watchdog.log` (rotating) and stderr.
+DEBUG. As a daemon the watchdog logs to the rotating
+`<log_dir>/watchdog.log` only (launchd's own stderr capture is not rotated,
+so nothing is sent there); run by hand (`voiced watchdog --once`) it logs
+to stderr.
 
 Stall detection needs no extra request: `/health` reports `queue_depth`
 (waiting plus running) and `last_inference_at` (last completed inference).
-A non-empty queue whose last completion is older than `stall_after_s` means
-the running request never finishes while the process is otherwise alive,
-which is exactly how a wedged Metal queue looks. Before anything has
-completed, the service's start time stands in for `last_inference_at`.
+The watchdog notes when it first sees the queue non-empty (`busy_since`) and
+restarts that timer whenever `last_inference_at` advances or the queue
+empties. A queue that has been busy for `stall_after_s` without a single
+completion means the running request never finishes while the process is
+otherwise alive, which is exactly how a wedged Metal queue looks. Measuring
+from `busy_since` rather than from the last completion matters: after an
+idle hour the first request would otherwise look stalled the moment it
+arrived.
 
 Optional probe (`[watchdog] probe = true`, off by default): when `/health`
 is `ok` and the queue is empty, the watchdog also sends a tiny inference
@@ -83,10 +94,8 @@ privileged attempt first:
 3. `launchctl kickstart system/<label>` so the service comes back now
    instead of after `ThrottleInterval`.
 
-Each step's outcome is in the log line. Logging goes to the rotating
-`<log_dir>/watchdog.log` when running as a daemon (launchd's own stderr
-capture is not rotated, so nothing is sent there) and to stderr when run by
-hand.
+Each step's outcome is in the log line. The watchdog never signals pid 0, 1
+or itself, whatever `launchctl print` says.
 
 ## Alternatives considered
 
@@ -107,6 +116,11 @@ hand.
 - A service that crash-loops is restarted by launchd (`KeepAlive`,
   `ThrottleInterval 10`), not by the watchdog; the watchdog only steps in for
   hangs, stuck loads and persistent degradation.
+- The off-by-default probe is kept: the queue rule only sees a wedge once a
+  request is queued, so a GPU that locks up while idle is found at the first
+  real request plus `stall_after_s`. Installations that want to find it
+  earlier turn the probe on. The code it adds is small and isolated
+  (`default_probe`, `run_probe`, the WAV and multipart helpers).
 - The decision rules are unit tested against a fake health endpoint
   (`tests/launchd/test_watchdog.py`); no network or models needed.
 - `voiced watchdog --once` runs one poll cycle and prints the decisions,

@@ -206,7 +206,7 @@ def test_uninstall_dry_then_real(
     assert (tmp_path / "cfg" / "config.toml").exists()  # --remove-config not given
 
 
-def test_watchdog_specs_and_policy(settings: Settings) -> None:
+def test_watchdog_specs(settings: Settings) -> None:
     settings.server.bind = "0.0.0.0"
     specs = lc.watchdog_specs(settings)
     assert [s.name for s in specs] == ["stt", "tts"]
@@ -214,9 +214,28 @@ def test_watchdog_specs_and_policy(settings: Settings) -> None:
     assert specs[1].health_url == "http://127.0.0.1:8880/health"
     assert specs[0].probe is not None and specs[0].probe.path == "/v1/audio/transcriptions"
     assert specs[1].probe is not None and b'"voice": "af_heart"' in specs[1].probe.body
-    policy = lc.watchdog_policy(settings)
-    assert policy.interval_s == 15 and policy.failures_before_restart == 3
-    assert policy.probe is False and policy.stall_after_s == 60
+    assert settings.watchdog.stall_after_s == 60 and settings.watchdog.probe is False
+
+
+def test_settings_http_helpers_and_label_validation() -> None:
+    s = Settings()
+    assert s.http_port("stt") == 8881 and s.http_port("tts") == 8880
+    assert s.http_url("tts") == "http://127.0.0.1:8880"
+    s.server.bind = "0.0.0.0"
+    assert s.http_url("stt") == "http://127.0.0.1:8881"
+    s.server.bind = "10.0.0.5"
+    assert s.http_url("stt") == "http://10.0.0.5:8881"
+    import pydantic
+
+    for bad in ("a;b", "x y", "ok\n", "", ".lead"):
+        with pytest.raises(pydantic.ValidationError):
+            Settings(launchd={"label_prefix": bad})  # type: ignore[arg-type]
+    assert (
+        Settings(launchd={"label_prefix": "org.example-1.voiced"}).launchd.label(  # type: ignore[arg-type]
+            "metalprobe"
+        )
+        == "org.example-1.voiced.metalprobe"
+    )
 
 
 def test_doctor_metal_probe_stages_script(
@@ -228,5 +247,5 @@ def test_doctor_metal_probe_stages_script(
     assert lc.cmd_doctor(args, settings, FakeLaunchctl({}), out.append) == 0
     staging = tmp_path / "cfg" / "launchd"
     assert (staging / "metal-probe.sh").exists()
-    assert (staging / f"{settings.launchd.label_prefix}.metalprobe.plist").exists()
+    assert (staging / f"{settings.launchd.label('metalprobe')}.plist").exists()
     assert any(line.startswith("Run:  sudo bash ") for line in out)

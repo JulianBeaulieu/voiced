@@ -29,7 +29,8 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.launchd` | `plist` rendering, `control` (launchctl argv builders and runners), `install` (the installer plan, scripts, uninstall safety), `metal_probe`. |
 | `voiced.watchdog` | Stdlib-only hang watchdog: health polling, decision rules, restart. |
 | `voiced.doctor` | Machine checks for `voiced doctor`, each an injectable function. |
-| `voiced.cli` | Command tree; `serve` and `config`. |
+| `voiced.table` | Plain-text table rendering shared by `status` and `doctor`. |
+| `voiced.cli` | Command tree and dispatch; `serve` and `config` live here. |
 | `voiced.cli_lifecycle` | `install | start | stop | status | logs | uninstall | doctor | watchdog`. |
 | `voiced.testing` | Fake engines so everything above is testable without models. |
 

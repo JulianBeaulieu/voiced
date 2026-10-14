@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from voiced import doctor
-from voiced.config import Settings
+from voiced.config import HTTP_SERVICES, SERVICES, DaemonName, Settings
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -32,9 +32,7 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.install import (
-    SERVICES,
     InstallError,
-    Service,
     is_root,
     plan_install,
     plan_summary,
@@ -46,14 +44,11 @@ from voiced.launchd.plist import log_paths
 from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
-    Policy,
-    ProbeRequest,
     ServiceSpec,
     Watchdog,
     configure_watchdog_logging,
-    multipart,
+    default_probe,
     poll_health,
-    silent_wav,
 )
 
 Echo = Callable[[str], None]
@@ -63,7 +58,12 @@ SERVICE_CHOICES = (*SERVICES, "all")
 def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     install = sub.add_parser("install", help="create the venv, download models, stage the plists")
     install.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
-    install.add_argument("--venv", type=Path, help="venv location (default: [install] venv_dir)")
+    install.add_argument(
+        "--venv",
+        type=Path,
+        help="venv location (default: [install] venv_dir; set that key too so doctor, "
+        "uninstall and the daemons agree)",
+    )
     install.add_argument("--python", help='interpreter or version for the venv, e.g. "3.12"')
     install.add_argument("--source", help="pip requirement or path to install (default: auto)")
     install.add_argument("--user", help="UserName for the daemons (default: current user)")
@@ -87,7 +87,9 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     logs.add_argument("--stderr", action="store_true", help="also show launchd's stderr capture")
 
     uninstall = sub.add_parser("uninstall", help="print the sudo script and remove the venv")
-    uninstall.add_argument("--venv", type=Path, help="venv location (default: [install] venv_dir)")
+    uninstall.add_argument(
+        "--venv", type=Path, help="venv location if it differs from [install] venv_dir"
+    )
     uninstall.add_argument("--yes", action="store_true", help="actually delete files")
     uninstall.add_argument(
         "--remove-config", action="store_true", help="also delete the config file and staging dir"
@@ -125,7 +127,7 @@ def run_lifecycle(
     return handlers[args.command]()
 
 
-def _services(name: str) -> tuple[Service, ...]:
+def _services(name: str) -> tuple[DaemonName, ...]:
     if name == "all":
         return SERVICES
     for service in SERVICES:
@@ -288,11 +290,12 @@ def collect_status(
             "pid": ls.pid,
             "last_exit_code": ls.last_exit_code,
         }
-        if service != "watchdog":
-            obs = poll(f"{settings.http_url(service)}/health")
-            row["health"] = obs.kind
-            row["health_detail"] = _health_detail(obs)
-            row["health_payload"] = obs.payload
+        for http_service in HTTP_SERVICES:
+            if http_service == service:
+                obs = poll(f"{settings.http_url(http_service)}/health")
+                row["health"] = obs.kind
+                row["health_detail"] = _health_detail(obs)
+                row["health_payload"] = obs.payload
         rows.append(row)
     return rows
 
@@ -396,9 +399,13 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         config=args.remove_config,
     )
     if not args.yes:
+        present = [t for t in targets.all() if t.exists() or t.is_symlink()]
+        if not present:
+            echo("nothing to remove")
+            return 0
         echo("Would remove (pass --yes to do it):")
-        for t in targets:
-            echo(f"  {t}{'' if t.exists() else '  (absent)'}")
+        for t in present:
+            echo(f"  {t}")
         return 0
     if remove_targets(targets, plan, echo) == 0:
         echo("nothing to remove")
@@ -438,42 +445,28 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
 
 
 def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
-    wav = silent_wav()
-    stt_body, stt_ctype = multipart({"model": settings.stt.model}, "probe.wav", wav)
-    tts_body = json.dumps(
-        {
-            "model": settings.tts.model,
-            "input": "ok",
-            "voice": settings.tts.default_voice,
-            "response_format": "pcm",
-        }
-    ).encode()
     return [
         ServiceSpec(
             name="stt",
             label=settings.launchd.label("stt"),
             base_url=settings.http_url("stt"),
             api_key=settings.server.api_key,
-            probe=ProbeRequest("/v1/audio/transcriptions", stt_body, stt_ctype),
+            probe=default_probe("stt", settings.stt.model),
         ),
         ServiceSpec(
             name="tts",
             label=settings.launchd.label("tts"),
             base_url=settings.http_url("tts"),
             api_key=settings.server.api_key,
-            probe=ProbeRequest("/v1/audio/speech", tts_body, "application/json"),
+            probe=default_probe("tts", settings.tts.model, settings.tts.default_voice),
         ),
     ]
-
-
-def watchdog_policy(settings: Settings) -> Policy:
-    return Policy(**settings.watchdog.model_dump())
 
 
 def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
     log_file = None if once else log_paths(settings.server.log_dir, "watchdog").app
     configure_watchdog_logging(settings.server.log_level, log_file)
-    dog = Watchdog(services=watchdog_specs(settings), policy=watchdog_policy(settings))
+    dog = Watchdog(services=watchdog_specs(settings), policy=settings.watchdog)
     if once:
         for name, decision in dog.tick().items():
             echo(f"{name}: {decision.action}: {decision.reason}")

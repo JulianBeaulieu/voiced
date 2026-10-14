@@ -19,9 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from voiced.config import ServiceName, Settings
+from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import METAL_PROBE_FILE, SERVICES
+from voiced.launchd.install import METAL_PROBE_FILE
+from voiced.launchd.metal_probe import macos_version as _macos_version
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
 
@@ -73,7 +74,7 @@ def check_apple_silicon(runner: Runner, machine: str | None = None) -> Check:
 
 
 def macos_version(runner: Runner) -> str:
-    return runner(["sw_vers", "-productVersion"]).stdout.strip() or platform.mac_ver()[0]
+    return _macos_version(runner(["sw_vers", "-productVersion"]).stdout)
 
 
 def check_macos_version(runner: Runner, system: str | None = None) -> Check:
@@ -344,8 +345,7 @@ def fetch_health(
     settings: Settings, timeout_s: float = 2.0
 ) -> list[tuple[ServiceName, Observation]]:
     out: list[tuple[ServiceName, Observation]] = []
-    services: tuple[ServiceName, ...] = ("stt", "tts")
-    for service in services:
+    for service in HTTP_SERVICES:
         url = f"{settings.http_url(service)}/health"
         obs = poll_health(url, timeout_s=timeout_s, api_key=settings.server.api_key)
         out.append((service, obs))
@@ -355,9 +355,9 @@ def fetch_health(
 def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
     items: list[DaemonEvidence] = []
     for service, obs in fetch_health(settings):
-        port = settings.stt.http_port if service == "stt" else settings.tts.http_port
         status = print_service(settings.launchd.label(service), runner)
-        items.append(DaemonEvidence(service, obs, status.pid, listener_pids(port, runner)))
+        pids = listener_pids(settings.http_port(service), runner)
+        items.append(DaemonEvidence(service, obs, status.pid, pids))
     return items
 
 
