@@ -24,8 +24,9 @@ public final class FakeControlServer: @unchecked Sendable {
         /// Close every connection right after accepting it, as the peer check does for
         /// another user.
         public var closeOnAccept = false
-        /// Close every connection right after hello, as a watchdog that crashes on start does.
-        public var closeAfterHello = false
+        /// Close a connection when its first request arrives: the client has read hello by
+        /// then, so this is a watchdog that says hello and goes away, with no race.
+        public var closeOnFirstRequest = false
         /// Settings a `VOICED_*` environment variable overrides, reported as
         /// `env_override:<key>` warnings when they are set, as the real server does.
         public var environmentOverrides: Set<SettingKey> = []
@@ -245,7 +246,6 @@ public final class FakeControlServer: @unchecked Sendable {
                         ],
                     ], to: client)
             }
-            if options.closeAfterHello { disconnect(client) }
         }
     }
 
@@ -314,6 +314,10 @@ public final class FakeControlServer: @unchecked Sendable {
         let id = fields["id"] ?? .null
         guard let number = id.intValue, let op = fields["op"]?.stringValue else {
             send(failure(id, RemoteError(code: "bad_request", message: "a request needs an integer id and an op")), to: client)
+            return
+        }
+        if options.closeOnFirstRequest {
+            disconnect(client)
             return
         }
         let args = fields["args"]?.objectValue ?? [:]

@@ -152,7 +152,7 @@ final class AppModelTests: XCTestCase {
     }
 
     func testHelloThenCloseReadsAsDisconnected() async throws {
-        let server = try startServer { $0.closeAfterHello = true }
+        let server = try startServer { $0.closeOnFirstRequest = true }
         defer { server.stop() }
         let model = try makeModel(
             socket: server.socketPath, backoff: Backoff(initial: .seconds(5), maximum: .seconds(5)))
