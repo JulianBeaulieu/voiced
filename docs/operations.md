@@ -196,13 +196,13 @@ environment, upgrades the package, re-stages the plists and prints the
 install script, which unloads and reloads the daemons. Models and the
 config file are kept.
 
-From a checkout, before the first release:
+From the checkout in `~/voiced`, before the first release:
 
 ```sh
-cd voiced
+cd ~/voiced
 git pull
-uv tool install --reinstall .
-voiced install --source "$PWD"
+uv tool install --reinstall ~/voiced
+voiced install --source ~/voiced
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 

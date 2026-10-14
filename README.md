@@ -27,8 +27,8 @@ brew install uv espeak-ng ffmpeg
 Until the first release, install from a checkout:
 
 ```sh
-git clone https://github.com/JulianBeaulieu/voiced
-uv tool install ./voiced
+git clone https://github.com/JulianBeaulieu/voiced ~/voiced
+uv tool install ~/voiced
 uv tool update-shell
 ```
 
@@ -37,11 +37,12 @@ often not on your `PATH` yet; `uv tool update-shell` adds it. Open a new
 terminal, then:
 
 ```sh
-voiced install --source "$PWD/voiced"
+voiced install --source ~/voiced
 ```
 
 `voiced install` builds the service environment in `~/.voiced` with the
-engines, downloads the models into the Hugging Face cache, writes the
+engines, downloads the models into the Hugging Face cache (about 3 GB, which
+takes several minutes on the first install), writes the
 launchd plists to `~/.config/voiced/launchd/` and prints one root step. Run
 it:
 
@@ -211,6 +212,11 @@ also pulls in the `espeakng-loader` wheel as a dependency of `kokoro-onnx`;
 that wheel carries its own GPL-3 copy of espeak-ng, which voiced does not
 use.
 
+Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
+package, not vendored; `parakeet-mlx` is Apache-2.0; `mlx-audio`, `wyoming`,
+`pysilero-vad` and `kokoro-onnx` are MIT. ffmpeg runs as a separate program
+installed with Homebrew.
+
 ### Using Soprano
 
 Soprano-80M is installed with the `tts` extra but is opt-in. To use it, set
@@ -223,8 +229,9 @@ model = "mlx-community/Soprano-80M-bf16"
 default_voice = "default"
 ```
 
-Then run `voiced install` again, which downloads the model, and the
-install script, which restarts the daemons. Know its limits before you
+Then run `voiced install --source ~/voiced` again (the path of your
+checkout), which downloads the model, and re-run the install script, which
+restarts the daemons. Know its limits before you
 switch. Its first audio takes about 150 to
 220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
 accepted and ignored. It has one voice, `default`. It sometimes runs on past
@@ -236,8 +243,7 @@ word, most often on one- and two-word replies. The details are in
 ## Benchmarks
 
 M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
-alone in its process. These are pre-release measurements from one machine;
-the round trip comes from a benchmark script written before this package.
+alone in its process. These are pre-release measurements from one machine.
 "First audio" is the time to the first PCM chunk.
 
 | Metric | Measured | Source |
@@ -249,15 +255,14 @@ the round trip comes from a benchmark script written before this package.
 | Soprano first audio | 156 to 223 ms median | Soprano engine, 2026-10-14 |
 | Soprano resident memory | 392 MB | Soprano engine, 2026-10-14 |
 | Parakeet batch, 9.4 s clip | 163 ms | Parakeet engine, 2026-10-14 |
-| Parakeet streaming finalize after the silence window | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
+| Parakeet streaming finalize after the end of speech | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
 | Parakeet first partial after the first word | about 0.7 s | Parakeet engine, 2026-10-14 |
 | Parakeet load including warm-up, warm disk cache | 1.2 s | Parakeet engine, 2026-10-14 |
 | Parakeet memory: after load, serving peak, load peak | 1.28 GB, 2.46 GB, 3.6 to 4.1 GB | Parakeet engine, 2026-10-14 |
-| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median | pre-release script, 2026-10-13 |
 
 Parakeet's figures are MLX allocations; its load peak happens once, while
-the fp32 weights are cast to bf16, and is over the 3 GB the two services
-need while serving. Known limits of streaming transcription: partial
+the fp32 weights are cast to bf16, and is over the 3 GB budget for both
+services while serving. Known limits of streaming transcription: partial
 transcripts trail the speaker by about 0.7 s, and a pause of about one second
 inside an utterance can repeat a short word ("set the the thermostat").
 Batch transcription is not affected. The measurements are in
@@ -312,5 +317,6 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Model weights and espeak-ng have their own
-licenses, listed above.
+MIT. See [LICENSE](LICENSE). Model weights, espeak-ng, ffmpeg and the
+libraries above have their own licenses, listed under
+[Models and licenses](#models-and-licenses).

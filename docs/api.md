@@ -149,8 +149,11 @@ a model that is still loading, refuses the handshake with HTTP `403`.
 
 The server does not detect end of speech on this endpoint; the client
 decides and sends `end`. Inside the engine, Parakeet runs the Silero speech
-detector to skip silence and to start its last encoder call during a pause,
-so `final` usually arrives within a few milliseconds of `end`. The config key
+detector to skip silence and to start its last encoder call during a pause.
+When the audio ends in a short silence, as it does when the client detects
+the end of speech itself, `final` usually arrives within a few milliseconds
+of `end`. A clip sent in one burst has no such pause, so the engine encodes
+it after `end`, one call per 0.8 s of audio: 466 ms for a 3.4 s clip. The config key
 `stt.vad_silence_ms` (default 200) is the silence window for server-side end
 of speech, which neither this endpoint nor Wyoming uses yet; changing it has
 no effect in this version.

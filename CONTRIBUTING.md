@@ -100,15 +100,16 @@ under 300 KB each, free of personal content. Never commit model weights.
 - Non-obvious design choices get an ADR under `docs/decisions/` with the
   next free number, and a line in `docs/decisions/README.md`.
 - Engines run every blocking model call through
-  `voiced.threads.run_blocking`, and transports call engines only inside
+  `voiced.threads.run_blocking`, or a `voiced.threads.ModelThread` when the
+  engine keeps MLX streams, which belong to one thread, and transports call engines only inside
   `voiced.inference.inference()`; see
   [ADR 0005](docs/decisions/0005-shared-inference-and-audio-primitives.md).
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
   the `stt` or `tts` extras; test and lint tools in the `dev` group.
 - Documentation that describes behaviour which has not landed yet carries an
-  HTML comment `<!-- TODO(phase2): ... -->` on its own line. The canonical
+  HTML comment `<!-- TODO(release): ... -->` on its own line. The canonical
   list of open items is
-  `grep -rn 'TODO(phase2)' README.md CONTRIBUTING.md CHANGELOG.md docs`;
+  `grep -rn 'TODO(release)' README.md CONTRIBUTING.md CHANGELOG.md docs`;
   resolve the item and delete the comment in the same change.
 
 ## Adding an engine
@@ -134,8 +135,8 @@ a user would notice.
 
 ## Releasing
 
-Maintainers only. Bump `version` in `pyproject.toml` and `src/voiced/__init__.py`,
-move the Unreleased section of the changelog under the new version with the
+Maintainers only. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
+the installed package metadata), move the Unreleased section of the changelog under the new version with the
 date, tag `v<version>`, and build with `uv build`.
 
-<!-- TODO(phase2): verify the publish step once the package is on PyPI -->
+<!-- TODO(release): verify the publish step once the package is on PyPI -->
