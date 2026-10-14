@@ -107,10 +107,11 @@ sample width or rate is a client error on every transport.
   result for the leftover audio or a fresh size budget. And it compares each
   chunk's rate, width and channels with the `PCMConverter` it built from
   `AudioStart`, raising an `EngineError` if they change. The queue between
-  the handler and the task is bounded (the handler awaits `put` under
-  `bounded`, so a client that outruns a busy GPU is pushed back), and the
-  whole session has a wall-clock bound so a client trickling tiny chunks
-  cannot hold the slot forever (ADR 0011).
+  the handler and the task is bounded in chunks and each chunk in bytes (the
+  handler awaits `put` under `bounded`, so a client that outruns a busy GPU is
+  pushed back and, once the wait runs out, told `QueueFull`), and the whole
+  session has a wall-clock bound so a client trickling tiny chunks cannot
+  hold the slot forever (ADR 0011).
 - **Never nest `inference()` in one task.** The second call would wait for
   the slot its own task holds; `slot()` raises `RuntimeError` instead. A
   child task spawned inside a slot is not caught by that check and would

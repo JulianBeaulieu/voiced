@@ -16,13 +16,15 @@ reports the outcome and closes the connection, like the TTS worker.
 Limits: an utterance may carry at most ``stt.max_upload_mb`` of 16-bit audio
 at 16 kHz (:func:`max_utterance_s`, about 26 minutes at the default 50 MB), and
 the whole session is bounded by that duration plus ``server.session_idle_s``,
-so a client trickling tiny chunks cannot hold the slot forever.
+so a client trickling tiny chunks cannot hold the slot forever. One chunk may
+carry at most :data:`MAX_CHUNK_BYTES`, so the queue holds at most
+``_QUEUE_CHUNKS * MAX_CHUNK_BYTES`` per connection; a client that fills it
+while the slot is busy gets ``server_busy`` once ``session_idle_s`` runs out.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 from wyoming.asr import Transcribe, Transcript
@@ -33,8 +35,9 @@ from wyoming.info import Describe
 from voiced.audio import PCMConverter, UnsupportedAudioFormat
 from voiced.config import Settings
 from voiced.engines.base import STT_SAMPLE_RATE, EngineError
-from voiced.inference import bounded, inference
+from voiced.inference import ClientTimeout, bounded, inference
 from voiced.metrics import Operation
+from voiced.queue import QueueFull
 from voiced.wyoming.handlers import VoicedEventHandler, cancel_task
 from voiced.wyoming.info import stt_info
 
@@ -44,6 +47,10 @@ log = logging.getLogger(__name__)
 # sends about 16 chunks per second, so this is a few seconds of audio; beyond
 # it the handler stops reading and TCP pushes back on the client.
 _QUEUE_CHUNKS = 64
+# Largest audio payload in one AudioChunk. Home Assistant sends about 2 KB; the
+# cap keeps the queue under _QUEUE_CHUNKS * MAX_CHUNK_BYTES (64 MB) whatever
+# chunk size a client picks.
+MAX_CHUNK_BYTES = 1_000_000
 _BYTES_PER_SAMPLE = 2  # the cap reads stt.max_upload_mb as 16-bit samples
 
 
@@ -65,19 +72,27 @@ class STTEventHandler(VoicedEventHandler):
             self._language = None  # a rejected hint must not leave the old one in use
             self._language = self.ctx.check_language(Transcribe.from_event(event).language)
             return True
-        if AudioStart.is_type(event.type) or AudioChunk.is_type(event.type):
-            if self._task is not None and self._task.done():
-                return False  # the session failed, reported, and is closing the connection
+        is_audio = any(t.is_type(event.type) for t in (AudioStart, AudioChunk, AudioStop))
+        if is_audio and self._task is not None and self._task.done():
+            # The session failed and reported; its stop() lets events already
+            # buffered through. None of them may reach or restart a session.
+            return False
         if AudioStart.is_type(event.type):
             start = AudioStart.from_event(event)
             await self._begin(start.rate, start.width, start.channels)
             return True
         if AudioChunk.is_type(event.type):
             chunk = AudioChunk.from_event(event)
+            if len(chunk.audio) > MAX_CHUNK_BYTES:
+                # Reported and closed rather than raised: a client error keeps
+                # the connection, and the next chunk would start a new session.
+                await self.report(EngineError(f"audio chunk over {MAX_CHUNK_BYTES} bytes"))
+                return False
             if self._task is None:
                 # Some clients skip AudioStart; take the format from the chunk.
                 await self._begin(chunk.rate, chunk.width, chunk.channels)
-            return await self._feed(chunk)
+            await self._feed(chunk)
+            return True
         if AudioStop.is_type(event.type):
             return await self._finish()
         log.debug("stt %s: ignoring %s", self.peer, event.type)
@@ -92,14 +107,19 @@ class STTEventHandler(VoicedEventHandler):
             name="wyoming stt session",
         )
 
-    async def _feed(self, item: AudioChunk | None) -> bool:
-        """Queue ``item`` for the session; ``False`` if the session has ended."""
-        task, queue = self._task, self._queue
-        assert task is not None and queue is not None
-        if task.done():
-            return False
-        await bounded(queue.put(item), self._idle_timeout_s)
-        return True
+    async def _feed(self, item: AudioChunk | None) -> None:
+        """Queue ``item`` for the session, waiting while the queue is full.
+
+        The queue only stays full while the session cannot drain it, which
+        means it is still waiting for the slot (or the engine is slow): the
+        server is the slow side, so running out of time is ``QueueFull``
+        (``server_busy``), not a client timeout.
+        """
+        assert self._queue is not None
+        try:
+            await bounded(self._queue.put(item), self._idle_timeout_s)
+        except ClientTimeout:
+            raise QueueFull(self.ctx.queue.capacity) from None
 
     async def _finish(self) -> bool:
         task = self._task
@@ -107,8 +127,7 @@ class STTEventHandler(VoicedEventHandler):
             # AudioStop without audio: answer with an empty transcript.
             await self.write_event(Transcript(text="", language=self._language).event())
             return True
-        if not await self._feed(None):
-            return False
+        await self._feed(None)
         ok = await task  # the task delivers the transcript or reports its failure
         self._task = self._queue = None
         return ok
@@ -161,7 +180,6 @@ class STTEventHandler(VoicedEventHandler):
             # A failed session never restarts on the same connection: a client
             # that keeps streaming after an error must not get a transcript of
             # the leftover audio or a fresh size budget.
-            _drain(queue)  # unblock a handler waiting on a full queue
             await self.report(exc)
             await self.stop()
             return False
@@ -169,9 +187,3 @@ class STTEventHandler(VoicedEventHandler):
     async def cleanup(self) -> None:
         task, self._task, self._queue = self._task, None, None
         await cancel_task(task)
-
-
-def _drain(queue: asyncio.Queue[AudioChunk | None]) -> None:
-    with contextlib.suppress(asyncio.QueueEmpty):
-        while True:
-            queue.get_nowait()

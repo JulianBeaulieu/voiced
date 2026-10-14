@@ -64,10 +64,18 @@ Limits. An utterance may carry at most `stt.max_upload_mb` of 16-bit audio at
 is an `EngineError`, and so is a session that outlives that duration plus
 `session_idle_s` (a wall-clock `asyncio.timeout` inside `inference()`), so a
 client trickling tiny chunks cannot hold the slot forever. The queue between
-handler and task holds 64 chunks (a few seconds of Home Assistant audio); the
-handler awaits `put` under `bounded(..., session_idle_s)`, so a client that
-outruns a busy GPU is pushed back through TCP instead of buffering without
-limit.
+handler and task holds 64 chunks (a few seconds of Home Assistant audio), and
+one chunk may carry at most `MAX_CHUNK_BYTES` (1 MB; Home Assistant sends about
+2 KB), so queued audio stays under 64 MB per connection whatever chunk size a
+client picks; a bigger chunk is one `Error` and a close. The handler awaits
+`put` under `bounded(..., session_idle_s)`, so a client that outruns a busy GPU
+is pushed back through TCP. The queue only stays full while the session cannot
+drain it, which means the server is the slow side (the session is still
+waiting for the slot, or the engine is slow), so running out of time there is
+`QueueFull` and the client gets `server_busy` rather than a dropped connection.
+That error is raised outside `inference()`, so, per ADR 0005, it is not counted
+in metrics; the request was admitted to the queue and gave up waiting, like an
+HTTP client that disconnects while queued.
 
 The connection handler only feeds the queue. The task reports its own outcome
 (the one place) and on any failure closes the connection, whatever the

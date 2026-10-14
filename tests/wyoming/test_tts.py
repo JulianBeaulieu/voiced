@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
-from typing import cast
 
 import pytest
 from fastapi import FastAPI
@@ -30,7 +29,7 @@ from voiced.wyoming import WYOMING_TTS_SERVICE
 from voiced.wyoming.server import WyomingListener
 from voiced.wyoming.tts_handler import TTSEventHandler
 
-from .conftest import client, read_until, wait_for
+from .conftest import client, read_until, stub_writer, wait_for
 
 
 async def test_describe_returns_tts_program(tts_listener: WyomingListener) -> None:
@@ -305,43 +304,11 @@ async def test_synthesize_stopped_is_last(tts_listener: WyomingListener) -> None
     assert "audio-chunk" in [e.type for e in events]
 
 
-class _StallWriter:
-    """A stream writer whose ``drain`` never returns in time, to exercise the
-    write timeout without a real socket."""
-
-    def __init__(self, *, closing: bool = False, drain_delay: float = 10.0) -> None:
-        self._closing = closing
-        self._drain_delay = drain_delay
-
-    def get_extra_info(self, name: str, default: object = None) -> tuple[str, int]:
-        return ("203.0.113.1", 9999)
-
-    def is_closing(self) -> bool:
-        return self._closing
-
-    def writelines(self, data: object) -> None:
-        pass
-
-    def write(self, data: object) -> None:
-        pass
-
-    async def drain(self) -> None:
-        await asyncio.sleep(self._drain_delay)
-
-    def close(self) -> None:
-        self._closing = True
-
-    async def wait_closed(self) -> None:
-        pass
-
-
 async def test_write_timeout_is_treated_as_disconnect(tts_app: FastAPI) -> None:
     ctx = tts_app.state.ctx
     await ctx.engine.load()
     ctx.settings.server.write_timeout_s = 0.1
-    handler = TTSEventHandler(
-        ctx, asyncio.StreamReader(), cast("asyncio.StreamWriter", _StallWriter())
-    )
+    handler = TTSEventHandler(ctx, asyncio.StreamReader(), stub_writer())
     with pytest.raises(ClientTimeout):
         await handler.write_event(Describe().event())
     assert ctx.health.last_error is None  # a stuck client is not an engine failure
@@ -350,9 +317,7 @@ async def test_write_timeout_is_treated_as_disconnect(tts_app: FastAPI) -> None:
 async def test_write_to_closing_transport_does_not_raise_type_error(tts_app: FastAPI) -> None:
     ctx = tts_app.state.ctx
     await ctx.engine.load()
-    handler = TTSEventHandler(
-        ctx, asyncio.StreamReader(), cast("asyncio.StreamWriter", _StallWriter(closing=True))
-    )
+    handler = TTSEventHandler(ctx, asyncio.StreamReader(), stub_writer(closing=True))
     with pytest.raises(ConnectionResetError):
         await handler.write_event(Describe().event())
     # send_error must swallow the disconnect, not raise TypeError on the closed

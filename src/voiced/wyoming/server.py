@@ -82,6 +82,9 @@ class WyomingListener:
             log.debug("%s wyoming: %s dropped: %s", self.ctx.service, handler.peer, exc)
         finally:
             self._handlers.pop(task, None)
+            # run() closes the writer itself, unless it was cancelled before
+            # getting there; wait_closed() on an open writer would never return.
+            writer.close()
             with contextlib.suppress(OSError):  # the socket is gone either way
                 await writer.wait_closed()
             log.debug("%s wyoming: %s disconnected", self.ctx.service, handler.peer)

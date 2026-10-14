@@ -82,7 +82,7 @@ class VoicedEventHandler(AsyncEventHandler):
         try:
             return await self.handle(event)
         except Exception as exc:
-            await self._cleanup_quietly()
+            await self.cleanup()
             return await self.report(exc)
 
     async def report(self, exc: Exception) -> bool:
@@ -100,19 +100,17 @@ class VoicedEventHandler(AsyncEventHandler):
     async def handle(self, event: Event) -> bool: ...
 
     async def cleanup(self) -> None:
-        """Release per-connection resources (session task, worker task)."""
+        """Release per-connection resources (session task, worker task).
+
+        Must not raise: the tasks it cancels catch their own exceptions, so
+        only the caller's own cancellation propagates (see :func:`cancel_task`).
+        """
 
     async def disconnect(self) -> None:
-        await self._cleanup_quietly()
+        await self.cleanup()
 
     async def send_error(self, text: str, code: str) -> None:
         try:
             await self.write_event(Error(text=text, code=code).event())
         except DISCONNECT_ERRORS:
             pass
-
-    async def _cleanup_quietly(self) -> None:
-        try:
-            await self.cleanup()
-        except Exception:
-            log.exception("%s %s: cleanup failed", self.ctx.service, self.peer)

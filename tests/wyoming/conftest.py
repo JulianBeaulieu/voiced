@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from typing import cast
 
 import pytest
 from fastapi import FastAPI
@@ -16,7 +17,7 @@ from voiced.wyoming.server import WyomingListener
 from voiced.wyoming.stt_handler import STTEventHandler
 from voiced.wyoming.tts_handler import TTSEventHandler
 
-__all__ = ["client", "free_port", "read_until", "wait_for"]
+__all__ = ["client", "free_port", "read_until", "stub_writer", "wait_for"]
 
 READ_TIMEOUT = 5.0
 
@@ -87,3 +88,38 @@ async def wait_for(predicate: object, within: float = 2.0) -> None:
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("condition not met in time")
         await asyncio.sleep(0.01)
+
+
+class _StubWriter:
+    """A stream writer without a socket. ``drain`` takes ``drain_delay``
+    seconds, long enough by default to exercise the write timeout."""
+
+    def __init__(self, *, closing: bool = False, drain_delay: float = 10.0) -> None:
+        self._closing = closing
+        self._drain_delay = drain_delay
+
+    def get_extra_info(self, name: str, default: object = None) -> tuple[str, int]:
+        return ("203.0.113.1", 9999)
+
+    def is_closing(self) -> bool:
+        return self._closing
+
+    def writelines(self, data: object) -> None:
+        pass
+
+    def write(self, data: object) -> None:
+        pass
+
+    async def drain(self) -> None:
+        await asyncio.sleep(self._drain_delay)
+
+    def close(self) -> None:
+        self._closing = True
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+def stub_writer(*, closing: bool = False) -> asyncio.StreamWriter:
+    """A handler-ready writer for unit tests that need no connection."""
+    return cast("asyncio.StreamWriter", _StubWriter(closing=closing))
