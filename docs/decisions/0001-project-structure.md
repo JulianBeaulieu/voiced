@@ -32,7 +32,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
 | `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |
 | `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies. |
-| `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app. |
+| `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app; see ADR 0011. |
 | `voiced.stt`, `voiced.tts` | Wire a configured engine into an app. |
 | `voiced.launchd` | `plist` rendering, `control` (launchctl argv builders and runners), `install` (the installer plan, scripts, uninstall safety), `metal_probe`. |
 | `voiced.watchdog` | Stdlib-only hang watchdog: health polling, decision rules, restart. |

@@ -44,7 +44,7 @@ from voiced.engines.base import TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError, 
 from voiced.inference import inference
 from voiced.metrics import Operation
 from voiced.text import normalize
-from voiced.wyoming.handlers import VoicedEventHandler
+from voiced.wyoming.handlers import VoicedEventHandler, cancel_task
 from voiced.wyoming.info import tts_info
 from voiced.wyoming.text import SentenceAccumulator
 
@@ -94,7 +94,11 @@ class TTSEventHandler(VoicedEventHandler):
                 return False  # the worker already reported and closed
             text = SynthesizeChunk.from_event(event).text
             open_stream.chars += len(text)
-            self._enforce_input_limit(open_stream.chars)
+            if open_stream.chars > self.ctx.settings.tts.max_input_chars:
+                # One error for the stream, then close: every later chunk and
+                # the SynthesizeStop would otherwise get an error of their own.
+                await self.report(self._input_limit_error())
+                return False
             for sentence in open_stream.accumulator.add(text):
                 open_stream.sentences.put_nowait(sentence)
             return True
@@ -114,9 +118,13 @@ class TTSEventHandler(VoicedEventHandler):
         return self.ctx.settings.tts.default_voice
 
     def _enforce_input_limit(self, chars: int) -> None:
-        limit = self.ctx.settings.tts.max_input_chars
-        if chars > limit:
-            raise EngineError(f"text exceeds max_input_chars ({limit})")
+        if chars > self.ctx.settings.tts.max_input_chars:
+            raise self._input_limit_error()
+
+    def _input_limit_error(self) -> EngineError:
+        return EngineError(
+            f"text exceeds max_input_chars ({self.ctx.settings.tts.max_input_chars})"
+        )
 
     async def _ensure_audio_start(self) -> None:
         """Send ``AudioStart`` exactly once per request before any chunk."""
@@ -126,10 +134,9 @@ class TTSEventHandler(VoicedEventHandler):
 
     async def _end_audio(self) -> None:
         """Close the audio stream: a lone ``AudioStart`` for empty text, then
-        ``AudioStop``. Resets the per-request state."""
+        ``AudioStop``. Each request resets ``_audio_started`` when it begins."""
         await self._ensure_audio_start()
         await self.write_event(AudioStop().event())
-        self._audio_started = False
 
     async def _speak(self, text: str, voice: str) -> None:
         """Synthesize ``text`` while holding the inference slot, sending
@@ -165,6 +172,8 @@ class TTSEventHandler(VoicedEventHandler):
                     continue
                 await self._speak(text, stream.voice)
         except Exception as exc:
+            # A broken stream always closes, whatever the outcome; report()'s
+            # keep-open answer only applies to request/response events.
             stream.failed = True
             await self.report(exc)
             await self.stop()
@@ -186,12 +195,5 @@ class TTSEventHandler(VoicedEventHandler):
 
     async def cleanup(self) -> None:
         stream, self._stream = self._stream, None
-        if stream is None or stream.worker is None or stream.worker.done():
-            return
-        stream.worker.cancel()
-        try:
-            await stream.worker
-        except asyncio.CancelledError:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                raise
+        if stream is not None:
+            await cancel_task(stream.worker)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import socket
+import contextlib
 from collections.abc import AsyncIterator
 
 import pytest
@@ -9,20 +9,16 @@ from fastapi import FastAPI
 from wyoming.client import AsyncTcpClient
 from wyoming.event import Event
 
+from tests.conftest import free_port
 from voiced.context import ServiceContext
 from voiced.wyoming import WYOMING_STT_SERVICE, WYOMING_TTS_SERVICE
 from voiced.wyoming.server import WyomingListener
 from voiced.wyoming.stt_handler import STTEventHandler
 from voiced.wyoming.tts_handler import TTSEventHandler
 
+__all__ = ["client", "free_port", "read_until", "wait_for"]
+
 READ_TIMEOUT = 5.0
-
-
-def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-    return port
 
 
 async def _loaded_ctx(app: FastAPI) -> ServiceContext:
@@ -54,8 +50,21 @@ async def tts_listener(tts_app: FastAPI) -> AsyncIterator[WyomingListener]:
         yield listener
 
 
+class _Client(AsyncTcpClient):
+    """A test client whose close tolerates a reset.
+
+    When the server closes a connection while audio the client sent is still
+    unread in the server's receive buffer, the kernel answers with a reset, and
+    closing our end then raises. The events read before that are unaffected.
+    """
+
+    async def disconnect(self) -> None:
+        with contextlib.suppress(ConnectionError):
+            await super().disconnect()
+
+
 def client(listener: WyomingListener) -> AsyncTcpClient:
-    return AsyncTcpClient("127.0.0.1", listener.port, read_timeout=READ_TIMEOUT)
+    return _Client("127.0.0.1", listener.port, read_timeout=READ_TIMEOUT)
 
 
 async def read_until(client: AsyncTcpClient, *types: str) -> list[Event]:

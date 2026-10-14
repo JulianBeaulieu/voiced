@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI
+from wyoming.client import AsyncTcpClient
+from wyoming.info import Describe, Info
 
 from voiced.wyoming import WYOMING_STT_SERVICE, ZEROCONF_TYPE
 from voiced.wyoming import zeroconf as zc
@@ -90,3 +92,34 @@ async def test_listener_registers_when_routable(
 
 def test_service_type_constant() -> None:
     assert ZEROCONF_TYPE == "_wyoming._tcp.local."
+
+
+async def test_zeroconf_failure_does_not_stop_the_listener(
+    stt_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """launchd may start the service before the network is up; AsyncZeroconf()
+    then raises and the listener must keep serving."""
+
+    def no_interfaces() -> None:
+        raise RuntimeError("No interfaces to listen on")
+
+    async def routable(bind: str) -> str:
+        return "10.0.0.5"
+
+    import voiced.wyoming.server as server_mod
+
+    monkeypatch.setattr(zc, "AsyncZeroconf", no_interfaces)
+    monkeypatch.setattr(zc, "advertised_address", routable)
+    monkeypatch.setattr(server_mod, "should_advertise", lambda bind, enabled: True)
+    ctx = stt_app.state.ctx
+    await ctx.engine.load()
+    ctx.health.mark_loaded()
+    listener = WyomingListener(
+        ctx, "127.0.0.1", 0, handler_cls=STTEventHandler, service_name=WYOMING_STT_SERVICE
+    )
+    async with listener:
+        assert listener.advertising is False
+        async with AsyncTcpClient("127.0.0.1", listener.port, read_timeout=5) as c:
+            await c.write_event(Describe().event())
+            event = await c.read_event()
+        assert event is not None and Info.is_type(event.type)

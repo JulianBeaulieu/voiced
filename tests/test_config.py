@@ -11,9 +11,10 @@ def test_defaults(settings: Settings) -> None:
     assert settings.server.bind == "127.0.0.1"
     assert settings.server.api_key == ""
     assert settings.stt.http_port == 8881
-    assert settings.stt.wyoming_port == 10300
+    # The fixture moves the Wyoming ports to free ones; check the real defaults.
+    assert Settings().stt.wyoming_port == 10300
     assert settings.tts.http_port == 8880
-    assert settings.tts.wyoming_port == 10200
+    assert Settings().tts.wyoming_port == 10200
     assert settings.tts.default_voice == "af_heart"
     assert settings.stt.vad_silence_ms == 200
     assert settings.stt.languages == ["en"]

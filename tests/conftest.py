@@ -28,7 +28,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
-def _free_port() -> int:
+def free_port() -> int:
+    """An ephemeral TCP port that was free a moment ago."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port: int = s.getsockname()[1]
@@ -48,6 +49,10 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     s.tts.engine = "fake"
     s.stt.queue_depth = 2
     s.tts.queue_depth = 2
+    # Ephemeral Wyoming ports, so a test that runs an app lifespan never binds
+    # the real 10300/10200 (which `voiced serve` may hold in another terminal).
+    s.stt.wyoming_port = free_port()
+    s.tts.wyoming_port = free_port()
     return s
 
 
@@ -63,15 +68,11 @@ def tts_engine() -> FakeTTSEngine:
 
 @pytest.fixture
 def stt_app(settings: Settings, stt_engine: FakeSTTEngine) -> FastAPI:
-    # Ephemeral Wyoming port so running the app lifespan in a test never binds
-    # the real 10300 (which may be in use by `voiced serve` elsewhere).
-    settings.stt.wyoming_port = _free_port()
     return build_stt_app(settings, stt_engine)
 
 
 @pytest.fixture
 def tts_app(settings: Settings, tts_engine: FakeTTSEngine) -> FastAPI:
-    settings.tts.wyoming_port = _free_port()
     return build_tts_app(settings, tts_engine)
 
 

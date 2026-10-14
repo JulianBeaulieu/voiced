@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import numpy as np
 import pytest
 from fastapi import FastAPI
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
+from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
+from wyoming.event import Event
 from wyoming.info import Describe, Info
 
 from voiced import __version__
 from voiced.testing import FakeSTTEngine
+from voiced.wyoming import WYOMING_STT_SERVICE, stt_handler
 from voiced.wyoming.server import WyomingListener
+from voiced.wyoming.stt_handler import STTEventHandler
 
 from .conftest import client, read_until, wait_for
 
@@ -101,7 +106,9 @@ async def test_unsupported_language_is_an_error(stt_listener: WyomingListener) -
         await c.write_event(Transcribe(language="xx").event())
         event = await c.read_event()
     assert event is not None and Error.is_type(event.type)
-    assert Error.from_event(event).code == "UnsupportedLanguage"
+    error = Error.from_event(event)
+    assert error.code == "invalid_request_error"
+    assert error.text.startswith("UnsupportedLanguage")
     assert stt_listener.ctx.health.status == "ok"
 
 
@@ -184,29 +191,149 @@ async def test_engine_failure_marks_degraded(
     assert stt_listener.ctx.queue.depth == 0
 
 
-async def test_utterance_over_cap_is_rejected(
+async def _after_error(c: AsyncTcpClient) -> list[Event]:
+    """Carry on as a misbehaving client would after an error (more audio, then
+    AudioStop) and return whatever still arrives. The server has closed the
+    connection, so writes or reads may hit a reset; that counts as nothing."""
+    events: list[Event] = []
+    with contextlib.suppress(ConnectionError):
+        for _ in range(3):
+            await c.write_event(chunk16k(pcm16(0.5)).event())
+        await c.write_event(AudioStop().event())
+        events = await read_until(c)
+    return events
+
+
+def chunk16k(audio: bytes) -> AudioChunk:
+    return AudioChunk(rate=16_000, width=2, channels=1, audio=audio)
+
+
+async def test_utterance_over_cap_closes_and_never_restarts(
     stt_app: FastAPI, stt_listener: WyomingListener
 ) -> None:
+    engine: FakeSTTEngine = stt_app.state.ctx.engine
     ctx = stt_listener.ctx
-    ctx.settings.stt.max_upload_mb = 1  # ~0.5M int16 samples, ~32s at 16 kHz
+    ctx.settings.stt.max_upload_mb = 1  # 500k int16 samples, about 31 s at 16 kHz
     async with client(stt_listener) as c:
         await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
-        # Two seconds over the cap in one chunk.
-        await c.write_event(AudioChunk(rate=16_000, width=2, channels=1, audio=pcm16(40.0)).event())
+        await c.write_event(chunk16k(pcm16(40.0)).event())  # over the cap in one chunk
         event = await c.read_event()
-    assert event is not None and Error.is_type(event.type)
+        assert event is not None and Error.is_type(event.type)
+        assert Error.from_event(event).text.startswith("EngineError")
+        # The connection is closed: no second session, no transcript of the
+        # leftover audio, no fresh size budget.
+        assert await _after_error(c) == []
+    assert engine.calls == 1
     await wait_for(lambda: ctx.queue.depth == 0)
     assert ctx.health.status == "ok"
+
+
+async def test_format_change_mid_stream_closes_without_transcript(
+    stt_app: FastAPI, stt_listener: WyomingListener
+) -> None:
+    engine: FakeSTTEngine = stt_app.state.ctx.engine
+    async with client(stt_listener) as c:
+        await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+        await c.write_event(chunk16k(pcm16(0.1)).event())
+        await c.write_event(
+            AudioChunk(rate=48_000, width=2, channels=1, audio=pcm16(0.1, 48_000)).event()
+        )
+        event = await c.read_event()
+        assert event is not None and Error.is_type(event.type)
+        assert Error.from_event(event).text.startswith("UnsupportedAudioFormat")
+        assert await _after_error(c) == []
+    assert engine.calls == 1
+    await wait_for(lambda: stt_listener.ctx.queue.depth == 0)
 
 
 @pytest.mark.parametrize("width", [3, 8])
 async def test_unsupported_width_is_rejected(stt_listener: WyomingListener, width: int) -> None:
     async with client(stt_listener) as c:
         await c.write_event(AudioStart(rate=16_000, width=width, channels=1).event())
-        await c.write_event(
-            AudioChunk(rate=16_000, width=width, channels=1, audio=bytes(width * 10)).event()
-        )
         event = await c.read_event()
-    assert event is not None and Error.is_type(event.type)
-    assert stt_listener.ctx.queue.depth == 0
+        assert event is not None and Error.is_type(event.type)
+        assert Error.from_event(event).text.startswith("UnsupportedAudioFormat")
+        assert await _after_error(c) == []
+    await wait_for(lambda: stt_listener.ctx.queue.depth == 0)
     assert stt_listener.ctx.health.status == "ok"
+
+
+async def test_client_outrunning_a_busy_slot_is_pushed_back(
+    stt_app: FastAPI, stt_listener: WyomingListener
+) -> None:
+    """While the slot is busy the session cannot drain its queue; the handler
+    must not buffer without limit. It stops reading at the queue bound and,
+    after session_idle_s without progress, drops the client."""
+    engine: FakeSTTEngine = stt_app.state.ctx.engine
+    ctx = stt_listener.ctx
+    ctx.settings.server.session_idle_s = 0.3
+    gate = asyncio.Event()
+
+    async def hold() -> None:
+        async with ctx.queue.slot():
+            await gate.wait()
+
+    holder = asyncio.create_task(hold())
+    await wait_for(lambda: ctx.queue.depth == 1)
+    try:
+        async with client(stt_listener) as c:
+            await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+            with contextlib.suppress(ConnectionError):
+                for _ in range(200):  # far more than the queue holds
+                    await c.write_event(chunk16k(pcm16(0.064)).event())
+            # Closed with nothing sent; the close may arrive as a reset because
+            # the server leaves the client's unread audio behind.
+            events: list[Event] = []
+            with contextlib.suppress(ConnectionError):
+                events = await read_until(c)
+            assert events == []
+        assert engine.calls == 0  # the session never got the slot
+        await wait_for(lambda: ctx.queue.depth == 1)  # only the holder is left
+    finally:
+        gate.set()
+        await holder
+    assert ctx.queue.depth == 0
+    assert ctx.health.status == "ok"
+
+
+async def test_session_wall_clock_is_bounded(
+    stt_listener: WyomingListener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tiny chunks that each arrive inside session_idle_s still cannot hold
+    the slot past max_utterance_s + session_idle_s."""
+    monkeypatch.setattr(stt_handler, "max_utterance_s", lambda settings: 0.2)
+    ctx = stt_listener.ctx
+    ctx.settings.server.session_idle_s = 0.3
+    async with client(stt_listener) as c:
+        await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+
+        async def trickle() -> None:
+            with contextlib.suppress(ConnectionError):
+                while True:
+                    await c.write_event(chunk16k(b"\x00\x00").event())
+                    await asyncio.sleep(0.1)
+
+        trickler = asyncio.create_task(trickle())
+        try:
+            events = await read_until(c)
+        finally:
+            trickler.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await trickler
+    assert [e.type for e in events] == ["error"]
+    assert "utterance longer than" in Error.from_event(events[0]).text
+    await wait_for(lambda: ctx.queue.depth == 0)
+
+
+async def test_audio_before_the_model_loads_is_busy(stt_app: FastAPI) -> None:
+    ctx = stt_app.state.ctx  # engine deliberately not loaded
+    ctx.settings.server.zeroconf = False
+    listener = WyomingListener(
+        ctx, "127.0.0.1", 0, handler_cls=STTEventHandler, service_name=WYOMING_STT_SERVICE
+    )
+    async with listener, client(listener) as c:
+        await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+        events = await read_until(c)
+    assert [e.type for e in events] == ["error"]
+    assert Error.from_event(events[0]).code == "server_busy"
+    assert ctx.queue.depth == 0

@@ -96,11 +96,21 @@ sample width or rate is a client error on every transport.
   `EngineError` before the response starts: write the body as an async
   generator wrapping `async with inference(...)` and prime it with one
   `anext()` in the route.
-  The session task's consumer has two more obligations: on every event it
-  checks `task.done()` and, if the session already ended, re-raises its
-  exception rather than queueing into a dead session; and it compares each
+  The session task has three more obligations. It reports its own outcome:
+  on any exception it maps `classify` through the transport's table, closes
+  the connection and ends, instead of leaving the error for the connection
+  handler to re-raise on the next event (a client waiting for the result
+  sends no next event, so the error would wait for teardown). The handler
+  never feeds a session that has ended: once the task is done it closes
+  rather than queueing into it or starting a new session on the same
+  connection, so a client that keeps streaming after an error cannot get a
+  result for the leftover audio or a fresh size budget. And it compares each
   chunk's rate, width and channels with the `PCMConverter` it built from
-  `AudioStart`, raising an `EngineError` if they change.
+  `AudioStart`, raising an `EngineError` if they change. The queue between
+  the handler and the task is bounded (the handler awaits `put` under
+  `bounded`, so a client that outruns a busy GPU is pushed back), and the
+  whole session has a wall-clock bound so a client trickling tiny chunks
+  cannot hold the slot forever (ADR 0011).
 - **Never nest `inference()` in one task.** The second call would wait for
   the slot its own task holds; `slot()` raises `RuntimeError` instead. A
   child task spawned inside a slot is not caught by that check and would

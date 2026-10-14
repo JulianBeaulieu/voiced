@@ -1,6 +1,6 @@
 """Wyoming protocol listeners for Home Assistant.
 
-See ``voiced.wyoming.server`` for the listener and ``docs/decisions/0004-wyoming.md``
+See ``voiced.wyoming.server`` for the listener and ``docs/decisions/0011-wyoming.md``
 for the design. Service identifiers are fixed here so the HA integration, zeroconf
 advertisement and docs all agree.
 """

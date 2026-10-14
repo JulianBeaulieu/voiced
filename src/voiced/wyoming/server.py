@@ -1,9 +1,11 @@
 """Wyoming listeners. Each runs in the same process and event loop as the HTTP
 app for its modality and shares its ``ServiceContext`` (engine, queue, health).
 
-:func:`attach` wraps the FastAPI lifespan so uvicorn starts the listener once
-the engine is loaded and stops it on shutdown; nothing else in the process
-needs to know about it. See ``docs/decisions/0004-wyoming.md``.
+:func:`attach` wraps the FastAPI lifespan so uvicorn starts the listener with
+the HTTP app and stops it on shutdown; nothing else in the process needs to
+know about it. The engine loads in the background (ADR 0005), so the listener
+may accept connections before the model is warm; requests answer
+``server_busy`` until it is. See ``docs/decisions/0011-wyoming.md``.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from voiced.context import ServiceContext
+from voiced.inference import DISCONNECT_ERRORS
 from voiced.wyoming.handlers import VoicedEventHandler
 from voiced.wyoming.zeroconf import ZeroconfAdvertiser, should_advertise
 
@@ -75,11 +78,11 @@ class WyomingListener:
         log.debug("%s wyoming: %s connected", self.ctx.service, handler.peer)
         try:
             await handler.run()
-        except (OSError, ConnectionError) as exc:
+        except DISCONNECT_ERRORS as exc:
             log.debug("%s wyoming: %s dropped: %s", self.ctx.service, handler.peer, exc)
         finally:
             self._handlers.pop(task, None)
-            with contextlib.suppress(OSError, ConnectionError):
+            with contextlib.suppress(OSError):  # the socket is gone either way
                 await writer.wait_closed()
             log.debug("%s wyoming: %s disconnected", self.ctx.service, handler.peer)
 
@@ -135,8 +138,9 @@ def attach(
 ) -> WyomingListener:
     """Run a listener for the app's lifetime, inside the app's own lifespan.
 
-    The engine is loaded by the inner (HTTP) lifespan first, so the listener
-    never answers before ``/health`` would. It is stored as ``app.state.wyoming``.
+    The listener starts right after the inner (HTTP) lifespan has started the
+    background engine load, so, like ``/health``, it is up while the model is
+    still loading. It is stored as ``app.state.wyoming``.
     """
     listener = WyomingListener(ctx, host, port, handler_cls=handler_cls, service_name=service_name)
     inner = app.router.lifespan_context

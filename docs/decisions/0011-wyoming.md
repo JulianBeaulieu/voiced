@@ -1,4 +1,4 @@
-# 0004: Wyoming listeners
+# 0011: Wyoming listeners
 
 Date: 2026-10-14. Status: accepted.
 
@@ -6,9 +6,12 @@ Date: 2026-10-14. Status: accepted.
 
 Home Assistant talks to local speech services over the Wyoming protocol
 (`wyoming` package, TCP, newline-delimited JSON events with binary payloads).
-HANDOFF section 5 asks for an STT listener on 10300 and a TTS listener on
-10200 that share the loaded model with the HTTP API of the same process, for
-streaming synthesis, and for zeroconf discovery.
+voiced needs an STT listener (port 10300) and a TTS listener (port 10200)
+that Home Assistant can add as Wyoming services. Each must share the loaded
+model, inference queue and health state with the HTTP API of the same process
+(one model in memory, one GPU queue), support Home Assistant's streaming
+synthesis so speech starts before the conversation agent finishes, and be
+discoverable over zeroconf.
 
 ## Decisions
 
@@ -54,10 +57,24 @@ from an `asyncio.Queue` with `bounded(queue.get(), session_idle_s)` so a
 half-open satellite's slot is released, finalizes on the `None` sentinel the
 connection handler enqueues at `AudioStop`, and writes the `Transcript`. A
 later chunk whose rate, width or channels differ from the `AudioStart` format
-is an `EngineError`; an over-long utterance (capped via `stt.max_upload_mb`,
-read as 16-bit audio) is too. The connection handler only feeds the queue; the
-task maps its own outcome to a Wyoming `Error` (the one place) and closes
-unless the fault was the client's.
+is an `EngineError`.
+
+Limits. An utterance may carry at most `stt.max_upload_mb` of 16-bit audio at
+16 kHz: `max_utterance_s` is about 26 minutes at the default 50 MB. More audio
+is an `EngineError`, and so is a session that outlives that duration plus
+`session_idle_s` (a wall-clock `asyncio.timeout` inside `inference()`), so a
+client trickling tiny chunks cannot hold the slot forever. The queue between
+handler and task holds 64 chunks (a few seconds of Home Assistant audio); the
+handler awaits `put` under `bounded(..., session_idle_s)`, so a client that
+outruns a busy GPU is pushed back through TCP instead of buffering without
+limit.
+
+The connection handler only feeds the queue. The task reports its own outcome
+(the one place) and on any failure closes the connection, whatever the
+outcome: the handler never feeds a session that has ended, and a failed
+session never restarts on the same connection, so a client that keeps
+streaming after an error cannot get a transcript of the leftover audio or a
+fresh size budget.
 
 ### TTS: streaming with per-sentence slots
 
@@ -65,8 +82,9 @@ Plain `Synthesize` runs the engine inside one `inference(ctx, SPEECH)` block
 and emits `AudioStart`, `AudioChunk`s, `AudioStop` at 24 kHz 16-bit mono.
 
 The streaming form (`SynthesizeStart`, `SynthesizeChunk`..., `SynthesizeStop`)
-accumulates text in `SentenceAccumulator`, which releases a sentence as soon
-as terminal punctuation is followed by whitespace (or a newline). A worker
+accumulates text in `SentenceAccumulator`, which runs `voiced.text.split_sentences`
+over the buffer and releases every sentence but the last, which may still be
+growing ("Call Dr." before "Smith"); a newline releases it too. A worker
 task synthesizes each sentence while the handler keeps reading text, so the
 first audio goes out while the conversation agent is still generating.
 
@@ -78,7 +96,8 @@ is held then; only the slot-holding `AudioChunk` writes are. The cost is that
 `QueueFull` can in theory hit mid-stream (after audio has already started),
 which is reported as an `Error` like everywhere else. `max_input_chars` caps
 the request text (the whole message for `Synthesize`, the running total for a
-`SynthesizeChunk` stream).
+`SynthesizeChunk` stream); a stream that goes over gets one `Error` and is
+closed.
 
 `AudioStart` is written exactly once per request through `_ensure_audio_start`
 and `_end_audio`, so the three code paths (plain, streaming, empty text) cannot
@@ -91,12 +110,17 @@ happened. `inference()` records the outcome; one `except Exception` then maps
 `classify(exc)` through `_WIRE`, the Wyoming counterpart of the HTTP `_HTTP`
 table: `busy` sends `Error(server_busy)` and closes; `client_error` (an
 unknown voice, unsupported language, over-long input, unconvertible audio)
-sends `Error(<type>)` and keeps the connection; `disconnect`
+sends `Error(invalid_request_error)` and keeps the connection for
+request/response events; `disconnect`
 (`DISCONNECT_ERRORS`, including a `ClientTimeout` from a bounded read or write)
 is cleaned up quietly with no `Error`; `failure` sends `Error(engine_error)`.
-For the streaming paths the session/worker task is that one place (reporting
-immediately rather than waiting for the next client event, which a client
-blocked on a read would never send). Writes are bounded with
+The error text starts with the exception type. For the streaming paths the
+session/worker task is that one place, reporting immediately rather than
+waiting for the next client event (which a client blocked on a read never
+sends), and a broken stream always closes the connection. Requests that arrive
+before the model has loaded get `server_busy` (`check_loaded()`); that includes
+the TTS `Describe`, whose voice list needs the loaded engine, so Home Assistant
+shows the entry as not ready until warm-up ends and then retries. Writes are bounded with
 `bounded(write, write_timeout_s)`, and a write to a peer that has already gone
 is guarded by `writer.is_closing()` so it raises `ConnectionResetError`
 (a disconnect) rather than a `TypeError` on a closed transport.

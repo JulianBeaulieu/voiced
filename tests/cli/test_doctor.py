@@ -121,7 +121,9 @@ def test_check_ports_uses_all_four(settings: Settings) -> None:
 
     checks = doctor.check_ports(settings, runner)
     assert [c.result for c in checks] == ["pass"] * 4
-    assert seen == ["-iTCP:8881", "-iTCP:10300", "-iTCP:8880", "-iTCP:10200"]
+    # The shared fixture moves the Wyoming ports to free ones; compare with it.
+    stt_wyoming, tts_wyoming = settings.stt.wyoming_port, settings.tts.wyoming_port
+    assert seen == ["-iTCP:8881", f"-iTCP:{stt_wyoming}", "-iTCP:8880", f"-iTCP:{tts_wyoming}"]
 
 
 def test_filevault() -> None:

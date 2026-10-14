@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
+from typing import Any
 
 from wyoming.error import Error
 from wyoming.event import Event
@@ -26,15 +27,35 @@ from voiced.metrics import Outcome
 log = logging.getLogger(__name__)
 
 ERROR_SERVER_BUSY = "server_busy"
+ERROR_INVALID_REQUEST = "invalid_request_error"
 ERROR_ENGINE = "engine_error"
 
-# Outcome -> (Wyoming error code, keep the connection open). ``disconnect`` is
-# handled before this table: nothing is sent and the connection closes.
+# Outcome -> (Wyoming error code, keep the connection open), the same shape as
+# the HTTP ``_HTTP`` table. ``disconnect`` is handled before this table: nothing
+# is sent and the connection closes. The error text names the exception type.
 _WIRE: dict[Outcome, tuple[str, bool]] = {
     Outcome.BUSY: (ERROR_SERVER_BUSY, False),
-    Outcome.CLIENT_ERROR: ("", True),  # code is the exception type name
+    Outcome.CLIENT_ERROR: (ERROR_INVALID_REQUEST, True),
     Outcome.FAILURE: (ERROR_ENGINE, False),
 }
+
+
+async def cancel_task(task: asyncio.Task[Any] | None) -> None:
+    """Cancel ``task`` and wait for it to finish.
+
+    The tasks this is used for (STT session, TTS worker) catch their own
+    exceptions, so only their cancellation can surface here; it is swallowed
+    unless the caller itself is being cancelled.
+    """
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
 
 
 class VoicedEventHandler(AsyncEventHandler):
@@ -72,7 +93,7 @@ class VoicedEventHandler(AsyncEventHandler):
             log.debug("%s %s: client went away: %r", self.ctx.service, self.peer, exc)
             return False
         code, keep_open = _WIRE[outcome]
-        await self.send_error(f"{type(exc).__name__}: {exc}", code or type(exc).__name__)
+        await self.send_error(f"{type(exc).__name__}: {exc}", code)
         return keep_open
 
     @abstractmethod
