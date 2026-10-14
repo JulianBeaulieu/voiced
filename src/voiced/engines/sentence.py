@@ -4,17 +4,20 @@ It owns the parts every such engine repeats: ``load()`` through
 ``run_blocking``, the loaded check, the voice and speed checks before the
 first yield, and the split-synthesize-yield loop with each model call in
 ``run_blocking`` (so a cancelled request cannot release the inference slot
-while the GPU is still busy). A subclass supplies three blocking methods:
+while the GPU is still busy). A subclass supplies:
 
-* ``_load_sync()`` builds the model in locals, warms up, and assigns
-  ``self._model`` last, so a failure leaves the engine unloaded;
-* ``_has_voice(voice)`` says whether ``voice`` is one of ``voices()``;
-* ``_synth_sentence(sentence, voice, speed)`` returns int16 PCM at
-  :data:`TTS_SAMPLE_RATE` for one sentence, or ``b""`` for nothing to say.
+* ``_load_sync()``, blocking, run in a worker thread: builds the model in
+  locals, warms up, and assigns ``self._model`` last, so a failure leaves the
+  engine unloaded;
+* ``_has_voice(voice)``, run on the event loop, so a cheap lookup: whether
+  ``voice`` is one of ``voices()``;
+* ``_synth_sentence(sentence, voice, speed)``, blocking, run in a worker
+  thread: int16 PCM at :data:`TTS_SAMPLE_RATE` for one sentence, or ``b""``
+  for nothing to say.
 
-``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``; an engine without rate
-control sets both to 1.0 so any other speed is a client error rather than
-silently ignored.
+``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``. An engine without rate
+control may ignore ``speed`` within the bounds, as ``TTSEngine.synthesize``
+allows.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from voiced.engines.base import (
 from voiced.text.sentences import split_sentences
 from voiced.threads import run_blocking
 
-__all__ = ["WARMUP_TEXT", "SentenceTTSEngine"]
+__all__ = ["SentenceTTSEngine"]
 
 WARMUP_TEXT = "Warming up."
 
@@ -71,8 +74,6 @@ class SentenceTTSEngine(TTSEngine):
         if not self._has_voice(voice):
             raise UnknownVoice(voice)
         if not self.MIN_SPEED <= speed <= self.MAX_SPEED:
-            if self.MIN_SPEED == self.MAX_SPEED:
-                raise EngineError(f"speed must be {self.MIN_SPEED} for {self.name}")
             raise EngineError(f"speed must be between {self.MIN_SPEED} and {self.MAX_SPEED}")
         for sentence in split_sentences(text):
             pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)

@@ -25,7 +25,6 @@ from voiced.engines.registry import (
     register_stt_engine,
     register_tts_engine,
 )
-from voiced.engines.sentence import SentenceTTSEngine
 
 __all__ = [
     "STT_ENTRY_POINT_GROUP",
@@ -37,7 +36,6 @@ __all__ = [
     "STTEngine",
     "STTStreamSession",
     "Segment",
-    "SentenceTTSEngine",
     "TTSEngine",
     "Transcript",
     "UnknownEngine",

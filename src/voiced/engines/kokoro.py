@@ -189,10 +189,10 @@ class KokoroEngine(SentenceTTSEngine):
                 voice = next((v.id for v in voices if v.language == tag), None)
                 if voice is not None:
                     _synth(model, tokenizer, packs[voice], WARMUP_TEXT, voice, 1.0)
-        self._model = model
         self._tokenizer = tokenizer
         self._packs = packs
         self._voices = voices
+        self._model = model  # last: it is what marks the engine loaded
         log.info(
             "kokoro: loaded %s with %d voices in %.1fs",
             self.model_id,

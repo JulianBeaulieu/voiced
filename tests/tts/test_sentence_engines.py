@@ -11,21 +11,19 @@ import time
 
 import pytest
 
-from voiced.engines import SentenceTTSEngine
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded, UnknownVoice
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.sentence import SentenceTTSEngine
 from voiced.queue import InferenceQueue
 
-# (engine class, a voice id it serves)
-ENGINES: list[tuple[type[SentenceTTSEngine], str]] = [
-    (KokoroEngine, "af_heart"),
-]
+ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine]
+VOICE = "test_voice"
+"""The one voice the stubbed engines accept."""
 
 
-@pytest.fixture(params=ENGINES, ids=lambda e: e[0].name)
+@pytest.fixture(params=ENGINES, ids=lambda cls: cls.name)
 def engine_and_voice(request: pytest.FixtureRequest) -> tuple[SentenceTTSEngine, str]:
-    cls, voice = request.param
-    return cls(), voice
+    return request.param(), VOICE
 
 
 def _stub_loaded(
@@ -53,7 +51,7 @@ async def test_methods_require_load(engine_and_voice: tuple[SentenceTTSEngine, s
             pass
 
 
-async def test_failed_load_leaves_engine_unloaded(
+async def test_load_propagates_errors(
     engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     engine, _ = engine_and_voice
@@ -66,6 +64,21 @@ async def test_failed_load_leaves_engine_unloaded(
         await engine.load()
     with pytest.raises(EngineNotLoaded):
         await engine.voices()
+
+
+async def test_load_runs_off_the_event_loop(
+    engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, _ = engine_and_voice
+    threads: list[int] = []
+
+    def fake_load() -> None:
+        threads.append(threading.get_ident())
+        engine._model = object()
+
+    monkeypatch.setattr(engine, "_load_sync", fake_load)
+    await engine.load()
+    assert threads and threads[0] != threading.get_ident()
 
 
 async def test_unknown_voice_raises_before_yielding(
