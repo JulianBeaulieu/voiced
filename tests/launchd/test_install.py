@@ -20,6 +20,7 @@ from voiced.launchd.install import (
     InstallPlan,
     daemon_install_lines,
     plan_install,
+    plan_summary,
     removal_refusal,
     remove_targets,
     run_install,
@@ -143,6 +144,17 @@ def test_paths_with_spaces_are_quoted(settings: Settings, tmp_path: Path) -> Non
         str(weird / "a.b.plist"),
         "/Library/LaunchDaemons/a.b.plist",
     ]
+
+
+def test_long_venv_path_is_not_flagged(settings: Settings, tmp_path: Path) -> None:
+    """uv and pip both write a /bin/sh trampoline instead of a ``#!`` line when the
+    interpreter path is long or has spaces, and the engine reads espeak-ng data
+    from Homebrew, not from the venv, so no venv path length is too long."""
+    venv = tmp_path / "Application Support" / ("x" * 200) / ".voiced"
+    p = plan_install(settings, venv_dir=venv, user="u", home=tmp_path, uv=None)
+    summary = plan_summary(p)
+    assert f"venv           {venv}" in summary
+    assert "warning" not in summary
 
 
 def test_default_install_runner_streams() -> None:

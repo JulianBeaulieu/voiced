@@ -101,8 +101,7 @@ probe = false
 probe_timeout_s = 20
 
 [install]
-# Where `voiced install` creates the virtual environment. Keep the path short:
-# espeak-ng, which Kokoro's phonemizer uses, fails with long data paths.
+# Where `voiced install` creates the virtual environment.
 venv_dir = "~/.voiced"
 # Python for the venv: a version like "3.12" (uv downloads it if needed) or a
 # path to an interpreter. Empty picks 3.12 with uv, or the running interpreter

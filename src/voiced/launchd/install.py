@@ -34,9 +34,6 @@ from voiced.launchd.plist import log_paths, render_plist
 Service = DaemonName
 EXTRAS: tuple[str, ...] = HTTP_SERVICES  # one package extra per inference service
 METAL_PROBE_FILE = "metal-probe.json"
-# espeak-ng (Kokoro's phonemizer) uses a fixed-size buffer for its data path;
-# the venv path plus site-packages/espeakng_loader/espeak-ng-data must fit.
-MAX_COMFORTABLE_VENV_PATH = 80
 
 # Label prefixes used by earlier releases. ``uninstall`` boots these out too
 # (ADR 0003). Empty until the prefix changes for the first time.
@@ -421,11 +418,6 @@ def plan_summary(plan: InstallPlan) -> str:
     ]
     for service in SERVICES:
         lines.append(f"label {service:<9}{plan.labels[service]}")
-    if len(str(plan.venv_dir)) > MAX_COMFORTABLE_VENV_PATH:
-        lines.append(
-            f"warning: venv path is {len(str(plan.venv_dir))} characters; espeak-ng fails with "
-            f"long data paths, keep it under {MAX_COMFORTABLE_VENV_PATH} (for example ~/.voiced)"
-        )
     return "\n".join(lines)
 
 

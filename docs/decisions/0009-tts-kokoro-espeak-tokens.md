@@ -73,8 +73,8 @@ bundles its own espeak-ng; the engine does not use it. espeak-ng has a fixed
 size path buffer and silently falls back to its compiled-in data path when
 the data directory's path is long, which is what happens to the wheel copy
 inside a deeply nested virtual environment, while the Homebrew data lives at
-a short path. For the same reason the installer should create its virtual
-environment at a short filesystem path.
+a short path. Because the engine never reads espeak-ng data from inside the
+virtual environment, the virtual environment's path length does not matter.
 
 Note that Homebrew's deprecated `espeak` formula conflicts with `espeak-ng`
 (both install an `espeak` binary); `brew unlink espeak` first if it is
@@ -85,8 +85,11 @@ installed.
 - Pronunciation quality depends on espeak-ng's English dictionaries, which
   are good for common words and acronyms and occasionally wrong for names.
   The normalizer is the place to fix systematic cases.
-- `doctor` must check for a working espeak-ng (the engine's
-  `espeak_candidates()` helper can be reused).
+- `doctor` checks for the library with the engine's own
+  `espeak_candidates()` and reports the path it would load (or the
+  override), so an unlinked keg passes and an `espeak-ng` binary on `PATH`
+  without the keg does not. It is a failure when the configured TTS engine
+  is `kokoro`, a warning otherwise.
 - Kokoro's 510-phoneme limit is enforced by the sentence splitter (300
   characters per chunk) and, because acronym-heavy text phonemizes to more
   than 1.7 characters per character, by cutting the phoneme string at spaces
