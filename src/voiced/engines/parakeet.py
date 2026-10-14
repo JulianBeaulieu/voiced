@@ -57,6 +57,7 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
+from voiced.threads import run_blocking
 
 __all__ = ["PARAKEET_V3_LANGUAGES", "ParakeetEngine", "ParakeetStreamSession"]
 
@@ -145,7 +146,7 @@ class ParakeetEngine(STTEngine):
         return code
 
     async def load(self) -> None:
-        await _run_blocking(self._load_blocking)
+        await run_blocking(self._load_blocking)
 
     def _load_blocking(self) -> None:
         import mlx.core as mx
@@ -189,7 +190,7 @@ class ParakeetEngine(STTEngine):
         duration = len(samples) / STT_SAMPLE_RATE
         if len(samples) < LIBRARY_MIN_SAMPLES or _is_silent(samples):
             return Transcript(text="", language=lang, duration_s=duration)
-        result = await _run_blocking(_generate, model, samples)
+        result = await run_blocking(_generate, model, samples)
         return _to_transcript(result, lang, duration)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
@@ -382,7 +383,7 @@ class ParakeetStreamSession(STTStreamSession):
                     np.concatenate(self._pending) if len(self._pending) > 1 else self._pending[0]
                 )
                 self._pending = []
-                await _run_blocking(self._adapter.feed, chunk)
+                await run_blocking(self._adapter.feed, chunk)
         except Exception as exc:
             self._failure = exc
             raise
@@ -394,7 +395,7 @@ class ParakeetStreamSession(STTStreamSession):
         self._check_open()
         self._closed = True
         await self._drain()
-        result = await _run_blocking(self._adapter.flush)
+        result = await run_blocking(self._adapter.flush)
         duration = self.samples_added / STT_SAMPLE_RATE
         if result is None:
             return Transcript(text="", language=self._language, duration_s=duration)
@@ -412,7 +413,7 @@ class ParakeetStreamSession(STTStreamSession):
                 await asyncio.wait({task})
         finally:
             try:
-                await _run_blocking(self._adapter.close)
+                await run_blocking(self._adapter.close)
             finally:
                 self._engine._session_closed(self)
 
@@ -432,27 +433,6 @@ class ParakeetStreamSession(STTStreamSession):
             exc = task.exception()
             if exc is not None:
                 raise exc
-
-
-async def _run_blocking(fn: Callable[..., Any], *args: Any) -> Any:
-    """``asyncio.to_thread``, except a cancelled caller waits for the thread to finish.
-
-    Otherwise a cancel would let the engine's inference slot go while the
-    encoder is still running. Replaced by ``voiced.threads.run_blocking``
-    once the shared primitive is in ``main``.
-    """
-    future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-    cancelled = False
-    while not future.done():
-        try:
-            await asyncio.wait({future})
-        except asyncio.CancelledError:
-            cancelled = True
-    if cancelled:
-        if not future.cancelled():
-            future.exception()  # retrieved; the cancel wins
-        raise asyncio.CancelledError
-    return future.result()
 
 
 def _generate(model: Any, samples: NDArray[np.float32]) -> Any:

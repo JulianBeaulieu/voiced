@@ -88,7 +88,7 @@ pending tail that is all silence) and returns the transcript; the library's
 stream context, which switches the model's attention globally, is exited in
 `close()`, when the server releases the inference slot. The adapter's lock
 makes `close()` wait for a pass that is still running, and every blocking
-call goes through a `run_blocking` that lets cancellation finish the thread,
+call goes through `voiced.threads.run_blocking`, which lets cancellation finish the thread,
 so a cancelled `finalize()` or `close()` always leaves the model in full
 attention. The engine refuses a second session or a batch call while a
 session is open. A failed encoder pass is raised from the next `add_audio`
