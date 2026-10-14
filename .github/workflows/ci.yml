@@ -44,6 +44,25 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  menubar:
+    # The macOS menu bar app in menubar/: a Swift 6 package. macos-15 ships
+    # Xcode 16, the first with Swift 6. No signing here; see
+    # menubar/Scripts/SIGNING.md.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: menubar
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: swift test
+      - name: Bundle
+        run: Scripts/bundle.sh
+
   model-tests:
     # Manual only. Installs the real MLX engines and runs the tests marked
     # `model`, which download weights from Hugging Face and need Metal.
