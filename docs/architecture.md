@@ -1,23 +1,23 @@
 # Architecture
 
-voiced is one Python package that runs as two long-lived processes on an
-Apple Silicon Mac. Each process loads one model onto the GPU through MLX,
-keeps it resident, and serves it over two protocols from one event loop.
-This page explains the pieces; the decision records under
+voiced is one Python package that runs as two services on an Apple Silicon
+Mac. Each service is one long-lived process that loads one model onto the
+GPU through MLX, keeps it resident, and serves it over two protocols from
+one event loop. This page explains the pieces; the decision records under
 [decisions/](decisions/README.md) explain why.
 
-## Processes
+## Services
 
 ```mermaid
 flowchart TB
     subgraph launchd [launchd LaunchDaemons]
         direction LR
-        d_stt[voiced.stt]
-        d_tts[voiced.tts]
-        d_wd[voiced.watchdog]
+        d_stt["&lt;prefix&gt;.stt"]
+        d_tts["&lt;prefix&gt;.tts"]
+        d_wd["&lt;prefix&gt;.watchdog"]
     end
 
-    subgraph stt [stt process, one event loop]
+    subgraph stt [stt service: one process, one event loop]
         direction TB
         s_http[FastAPI :8881<br/>/v1/audio/transcriptions<br/>/v1/audio/transcriptions/stream<br/>/v1/models /health /]
         s_wy[Wyoming listener :10300<br/>AudioStart AudioChunk AudioStop]
@@ -29,7 +29,7 @@ flowchart TB
         s_ctx --> s_q --> s_eng
     end
 
-    subgraph tts [tts process, one event loop]
+    subgraph tts [tts service: one process, one event loop]
         direction TB
         t_http[FastAPI :8880<br/>/v1/audio/speech<br/>/v1/audio/voices<br/>/v1/models /health /]
         t_wy[Wyoming listener :10200<br/>Synthesize, SynthesizeStart/Chunk/Stop]
@@ -43,16 +43,16 @@ flowchart TB
 
     d_stt -->|RunAtLoad, KeepAlive| stt
     d_tts -->|RunAtLoad, KeepAlive| tts
-    d_wd -->|GET /health every 15 s| s_http
-    d_wd -->|GET /health every 15 s| t_http
-    d_wd -.->|launchctl kickstart -k after 3 failures| d_stt
-    d_wd -.->|launchctl kickstart -k after 3 failures| d_tts
+    d_wd -->|GET /health| s_http
+    d_wd -->|GET /health| t_http
+    d_wd -.->|launchctl kickstart -k| d_stt
+    d_wd -.->|launchctl kickstart -k| d_tts
 
     zc[zeroconf<br/>_wyoming._tcp.local.] -.- s_wy
     zc -.- t_wy
 ```
 
-Two processes rather than one so that a crash or hang in one modality does
+Two services rather than one so that a crash or hang in one modality does
 not take down the other, and so the watchdog can restart them independently.
 They never share a loaded model, which costs nothing because they load
 different ones. Everything they have in common is in the top-level modules:
@@ -82,7 +82,7 @@ different ones. Everything they have in common is in the top-level modules:
 3. The handler takes a slot in the `InferenceQueue`. If the queue is at
    capacity the request fails immediately: HTTP `503` with `Retry-After`, or a
    Wyoming `Error` with code `queue_full`. Otherwise it waits its turn.
-4. The engine runs. Blocking MLX calls happen in a worker thread via
+4. The engine runs. Blocking MLX calls happen in a thread via
    `asyncio.to_thread`, so the event loop keeps serving `/health` and
    accepting connections.
 5. The handler encodes the output (WAV, MP3, Opus, subtitle formats, Wyoming
@@ -98,7 +98,7 @@ everyone else.
 ## Inference queue
 
 MLX runs one kernel stream per process and model objects are not
-thread-safe, so each process runs exactly one inference at a time. The queue
+thread-safe, so each service runs exactly one inference at a time. The queue
 is an `asyncio.Lock` with a counter in front of it:
 
 - `async with queue.slot():` holds the GPU for the block. Used by streams.
@@ -114,47 +114,22 @@ queue.
 
 ## Health
 
-`GET /health` serializes a per-process `HealthState`:
-
-| `status` | Condition | HTTP code |
-|---|---|---|
-| `starting` | `load()` has not finished | 503 |
-| `ok` | loaded and the last inference succeeded | 200 |
-| `degraded` | loaded but the last inference raised | 200 |
-
-The response also carries queue depth and capacity, the time and duration
-of the last successful inference, the last error message and the version.
-The schema is frozen because the watchdog and the status page depend on it.
-
-`load()` runs inside the FastAPI lifespan before the Wyoming listener starts
-and before `/health` turns 200. Engines download their weights if needed,
-load them, and run a dummy inference, so "healthy" means "warm".
+Each service keeps one `HealthState` that `GET /health` serializes; the
+fields and the `starting`, `ok` and `degraded` rules are in the
+[API reference](api.md#get-health). The engine's `load()` runs inside the
+FastAPI lifespan before the Wyoming listener starts and before `/health`
+turns 200. Engines download their weights if needed, load them, and run a
+dummy inference, so "healthy" means "warm".
 
 ## launchd and the watchdog
 
-`voiced install` renders three LaunchDaemon plists with the labels
-`<prefix>.stt`, `<prefix>.tts` and `<prefix>.watchdog`, where the prefix
-defaults to `io.github.julianbeaulieu.voiced` and is a config key
-(`[launchd] label_prefix`). Each plist has `RunAtLoad`, `KeepAlive`,
-`ThrottleInterval 10`, `UserName` set to the installing user, and stdout and
-stderr files under `~/Library/Logs/voiced/`. Daemons, not agents, so the
-services start at boot without anyone logging in; Metal is available from a
-daemon context on Apple Silicon (verified on macOS 15, see
-[operations.md](operations.md)).
-
-`KeepAlive` handles crashes: launchd restarts an exited process after the
-throttle interval. It cannot handle a process that is alive but stuck, which
-MLX can produce. That is the watchdog's job:
-
-- Every `interval_s` (default 15) it requests `/health` from each service.
-- A timeout, a connection error, or `starting` for longer than the load
-  budget counts as a failure. `degraded` on its own does not.
-  <!-- TODO(phase2): verify the watchdog's exact failure rules -->
-- After `failures_before_restart` consecutive failures (default 3) it runs
-  `launchctl kickstart -k system/<label>`, which kills and restarts the
-  service.
-
-The watchdog is a third daemon so it survives either service dying.
+`voiced install` renders three LaunchDaemon plists, `<prefix>.stt`,
+`<prefix>.tts` and `<prefix>.watchdog`, with the prefix from
+`[launchd] label_prefix`. launchd starts them at boot with no GUI login and
+restarts a service that exits. The watchdog, a third daemon, polls `/health`
+and restarts a service that is alive but no longer answers, which `KeepAlive`
+alone cannot detect. The plist keys, the restart rules and the Metal probe
+are documented in [operations.md](operations.md#launchd).
 
 ## Engine registry
 
@@ -169,10 +144,12 @@ voiced itself registers:
 
 | Name | Group | Class |
 |---|---|---|
-| `parakeet` | `voiced.stt_engines` | Parakeet TDT 0.6B v3 via `parakeet-mlx` <!-- TODO(phase2): verify after the STT PR --> |
-| `kokoro` | `voiced.tts_engines` | Kokoro-82M via `mlx-audio` with espeak-ng phonemes <!-- TODO(phase2): verify after the TTS PR --> |
-| `soprano` | `voiced.tts_engines` | Soprano-80M via `mlx-audio` with a repetition penalty and duration cap <!-- TODO(phase2): verify after the TTS PR --> |
+| `parakeet` | `voiced.stt_engines` | Parakeet TDT 0.6B v3 via `parakeet-mlx` |
+| `kokoro` | `voiced.tts_engines` | Kokoro-82M via `mlx-audio` with espeak-ng phonemes |
+| `soprano` | `voiced.tts_engines` | Soprano-80M via `mlx-audio` with a repetition penalty and duration cap |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
+
+<!-- TODO(phase2): verify the registered engines against main after the engine PRs merge -->
 
 The MLX engines live in the optional extras `stt` and `tts`, so the core
 package installs on any machine and CI runs against the fakes.
@@ -239,7 +216,7 @@ An engine is a separate package. It implements one of the two classes,
 declares an entry point, and the user installs it into the same environment
 as voiced.
 
-`my_engines/piper.py`:
+`my_package/piper.py`:
 
 ```python
 import asyncio
@@ -269,12 +246,10 @@ class PiperEngine(TTSEngine):
             yield PCMChunk(data=pcm)  # int16 LE mono 24 kHz
 ```
 
-`pyproject.toml` of that package, as described in `voiced/engines/registry.py`:
+`pyproject.toml` of that package, in the form `voiced/engines/registry.py`
+documents (use `voiced.stt_engines` for a speech-to-text engine):
 
 ```toml
-[project.entry-points."voiced.stt_engines"]
-whisper = "my_package.whisper:WhisperEngine"
-
 [project.entry-points."voiced.tts_engines"]
 piper = "my_package.piper:PiperEngine"
 ```

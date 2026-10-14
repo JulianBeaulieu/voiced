@@ -41,7 +41,7 @@ uv run pytest
 
 | Tool | Rules |
 |---|---|
-| ruff | Line length 100. Rule sets `E`, `F`, `I`, `UP`, `B`, `ASYNC`, `RUF`. Imports sorted by ruff. |
+| ruff | Line length 100. Rule sets `E`, `F`, `I`, `UP`, `B`, `ASYNC`, `RUF`. Imports sorted by ruff. `ruff format` also formats Python code blocks in Markdown, so keep doc snippets formatted. |
 | mypy | `strict` over the `voiced` package. Third-party MLX and Wyoming packages are `ignore_missing_imports`; add new untyped dependencies to that list in `pyproject.toml`, do not sprinkle `type: ignore`. |
 | pytest | `asyncio_mode = "auto"`; `DeprecationWarning` from `voiced.*` is an error. |
 
@@ -52,7 +52,8 @@ MLX packages installed, because that is what CI is. Use `FakeSTTEngine` and
 `FakeTTSEngine` from `voiced.testing` and the `lifespan_client` helper for
 HTTP tests.
 
-Tests that need real models or Metal are marked and skipped unless asked for:
+Tests that need real models or Metal carry the `model` marker and are
+skipped unless `VOICED_MODEL_TESTS=1` is set:
 
 ```python
 import pytest
@@ -69,7 +70,8 @@ VOICED_MODEL_TESTS=1 uv run pytest -m model          # only the model tests
 VOICED_MODEL_TESTS=1 uv run pytest                   # everything
 ```
 
-<!-- TODO(phase2): verify the marker is registered in pyproject and the skip hook exists in conftest -->
+The `model-tests` job in `.github/workflows/ci.yml` runs the same command on
+demand (`workflow_dispatch`) on a runner you name.
 
 Audio fixtures go in `tests/fixtures/`, 16 kHz mono WAV, a few seconds,
 under 300 KB each, free of personal content. Never commit model weights.
@@ -86,31 +88,28 @@ under 300 KB each, free of personal content. Never commit model weights.
 - No emoji in code, docs, UI or commit messages.
 - Nothing personal in the repo: no hostnames, IP addresses, usernames or
   tokens. Deployment settings belong in your own
-  `~/.config/voiced/config.toml`, which is gitignored. `.env` files are never
-  read by the code and must never be committed.
-- The engine interfaces in `src/voiced/engines/base.py` and the `/health`
-  schema are frozen. Propose a change in an issue before touching them.
+  `~/.config/voiced/config.toml`, outside the repository. `.env` files are
+  never read by the code and must never be committed.
+- The engine interfaces in `src/voiced/engines/base.py`, the
+  [audio conventions](docs/architecture.md#audio-conventions) and the
+  `/health` schema are frozen. Propose a change in an issue before touching
+  them.
 - Non-obvious design choices get an ADR under `docs/decisions/` with the
   next free number, and a line in `docs/decisions/README.md`.
-- Audio conventions are fixed: STT input mono float32 16 kHz, TTS output
-  mono int16 LE 24 kHz.
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
   the `stt` or `tts` extras; test and lint tools in the `dev` group.
+- Documentation that describes behaviour which has not landed yet carries an
+  HTML comment `<!-- TODO(phase2): ... -->` on its own line. The canonical
+  list of open items is `grep -rn 'TODO(phase2)' README.md CONTRIBUTING.md docs`;
+  resolve the item and delete the comment in the same change.
 
 ## Adding an engine
 
-Engines live in their own packages. Implement `STTEngine` or `TTSEngine`
-from `voiced.engines.base`, declare an entry point, and
-`engine = "<name>"` in the config selects it:
-
-```toml
-[project.entry-points."voiced.tts_engines"]
-piper = "my_package.piper:PiperEngine"
-```
-
-The walkthrough is in [docs/architecture.md](docs/architecture.md#adding-an-engine).
-Engines bundled with voiced follow the same path; the only difference is
-that their entry points are declared in this repository's `pyproject.toml`.
+Engines live in their own packages and are selected by name in the config.
+The walkthrough, with a complete example and the entry-point declaration, is
+in [docs/architecture.md](docs/architecture.md#adding-an-engine). Engines
+bundled with voiced follow the same path; the only difference is that their
+entry points are declared in this repository's `pyproject.toml`.
 
 ## Pull requests
 
@@ -130,4 +129,5 @@ a user would notice.
 Maintainers only. Bump `version` in `pyproject.toml` and `src/voiced/__init__.py`,
 move the Unreleased section of the changelog under the new version with the
 date, tag `v<version>`, and build with `uv build`.
+
 <!-- TODO(phase2): verify the publish step once the package is on PyPI -->

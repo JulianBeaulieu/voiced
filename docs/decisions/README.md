@@ -3,14 +3,15 @@
 One file per non-obvious choice, numbered in the order they were made.
 Status is `accepted` unless the record says otherwise. Add a new record with
 the next free number; collisions from parallel branches are renumbered at
-merge.
+merge, and this index is updated when a record lands on `main`.
 
 | ADR | Title | Summary |
 |---|---|---|
-| [0001](0001-project-structure.md) | Project structure | One package, two processes (`stt`, `tts`), shared core modules, MLX engines as optional extras, port assignments. |
+| [0001](0001-project-structure.md) | Project structure | One package, two services (`stt`, `tts`), shared core modules, MLX engines as optional extras, port assignments. |
 | [0002](0002-engine-interfaces.md) | Engine interfaces | Frozen async `STTEngine`, `STTStreamSession` and `TTSEngine` classes, fixed audio formats, entry-point discovery, error and cancellation rules. |
 | [0003](0003-launchd-label-prefix.md) | launchd label prefix | `io.github.julianbeaulieu.voiced` as the single-constant prefix, with a planned switch to `computer.voiced`. |
-| 0004 (`0004-wyoming.md`, lands with PR 1) | Wyoming listeners | In-process listeners inside the FastAPI lifespan, one queue slot per STT utterance and per TTS sentence, zeroconf only when reachable, what Home Assistant actually expects. <!-- TODO(phase2): link the file once PR 1 is merged --> |
+
+<!-- TODO(phase2): add the records from the merged Phase 1 branches (Wyoming, HTTP API, Kokoro and espeak tokens, launchd daemon vs agent, watchdog, install layout) with their final numbers -->
 
 ## Writing one
 

@@ -1,10 +1,11 @@
 # voiced
 
-Local speech-to-text and text-to-speech server for Apple Silicon. Models run
-on the GPU through MLX and stay resident in memory, so there are no cold
-starts. voiced exposes an OpenAI-compatible HTTP API and the Wyoming protocol
-for Home Assistant, runs as a launchd daemon that starts at boot without a
-GUI login, and recovers from crashes and hangs on its own.
+Run speech-to-text and text-to-speech on your Mac for Home Assistant voice
+control or any app that speaks the OpenAI audio API. Models stay loaded on
+the Apple Silicon GPU, so replies start in about 100 ms. voiced installs as
+a pair of launchd services that start at boot without anyone logging in and
+restart themselves after a crash or a hang. Home Assistant talks to it over
+Wyoming, the protocol its Assist pipelines use for local speech services.
 
 **Status:** pre-alpha. The interfaces are frozen and the skeleton runs with
 fake engines; the real engines, the installer and the Home Assistant
@@ -12,27 +13,39 @@ integration are being merged. Do not deploy yet.
 
 ## Quickstart
 
-Requires an M-series Mac, macOS 14 or newer, and Python 3.11 to 3.13.
+Requirements: an Apple Silicon Mac, macOS 14 or newer,
+[Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-brew install espeak-ng ffmpeg
-uv tool install "voiced[stt,tts]"   # or: pipx install "voiced[stt,tts]"
-voiced install
+brew install uv espeak-ng ffmpeg
 ```
 
-<!-- TODO(phase2): verify the install command once voiced is on PyPI -->
+Until the first release, install from a checkout:
 
-`voiced install` creates the service environment, downloads the models,
-writes the launchd plists and prints a short script. Run that script with
-`sudo` (it only copies the plists into `/Library/LaunchDaemons` and loads
-them; voiced never runs root steps for you). Then:
+```sh
+git clone https://github.com/JulianBeaulieu/voiced
+uv tool install ./voiced
+voiced install --source ./voiced
+```
+
+<!-- TODO(phase2): verify against the merged installer; after the first release this becomes `uv tool install voiced` and plain `voiced install` -->
+
+`voiced install` builds the service environment in `~/.voiced`, downloads
+the models, writes the launchd plists and prints one root step. Run it:
+
+```sh
+sudo bash ~/.config/voiced/launchd/install-daemons.sh
+```
+
+The script copies the three plists into `/Library/LaunchDaemons` and loads
+them. It is a few lines long; read it first. voiced never runs anything as
+root itself. Then:
 
 ```sh
 voiced status
-curl -s http://127.0.0.1:8880/health
 ```
 
-Both services report `"status": "ok"` once their model is warm. Try them:
+Both services report `ok` once their model is warm. Try them:
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/audio/speech \
@@ -82,7 +95,7 @@ flowchart LR
         ha[Home Assistant]
     end
 
-    subgraph stt [stt process]
+    subgraph stt [stt service]
         stt_http[HTTP API :8881]
         stt_wy[Wyoming :10300]
         stt_q[Inference queue]
@@ -92,7 +105,7 @@ flowchart LR
         stt_q --> parakeet
     end
 
-    subgraph tts [tts process]
+    subgraph tts [tts service]
         tts_http[HTTP API :8880]
         tts_wy[Wyoming :10200]
         tts_q[Inference queue]
@@ -114,12 +127,13 @@ flowchart LR
     watchdog -.->|kickstart -k| launchd
 ```
 
-Two processes, one package. Each process loads one model, serves it over HTTP
-and Wyoming from the same event loop, and serializes GPU work through a
-bounded queue. launchd restarts a process that exits; the watchdog restarts
-one that stops answering. Engines are entry-point plugins behind a frozen
-interface. Details, including the audio conventions and how to add an
-engine, are in [docs/architecture.md](docs/architecture.md).
+Two services, one package. Each service is one process that loads one
+model, serves it over HTTP and Wyoming from the same event loop, and
+serializes GPU work through a bounded queue. launchd restarts a service that
+exits; the watchdog restarts one that stops answering. Engines are
+entry-point plugins behind a frozen interface. Details, including the audio
+conventions and how to add an engine, are in
+[docs/architecture.md](docs/architecture.md).
 
 ## Configuration
 
@@ -160,34 +174,39 @@ on first run into the standard Hugging Face cache.
 |---|---|---|---|
 | [Parakeet TDT 0.6B v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | STT | yes | CC-BY-4.0 |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
-| Soprano-80M | TTS | no, selectable | see model card <!-- TODO(phase2): verify with the TTS worker --> |
+| Soprano-80M | TTS | no, selectable | see model card |
 
-CC-BY-4.0 requires attribution to NVIDIA when you redistribute Parakeet
-output or the weights. Kokoro's phonemizer uses espeak-ng, which is GPL-3.
-voiced does not include espeak-ng's source or link against it; it is an
-external program you install with Homebrew and voiced calls it as a
-dependency, so the voiced code itself stays MIT. If you redistribute a bundle
-that includes espeak-ng, the GPL applies to that bundle.
+<!-- TODO(phase2): verify the Soprano license once its engine PR lands -->
+
+CC-BY-4.0 covers the Parakeet weights: attribute NVIDIA if you redistribute
+them. It says nothing about the transcripts you produce.
+
+Kokoro's phonemizer is espeak-ng, which is GPL-3. voiced does not vendor or
+redistribute it. The preferred source is Homebrew (`brew install espeak-ng`),
+which voiced finds and loads at run time. The `tts` extra also pulls in the
+`espeakng-loader` wheel, which carries its own GPL-3 espeak-ng binary; voiced
+uses it only as a last resort when no Homebrew install is found. Either way
+espeak-ng is loaded dynamically from a separately licensed package and the
+voiced code stays MIT.
 
 ## Benchmarks
 
-Warm model, local request, measured with the scripts in `scripts/`
-<!-- TODO(phase2): verify script location --> on an otherwise idle machine.
-"First audio" is the time to the first PCM chunk of a three-sentence text;
-"short synth" is a complete six-word sentence.
+Prototype measurements, M1 Max MacBook Pro with 64 GB, macOS 15.7,
+2026-10-13, warm model, local request. "First audio" is the time to the
+first PCM chunk of a three-sentence text; "short synth" is a complete
+six-word sentence.
 
-| Metric | M1 Max MacBook Pro, 64 GB, macOS 15.7 | M1 Max Mac Studio, 32 GB, macOS 27 |
-|---|---|---|
-| Kokoro short synth | 92 ms (RTF 0.039) | pending |
-| Kokoro first audio over HTTP | about 160 ms | pending |
-| Soprano short synth | 133 ms (RTF 0.085) | pending |
-| Streaming STT finalize after 200 ms silence endpoint | about 3 ms | pending |
-| Voice round trip (endpoint, STT, local LLM first clause, first audio) | 552 ms median | pending |
-| TTS resident memory, Kokoro and Soprano loaded | about 0.55 GB | pending |
+| Metric | Measured |
+|---|---|
+| Kokoro short synth | 92 ms (RTF 0.039) |
+| Kokoro first audio over HTTP | about 160 ms |
+| Soprano short synth | 133 ms (RTF 0.085) |
+| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms |
+| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median |
+| TTS resident memory, Kokoro and Soprano loaded | about 0.55 GB |
 
-The round trip used a local Ollama model as the conversation agent; the
-local parts (endpoint, STT, TTS) add up to roughly 280 to 380 ms, so a remote
-LLM that answers within about 600 ms keeps the whole turn under one second.
+Numbers from the packaged services and from a second machine follow with the
+first release.
 
 ## Troubleshooting
 
@@ -201,42 +220,31 @@ conflicts and FileVault.
 | `/health` says `"degraded"` | The last inference raised. The error is in `last_error`; the watchdog restarts the service if it keeps failing. |
 | HTTP 503 `server_busy` | The inference queue is full. Raise `queue_depth` in the config or send fewer concurrent requests. |
 | HTTP 401 | `api_key` is set; send `Authorization: Bearer <key>`. |
-| Kokoro produces garbage or fails with a phonemizer error | espeak-ng is missing (`brew install espeak-ng`) or the service venv sits at a long path. espeak breaks on long paths; `voiced install` uses a short one for this reason. |
+| Kokoro produces garbage or fails with a phonemizer error | espeak-ng is missing (`brew install espeak-ng`) or the service environment sits at a long path. espeak-ng breaks on long paths; `voiced install` uses `~/.voiced` for this reason. |
 | Transcription fails with a decode error | ffmpeg is missing (`brew install ffmpeg`) or the upload is not audio. |
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. Set `bind = "0.0.0.0"` or add the integration by host and port. |
-| Services do not come up after a reboot | FileVault is on: launchd cannot start anything until the disk is unlocked at the login screen. No GUI login is needed after that. |
-| Port already in use | Another service owns 8880, 8881, 10200 or 10300. Change the port in the config; `voiced doctor` names the conflicting process. |
-| MLX cannot find the GPU under launchd | Run `voiced doctor` to probe Metal from a daemon context and read [docs/operations.md](docs/operations.md). |
+| Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
+| Port already in use | Another program owns 8880, 8881, 10200 or 10300. Change the port in the config; `voiced doctor` names the conflicting process. |
+| MLX cannot find the GPU under launchd | Run `voiced doctor` to probe Metal from a daemon context; see [docs/operations.md](docs/operations.md#launchd). |
 
 Logs live under `~/Library/Logs/voiced/`. More in
 [docs/operations.md](docs/operations.md).
 
 ## Roadmap
 
-Version 1 ships English only with Parakeet and Kokoro. Everything else is a
-plugin:
-
-- More languages: engines advertise their languages, and the server
-  intersects them with the configured list, so adding a language is an
-  engine concern.
-- More engines: Whisper, Piper, Pocket TTS and any other model can be added
-  as a separate package that declares a `voiced.stt_engines` or
-  `voiced.tts_engines` entry point. See
-  [docs/architecture.md](docs/architecture.md#adding-an-engine).
-- Semantic end-of-turn detection as a pluggable endpointing hook.
-- A Homebrew tap.
-
-Ideas and requests go in the
+Version 1 is English only with Parakeet and Kokoro. More languages and more
+engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
+[Adding an engine](docs/architecture.md#adding-an-engine). Requests go in the
 [issue tracker](https://github.com/JulianBeaulieu/voiced/issues).
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [docs/api.md](docs/api.md) | HTTP and WebSocket reference with curl and Python examples |
-| [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, Ollama as the conversation agent |
-| [docs/architecture.md](docs/architecture.md) | Processes, queue, health, watchdog, engine registry, adding an engine |
-| [docs/operations.md](docs/operations.md) | launchd, logs, FileVault, memory budget, GPU wired limit |
+| [docs/api.md](docs/api.md) | HTTP, WebSocket and Wyoming reference with curl and Python examples |
+| [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, optional Ollama conversation agent |
+| [docs/architecture.md](docs/architecture.md) | Services, queue, engine registry, audio conventions, adding an engine |
+| [docs/operations.md](docs/operations.md) | launchd, watchdog, logs, FileVault, memory |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, conventions |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |

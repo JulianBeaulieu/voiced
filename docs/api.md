@@ -1,7 +1,8 @@
-# HTTP API reference
+# API reference
 
-voiced runs two HTTP servers, one per process. Each one also serves its
-OpenAPI schema at `/docs`.
+voiced runs two HTTP servers, one per service. Each one also serves its
+OpenAPI schema at `/docs`. The Wyoming listeners used by Home Assistant are
+described at the [end of this page](#wyoming-protocol).
 
 | Service | Default base URL | Endpoints |
 |---|---|---|
@@ -11,17 +12,8 @@ OpenAPI schema at `/docs`.
 The `/v1` routes follow the OpenAI audio API closely enough that the official
 clients work unmodified. Point the client at the service for the modality you
 need; a client configured for the tts port cannot transcribe, and the other
-way round.
-
-```python
-from openai import OpenAI
-
-stt = OpenAI(base_url="http://127.0.0.1:8881/v1", api_key="unused")
-tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
-```
-
-The `api_key` argument is required by the client library. Any value works
-unless you configured one (see [Authentication](#authentication)).
+way round. The `api_key` argument is required by the client library; any
+value works unless you configured one (see [Authentication](#authentication)).
 
 ## Authentication
 
@@ -35,7 +27,10 @@ curl -s http://127.0.0.1:8880/v1/models -H 'Authorization: Bearer <key>'
 ```
 
 ```python
+from openai import OpenAI
+
 tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="<key>")
+print([m.id for m in tts.models.list()])
 ```
 
 A missing or wrong token gets `401` with the standard
@@ -49,10 +44,12 @@ Transcribe one complete audio file. Multipart form.
 | Field | Required | Description |
 |---|---|---|
 | `file` | yes | Any format ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, ...). Decoded to mono 16 kHz before inference. Limited by `max_upload_mb` (default 50). |
-| `model` | yes | Accepted for compatibility. The configured engine answers every request. <!-- TODO(phase2): verify how model is matched --> |
+| `model` | yes | Accepted for compatibility. The configured engine answers every request. |
 | `language` | no | BCP-47 code such as `en`. Must be in the configured list; otherwise `400`. Omit to let the engine decide. |
 | `response_format` | no | `json` (default), `text`, `verbose_json`, `srt`, `vtt`. |
 | `prompt`, `temperature` | no | Accepted and ignored. |
+
+<!-- TODO(phase2): verify how `model` is matched in the merged API -->
 
 ```sh
 curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
@@ -84,6 +81,10 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 and `vtt` return subtitle files built from the segments.
 
 ```python
+from openai import OpenAI
+
+stt = OpenAI(base_url="http://127.0.0.1:8881/v1", api_key="unused")
+
 with open("clip.wav", "rb") as f:
     result = stt.audio.transcriptions.create(model="parakeet", file=f)
 print(result.text)
@@ -104,7 +105,7 @@ Live transcription over a WebSocket. Send audio as it is captured, receive
 partial hypotheses while speaking and a final transcript at the end. Built for
 voice-agent frameworks such as Pipecat.
 
-<!-- TODO(phase2): verify the message schema against the API worker's implementation -->
+<!-- TODO(phase2): verify the message schema against the merged implementation -->
 
 Connect to `ws://127.0.0.1:8881/v1/audio/transcriptions/stream`. With an API
 key, send it as the `Authorization: Bearer <key>` header on the upgrade
@@ -161,10 +162,12 @@ Synthesize text. JSON body.
 | Field | Required | Description |
 |---|---|---|
 | `input` | yes | Text to speak. Limited by `max_input_chars` (default 4096). Numbers, times and acronyms are normalized before synthesis; markdown is stripped. |
-| `model` | yes | Accepted for compatibility. The configured engine answers every request. <!-- TODO(phase2): verify how model is matched --> |
+| `model` | yes | Accepted for compatibility. The configured engine answers every request. |
 | `voice` | no | A voice id from `/v1/audio/voices`. Defaults to `default_voice` from the config (`af_heart`). Unknown voices get `400`. |
 | `speed` | no | Multiplier, default `1.0`. |
 | `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
+
+<!-- TODO(phase2): verify how `model` is matched in the merged API -->
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/audio/speech \
@@ -174,6 +177,9 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 ```
 
 ```python
+from openai import OpenAI
+
+tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
 response = tts.audio.speech.create(
     model="kokoro", voice="af_heart", input="The meeting is at 8:14."
 )
@@ -194,6 +200,9 @@ curl -sN http://127.0.0.1:8880/v1/audio/speech \
 ```
 
 ```python
+from openai import OpenAI
+
+tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
 with tts.audio.speech.with_streaming_response.create(
     model="kokoro",
     voice="af_heart",
@@ -207,6 +216,8 @@ with tts.audio.speech.with_streaming_response.create(
 `wav`, `mp3` and `opus` are encoded once the whole text is synthesized, so
 they do not stream. The `Content-Type` is `audio/wav`, `audio/mpeg` or
 `audio/ogg` respectively.
+
+<!-- TODO(phase2): verify which formats stream in the merged API -->
 
 ## GET /v1/audio/voices
 
@@ -224,12 +235,12 @@ curl -s http://127.0.0.1:8880/v1/audio/voices
 ```
 
 Only voices whose language is in the configured `languages` list are
-returned. Kokoro's English voices start with `af_`, `am_`, `bf_` and `bm_`
-(American and British, female and male).
+returned. Kokoro voice ids start with a language and gender code: `af_` and
+`am_` are American English female and male, `bf_` and `bm_` British.
 
 ## GET /v1/models
 
-Available on both services. Lists the one model the process serves, plus the
+Available on both services. Lists the one model the service runs, plus the
 engine name, its languages and the weights license.
 
 ```sh
@@ -254,6 +265,9 @@ curl -s http://127.0.0.1:8881/v1/models
 ```
 
 ```python
+from openai import OpenAI
+
+stt = OpenAI(base_url="http://127.0.0.1:8881/v1", api_key="unused")
 for model in stt.models.list():
     print(model.id)
 ```
@@ -286,17 +300,21 @@ curl -s http://127.0.0.1:8880/health
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded, `degraded` if the most recent inference raised, `ok` otherwise. |
+| `status` | `starting` until the model is loaded and warm, `degraded` if the most recent inference raised, `ok` otherwise. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference. |
 | `last_error` | Exception name and message of the last failed inference, cleared by the next success. |
 
+The schema is frozen because the watchdog and the status page depend on it.
+
 ## GET /
 
 The status page: models, memory, p50 and p95 latency, recent errors, and a
 test box to type text and hear it or upload audio and read the transcript.
-HTML, no authentication. <!-- TODO(phase2): verify once the status page lands -->
+HTML, no authentication.
+
+<!-- TODO(phase2): verify against the merged status page -->
 
 ## Errors
 
@@ -306,6 +324,11 @@ expect:
 ```json
 {"error": {"message": "unknown voice 'xx_nobody'", "type": "UnknownVoice"}}
 ```
+
+`type` is a snake_case code for errors the server detects itself, and the
+exception class name for errors an engine raised about the request.
+
+<!-- TODO(phase2): verify the `type` casing convention and the full code list against the merged API -->
 
 | Status | `type` | Cause |
 |---|---|---|
@@ -325,8 +348,39 @@ exception.
 
 ## Concurrency
 
-Each process runs one inference at a time. Requests beyond that wait in order;
-once `queue_depth` requests are waiting or running, new ones fail immediately
-with `503`. Streaming requests (the WebSocket and `pcm` speech) hold their
-slot for the duration of the stream. Wyoming requests go through the same
-queue, so Home Assistant traffic and HTTP traffic share the limit.
+Each service runs one inference at a time and queues the rest, up to
+`queue_depth`; beyond that, requests fail at once with `503`. Streaming
+requests hold their place for the whole stream. Wyoming requests share the
+same queue. How the queue works is described in
+[architecture.md](architecture.md#inference-queue).
+
+## Wyoming protocol
+
+The stt service listens on TCP 10300 and the tts service on TCP 10200
+(`wyoming_port` in each section). The listeners share the loaded model and
+the queue with the HTTP routes. Home Assistant setup is in
+[home-assistant.md](home-assistant.md); this section is for other Wyoming
+clients.
+
+- STT: `Describe` answers `Info` with one `AsrProgram` named `voiced`, the
+  model id and the configured languages. Send `Transcribe`, `AudioStart`,
+  `AudioChunk` events, then `AudioStop`; the answer is `Transcript`. Any
+  sample width, channel count and rate is accepted and converted to mono
+  16 kHz. `requires_external_vad` is true: the client decides when speech
+  ends.
+- TTS: `Info` lists one `TtsProgram` with a `TtsVoice` per voice and
+  `supports_synthesize_streaming` true. Plain `Synthesize` answers
+  `AudioStart`, `AudioChunk` events, `AudioStop` at 24 kHz, 16-bit, mono.
+  Streaming `SynthesizeStart`, `SynthesizeChunk`, `SynthesizeStop` synthesizes
+  sentence by sentence as text arrives and ends with `AudioStop` then
+  `SynthesizeStopped`.
+- Errors come back as a Wyoming `Error` event with `code` set to
+  `queue_full`, `engine_error` or the engine exception name.
+- Discovery: with `bind` set to a non-loopback address and `zeroconf = true`
+  (the default), `voiced-stt` and `voiced-tts` are advertised as
+  `_wyoming._tcp.local.`.
+
+The design notes and what Home Assistant's integration actually expects are
+in ADR 0004, `docs/decisions/0004-wyoming.md`.
+
+<!-- TODO(phase2): link the ADR once it is on main -->

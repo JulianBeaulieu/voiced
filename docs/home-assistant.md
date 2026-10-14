@@ -1,14 +1,26 @@
 # Home Assistant setup
 
 voiced speaks the Wyoming protocol, which is how Home Assistant Assist talks
-to local speech services. The stt process listens on TCP 10300 and the tts
-process on TCP 10200. Both run inside the same processes as the HTTP API and
+to local speech services. The stt service listens on TCP 10300 and the tts
+service on TCP 10200. Both run inside the same processes as the HTTP API and
 share the loaded models, so there is nothing extra to start.
 
-This guide uses `<mac-ip>` for the address of the Mac running voiced and
-`<ollama-host>` for the machine running Ollama. Replace them with your own.
 Home Assistant 2025.7 or newer gets streaming text-to-speech; older
 versions work with whole-message synthesis.
+
+## Before you start
+
+Find the address of the Mac running voiced. Open **System Settings**,
+**Wi-Fi** (or **Network**), click **Details** next to the active connection
+and read the IP address, or run:
+
+```sh
+ipconfig getifaddr en0
+```
+
+This guide calls it `<mac-ip>`. Give the Mac a fixed address in your router
+so it does not change; mDNS discovery works without one, but a manual
+integration entry stores the address.
 
 ## 1. Expose voiced on your network
 
@@ -24,12 +36,10 @@ Then `voiced stop` and `voiced start`. Read the security note in the
 [README](../README.md#security-note-on-bind) first: the Wyoming protocol has
 no authentication, so only do this on a trusted network.
 
-Check from the Home Assistant host (or any other machine):
-
-```sh
-nc -vz <mac-ip> 10300
-nc -vz <mac-ip> 10200
-```
+Check from any other machine on the network by opening
+`http://<mac-ip>:8880/health` in a browser. You should see a JSON document
+with `"status": "ok"`. Then try `http://<mac-ip>:8881/health` for the stt
+service.
 
 ## 2. Add the Wyoming integrations
 
@@ -50,7 +60,8 @@ If nothing is discovered (mDNS does not cross VLANs, or you disabled it with
 
 Both entries are titled "voiced"; the port tells them apart. Each one creates
 an entity (`stt.voiced` and `tts.voiced`) that the pipeline uses.
-<!-- TODO(phase2): verify entity ids once merged -->
+
+<!-- TODO(phase2): verify the entity ids against a real Home Assistant -->
 
 ## 3. Create or edit an Assist pipeline
 
@@ -59,8 +70,8 @@ an entity (`stt.voiced` and `tts.voiced`) that the pipeline uses.
    and click the pencil to edit it.
 3. **Speech-to-text**: pick **voiced**. Language: **English**.
 4. **Text-to-speech**: pick **voiced**. Language: **English**. Pick a voice;
-   `af_heart` is the default. Voices starting with `af_` and `am_` are
-   American English, `bf_` and `bm_` are British.
+   `af_heart` is the default. The voice id prefixes are explained in the
+   [API reference](api.md#get-v1audiovoices).
 5. **Conversation agent**: **Home Assistant** for the built-in intent
    matcher, or an LLM; see the next section.
 6. Save, then click the three dots on the pipeline and **Set as preferred**
@@ -69,14 +80,15 @@ an entity (`stt.voiced` and `tts.voiced`) that the pipeline uses.
 Test it from the same page with the **Start a conversation** (microphone)
 button, or from any Assist dialog in the UI.
 
-## 4. Ollama as the conversation agent
+## 4. Optional: Ollama as the conversation agent
 
 An LLM makes Assist understand free-form requests instead of exact phrases.
 Ollama runs locally and has a native Home Assistant integration.
 
 1. Install Ollama and pull a model that supports tool calling, for example
    `ollama pull qwen3:8b`. Make Ollama listen on the network
-   (`OLLAMA_HOST=0.0.0.0`) if it is not on the Home Assistant machine.
+   (`OLLAMA_HOST=0.0.0.0`) if it is not on the Home Assistant machine. This
+   guide calls that machine `<ollama-host>`.
 2. **Settings**, **Devices and services**, **Add integration**, search for
    **Ollama**.
 3. URL `http://<ollama-host>:11434`, then pick the model.
@@ -103,10 +115,9 @@ satellite's device page, **Voice assistant**.
 
 | Symptom | Fix |
 |---|---|
-| Not discovered | Confirm `bind = "0.0.0.0"` and that `nc -vz <mac-ip> 10300` connects from the Home Assistant host. Add by host and port if mDNS is blocked between networks. |
-| Integration added, but "Unavailable" | The service is still loading its model (`/health` says `starting`), or the Mac rebooted with FileVault on and is waiting at the unlock screen. |
+| Not discovered | Confirm `bind = "0.0.0.0"` and that `http://<mac-ip>:8880/health` opens from another machine. Add by host and port if mDNS is blocked between networks. |
+| Integration added, but "Unavailable" | The service is still loading its model (`/health` says `starting`), or the Mac is waiting at the FileVault unlock screen after a reboot; see [operations.md](operations.md#filevault). |
 | STT returns nothing | The pipeline language is not in the configured `languages` list. Version 1 is English only. |
-| TTS plays the reply twice | Home Assistant older than 2025.7 together with a very old voiced build. Update voiced; the listener ignores the duplicate `Synthesize` Home Assistant sends inside a text stream. |
 | TTS cuts off | Check `voiced logs tts` for `queue_full`. Raise `queue_depth` under `[tts]` if many satellites talk at once. |
 | Voices missing from the picker | Only voices whose language matches the configured `languages` are advertised. |
 
@@ -115,25 +126,5 @@ Logs: `voiced logs stt` and `voiced logs tts`, or the files under
 (rate, width, channels) at debug level; set `log_level = "debug"` under
 `[server]` to see it.
 
-## Protocol notes
-
-For people integrating other Wyoming clients:
-
-- STT: `Describe` answers `Info` with one `AsrProgram` named `voiced`, the
-  model id and the configured languages. Send `Transcribe`, `AudioStart`,
-  `AudioChunk` events, then `AudioStop`; the answer is `Transcript`. Any
-  sample width, channel count and rate is accepted and converted to mono
-  16 kHz. `requires_external_vad` is true: the client decides when speech
-  ends.
-- TTS: `Info` lists one `TtsProgram` with a `TtsVoice` per voice and
-  `supports_synthesize_streaming` true. Plain `Synthesize` answers
-  `AudioStart`, `AudioChunk` events, `AudioStop` at 24 kHz, 16-bit, mono.
-  Streaming `SynthesizeStart`, `SynthesizeChunk`, `SynthesizeStop` synthesizes
-  sentence by sentence as text arrives and ends with `AudioStop` then
-  `SynthesizeStopped`.
-- Errors come back as a Wyoming `Error` event with `code` set to
-  `queue_full`, `engine_error` or the engine exception name.
-
-The reasoning behind these choices and what Home Assistant's integration
-actually expects are in ADR 0004, `docs/decisions/0004-wyoming.md`.
-<!-- TODO(phase2): link the ADR once PR 1 is merged -->
+The Wyoming message flow for other clients is documented in the
+[API reference](api.md#wyoming-protocol).

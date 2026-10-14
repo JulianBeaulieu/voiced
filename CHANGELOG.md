@@ -25,5 +25,5 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10` and cancels
+- CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.0` and cancels
   superseded runs of the same branch.
