@@ -9,13 +9,14 @@ before letting ``CancelledError`` propagate.
 Engines must use it for every blocking model call (instead of
 ``asyncio.to_thread``) so a slot is never released while GPU work is in flight.
 
-MLX engines go one step further and run every model call, ``load()``
-included, through their own :class:`ModelThread`. MLX keeps a GPU stream per
-thread, and arrays created on one thread (by loading weights or entering a
-streaming context) cannot be evaluated on another: "There is no Stream(gpu,
+Engines whose state holds MLX arrays across calls run every model call,
+``load()`` included, through their own :class:`ModelThread`. MLX keeps a GPU
+stream per thread, and arrays created on one thread (entering a streaming
+context, for one) cannot be evaluated on another: "There is no Stream(gpu,
 N) in current thread". The default executor is a pool shared by the whole
 process, so once anything else grows it, consecutive calls for one model land
-on different threads. One thread per engine for its whole life rules that out.
+on different threads. Parakeet streaming needs this; Kokoro forces evaluation
+in every call and was probed safe across threads (ADR 0008).
 """
 
 from __future__ import annotations

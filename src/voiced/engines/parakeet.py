@@ -28,10 +28,9 @@ inference slot until the session's context manager exits.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
-import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
@@ -52,7 +51,7 @@ from voiced.engines.base import (
     UnsupportedLanguage,
 )
 from voiced.threads import ModelThread
-from voiced.vad import Endpointer
+from voiced.vad import Endpointer, EndpointEvent
 
 __all__ = ["PARAKEET_V3_LANGUAGES", "ParakeetEngine", "ParakeetStreamSession"]
 
@@ -103,8 +102,8 @@ PRE_ROLL_S = 0.3
 a call of room noise alone looks like speech to the per-call mel normalization and
 adds invented words."""
 HOLD_MAX_S = 2.5
-"""A pause after a speculative call is held this long before it is given up on and
-the buffered audio encoded as if there had been no pause."""
+"""How long a pause after a speculative call is held before it is given up on and
+the buffer goes on as if there had been no pause."""
 MAX_BACKLOG_S = 30.0
 """A client streaming faster than real time must not grow the buffer without bound
 while holding the only inference slot; ``add_audio`` rejects audio past this."""
@@ -113,6 +112,12 @@ SILENCE_FLOOR_DBFS = -60.0
 """Batch only: input with no 32 ms frame above this RMS is silence, nothing to
 transcribe (the model says "Yeah." on near-silent noise)."""
 SILENCE_FLOOR = dbfs_to_amplitude(SILENCE_FLOOR_DBFS)
+BATCH_CHUNK_S = 20.0
+"""Batch input longer than this is transcribed in chunks of this length, overlapping
+by :data:`BATCH_OVERLAP_S`. Bounds the MLX peak at about 2.5 GB for any input length
+(a 5 minute request peaked at 6.4 GB in one piece); merged text matched the
+one-piece transcript at 0.985 to 0.999 word accuracy."""
+BATCH_OVERLAP_S = 4.0
 LIBRARY_MIN_SAMPLES = 257
 """Batch only, defensive: ``n_fft // 2 + 1``. parakeet-mlx 0.5's reflect padding
 reads past the buffer below this (upstream issue to be filed); streaming calls are
@@ -122,9 +127,8 @@ _SR = STT_SAMPLE_RATE
 _PASS = round(PASS_S * _SR)
 _PRE_ROLL = round(PRE_ROLL_S * _SR)
 _MAX_HELD = round(HOLD_MAX_S * _SR)
-_MAX_BACKLOG = round(MAX_BACKLOG_S * _SR)
-
-ToArray = Callable[[NDArray[np.float32]], Any]
+_BATCH_CHUNK = round(BATCH_CHUNK_S * _SR)
+_BATCH_OVERLAP = round(BATCH_OVERLAP_S * _SR)
 
 
 class ParakeetEngine(STTEngine):
@@ -136,7 +140,6 @@ class ParakeetEngine(STTEngine):
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
         self._model: Any = None
-        self._to_array: ToArray = _identity
         self._thread = ModelThread("parakeet")
         self._session: ParakeetStreamSession | None = None
         self._speech: Endpointer | None = None
@@ -155,7 +158,6 @@ class ParakeetEngine(STTEngine):
         await self._thread.run(self._load_blocking)
 
     def _load_blocking(self) -> None:
-        import mlx.core as mx
         from parakeet_mlx import from_pretrained
 
         t0 = time.perf_counter()
@@ -167,13 +169,12 @@ class ParakeetEngine(STTEngine):
         # service reports healthy.
         t1 = time.perf_counter()
         _generate(model, np.zeros(round(WARMUP_S * _SR), dtype=np.float32))
-        warm = _LibraryStream(model, mx.array)
+        warm = _LibraryStream(model)
         try:
             warm.encode(np.zeros(_PASS, dtype=np.float32), 0)
         finally:
             warm.close()
         self._model = model
-        self._to_array = mx.array
         log.info("STT model ready: load %.1fs, warm-up %.1fs", load_s, time.perf_counter() - t1)
 
     def _require_idle(self) -> Any:
@@ -200,13 +201,13 @@ class ParakeetEngine(STTEngine):
         lang = self.normalize_language(language)
         speech = self._speech_detector()
         speech.reset()
-        adapter = _ChunkedStream(self._new_library(model), _Planner(speech))
+        adapter = _StepRunner(self._new_library(model), _Planner(speech))
         session = ParakeetStreamSession(self, adapter, lang)
         self._session = session
         return session
 
     def _new_library(self, model: Any) -> _Library:
-        return _LibraryStream(model, self._to_array)
+        return _LibraryStream(model)
 
     def _speech_detector(self) -> Endpointer:
         """Silero, reused across sessions (the engine runs one at a time) and reset
@@ -241,9 +242,10 @@ class _Planner:
 
     * **Speech-start gate.** Nothing is planned until ``speech`` reports speech
       start; then the buffer starts :data:`PRE_ROLL_S` before the onset.
-    * **Grid.** Every full :data:`PASS_S` of buffered audio that contains speech
-      is one call. Audio with no speech is never encoded on its own; a long pause
-      keeps at most one pass of it.
+    * **Grid.** Every full :data:`PASS_S` of buffered audio is one call if any of
+      its 32 ms frames is speech. A pass with none is never encoded (the model
+      invents words in silence): the grid restarts :data:`PRE_ROLL_S` before the
+      next speech, and a long pause keeps at most one pass of audio meanwhile.
     * **Pause.** When the latest 32 ms frame is not speech and less than a pass
       is buffered, a checkpoint and one call over the buffer, padded to a pass,
       run at once, so the hypothesis is complete before the endpointer's silence
@@ -259,6 +261,7 @@ class _Planner:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._start = 0  # session position of _buffer[0]
         self._speculating = False
+        self._speech_ends: list[int] = []  # where frames judged speech end, from _start on
         # enough history to reach back from a speech-start event to the pre-roll
         self._history = _PRE_ROLL + round(speech.min_speech_s * _SR) + 2 * _VAD_FRAME
 
@@ -268,7 +271,7 @@ class _Planner:
 
     def feed(self, samples: NDArray[np.float32]) -> list[_Step]:
         before = self._fed
-        events = self._speech.feed(samples)
+        events = self._detect(samples)
         self._fed += len(samples)
         self._buffer = np.concatenate([self._buffer, samples])
         if not self._started:
@@ -280,7 +283,7 @@ class _Planner:
             self._drop_before(round(onset.speech_start_s * _SR) - _PRE_ROLL)
         steps: list[_Step] = []
         if self._speculating:
-            if self._last_speech() <= before and len(self._buffer) <= _MAX_HELD:
+            if self._last_speech() <= before and self._fed - self._last_speech() <= _MAX_HELD:
                 return []  # the pause goes on
             steps.append("restore")
             self._speculating = False
@@ -294,21 +297,46 @@ class _Planner:
         """The calls still needed for the final hypothesis."""
         steps: list[_Step] = []
         if not self._speculating:
-            while len(self._buffer) and self._has_speech():
-                steps.append(_Encode(_pad(self._buffer[:_PASS]), self._start))
-                self._drop_before(self._start + _PASS)
+            while self._has_speech():
+                if self._speech_in(self._start):
+                    steps.append(_Encode(_pad(self._buffer[:_PASS]), self._start))
+                    self._drop_before(self._start + _PASS)
+                else:
+                    self._skip_to_speech()
         self._speculating = False
         self._drop_before(self._fed)
         return steps
 
     def _due(self) -> list[_Step]:
         steps: list[_Step] = []
-        while len(self._buffer) >= _PASS and self._has_speech():
-            steps.append(_Encode(self._buffer[:_PASS], self._start))
-            self._drop_before(self._start + _PASS)
+        # A window is decided once the detector has judged all of its frames, so
+        # the decision does not depend on how the audio was chunked.
+        while self._start + _PASS <= self._heard() and self._has_speech():
+            if self._speech_in(self._start):
+                steps.append(_Encode(self._buffer[:_PASS], self._start))
+                self._drop_before(self._start + _PASS)
+            else:
+                self._skip_to_speech()
         if not self._has_speech():
             self._drop_before(self._fed - _PASS)
         return steps
+
+    def _detect(self, samples: NDArray[np.float32]) -> list[EndpointEvent]:
+        """Feed the detector frame by frame, recording where each speech frame ends."""
+        events: list[EndpointEvent] = []
+        i, short = 0, self._fed - self._heard()  # samples the detector holds back
+        while i < len(samples):
+            n = min(_VAD_FRAME - short, len(samples) - i)
+            last = self._speech.last_speech_s
+            events += self._speech.feed(samples[i : i + n])
+            if self._speech.last_speech_s != last:
+                self._speech_ends.append(self._last_speech())
+            i, short = i + n, 0
+        return events
+
+    def _heard(self) -> int:
+        """Session position up to which the detector has judged every frame."""
+        return round(self._speech.position_s * _SR)
 
     def _last_speech(self) -> int:
         """Session position where the last frame judged speech ended."""
@@ -317,15 +345,31 @@ class _Planner:
     def _has_speech(self) -> bool:
         return self._last_speech() > self._start
 
+    def _speech_in(self, start: int) -> bool:
+        """Whether the pass starting at ``start`` holds the middle of a speech frame
+        (a frame straddling two passes belongs to the one with more of it)."""
+        half = _VAD_FRAME // 2
+        i = bisect.bisect_left(self._speech_ends, start + half)
+        return i < len(self._speech_ends) and self._speech_ends[i] - half < start + _PASS
+
+    def _skip_to_speech(self) -> None:
+        """Drop a pass with no speech: the grid restarts :data:`PRE_ROLL_S` before
+        the next speech frame, as it does at speech start, so the next call has
+        the same lead-in (a call that starts right at a word misreads it)."""
+        half = _VAD_FRAME // 2
+        i = bisect.bisect_left(self._speech_ends, self._start + half)
+        onset = self._speech_ends[i] - _VAD_FRAME
+        self._drop_before(max(onset - _PRE_ROLL, self._start + 1))
+
     def _at_pause(self) -> bool:
-        heard = round(self._speech.position_s * _SR)
-        return heard - self._last_speech() >= _VAD_FRAME
+        return self._heard() - self._last_speech() >= _VAD_FRAME
 
     def _drop_before(self, position: int) -> None:
         drop = min(position - self._start, len(self._buffer))
         if drop > 0:
             self._buffer = self._buffer[drop:]
             self._start += drop
+            del self._speech_ends[: bisect.bisect_right(self._speech_ends, self._start)]
 
 
 # --- the library seam ---------------------------------------------------------
@@ -388,9 +432,11 @@ class _LibraryStream:
     speech-start gate and across dropped pauses.
     """
 
-    def __init__(self, model: Any, to_array: ToArray) -> None:
+    def __init__(self, model: Any) -> None:
+        import mlx.core as mx
+
         self._model = model
-        self._to_array = to_array
+        self._array = mx.array  # also copies an MLX array
         self._hop_s = model.preprocessor_config.hop_length / _SR
         self._subsampling = int(model.encoder_config.subsampling_factor)
         self._stream: Any = None
@@ -407,7 +453,7 @@ class _LibraryStream:
         base = len(self._starts) * self._frames - retained  # mel frame of the buffer start
         known = len(stream.finalized_tokens)
         t0 = time.perf_counter()
-        stream.add_audio(self._to_array(window))
+        stream.add_audio(self._array(window))
         if not self._frames:  # one window is shorter than the right context: untrimmed
             self._frames = int(stream.mel_buffer.shape[1])
         self._starts.append(start)
@@ -434,7 +480,7 @@ class _LibraryStream:
         stream = self._open()
 
         def copy(a: Any) -> Any:
-            return None if a is None else self._to_array(a)
+            return None if a is None else self._array(a)
 
         return _Checkpoint(
             caches=[(copy(c.keys), copy(c.values), copy(c.conv), c.offset) for c in stream.cache],
@@ -495,15 +541,14 @@ class _LibraryStream:
 # --- the adapter and the session ----------------------------------------------
 
 
-class _ChunkedStream:
-    """Runs the planner's steps against the library under one lock, so ``close``
-    waits for a call still running instead of exiting the stream underneath it.
-    Synchronous: the session calls it on the engine's model thread."""
+class _StepRunner:
+    """Runs the planner's steps against the library. Synchronous: the session
+    calls it only on the engine's model thread, one call at a time, so ``close``
+    can never overlap a running encoder call."""
 
     def __init__(self, library: _Library, planner: _Planner) -> None:
         self._library = library
         self._planner = planner
-        self._lock = threading.Lock()
         self._checkpoint: object = None
         self.rollbacks = 0
 
@@ -520,19 +565,16 @@ class _ChunkedStream:
         return self._library.calls
 
     def feed(self, samples: NDArray[np.float32]) -> None:
-        with self._lock:
-            self._run(self._planner.feed(samples))
+        self._run(self._planner.feed(samples))
 
     def flush(self) -> Any:
         """Run the remaining calls; the final result, or ``None`` if nothing was encoded."""
-        with self._lock:
-            self._run(self._planner.flush())
-            return self._library.result()
+        self._run(self._planner.flush())
+        return self._library.result()
 
     def close(self) -> None:
-        with self._lock:
-            self._library.close()
-            log.debug("stream closed: %d encoder calls, %d undone", self.passes, self.rollbacks)
+        self._library.close()
+        log.debug("stream closed: %d encoder calls, %d undone", self.passes, self.rollbacks)
 
     def _run(self, steps: list[_Step]) -> None:
         for step in steps:
@@ -555,9 +597,7 @@ class ParakeetStreamSession(STTStreamSession):
     ``async with``.
     """
 
-    def __init__(
-        self, engine: ParakeetEngine, adapter: _ChunkedStream, language: str | None
-    ) -> None:
+    def __init__(self, engine: ParakeetEngine, adapter: _StepRunner, language: str | None) -> None:
         self._engine = engine
         self._thread = engine._thread
         self._adapter = adapter
@@ -665,16 +705,47 @@ def _pad(window: NDArray[np.float32]) -> NDArray[np.float32]:
 
 
 def _generate(model: Any, samples: NDArray[np.float32]) -> Any:
-    """Blocking batch transcription. Returns the library's ``AlignedResult``."""
+    """Blocking batch transcription. Returns the library's ``AlignedResult``.
+
+    Input longer than :data:`BATCH_CHUNK_S` is transcribed in overlapping
+    chunks merged on their tokens, as the library's file-based ``transcribe``
+    does, so memory does not grow with the length of the input. MLX's buffer
+    cache is emptied afterwards rather than held until the next request.
+    """
     import mlx.core as mx
+    from parakeet_mlx.alignment import (
+        merge_longest_common_subsequence,
+        merge_longest_contiguous,
+        sentences_to_result,
+        tokens_to_sentences,
+    )
     from parakeet_mlx.audio import get_logmel
 
-    mel = get_logmel(mx.array(samples), model.preprocessor_config)
-    return model.generate(mel)[0]
+    def run(audio: NDArray[np.float32]) -> Any:
+        return model.generate(get_logmel(mx.array(audio), model.preprocessor_config))[0]
 
-
-def _identity(samples: NDArray[np.float32]) -> Any:
-    return samples
+    try:
+        if len(samples) <= _BATCH_CHUNK:
+            return run(samples)
+        tokens: list[Any] = []
+        for start in range(0, len(samples), _BATCH_CHUNK - _BATCH_OVERLAP):
+            end = min(start + _BATCH_CHUNK, len(samples))
+            offset = start / _SR
+            chunk = [replace(t, start=t.start + offset) for t in run(samples[start:end]).tokens]
+            if not tokens:
+                tokens = chunk
+            else:
+                overlap = BATCH_OVERLAP_S
+                try:
+                    tokens = merge_longest_contiguous(tokens, chunk, overlap_duration=overlap)
+                except RuntimeError:  # how the library reports no contiguous overlap
+                    merge = merge_longest_common_subsequence
+                    tokens = merge(tokens, chunk, overlap_duration=overlap)
+            if end == len(samples):
+                break
+        return sentences_to_result(tokens_to_sentences(tokens))
+    finally:
+        mx.clear_cache()
 
 
 def _is_silent(samples: NDArray[np.float32]) -> bool:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import wave
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import numpy as np
@@ -30,15 +29,9 @@ def words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9 ]", " ", text.lower()).split()
 
 
-def similarity(a: str, b: str) -> float:
-    """Word-level similarity in [0, 1], case and punctuation insensitive."""
-    return SequenceMatcher(None, words(a), words(b)).ratio()
-
-
 def word_accuracy(hypothesis: str, reference: str) -> float:
-    """1 minus the word error rate (edit distance over the reference length).
-    Unlike :func:`similarity` it aligns optimally, so text that repeats itself
-    is scored right."""
+    """1 minus the word error rate: word edit distance over the reference length,
+    case and punctuation insensitive."""
     hyp, ref = words(hypothesis), words(reference)
     row = list(range(len(hyp) + 1))
     for i, r in enumerate(ref, 1):

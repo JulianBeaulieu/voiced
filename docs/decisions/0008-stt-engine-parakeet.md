@@ -93,21 +93,25 @@ changes.
 Streaming is three pieces in `voiced.engines.parakeet`:
 
 - **`_Planner`** (numpy only) decides what to encode and when, from the audio
-  and a Silero `Endpointer` (`voiced.vad`, the detector the transports use).
+  and a Silero `Endpointer` (`voiced.vad`, the detector the transports will use).
   - *Speech-start gate.* Nothing is encoded until the detector reports speech
     start, then from `PRE_ROLL_S` (300 ms) before it (fact 4). A level gate
     cannot do this: before the speaker starts there is no level to be relative
     to.
   - *Fixed grid.* Every regular call is exactly `PASS_S` at fixed offsets from
     the start of speech, so the transcript is a function of the audio, not of
-    how it was chunked or how busy the GPU was (facts 2 and 3). Audio with no
-    speech is never encoded on its own; a long pause keeps at most one pass.
+    how it was chunked or how busy the GPU was (facts 2 and 3). A pass in
+    which no 32 ms frame is speech is never encoded (the model invents words
+    in a call of silence): it is dropped and the grid restarts `PRE_ROLL_S`
+    before the next speech frame, the same lead-in as at speech start. A long
+    pause keeps at most one pass of audio meanwhile.
   - *Speculative final call.* When the last 32 ms frame is not speech (Silero's
     per-frame decision, `Endpointer.last_speech_s`) and less than a pass is
     buffered, the planner checkpoints the stream and encodes the buffer at
     once, zero-padded to a pass. The buffer is kept: if speech resumes, or the
-    pause outgrows `HOLD_MAX_S` (2.5 s), the checkpoint is restored and the
-    grid goes on as if there had been no pause, so the padding never becomes
+    pause (measured from the last speech frame) outgrows `HOLD_MAX_S` (2.5 s),
+    the checkpoint is restored and the grid goes on as if there had been no
+    pause, so the padding never becomes
     part of the transcript. If not, that call is the final one and
     `finalize()` has nothing left to encode.
 - **`_LibraryStream`** is the only code that touches `StreamingParakeet`:
@@ -130,14 +134,14 @@ waits for a running call even when cancelled. A failed encoder call is raised
 from the next `add_audio` or `finalize`.
 
 Batch `transcribe()` builds the log-mel from the numpy input directly
-(`get_logmel` + `generate`), and returns an empty transcript when no 32 ms
+(`get_logmel` + `generate`, in 20 s chunks past 20 s; see Consequences), and returns an empty transcript when no 32 ms
 frame reaches -60 dBFS (the model says "Yeah." on near-silent noise).
 
 ### Why the speculative call stays
 
 With the cheaper call, the alternative of encoding the rest only when
-`finalize()` is called, measured over the same alignments (the earlier
-engine code with the new constants):
+`finalize()` is called, measured over the same alignments (the same code
+with the planner's pause step removed):
 
 | Case | Speculative: worst, median | At finalize: worst, median |
 |---|---|---|
@@ -189,7 +193,7 @@ of lead-in), similarity to the batch transcript of the same audio:
 | 26.6 s | 152, 190 ms | 1, 1 ms | 2, 1 ms | 0.94 |
 
 With `(256, 256)` the same 25 s utterance cost 433 ms per call and a
-1.3 s finalize median (round 3 review). The few alignments between 50 and
+1.3 s finalize median (measured with `(256, 256)`). The few alignments between 50 and
 131 ms are not traced; they stay under one encoder call, and the likely cause
 is a regular call that started just before the final one.
 
@@ -216,7 +220,8 @@ Other numbers:
 | `CONTEXT_SIZE` | (64, 64) | right context sets call cost (fact 1) and accuracy (fact 2) |
 | `PASS_S` | 0.8 s | shorter calls lose words with this context; must stay below the right context (5.1 s) |
 | `PRE_ROLL_S` | 0.3 s | onset audio before Silero's 96 ms confirmation |
-| `HOLD_MAX_S` | 2.5 s | bounds what a pause holds before the grid resumes |
+| `HOLD_MAX_S` | 2.5 s | bounds how long a pause is held before the grid resumes |
+| `BATCH_CHUNK_S`, `BATCH_OVERLAP_S` | 20 s, 4 s | bound batch memory (see Consequences) |
 | `MAX_BACKLOG_S` | 30 s | bounds memory for a client feeding faster than real time |
 | `SILENCE_FLOOR_DBFS` | -60 | batch only: skip near-silent input |
 | `LIBRARY_MIN_SAMPLES` | 257 | batch only, defensive (fact 3) |
@@ -229,7 +234,7 @@ ships the Silero VAD v6.2 weights (MIT) converted to ggml, 885 KB, inside the
 wheel, with ggml's CPU libraries (MIT): no torch, no onnxruntime, no Python
 dependencies, nothing downloaded at runtime, about 4.8 MB installed, prebuilt
 wheels for macOS arm64 and Linux, about 0.12 ms per 32 ms frame. It is a core
-dependency because both the engine and the transports use it; that is also
+dependency because the engine uses it and the transports will; that is also
 why the module is `voiced.vad` at the top level, per ADR 0001.
 
 `Endpointer` is detector-agnostic: speech starts after 96 ms of speech
@@ -248,28 +253,38 @@ longer maximum wait: a change inside `voiced.vad` plus a config key.
 
 ## Consequences
 
-- Partial hypotheses trail the speaker by up to one pass plus one call
-  (800 ms of audio plus 100 to 200 ms).
+- Partial hypotheses trail the speaker by up to one pass plus one call. The
+  first partial arrives a median 0.7 s after the first word (0.6 to 0.8 s,
+  100 ms chunks); a 400 ms grid gave 0.3 s but loses words at this context
+  (fact 2). This is the price of the finalize target; nothing recovers it
+  without a second grid.
 - Each pause inside an utterance costs one discarded call.
 - Streaming accuracy depends on where grid calls fall against long pauses.
   With silence inserted at every gap between words, streaming read "kitchen
   light" (250 ms gaps) and "set the the th thermostat" (400 ms gaps) where
   batch is right; encoding the same windows straight through, with no
   checkpoint or restore, gives the same text, so the speculative call is not
-  the cause. Natural speech (the fixtures and the 27 s passage) scores 0.92 to
-  1.00 against batch.
+  the cause. One pause of 1.0 s between "set the" and "thermostat" gave "the
+  the" at 3 of 4 alignments, again with or without the speculative call;
+  0.6, 0.8 and 1.2 to 4.0 s pauses were clean at every alignment. Natural
+  speech (the fixtures and the 27 s passage) scores 0.92 to 1.00 against
+  batch.
 - A client that delivers a whole clip at once through the streaming API pays
   one call per 800 ms of audio; the batch endpoint is the right tool for
   files.
 - The model must not serve a batch request while a stream session is open;
   the engine enforces it and the server's per-engine `InferenceQueue` makes
   it impossible in normal operation.
-- Memory (MLX allocations, `mx.get_peak_memory()`, process-wide): 1.28 GB
-  held after load. Serving peaks at 2.0 GB for a 27 s stream and 2.1 to
-  2.6 GB for 5 to 25 s batch requests, inside the 3 GB budget for STT and TTS
-  together (Kokoro is 469 MB on its own). Loading peaks once at 3.6 to 4.1 GB,
+- Memory (MLX allocations, `mx.get_peak_memory()`, a process-wide peak):
+  1.28 GB held after load. Batch input longer than `BATCH_CHUNK_S` (20 s) is
+  transcribed in 20 s chunks overlapping by 4 s and merged on their tokens, as
+  parakeet-mlx's own file transcription does, and MLX's buffer cache is
+  emptied after each request. Serving then peaks at 2.46 GB for any input
+  length (a 4 minute request, and a stream; in one piece a 62 s request
+  peaked at 4.1 GB and 5 minutes at 6.4 GB, with as much again held in the
+  cache), inside the 3 GB budget for STT and TTS together (Kokoro is 469 MB
+  on its own). Chunked text matched the one-piece transcript at 0.985 (62 s)
+  to 0.999 (5 min) word accuracy. Loading peaks once at 3.6 to 4.1 GB,
   because parakeet-mlx reads the fp32 weights and then casts them to bf16;
-  that transient is over the budget at startup. Loading tensor by tensor would
-  avoid it; that is a library change, not made here. MLX also keeps freed
-  buffers in its cache (up to 2.3 GB after a 25 s batch request) until
-  reused.
+  that transient is over the budget at startup. Loading tensor by tensor
+  would avoid it; that is a library change, not made here.
