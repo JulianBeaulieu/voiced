@@ -35,6 +35,19 @@ def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, words(a), words(b)).ratio()
 
 
+def word_accuracy(hypothesis: str, reference: str) -> float:
+    """1 minus the word error rate (edit distance over the reference length).
+    Unlike :func:`similarity` it aligns optimally, so text that repeats itself
+    is scored right."""
+    hyp, ref = words(hypothesis), words(reference)
+    row = list(range(len(hyp) + 1))
+    for i, r in enumerate(ref, 1):
+        prev, row[0] = row[0], i
+        for j, h in enumerate(hyp, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (r != h))
+    return 1.0 - row[-1] / max(len(ref), 1)
+
+
 @pytest.fixture
 def speech() -> NDArray[np.float32]:
     return load_fixture("speech_en.wav")

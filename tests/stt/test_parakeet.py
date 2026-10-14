@@ -1,17 +1,17 @@
 """Parakeet engine tests.
 
-The first half runs anywhere: metadata, input validation, and the streaming
-adapter and session against a fake model that records every encoder call and
-keeps the library's mutable state fields, so snapshots and rollbacks are
-observable. The second half is marked ``model`` and needs the real weights:
-``VOICED_MODEL_TESTS=1 uv run pytest tests/stt -m model -s``.
+The first half runs anywhere: metadata, input validation, the planner, the
+adapter and the session against a fake library that records every encoder
+call, checkpoint and restore. Speech is detected by ``EnergyDetector`` so
+synthetic signals work. The second half is marked ``model`` and needs the
+real weights: ``VOICED_MODEL_TESTS=1 uv run pytest tests/stt -m model -s``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import resource
 import statistics
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from tests.stt.conftest import similarity, words
+from tests.stt.conftest import similarity, word_accuracy, words
 from voiced.engines import parakeet
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
@@ -31,6 +31,8 @@ from voiced.engines.base import (
     UnsupportedLanguage,
 )
 from voiced.engines.parakeet import (
+    CONTEXT_SIZE,
+    HOLD_MAX_S,
     MAX_BACKLOG_S,
     PARAKEET_V3_LANGUAGES,
     PASS_S,
@@ -40,8 +42,9 @@ from voiced.engines.parakeet import (
     ParakeetStreamSession,
     _check_samples,
     _ChunkedStream,
-    _identity,
     _is_silent,
+    _Library,
+    _Planner,
     _to_transcript,
 )
 from voiced.engines.registry import get_stt_engine
@@ -57,14 +60,10 @@ CHUNK = STT_SAMPLE_RATE // 10  # 100 ms, what the HTTP layer sends
 WYOMING_CHUNK = 1024  # 64 ms, a common Wyoming chunk size
 SILENCE_WINDOW_S = 0.2  # the default settings.stt.vad_silence_ms
 FINALIZE_BUDGET_S = 0.05  # the interface's target for streaming finalize latency
-# When a grid call starts just before the end of speech, the end-of-speech flush
-# waits behind it, so finalize waits about one encoder call. ADR 0008 reports
-# that case (roughly call time over PASS_S of all alignments); these bounds only
-# catch regressions beyond it: never more than one call, and not more often.
-FINALIZE_WORST_BOUND_S = 0.3
-FINALIZE_OVER_BUDGET_SHARE = 0.65
-PASS = int(PASS_S * STT_SAMPLE_RATE)
-PRE_ROLL = int(PRE_ROLL_S * STT_SAMPLE_RATE)
+FINALIZE_WORST_S = 0.15  # the owner's acceptance bound (DECISIONS.md, ADR 0008)
+PASS = round(PASS_S * STT_SAMPLE_RATE)
+PRE_ROLL = round(PRE_ROLL_S * STT_SAMPLE_RATE)
+FRAME = 512
 
 
 def assert_transcribed(text: str, expected: str, key_words: set[str]) -> None:
@@ -75,7 +74,7 @@ def assert_transcribed(text: str, expected: str, key_words: set[str]) -> None:
 
 
 def seconds(n: float) -> int:
-    return int(n * STT_SAMPLE_RATE)
+    return round(n * STT_SAMPLE_RATE)
 
 
 def speech_like(s: float, level: float = 0.1) -> NDArray[np.float32]:
@@ -115,9 +114,10 @@ def test_model_id_override() -> None:
     assert ParakeetEngine().model_id == ParakeetEngine.model_id
 
 
-def test_pass_size_is_inside_the_measured_safe_band() -> None:
-    # ADR 0008: 320 to 620 ms calls matched the batch transcript.
-    assert 0.32 <= PASS_S <= 0.62
+def test_pass_fits_the_right_context() -> None:
+    # _LibraryStream reads the mel frames per window from the first call, which
+    # holds only while one window is shorter than the right context (80 ms frames).
+    assert PASS_S < CONTEXT_SIZE[1] * 0.08
     assert parakeet.LIBRARY_MIN_SAMPLES < PASS
 
 
@@ -181,95 +181,88 @@ def test_to_transcript_normalizes_and_clamps() -> None:
     assert transcript.segments[1].end == 2.0  # clamped to the input duration
 
 
-class FakeStream:
-    """Stands in for the library's StreamingParakeet.
+class FakeLibrary:
+    """Stands in for ``_LibraryStream``. Each window that counts becomes the word
+    ``p<start>`` (its session position), timed from ``start`` to one pass later,
+    so a transcript shows exactly which windows the state holds."""
 
-    ``calls`` records every encoder call, including ones a rollback undoes.
-    ``finalized_tokens`` is the state the transcript is built from: the sizes
-    of the passes that count. Snapshot and restore act on it like on the real
-    library's token list.
-    """
-
-    def __init__(self, model: FakeModel) -> None:
-        self.model = model
-        self.calls: list[int] = []
+    def __init__(self, *, fail_on: int | None = None, delay_s: float = 0.0) -> None:
+        self.fail_on = fail_on
+        self.delay_s = delay_s
+        self.encoded: list[int] = []  # every call, undone ones included
         self.windows: list[NDArray[np.float32]] = []
-        self.entered = False
-        self.exited = False
+        self.kept: list[int] = []  # the calls the current state is built from
+        self.restores = 0
+        self.closed = False
         self.in_call = False
-        # the library's mutable state, as the adapter's snapshot expects
-        self.cache: list[Any] = []
-        self.audio_buffer: Any = None
-        self.mel_buffer: Any = None
-        self.decoder_hidden: Any = None
-        self.last_token: Any = None
-        self.finalized_tokens: list[int] = []
-        self.draft_tokens: list[int] = []
 
-    def __enter__(self) -> FakeStream:
-        self.entered = True
-        return self
+    @property
+    def text(self) -> str:
+        return " ".join(f"p{start}" for start in self.kept)
 
-    def __exit__(self, *exc: object) -> None:
-        self.exited = True
+    @property
+    def calls(self) -> int:
+        return len(self.encoded)
 
-    def add_audio(self, audio: NDArray[np.float32]) -> None:
+    def encode(self, window: NDArray[np.float32], start: int) -> None:
+        assert len(window) == PASS, "every call is exactly one pass"
         self.in_call = True
         try:
-            time.sleep(self.model.delay_s)
-            self.calls.append(len(audio))
-            self.windows.append(np.array(audio))
-            if self.model.fail_on == len(self.calls):
+            time.sleep(self.delay_s)
+            self.encoded.append(start)
+            self.windows.append(np.array(window))
+            if self.fail_on == len(self.encoded):
                 raise RuntimeError("encoder exploded")
-            self.finalized_tokens.append(len(audio))
+            self.kept.append(start)
         finally:
             self.in_call = False
 
-    @property
+    def checkpoint(self) -> object:
+        return list(self.kept)
+
+    def restore(self, checkpoint: object) -> None:
+        assert isinstance(checkpoint, list)
+        self.kept = list(checkpoint)
+        self.restores += 1
+
     def result(self) -> Any:
-        sentences, t = [], 0.0
-        for n in self.finalized_tokens:
-            sentences.append(SimpleNamespace(text=f"p{n}", start=t, end=t + n / STT_SAMPLE_RATE))
-            t += n / STT_SAMPLE_RATE
-        return SimpleNamespace(text=" ".join(s.text for s in sentences), sentences=sentences)
+        if not self.encoded:
+            return None
+        sentences = [
+            SimpleNamespace(
+                text=f"p{s}", start=s / STT_SAMPLE_RATE, end=(s + PASS) / STT_SAMPLE_RATE
+            )
+            for s in self.kept
+        ]
+        return SimpleNamespace(text=self.text, sentences=sentences)
+
+    def close(self) -> None:
+        self.closed = True
 
 
-class FakeModel:
-    def __init__(
-        self, *, fail_on: int | None = None, delay_s: float = 0.0, time_ratio: float = 0.08
-    ) -> None:
-        self.fail_on = fail_on
-        self.delay_s = delay_s
-        self.time_ratio = time_ratio
-        self.streams: list[FakeStream] = []
-
-    def transcribe_stream(self, context_size: tuple[int, int], depth: int) -> FakeStream:
-        assert context_size == parakeet.CONTEXT_SIZE and depth == parakeet.CONTEXT_DEPTH
-        stream = FakeStream(self)
-        self.streams.append(stream)
-        return stream
+def energy_speech() -> Endpointer:
+    """The engine's detector, but one that accepts synthetic signals: anything
+    above -50 dBFS is speech."""
+    return Endpointer(EnergyDetector(threshold_dbfs=-50.0), silence_ms=0)
 
 
-def energy_onset() -> Endpointer:
-    """A speech-start detector that, unlike Silero, accepts synthetic signals."""
-    return Endpointer(EnergyDetector(threshold_dbfs=-50.0), silence_ms=200)
+def adapter(**library: Any) -> tuple[_ChunkedStream, FakeLibrary]:
+    lib = FakeLibrary(**library)
+    return _ChunkedStream(lib, _Planner(energy_speech())), lib
 
 
-def fake_engine(model: FakeModel | None = None) -> ParakeetEngine:
-    engine = ParakeetEngine()
-    engine._model = model or FakeModel()
-    engine._to_array = _identity
-    engine._onset = energy_onset()
-    return engine
+class FakeEngine(ParakeetEngine):
+    def __init__(self, **library: Any) -> None:
+        super().__init__()
+        self._model = object()
+        self._speech = energy_speech()
+        self._library_args = library
+        self.libraries: list[FakeLibrary] = []
 
-
-def adapter(
-    model: FakeModel | None = None, *, flush: bool = True, gated: bool = False
-) -> _ChunkedStream:
-    a = _ChunkedStream(model or FakeModel(), _identity, onset=energy_onset() if gated else None)
-    if not flush:
-        a._tail_is_pause = lambda chunk: False  # type: ignore[method-assign]
-    return a
+    def _new_library(self, model: Any) -> _Library:
+        lib = FakeLibrary(**self._library_args)
+        self.libraries.append(lib)
+        return lib
 
 
 def feed_all(a: _ChunkedStream, chunks: list[NDArray[np.float32]]) -> Any:
@@ -282,140 +275,113 @@ def chunked(audio: NDArray[np.float32], size: int = CHUNK) -> list[NDArray[np.fl
     return [audio[i : i + size] for i in range(0, len(audio), size)]
 
 
-def test_adapter_runs_regular_passes_at_the_minimum() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    ran = [a.feed(speech_like(0.1)) for _ in range(4)]
-    assert ran == [False, False, False, True]
-    assert model.streams[0].calls == [seconds(0.4)]
-    assert a.text == f"p{seconds(0.4)}"
+def grid(audio: NDArray[np.float32]) -> list[int]:
+    """Where the grid puts calls for ``audio`` that is speech from its first sample:
+    every pass up to the last one that contains speech."""
+    loud = np.nonzero(np.abs(audio) > 0.003)[0]
+    return list(range(0, int(loud[-1]) + 1, PASS))
 
 
-def test_adapter_flushes_speculatively_on_a_pause() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    for _ in range(4):
+def test_regular_calls_run_on_the_pass_grid() -> None:
+    a, lib = adapter()
+    for _ in range(round(PASS_S * 10)):
         a.feed(speech_like(0.1))
-    a.feed(speech_like(0.1))  # a short tail of speech
-    assert a.feed(silence(0.1))  # the speaker went quiet: flush now
-    calls = model.streams[0].calls
-    assert calls == [seconds(0.4), PASS]  # the tail and the quiet chunk, padded
-    assert not a.feed(silence(0.1))  # the pause is held, not encoded
+    assert lib.encoded == [0]
+    assert a.text == "p0"
+    assert a.buffered_s == 0.0
+
+
+def test_a_pause_runs_the_final_call_before_finalize() -> None:
+    a, lib = adapter()
+    a.feed(speech_like(PASS_S + 0.3))
+    assert lib.encoded == [0]
+    a.feed(silence(0.1))  # the speaker went quiet: everything buffered, padded, at once
+    assert lib.encoded == [0, PASS]
+    a.feed(silence(0.1))  # the pause is held, not encoded
     result = a.flush()
-    assert result is not None
-    assert model.streams[0].calls == calls, "finalize after a pause needs no encoder call"
+    assert result is not None and result.text == f"p0 p{PASS}"
+    assert lib.encoded == [0, PASS], "finalize after a pause needs no encoder call"
     assert a.rollbacks == 0
 
 
-def test_adapter_flushes_on_a_silent_chunk_tail() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    assert a.feed(np.concatenate([speech_like(0.1), silence(0.032)]))
-    assert model.streams[0].calls == [PASS]
-    a.flush()
-    b = adapter(FakeModel())
-    assert not b.feed(np.concatenate([silence(0.1), speech_like(0.1)]))  # speech to the end
+def test_the_pause_is_the_last_whole_frame() -> None:
+    a, lib = adapter()
+    a.feed(np.concatenate([speech_like(0.2), silence(0.064)]))
+    assert lib.encoded == [0]
+    b, lib_b = adapter()
+    b.feed(np.concatenate([silence(0.1), speech_like(0.2)]))  # speech to the end
+    assert lib_b.encoded == []
 
 
-@pytest.mark.parametrize("pause_chunks", [1, 2, 3, 5, 8, 30])
+@pytest.mark.parametrize("pause_s", [0.1, 0.2, 0.3, 0.5, 0.8, 2.0])
 @pytest.mark.parametrize("chunk", [CHUNK, WYOMING_CHUNK])
-def test_resumed_speech_matches_no_flush_exactly(pause_chunks: int, chunk: int) -> None:
-    """A speculative flush followed by more speech leaves no trace in the transcript."""
-    audio = np.concatenate(
-        [speech_like(0.5), silence(pause_chunks * 0.1), speech_like(0.7, level=0.2)]
-    )
-    on_model, off_model = FakeModel(), FakeModel()
-    on = adapter(on_model)
-    off = adapter(off_model, flush=False)
-    on_result = feed_all(on, chunked(audio, chunk))
-    off_result = feed_all(off, chunked(audio, chunk))
-    assert on.rollbacks >= 1, "the pause should have triggered a speculative flush"
-    assert on_result.text == off_result.text
-    assert on_model.streams[0].finalized_tokens == off_model.streams[0].finalized_tokens
-    # the rolled-back speculative passes still cost encoder calls
-    assert len(on_model.streams[0].calls) > len(off_model.streams[0].calls)
+def test_resumed_speech_leaves_no_trace(pause_s: float, chunk: int) -> None:
+    """A speculative call followed by more speech is undone: the state holds
+    exactly the grid's calls over the real audio, never the padded window."""
+    audio = np.concatenate([speech_like(0.5), silence(pause_s), speech_like(0.9, level=0.2)])
+    a, lib = adapter()
+    result = feed_all(a, chunked(audio, chunk))
+    assert a.rollbacks >= 1, "the pause should have triggered a speculative call"
+    assert lib.kept == grid(audio)
+    assert result.text == " ".join(f"p{s}" for s in grid(audio))
+    last_window = dict(zip(lib.encoded, lib.windows, strict=True))
+    for start in lib.kept:
+        real = audio[start : start + PASS]
+        assert np.array_equal(last_window[start][: len(real)], real)
+    assert len(lib.encoded) > len(lib.kept), "the undone calls still cost encoder time"
 
 
-def test_adapter_never_makes_a_call_shorter_than_a_pass() -> None:
-    # much shorter calls corrupt the library's encoder cache (per-call mel normalization)
-    audio = np.concatenate(
-        [speech_like(0.05), silence(0.05), speech_like(0.37), silence(0.3), speech_like(0.02)]
-    )
-    for size in (CHUNK, WYOMING_CHUNK, 160, 4000):
-        model = FakeModel()
-        feed_all(adapter(model), chunked(audio, size))
-        assert model.streams[0].calls
-        assert min(model.streams[0].calls) >= PASS
-
-
-@pytest.mark.parametrize("backlog_s", [0.65, 1.1, 1.3, 5.0])
-def test_adapter_encodes_a_backlog_on_the_fixed_grid(backlog_s: float) -> None:
-    model = FakeModel()
-    a = adapter(model)
-    assert a.feed(speech_like(backlog_s))
-    calls = model.streams[0].calls
-    assert calls == [PASS] * (seconds(backlog_s) // PASS)
+@pytest.mark.parametrize("backlog_s", [0.65, 1.7, 2.5, 5.0])
+def test_a_backlog_is_encoded_on_the_grid(backlog_s: float) -> None:
+    a, lib = adapter()
+    a.feed(speech_like(backlog_s))
+    assert lib.encoded == list(range(0, seconds(backlog_s) - PASS + 1, PASS))
     assert a.buffered_s == pytest.approx((seconds(backlog_s) % PASS) / STT_SAMPLE_RATE)
 
 
 @pytest.mark.parametrize("size", [160, 1024, 1600, 4000, 16000])
 def test_pass_boundaries_do_not_depend_on_chunking(size: int) -> None:
     audio = np.concatenate([speech_like(1.3), speech_like(0.9, level=0.3)])
-    reference_model, model = FakeModel(), FakeModel()
-    feed_all(adapter(reference_model), [audio])
-    feed_all(adapter(model), chunked(audio, size))
-    assert model.streams[0].calls == reference_model.streams[0].calls
-    for ours, theirs in zip(
-        model.streams[0].windows, reference_model.streams[0].windows, strict=True
-    ):
-        assert np.array_equal(ours, theirs)
+    reference, _ = adapter()
+    ours, _ = adapter()
+    ref_lib = reference._library
+    our_lib = ours._library
+    feed_all(reference, [audio])
+    feed_all(ours, chunked(audio, size))
+    assert isinstance(ref_lib, FakeLibrary) and isinstance(our_lib, FakeLibrary)
+    assert our_lib.encoded == ref_lib.encoded
+    for mine, theirs in zip(our_lib.windows, ref_lib.windows, strict=True):
+        assert np.array_equal(mine, theirs)
 
 
-def test_adapter_never_encodes_pure_silence() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    for _ in range(20):
-        assert not a.feed(silence(0.1))
-    assert a.buffered_s <= PASS_S  # an open microphone does not grow the buffer
-    assert a.flush() is None
-    assert model.streams == []
-    a.close()  # nothing to exit
-
-
-def test_adapter_hears_quiet_speech_after_long_silence() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    assert a.feed(np.concatenate([silence(10.0), speech_like(0.5, level=0.005)]))
-    assert model.streams[0].calls
-
-
-@pytest.mark.parametrize("noise_dbfs", [-70.0, -60.0, -55.0, -50.0])
-def test_noise_floor_after_speech_neither_rearms_nor_blocks_the_flush(noise_dbfs: float) -> None:
-    model = FakeModel()
-    a = adapter(model)
-    loud = speech_like(0.1, level=0.5)  # about -6 dBFS
-    for _ in range(5):
-        a.feed(loud)
-    for i in range(6):  # the endpointer's window of room noise
-        a.feed(noise(0.1, noise_dbfs, seed=i))
-    calls = list(model.streams[0].calls)
-    assert len(calls) == 2, "one regular pass, one speculative flush on the first noise chunk"
-    assert a.flush() is not None
-    assert model.streams[0].calls == calls, "the noise must not need another encoder call"
-
-
-def test_adapter_replays_a_pause_that_outgrows_the_hold() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    for _ in range(5):
-        a.feed(speech_like(0.1))
-    a.feed(silence(0.1))  # speculative flush
-    assert a._speculation is not None
-    for _ in range(30):  # 3 s, past the hold limit
+def test_silence_is_never_encoded() -> None:
+    a, lib = adapter()
+    for _ in range(50):
         a.feed(silence(0.1))
-    assert a._speculation is None
+    assert a.buffered_s < 1.0, "an open microphone does not grow the buffer"
+    assert a.flush() is None
+    assert lib.encoded == []
+    a.close()
+
+
+def test_quiet_speech_after_long_silence_is_heard() -> None:
+    a, lib = adapter()
+    a.feed(np.concatenate([silence(10.0), speech_like(1.0, level=0.005)]))
+    assert lib.encoded
+
+
+def test_a_long_pause_is_given_up_on_and_dropped() -> None:
+    a, lib = adapter()
+    a.feed(speech_like(0.5))
+    a.feed(silence(0.1))  # speculative call
+    assert lib.encoded == [0]
+    for _ in range(round(HOLD_MAX_S * 10) + 5):
+        a.feed(silence(0.1))
     assert a.rollbacks == 1
+    assert lib.kept == [0], "after giving up, the speech is encoded on the grid"
     assert a.buffered_s <= PASS_S
+    result = a.flush()
+    assert result is not None and lib.kept == [0]
 
 
 def onset_offset(window: NDArray[np.float32]) -> int:
@@ -424,60 +390,54 @@ def onset_offset(window: NDArray[np.float32]) -> int:
 
 
 def test_gate_encodes_nothing_before_speech_and_keeps_the_pre_roll() -> None:
-    model = FakeModel()
-    a = adapter(model, gated=True)
-    room = noise(1.0, -55.0)
-    for chunk in chunked(room):
-        assert not a.feed(chunk)
-    assert model.streams == [], "room noise alone is never encoded"
+    a, lib = adapter()
+    for chunk in chunked(noise(1.0, -55.0)):
+        a.feed(chunk)
+    assert lib.encoded == [], "room noise alone is never encoded"
     feed_all(a, chunked(speech_like(1.0)))
-    first = model.streams[0].windows[0]
-    # The first call starts PRE_ROLL_S before the onset, rounded to a 32 ms frame.
-    assert abs(onset_offset(first) - PRE_ROLL) <= 512
-    assert np.sqrt(np.mean(np.square(first[: PRE_ROLL - 512]))) < 0.01
+    # The first call starts PRE_ROLL_S before the onset, which is frame-aligned.
+    assert abs(onset_offset(lib.windows[0]) - PRE_ROLL) < FRAME
+    assert lib.encoded[0] == seconds(1.0) - onset_offset(lib.windows[0])
 
 
 def test_gate_finds_the_onset_inside_one_large_chunk() -> None:
-    model = FakeModel()
-    a = adapter(model, gated=True)
+    a, lib = adapter()
     feed_all(a, [np.concatenate([noise(2.0, -55.0), speech_like(1.0)])])
-    assert abs(onset_offset(model.streams[0].windows[0]) - PRE_ROLL) <= 512
+    assert abs(onset_offset(lib.windows[0]) - PRE_ROLL) < FRAME
 
 
 def test_gate_never_encodes_a_session_of_room_noise() -> None:
-    model = FakeModel()
-    a = adapter(model, gated=True)
+    a, lib = adapter()
     for chunk in chunked(noise(3.0, -55.0)):
         a.feed(chunk)
     assert a.flush() is None
-    assert model.streams == []
+    assert lib.encoded == []
 
 
-def test_engine_reuses_and_resets_its_speech_start_detector() -> None:
+def test_calls_carry_their_session_position() -> None:
+    """The library maps token times through these, so segments after a lead-in
+    or a dropped pause are in session time (ADR 0008)."""
+    lead = 1.5
+    audio = np.concatenate([noise(lead, -55.0), speech_like(1.0), silence(5.0), speech_like(1.0)])
+    a, lib = adapter()
+    result = feed_all(a, chunked(audio))
+    assert lib.kept[0] == pytest.approx(seconds(lead - PRE_ROLL_S), abs=FRAME)
+    second = seconds(lead + 1.0 + 5.0)
+    assert lib.kept[-1] >= second - PASS, "the dropped pause shifts later calls"
+    assert result.sentences[0].start == pytest.approx(lead - PRE_ROLL_S, abs=0.04)
+
+
+def test_engine_reuses_its_speech_detector() -> None:
     engine = ParakeetEngine()
-    assert engine._onset_detector() is engine._onset_detector()
+    assert engine._speech_detector() is engine._speech_detector()
 
 
-def test_adapter_trims_segments_past_the_timestamp_horizon() -> None:
-    model = FakeModel(time_ratio=0.002)  # horizon 256 * 0.002 = 0.512 s
-    a = adapter(model)
-    for _ in range(12):
-        a.feed(speech_like(0.1))
-    result = a.flush()
-    assert result is not None
-    assert result.sentences, "segments inside the horizon are kept"
-    assert all(s.end <= 0.512 for s in result.sentences)
-    assert len(result.sentences) < len(model.streams[0].finalized_tokens)
-
-
-def test_adapter_close_restores_the_stream_context() -> None:
-    model = FakeModel()
-    a = adapter(model)
-    a.feed(speech_like(0.5))
-    assert model.streams[0].entered and not model.streams[0].exited
+def test_close_is_idempotent() -> None:
+    a, lib = adapter()
+    a.feed(speech_like(1.0))
     a.close()
-    assert model.streams[0].exited
-    a.close()  # idempotent
+    assert lib.closed
+    a.close()
 
 
 async def assert_engine_accepts_a_new_stream(engine: ParakeetEngine) -> None:
@@ -486,7 +446,7 @@ async def assert_engine_accepts_a_new_stream(engine: ParakeetEngine) -> None:
 
 
 async def test_engine_allows_one_session_at_a_time() -> None:
-    engine = fake_engine()
+    engine = FakeEngine()
     session = await engine.stream("en")
     with pytest.raises(EngineError):
         await engine.stream("en")
@@ -497,78 +457,99 @@ async def test_engine_allows_one_session_at_a_time() -> None:
 
 
 async def test_session_streams_through_the_adapter() -> None:
-    model = FakeModel()
-    engine = fake_engine(model)
+    engine = FakeEngine()
     async with await engine.stream("en") as session:
-        for _ in range(4):
+        for _ in range(round(PASS_S * 10)):
             await session.add_audio(speech_like(0.1))
         await asyncio.sleep(0.05)
-        assert session.partial() == f"p{seconds(0.4)}"
+        assert session.partial() == "p0"
         assert session.backlog_s == 0.0
         await session.add_audio(speech_like(0.1))
-        await session.add_audio(silence(0.1))  # the speaker went quiet: tail flushed now
+        await session.add_audio(silence(0.1))  # the speaker went quiet: tail encoded now
         await asyncio.sleep(0.05)
         transcript = await session.finalize()
-    assert transcript.text == f"p{seconds(0.4)} p{PASS}"
+    assert transcript.text == f"p0 p{PASS}"
     assert transcript.language == "en"
-    assert transcript.duration_s == pytest.approx(0.6)
-    assert [s.text for s in transcript.segments] == [f"p{seconds(0.4)}", f"p{PASS}"]
-    assert model.streams[0].exited
+    assert transcript.duration_s == pytest.approx(PASS_S + 0.2)
+    assert [s.text for s in transcript.segments] == ["p0", f"p{PASS}"]
+    assert engine.libraries[0].closed
+    assert engine.libraries[0].encoded == [0, PASS]
     await assert_engine_accepts_a_new_stream(engine)
 
 
-async def test_session_rejects_audio_past_the_backlog_bound() -> None:
-    engine = fake_engine(FakeModel(delay_s=0.2))
+async def test_session_runs_every_call_on_the_engine_thread() -> None:
+    engine = FakeEngine()
+    threads: set[int] = set()
+    async with await engine.stream("en") as session:
+        lib = engine.libraries[0]
+        encode = lib.encode
+
+        def spy(window: NDArray[np.float32], start: int) -> None:
+            threads.add(threading.get_ident())
+            encode(window, start)
+
+        lib.encode = spy  # type: ignore[method-assign]
+        busy = threading.Event()
+        hold = asyncio.create_task(run_blocking(busy.wait, 5))  # grows the default pool
+        for _ in range(30):
+            await session.add_audio(speech_like(0.1))
+            await asyncio.sleep(0)
+        await session.finalize()
+        busy.set()
+        await hold
+    assert len(threads) == 1
+
+
+async def test_session_backlog_counts_the_call_in_flight() -> None:
+    engine = FakeEngine(delay_s=0.3)
     async with await engine.stream("en") as session:
         with pytest.raises(EngineError, match="backlog"):
             await session.add_audio(speech_like(MAX_BACKLOG_S + 1))
-        await session.add_audio(speech_like(1.0))  # the consumer is now busy for a while
+        await session.add_audio(speech_like(20.0))
+        await asyncio.sleep(0.05)  # the consumer took it: in flight, nothing pending
+        assert session.backlog_s == pytest.approx(20.0)
         with pytest.raises(EngineError, match="backlog"):
-            for _ in range(int(MAX_BACKLOG_S) + 1):
-                await session.add_audio(speech_like(1.0))
+            await session.add_audio(speech_like(MAX_BACKLOG_S - 15.0))
 
 
 async def test_session_reports_an_encoder_failure_once() -> None:
-    model = FakeModel(fail_on=1)
-    engine = fake_engine(model)
+    engine = FakeEngine(fail_on=1)
     session = await engine.stream("en")
     async with session:
-        await session.add_audio(speech_like(0.4))
+        await session.add_audio(speech_like(PASS_S))
         await asyncio.sleep(0.05)
         with pytest.raises(RuntimeError, match="encoder exploded"):
             await session.add_audio(speech_like(0.1))
         with pytest.raises(RuntimeError, match="encoder exploded"):
             await session.finalize()
-    assert model.streams[0].exited
+    assert engine.libraries[0].closed
     consumer = session._consumer
     assert consumer is not None and consumer.done() and consumer.exception() is None
     await assert_engine_accepts_a_new_stream(engine)
 
 
 async def test_session_close_after_a_failure_without_finalize() -> None:
-    model = FakeModel(fail_on=1)
-    engine = fake_engine(model)
+    engine = FakeEngine(fail_on=1)
     session = await engine.stream("en")
-    await session.add_audio(speech_like(0.4))
+    await session.add_audio(speech_like(PASS_S))
     await asyncio.sleep(0.05)
     await session.close()  # no "Task exception was never retrieved"
     consumer = session._consumer
     assert consumer is not None and consumer.exception() is None
-    assert model.streams[0].exited
+    assert engine.libraries[0].closed
     await assert_engine_accepts_a_new_stream(engine)
 
 
 async def test_session_failure_during_finalize_is_raised() -> None:
-    model = FakeModel(fail_on=1, delay_s=0.1)
-    engine = fake_engine(model)
+    engine = FakeEngine(fail_on=1, delay_s=0.1)
     async with await engine.stream("en") as session:
-        await session.add_audio(speech_like(0.4))
+        await session.add_audio(speech_like(PASS_S))
         with pytest.raises(RuntimeError, match="encoder exploded"):
             await session.finalize()
 
 
 async def test_session_rejects_use_after_close() -> None:
-    engine = fake_engine()
+    engine = FakeEngine()
     session = await engine.stream()
     await session.close()
     with pytest.raises(EngineError):
@@ -579,7 +560,7 @@ async def test_session_rejects_use_after_close() -> None:
 
 
 async def test_session_finalize_twice_raises() -> None:
-    engine = fake_engine()
+    engine = FakeEngine()
     async with await engine.stream() as session:
         await session.add_audio(speech_like(0.5))
         await session.finalize()
@@ -588,7 +569,7 @@ async def test_session_finalize_twice_raises() -> None:
 
 
 async def test_empty_session_finalizes_to_empty_transcript() -> None:
-    engine = fake_engine()
+    engine = FakeEngine()
     async with await engine.stream() as session:
         transcript = await session.finalize()
     assert transcript.text == ""
@@ -596,41 +577,40 @@ async def test_empty_session_finalizes_to_empty_transcript() -> None:
     assert transcript.segments == ()
 
 
-async def test_cancelled_finalize_waits_for_the_pass_and_exits_the_stream() -> None:
-    model = FakeModel(delay_s=0.3)
-    engine = fake_engine(model)
+async def test_cancelled_finalize_waits_for_the_call_and_closes() -> None:
+    engine = FakeEngine(delay_s=0.3)
     session = await engine.stream("en")
 
     async def run() -> None:
         async with session:
-            await session.add_audio(speech_like(0.4))
+            await session.add_audio(speech_like(PASS_S))
             await session.finalize()
 
     task = asyncio.create_task(run())
     await asyncio.sleep(0.05)
-    assert model.streams[0].in_call
+    lib = engine.libraries[0]
+    assert lib.in_call
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    stream = model.streams[0]
-    assert not stream.in_call, "close() must wait for the running pass"
-    assert stream.exited
+    assert not lib.in_call, "close() must wait for the running call"
+    assert lib.closed
     await assert_engine_accepts_a_new_stream(engine)
 
 
-async def test_cancelled_close_still_exits_the_stream() -> None:
-    model = FakeModel(delay_s=0.3)
-    engine = fake_engine(model)
+async def test_cancelled_close_still_closes() -> None:
+    engine = FakeEngine(delay_s=0.3)
     session = await engine.stream("en")
-    await session.add_audio(speech_like(0.4))
+    await session.add_audio(speech_like(PASS_S))
     await asyncio.sleep(0.05)
     task = asyncio.create_task(session.close())
     await asyncio.sleep(0.05)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert model.streams[0].exited
-    assert not model.streams[0].in_call
+    lib = engine.libraries[0]
+    assert lib.closed
+    assert not lib.in_call
     await assert_engine_accepts_a_new_stream(engine)
 
 
@@ -639,10 +619,15 @@ async def test_cancelled_close_still_exits_the_stream() -> None:
 
 @pytest.fixture(scope="module")
 def engine() -> ParakeetEngine:
+    import mlx.core as mx
+
     engine = ParakeetEngine()
     t0 = time.perf_counter()
     asyncio.run(engine.load())
-    print(f"\nparakeet load and warm-up: {time.perf_counter() - t0:.1f}s")
+    print(
+        f"\nparakeet load and warm-up: {time.perf_counter() - t0:.1f}s, "
+        f"MLX peak {mx.get_peak_memory() / 1e9:.2f} GB (fp32 weights cast to bf16)"
+    )
     return engine
 
 
@@ -652,21 +637,22 @@ def attention_class(engine: ParakeetEngine) -> str:
 
 def at_peak(audio: NDArray[np.float32], dbfs: float) -> NDArray[np.float32]:
     """Scale so the loudest 32 ms frame sits at ``dbfs``, a realistic microphone level."""
-    frames = audio[: len(audio) // 512 * 512].reshape(-1, 512)
+    frames = audio[: len(audio) // FRAME * FRAME].reshape(-1, FRAME)
     peak = float(np.sqrt(np.mean(np.square(frames), axis=1)).max())
     return (audio / peak * 10 ** (dbfs / 20)).astype(np.float32)
 
 
+def with_room(audio: NDArray[np.float32], dbfs: float, seed: int) -> NDArray[np.float32]:
+    rng = np.random.default_rng(seed)
+    return (audio + rng.standard_normal(len(audio)) * 10 ** (dbfs / 20)).astype(np.float32)
+
+
 async def paced_stream(
-    session: ParakeetStreamSession,
-    audio: NDArray[np.float32],
-    trailing_silence_s: float = 0.0,
-    chunk: int = CHUNK,
+    session: ParakeetStreamSession, clip: NDArray[np.float32], chunk: int = CHUNK
 ) -> tuple[list[float], list[str]]:
     """Feed ``chunk``-sized pieces at the rate a microphone delivers them."""
     add_times: list[float] = []
     partials: list[str] = []
-    clip = np.concatenate([audio, silence(trailing_silence_s)])
     t0 = time.perf_counter()
     for i in range(0, len(clip), chunk):
         t = time.perf_counter()
@@ -679,12 +665,34 @@ async def paced_stream(
 
 async def timed_finalize(
     engine: ParakeetEngine, clip: NDArray[np.float32], chunk: int = CHUNK
-) -> tuple[float, str]:
+) -> tuple[float, Any]:
+    """Stream ``clip`` in real time, then finalize: the latency and the transcript."""
     async with await engine.stream("en") as session:
-        await paced_stream(session, clip, chunk=chunk)
+        await paced_stream(session, clip, chunk)
         t = time.perf_counter()
         transcript = await session.finalize()
-        return time.perf_counter() - t, transcript.text
+        return time.perf_counter() - t, transcript
+
+
+def report(label: str, latencies: list[float]) -> None:
+    ms = sorted(x * 1000 for x in latencies)
+    print(
+        f"{label}: worst {ms[-1]:.0f} ms, median {statistics.median(ms):.0f} ms, "
+        f"over 50 ms {sum(m > 50 for m in ms)} of {len(ms)}"
+    )
+
+
+def utterance(*parts: NDArray[np.float32], gap_s: float = 0.15) -> NDArray[np.float32]:
+    """Clips joined by pauses shorter than the endpointer's window: one utterance."""
+    gap = silence(gap_s)
+    return np.concatenate([p for part in parts for p in (part, gap)][:-1])
+
+
+def trimmed(audio: NDArray[np.float32]) -> NDArray[np.float32]:
+    """Without leading and trailing quiet frames."""
+    frames = audio[: len(audio) // FRAME * FRAME].reshape(-1, FRAME)
+    loud = np.nonzero(np.sqrt(np.mean(np.square(frames), axis=1)) > 0.003)[0]
+    return audio[int(loud[0]) * FRAME : (int(loud[-1]) + 1) * FRAME]
 
 
 @pytest.mark.model
@@ -780,115 +788,164 @@ async def test_streaming_partials_and_transcript(
     session = await engine.stream("en")
     assert isinstance(session, ParakeetStreamSession)
     async with session:
-        add_times, partials = await paced_stream(session, speech, SILENCE_WINDOW_S)
+        clip = np.concatenate([speech, silence(SILENCE_WINDOW_S)])
+        add_times, partials = await paced_stream(session, clip)
         transcript = await session.finalize()
     first_partial = next(i for i, p in enumerate(partials) if p) + 1
     print(
-        f"stream: max add_audio {max(add_times) * 1000:.2f} ms, {session.passes} passes, "
+        f"stream: max add_audio {max(add_times) * 1000:.2f} ms, {session.passes} calls, "
         f"first partial after {first_partial} chunks: {transcript.text!r}"
     )
     assert any(partials), "no partial hypothesis before finalize"
     assert max(add_times) < 0.02, "add_audio must not block on the encoder"
     assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
     assert transcript.language == "en"
-    assert transcript.duration_s == pytest.approx(len(speech) / STT_SAMPLE_RATE + SILENCE_WINDOW_S)
+    assert transcript.duration_s == pytest.approx(len(clip) / STT_SAMPLE_RATE)
     assert transcript.segments and transcript.segments[0].start < 0.5
 
 
 @pytest.mark.model
 @pytest.mark.parametrize("chunk", [CHUNK, WYOMING_CHUNK], ids=["100ms", "64ms"])
 @pytest.mark.parametrize("noise_dbfs", [None, -55.0], ids=["silence", "noise-55dBFS"])
-async def test_finalize_latency_worst_case_over_alignments(
+async def test_finalize_latency_over_alignments(
     engine: ParakeetEngine, speech: NDArray[np.float32], chunk: int, noise_dbfs: float | None
 ) -> None:
     """End of speech at every 20 ms offset relative to the chunk and pass grid,
     then the endpointer's silence window (digital, or room noise at -55 dBFS
-    with speech at a -6 dBFS peak), then finalize. Latency is bimodal: a few
-    milliseconds, or one encoder call when a grid call was running as the
-    speaker stopped (ADR 0008). Both modes are bounded here."""
+    with speech at a -6 dBFS peak), then finalize."""
     voice = speech if noise_dbfs is None else at_peak(speech, -6.0)
-    rng = np.random.default_rng(1)
     latencies: list[float] = []
-    texts: list[str] = []
     for lead_ms in range(0, 640, 20):
         clip = np.concatenate([silence(lead_ms / 1000), voice, silence(SILENCE_WINDOW_S)])
         if noise_dbfs is not None:
-            room = rng.standard_normal(len(clip)) * 10 ** (noise_dbfs / 20)
-            clip = (clip + room).astype(np.float32)
-        finalize_s, text = await timed_finalize(engine, clip, chunk)
+            clip = with_room(clip, noise_dbfs, seed=lead_ms)
+        finalize_s, transcript = await timed_finalize(engine, clip, chunk)
         latencies.append(finalize_s)
-        texts.append(text)
-    ms = sorted(x * 1000 for x in latencies)
-    print(
-        f"finalize over {len(ms)} alignments ({chunk} samples, noise {noise_dbfs}): "
-        f"worst {ms[-1]:.1f} ms, p95 {ms[int(len(ms) * 0.95)]:.1f}, "
-        f"median {statistics.median(ms):.1f}, over budget {sum(m > 50 for m in ms)}"
+        assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+    report(f"finalize, {chunk} samples, noise {noise_dbfs}", latencies)
+    assert max(latencies) < FINALIZE_WORST_S
+
+
+@pytest.mark.model
+@pytest.mark.parametrize("peak_dbfs", [-20.0, -25.0])
+async def test_quiet_speaker_over_room_noise(
+    engine: ParakeetEngine, speech: NDArray[np.float32], peak_dbfs: float
+) -> None:
+    """Pauses are Silero's per-frame decision, not a level threshold, so a quiet
+    speaker 25 to 30 dB over the room still gets the early final call."""
+    latencies: list[float] = []
+    for lead_ms in range(0, 640, 80):
+        clip = np.concatenate([silence(lead_ms / 1000), at_peak(speech, peak_dbfs)])
+        clip = with_room(np.concatenate([clip, silence(SILENCE_WINDOW_S)]), -50.0, seed=lead_ms)
+        finalize_s, transcript = await timed_finalize(engine, clip, WYOMING_CHUNK)
+        latencies.append(finalize_s)
+        assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+    report(f"finalize, {peak_dbfs} dBFS peak over -50 dBFS", latencies)
+    assert max(latencies) < FINALIZE_WORST_S
+    assert statistics.median(latencies) < FINALIZE_BUDGET_S
+
+
+@pytest.mark.model
+async def test_long_utterance_keeps_calls_bounded(
+    engine: ParakeetEngine,
+    speech: NDArray[np.float32],
+    speech_with_trailing_silence: NDArray[np.float32],
+) -> None:
+    """The right context bounds what each call re-encodes, so a 20 s utterance
+    costs no more per call than a short one, and finalize stays fast."""
+    parts = [trimmed(speech), trimmed(speech_with_trailing_silence)] * 3
+    clip = utterance(*parts)
+    reference = await engine.transcribe(AudioInput(clip), "en")
+    latencies: list[float] = []
+    for lead_ms in (0, 270, 530):
+        tail = silence(SILENCE_WINDOW_S)
+        finalize_s, transcript = await timed_finalize(
+            engine, np.concatenate([silence(lead_ms / 1000), clip, tail])
+        )
+        latencies.append(finalize_s)
+        assert word_accuracy(transcript.text, reference.text) >= 0.9, transcript.text
+    report(f"finalize after {len(clip) / STT_SAMPLE_RATE:.0f}s", latencies)
+    assert max(latencies) < FINALIZE_WORST_S
+
+
+@pytest.mark.model
+async def test_streamed_timestamps_are_in_session_time(
+    engine: ParakeetEngine,
+    speech: NDArray[np.float32],
+    speech_with_trailing_silence: NDArray[np.float32],
+) -> None:
+    """After a 1.5 s lead-in and across a dropped pause, the streamed transcript
+    starts where the speech starts and ends where batch ends it. (Batch puts its
+    first token up to 0.5 s before the speech, and the two split sentences
+    differently, so only the outer times are compared, to the best reference.)"""
+    clip = np.concatenate(
+        [silence(1.5), speech, silence(1.5), trimmed(speech_with_trailing_silence)]
     )
-    for text in texts:
-        assert_transcribed(text, EXPECTED, EXPECTED_WORDS)
-    assert max(latencies) < FINALIZE_WORST_BOUND_S
-    over = sum(x >= FINALIZE_BUDGET_S for x in latencies)
-    assert over <= FINALIZE_OVER_BUDGET_SHARE * len(latencies)
+    clip = np.concatenate([clip, silence(SILENCE_WINDOW_S)])
+    batch = await engine.transcribe(AudioInput(clip), "en")
+    _, streamed = await timed_finalize(engine, clip)
+    print(f"batch  {[(s.start, s.end) for s in batch.segments]}")
+    print(f"stream {[(s.start, s.end) for s in streamed.segments]}")
+    onset = (len(clip) - len(trimmed(clip))) / STT_SAMPLE_RATE  # nothing loud trails
+    assert streamed.segments[0].start == pytest.approx(onset, abs=0.25)
+    assert streamed.segments[-1].end == pytest.approx(batch.segments[-1].end, abs=0.25)
+    for earlier, later in zip(streamed.segments, streamed.segments[1:], strict=False):
+        assert earlier.end <= later.start + 1e-3
 
 
 def with_pauses(speech: NDArray[np.float32], gap_ms: int) -> NDArray[np.float32]:
     """The fixture with ``gap_ms`` of silence inserted at every gap between words."""
-    frames = speech[: len(speech) // 512 * 512].reshape(-1, 512)
+    frames = speech[: len(speech) // FRAME * FRAME].reshape(-1, FRAME)
     env = np.sqrt(np.mean(np.square(frames), axis=1))
-    cuts = [i * 512 for i in range(1, len(env)) if env[i] < env.max() * 0.05 <= env[i - 1]]
+    cuts = [i * FRAME for i in range(1, len(env)) if env[i] < env.max() * 0.05 <= env[i - 1]]
     gap = silence(gap_ms / 1000)
     return np.concatenate([p for part in np.split(speech, cuts) for p in (part, gap)])
 
 
 @pytest.mark.model
 @pytest.mark.parametrize("gap_ms", [110, 250, 400])
-async def test_rollback_leaves_the_real_stream_exactly_as_without_a_flush(
+async def test_undone_calls_leave_the_real_stream_exact(
     engine: ParakeetEngine, speech: NDArray[np.float32], gap_ms: int
 ) -> None:
-    """With real weights: after every pause the speculative flush is undone, so
-    the library's state is the same as if no flush had happened. The clip is cut
-    at the last loud frame, so the final call is the same in both runs. MLX
-    streams are per thread, so the adapter runs in a worker thread like the
-    engine's own calls."""
+    """With real weights: every speculative call that speech followed is undone,
+    so the transcript equals the one from encoding the planner's kept windows
+    straight through the library, with no checkpoint or restore."""
     import mlx.core as mx
 
-    clip = with_pauses(speech, gap_ms)
-    frames = clip[: len(clip) // 512 * 512].reshape(-1, 512)
-    env = np.sqrt(np.mean(np.square(frames), axis=1))
-    clip = clip[: (int(np.nonzero(env > env.max() * 0.3)[0][-1]) + 1) * 512]
+    clip = trimmed(with_pauses(speech, gap_ms))
 
-    def run(flush: bool) -> tuple[str, int]:
-        a = _ChunkedStream(engine._model, mx.array)
-        if not flush:
-            a._tail_is_pause = lambda chunk: False  # type: ignore[method-assign]
+    def run() -> tuple[str, str, int]:
+        lib = parakeet._LibraryStream(engine._model, mx.array)
+        planned = _ChunkedStream(lib, _Planner(Endpointer(silence_ms=0)))
+        windows: list[tuple[NDArray[np.float32], int]] = []
+        encode = lib.encode
+
+        def spy(window: NDArray[np.float32], start: int) -> None:
+            windows.append((window, start))
+            encode(window, start)
+
+        lib.encode = spy  # type: ignore[method-assign]
         try:
             for chunk in chunked(clip, WYOMING_CHUNK):
-                a.feed(chunk)
-            result = a.flush()
+                planned.feed(chunk)
+            result = planned.flush()
         finally:
-            a.close()
-        return (result.text if result is not None else ""), a.rollbacks
+            planned.close()
+        # what the state holds: the last call made at each grid position
+        kept = {start: window for window, start in windows}
+        straight = parakeet._LibraryStream(engine._model, mx.array)
+        try:
+            for start, window in sorted(kept.items()):
+                straight.encode(window, start)
+            reference = straight.result()
+        finally:
+            straight.close()
+        return result.text, reference.text, planned.rollbacks
 
-    with_flush, rollbacks = await run_blocking(run, True)
-    without_flush, _ = await run_blocking(run, False)
-    texts = [with_flush, without_flush]
-    print(f"{gap_ms} ms pauses, {rollbacks} rollbacks: {texts[0]!r}")
+    ours, reference, rollbacks = await engine._thread.run(run)
+    print(f"{gap_ms} ms pauses, {rollbacks} undone: {ours!r}")
     assert rollbacks >= 1
-    assert texts[0] == texts[1]
-
-
-@pytest.mark.model
-@pytest.mark.parametrize("gap_ms", [110, 250])
-async def test_pauses_inside_an_utterance_keep_the_words(
-    engine: ParakeetEngine, speech: NDArray[np.float32], gap_ms: int
-) -> None:
-    """Long inserted pauses can turn "lights" into "light" in streaming (batch
-    gets it right). That comes from where the grid calls fall, not from the
-    flush: the rollback test above gives the same text with the flush off."""
-    clip = np.concatenate([with_pauses(speech, gap_ms), silence(SILENCE_WINDOW_S)])
-    _, text = await timed_finalize(engine, clip)
-    print(f"{gap_ms} ms pauses, streamed: {text!r}")
-    assert_transcribed(text, EXPECTED, EXPECTED_WORDS - {"lights"})
+    assert ours == reference
 
 
 @pytest.mark.model
@@ -896,25 +953,23 @@ async def test_pauses_inside_an_utterance_keep_the_words(
 async def test_room_noise_before_speech_adds_no_words(
     engine: ParakeetEngine, speech: NDArray[np.float32], lead_ms: int
 ) -> None:
-    """Without the speech-start gate, a pass of room noise alone was decoded as
+    """Without the speech-start gate, a call of room noise alone was decoded as
     words ("We have a turn on the kitchen lights")."""
     voice = at_peak(speech, -6.0)
     for seed in range(3):
-        rng = np.random.default_rng(seed)
         clip = np.concatenate([silence(lead_ms / 1000), voice, silence(SILENCE_WINDOW_S)])
-        clip = (clip + rng.standard_normal(len(clip)) * 10 ** (-55 / 20)).astype(np.float32)
-        _, text = await timed_finalize(engine, clip)
-        assert words(text)[:1] == ["turn"], f"leading words before the speech: {text!r}"
-        assert_transcribed(text, EXPECTED, EXPECTED_WORDS)
+        _, transcript = await timed_finalize(engine, with_room(clip, -55.0, seed))
+        assert words(transcript.text)[:1] == ["turn"], f"leading words: {transcript.text!r}"
+        assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
 
 
 @pytest.mark.model
 async def test_streaming_trailing_silence_fixture(
     engine: ParakeetEngine, speech_with_trailing_silence: NDArray[np.float32]
 ) -> None:
-    finalize_s, text = await timed_finalize(engine, speech_with_trailing_silence)
+    finalize_s, transcript = await timed_finalize(engine, speech_with_trailing_silence)
     print(f"stream (fixture with 1 s of silence): finalize {finalize_s * 1000:.1f} ms")
-    assert_transcribed(text, EXPECTED_TRAILING, TRAILING_WORDS)
+    assert_transcribed(transcript.text, EXPECTED_TRAILING, TRAILING_WORDS)
     assert finalize_s < FINALIZE_BUDGET_S
 
 
@@ -930,7 +985,7 @@ async def test_stream_whole_clip_at_once(
         burst_ms = (time.perf_counter() - t) * 1000
     print(f"burst finalize of {len(speech) / STT_SAMPLE_RATE:.1f}s: {burst_ms:.0f} ms")
     assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
-    assert session.passes >= 5
+    assert session.passes >= len(speech) // PASS
 
 
 @pytest.mark.model
@@ -949,8 +1004,8 @@ async def test_close_without_finalize_restores_batch_path(
     engine: ParakeetEngine, speech: NDArray[np.float32]
 ) -> None:
     async with await engine.stream("en") as session:
-        await session.add_audio(speech[:STT_SAMPLE_RATE])
-        await asyncio.sleep(0.3)
+        await session.add_audio(speech[: 2 * PASS])
+        await asyncio.sleep(0.5)
         assert attention_class(engine) == "RelPositionMultiHeadLocalAttention"
     assert attention_class(engine) == "RelPositionMultiHeadAttention"
     with pytest.raises(EngineError):
@@ -976,13 +1031,60 @@ async def test_cancelled_finalize_restores_the_model(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert attention_class(engine) == "RelPositionMultiHeadAttention"
-    assert not session._adapter._lock.locked(), "an encoder pass is still running"
+    assert not session._adapter._lock.locked(), "an encoder call is still running"
     transcript = await engine.transcribe(AudioInput(speech), "en")
     assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
 
 
 @pytest.mark.model
-def test_resident_memory(engine: ParakeetEngine) -> None:
-    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
-    print(f"peak resident memory with the model loaded: {rss_mb:.0f} MB")
-    assert rss_mb < 2000
+async def test_model_calls_survive_a_busy_default_pool(
+    engine: ParakeetEngine, speech: NDArray[np.float32]
+) -> None:
+    """MLX arrays belong to the thread that created them. With the default pool
+    grown by other work, and a close cancelled mid-call, every later batch and
+    stream still runs, because the engine runs all its calls on one thread."""
+    busy = threading.Event()
+    hold = asyncio.create_task(run_blocking(busy.wait, 60))
+    try:
+        for _ in range(5):
+            await engine.transcribe(AudioInput(speech), "en")
+            async with await engine.stream("en") as session:
+                await session.add_audio(speech)
+                assert_transcribed((await session.finalize()).text, EXPECTED, EXPECTED_WORDS)
+        session = await engine.stream("en")
+        await session.add_audio(speech)
+        await asyncio.sleep(0.05)
+        closing = asyncio.create_task(session.close())
+        await asyncio.sleep(0)
+        closing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        _, transcript = await timed_finalize(engine, np.concatenate([speech, silence(0.2)]))
+        assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+    finally:
+        busy.set()
+        await hold
+
+
+@pytest.mark.model
+async def test_peak_memory_while_serving(
+    engine: ParakeetEngine,
+    speech: NDArray[np.float32],
+    speech_with_trailing_silence: NDArray[np.float32],
+) -> None:
+    """MLX's peak allocation in this process while serving a 20 s batch request
+    and a 20 s stream, after loading. Loading itself peaks higher, once
+    (parakeet-mlx reads fp32 weights and casts them; ADR 0008). The budget for
+    STT and TTS together is 3 GB."""
+    import mlx.core as mx
+
+    clip = utterance(*[trimmed(speech), trimmed(speech_with_trailing_silence)] * 3)
+    mx.reset_peak_memory()
+    await engine.transcribe(AudioInput(clip), "en")
+    async with await engine.stream("en") as session:
+        for chunk in chunked(clip, seconds(1.0)):
+            await session.add_audio(chunk)
+        await session.finalize()
+    peak_gb = mx.get_peak_memory() / 1e9
+    print(f"MLX peak while serving {len(clip) / STT_SAMPLE_RATE:.0f}s: {peak_gb:.2f} GB")
+    assert peak_gb < 3.0

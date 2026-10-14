@@ -168,8 +168,8 @@ class STTStreamSession(ABC):
     async def finalize(self) -> Transcript:
         """Flush, return the final transcript, and close the session.
 
-        Called once end of speech is detected (the VAD lives outside the
-        engine). Target latency is single-digit milliseconds after the last
+        Called once end of speech is detected (end of speech is decided
+        outside the engine). Target latency is single-digit milliseconds after the last
         ``add_audio`` for streaming engines.
         """
 

@@ -112,6 +112,21 @@ def test_reset_clears_state() -> None:
     assert kinds == ["speech_start", "speech_end"]
 
 
+def test_last_speech_frame_is_tracked_between_events() -> None:
+    """The engine reads the per-frame decision, not only the events."""
+    ep = energy_endpointer(min_speech_ms=96)
+    assert ep.min_speech_s == pytest.approx(3 * FRAME_S)
+    assert ep.last_speech_s == 0.0
+    run(ep, np.concatenate([silence(0.32), noise(0.064)]))  # too short for speech_start
+    assert not ep.in_speech
+    assert ep.last_speech_s == pytest.approx(0.32 + 0.064)
+    run(ep, silence(0.096))
+    assert ep.last_speech_s == pytest.approx(0.32 + 0.064)
+    assert ep.position_s - ep.last_speech_s == pytest.approx(0.096)
+    ep.reset()
+    assert ep.last_speech_s == 0.0
+
+
 def test_frame_alignment_is_independent_of_chunk_size() -> None:
     audio = np.concatenate([noise(1.0), silence(1.0)])
     ends = []

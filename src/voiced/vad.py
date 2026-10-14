@@ -1,9 +1,9 @@
 """Endpointing: deciding when the speaker has finished.
 
-The engine never sees the voice activity detector (``voiced.engines.base``:
-the VAD lives outside the engine). The server feeds every incoming chunk to
-the :class:`Endpointer` next to the engine's stream session and calls
-``finalize()`` when it reports end of speech::
+End of speech is decided outside the engine (``voiced.engines.base``). The
+server feeds every incoming chunk to the :class:`Endpointer` next to the
+engine's stream session and calls ``finalize()`` when it reports end of
+speech::
 
     endpointer = create_endpointer(settings.stt)
     async with await engine.stream() as session:
@@ -14,17 +14,21 @@ the :class:`Endpointer` next to the engine's stream session and calls
                 transcript = await session.finalize()
                 break
 
-The STT engine also uses an :class:`Endpointer` internally, for speech start
-only: its stream session encodes nothing until speech begins (see
-``voiced.engines.parakeet``), so the two never disagree about what speech is.
+The Parakeet engine runs its own Silero :class:`Endpointer` on the same audio,
+for two decisions that are only about scheduling encoder work: encode nothing
+before speech starts, and start the final encoder call at the first frame of a
+pause (``last_speech_s``), before the server's silence window has elapsed. Same
+detector, same threshold, so both agree on what speech is; only the server's
+endpointer ends the turn.
 
 Two layers:
 
 * A :class:`SpeechDetector` turns one fixed-size frame (512 samples, 32 ms at
   16 kHz) into a speech probability. :class:`SileroDetector` wraps the Silero
-  VAD model through ``pysilero-vad`` (a ggml build, about 1 MB, no torch and no
-  onnxruntime). ``voiced.testing.EnergyDetector`` is the deterministic stand-in
-  for tests with synthetic signals, which Silero rightly rejects as non-speech.
+  VAD model through ``pysilero-vad`` (a ggml build, 885 KB of weights and about
+  4.8 MB installed, no torch and no onnxruntime). ``voiced.testing.EnergyDetector``
+  is the deterministic stand-in for tests with synthetic signals, which Silero
+  rightly rejects as non-speech.
 * :class:`Endpointer` is the state machine on top. Speech starts after
   ``min_speech_ms`` of consecutive speech frames and ends after ``silence_ms``
   of consecutive non-speech frames (``settings.stt.vad_silence_ms``). Both are
@@ -139,6 +143,7 @@ class Endpointer:
         self._speech_run = 0
         self._silence_run = 0
         self._speech_start_frame = 0
+        self._last_speech_frame = 0
 
     def _frames_for(self, ms: int) -> int:
         return max(1, round(ms * self._rate / 1000 / self._frame))
@@ -147,6 +152,18 @@ class Endpointer:
     def silence_s(self) -> float:
         """The trailing-silence window actually applied, after frame rounding."""
         return self._silence_frames * self._frame / self._rate
+
+    @property
+    def min_speech_s(self) -> float:
+        """Consecutive speech needed before ``speech_start``, after frame rounding."""
+        return self._min_speech_frames * self._frame / self._rate
+
+    @property
+    def last_speech_s(self) -> float:
+        """Where the last frame judged speech ended (0.0 before any), whether or not
+        it was part of an utterance yet. Callers that need the per-frame decision,
+        not only the events, read it after ``feed``."""
+        return self._last_speech_frame * self._frame / self._rate
 
     @property
     def in_speech(self) -> bool:
@@ -165,6 +182,7 @@ class Endpointer:
         self._speech_run = 0
         self._silence_run = 0
         self._speech_start_frame = 0
+        self._last_speech_frame = 0
 
     def feed(self, samples: NDArray[np.float32]) -> list[EndpointEvent]:
         arr = np.asarray(samples, dtype=np.float32)
@@ -183,6 +201,8 @@ class Endpointer:
     def _step(self, frame: NDArray[np.float32]) -> EndpointEvent | None:
         speech = self._detector.probability(frame) >= self._threshold
         self._frames_seen += 1
+        if speech:
+            self._last_speech_frame = self._frames_seen
         if not self._in_speech:
             if not speech:
                 self._speech_run = 0
