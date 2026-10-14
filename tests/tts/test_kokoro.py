@@ -3,9 +3,7 @@ Metal; everything else runs on CI."""
 
 from __future__ import annotations
 
-import asyncio
 import statistics
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -14,20 +12,17 @@ import numpy as np
 import pytest
 
 from voiced.engines import get_tts_engine
-from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded, UnknownVoice
+from voiced.engines.base import EngineNotLoaded
 from voiced.engines.kokoro import (
     ENV_ESPEAK_DATA,
     ENV_ESPEAK_LIBRARY,
     ESPEAK_INSTALL_HINT,
     HOMEBREW_PREFIXES,
-    MAX_SPEED,
-    MIN_SPEED,
     EspeakNotFound,
     KokoroEngine,
     espeak_candidates,
     kokoro_voices,
 )
-from voiced.queue import InferenceQueue
 from voiced.text import normalize
 
 # -- registry, metadata, voice table -----------------------------------------
@@ -119,149 +114,20 @@ async def test_load_with_broken_espeak_names_the_brew_command(
         await KokoroEngine().load()
 
 
-# -- contract without a model -------------------------------------------------
+# -- Kokoro-specific contract (shared ones: test_sentence_engines.py) ---------
 
 
-async def test_methods_require_load() -> None:
+def test_phonemize_requires_load() -> None:
+    with pytest.raises(EngineNotLoaded):
+        KokoroEngine().phonemize("Hi.", "af_heart")
+
+
+def test_has_voice_reads_the_loaded_packs() -> None:
     engine = KokoroEngine()
-    with pytest.raises(EngineNotLoaded):
-        await engine.voices()
-    with pytest.raises(EngineNotLoaded):
-        async for _ in engine.synthesize("Hi.", "af_heart"):
-            pass
-    with pytest.raises(EngineNotLoaded):
-        engine.phonemize("Hi.", "af_heart")
-
-
-def _stub_loaded(engine: KokoroEngine, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, float]]:
-    """Make ``engine`` look loaded with a fake synthesizer that records calls."""
-    calls: list[tuple[str, float]] = []
-
-    def fake_synth(sentence: str, voice: str, speed: float) -> bytes:
-        calls.append((sentence, speed))
-        return bytes(480)
-
-    engine._model = object()
-    engine._tokenizer = object()
+    assert not engine._has_voice("af_heart")
     engine._packs = {"af_heart": object()}
-    engine._voices = kokoro_voices(["en-US"])[:1]
-    monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
-    return calls
-
-
-async def test_unknown_voice_raises_before_yielding(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = KokoroEngine()
-    calls = _stub_loaded(engine, monkeypatch)
-    gen = engine.synthesize("Hi.", "xx_nobody")
-    with pytest.raises(UnknownVoice):
-        await gen.__anext__()
-    assert calls == []
-
-
-@pytest.mark.parametrize("speed", [0.0, -1.0, MIN_SPEED / 2, MAX_SPEED * 2, float("nan")])
-async def test_speed_out_of_range_is_rejected(
-    speed: float, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    engine = KokoroEngine()
-    calls = _stub_loaded(engine, monkeypatch)
-    gen = engine.synthesize("Hi.", "af_heart", speed=speed)
-    with pytest.raises(EngineError, match="speed"):
-        await gen.__anext__()
-    assert calls == []
-
-
-@pytest.mark.parametrize("speed", [MIN_SPEED, 1.0, MAX_SPEED])
-async def test_speed_in_range_is_accepted(speed: float, monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = KokoroEngine()
-    calls = _stub_loaded(engine, monkeypatch)
-    chunks = [c async for c in engine.synthesize("Hi.", "af_heart", speed=speed)]
-    assert len(chunks) == 1
-    assert calls == [("Hi.", speed)]
-
-
-async def test_one_chunk_per_sentence_and_text_is_not_renormalized(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    engine = KokoroEngine()
-    calls = _stub_loaded(engine, monkeypatch)
-    chunks = [c async for c in engine.synthesize("First one. Then CO2 at 5.", "af_heart")]
-    assert len(chunks) == 2
-    assert [s for s, _ in calls] == ["First one.", "Then CO2 at 5."]
-    assert all(c.sample_rate == TTS_SAMPLE_RATE for c in chunks)
-
-
-async def test_aclose_stops_synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = KokoroEngine()
-    calls = _stub_loaded(engine, monkeypatch)
-    gen = engine.synthesize("One. Two. Three.", "af_heart")
-    await gen.__anext__()
-    await gen.aclose()
-    with pytest.raises(StopAsyncIteration):
-        await gen.__anext__()
-    assert [s for s, _ in calls] == ["One."]
-
-
-async def test_synthesis_runs_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = KokoroEngine()
-    threads: list[int] = []
-
-    def fake_synth(sentence: str, voice: str, speed: float) -> bytes:
-        threads.append(threading.get_ident())
-        return bytes(2)
-
-    _stub_loaded(engine, monkeypatch)
-    monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
-    async for _ in engine.synthesize("A. B.", "af_heart"):
-        pass
-    assert threads and all(t != threading.get_ident() for t in threads)
-
-
-class _Overlap:
-    """Counts concurrent model calls through a slow fake synthesizer that
-    signals once it is inside a call, so the test never races on wall clock."""
-
-    def __init__(self) -> None:
-        self.active = 0
-        self.peak = 0
-        self.lock = threading.Lock()
-        self.entered = threading.Event()
-
-    def synth(self, sentence: str, voice: str, speed: float) -> bytes:
-        with self.lock:
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-        self.entered.set()
-        time.sleep(0.15)  # stay in the call while the test cancels and retries
-        with self.lock:
-            self.active -= 1
-        return bytes(2)
-
-
-async def test_cancelled_request_never_overlaps_the_next_model_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A client disconnect cancels the awaiting task while a model call is in
-    flight. ``run_blocking`` keeps the inference slot until the thread returns,
-    so the next request cannot start a second concurrent model call."""
-    engine = KokoroEngine()
-    _stub_loaded(engine, monkeypatch)
-    overlap = _Overlap()
-    monkeypatch.setattr(engine, "_synth_sentence", overlap.synth)
-    queue = InferenceQueue(capacity=2)
-
-    async def request(text: str) -> None:
-        async with queue.slot():
-            async for _ in engine.synthesize(text, "af_heart"):
-                pass
-
-    first = asyncio.create_task(request("One. Two."))
-    await asyncio.to_thread(overlap.entered.wait, 2.0)  # first is inside its model call
-    first.cancel()
-    second = asyncio.create_task(request("Three."))
-    with pytest.raises(asyncio.CancelledError):
-        await first
-    await second
-    assert overlap.peak == 1
+    assert engine._has_voice("af_heart")
+    assert not engine._has_voice("xx_nobody")
 
 
 # -- model tests --------------------------------------------------------------
