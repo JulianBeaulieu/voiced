@@ -13,18 +13,22 @@ docs/decisions/0008-stt-engine-parakeet.md, are hidden inside
   window (up to 20 s), which costs 150 to 300 ms per call regardless of how
   much audio the call adds. Feeding 100 ms chunks one by one runs slower than
   real time.
-* The log-mel is normalized per call, so calls with less than about
-  :data:`MIN_PASS_S` of audio produce worse text.
+* The log-mel is normalized per call, so short calls produce worse text, very
+  short ones corrupt the encoder cache, and the transcript depends on where
+  the call boundaries fall.
 * Calls with fewer than :data:`LIBRARY_MIN_SAMPLES` samples read past the
   buffer and produce NaN features.
 
 So the session never calls the encoder from ``add_audio``. It buffers, and one
-background task feeds the adapter in a worker thread; the adapter runs encoder
-passes of :data:`MIN_PASS_S` to :data:`MAX_PASS_S`. When the speaker goes
-quiet (the incoming audio drops :data:`END_OF_SPEECH_DROP_DB` below the
-loudest speech heard) the buffered tail is encoded immediately, during the
-endpointer's silence window, so ``finalize()`` normally has nothing left to
-encode. ``partial()`` returns the last decoded hypothesis.
+background task feeds the adapter in a worker thread. Nothing is encoded until
+the speech-start detector fires (then from :data:`PRE_ROLL_S` before it), and
+after that the adapter runs encoder calls of exactly :data:`PASS_S` on a fixed
+grid. When the speaker goes quiet (the incoming audio drops
+:data:`END_OF_SPEECH_DROP_DB` below the loudest speech heard) everything
+buffered is encoded at once, speculatively, during the endpointer's silence
+window, so ``finalize()`` normally has nothing left to encode; if speech
+resumes, the speculative call is undone. ``partial()`` returns the last
+decoded hypothesis.
 
 Entering the library's stream context switches the model to local attention
 globally; :meth:`ParakeetStreamSession.close` restores it. The engine refuses
@@ -36,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import threading
 import time
 from collections.abc import Callable
@@ -59,6 +62,7 @@ from voiced.engines.base import (
     UnsupportedLanguage,
 )
 from voiced.threads import run_blocking
+from voiced.vad import Endpointer
 
 __all__ = ["PARAKEET_V3_LANGUAGES", "ParakeetEngine", "ParakeetStreamSession"]
 
@@ -97,11 +101,12 @@ PARAKEET_V3_LANGUAGES: list[str] = [
 CONTEXT_SIZE: tuple[int, int] = (256, 256)
 """Local-attention context in encoder frames (80 ms each). Smaller is not faster."""
 CONTEXT_DEPTH = 1
-MIN_PASS_S = 0.32
-"""Shortest regular encoder pass; shorter calls degrade the library's per-call mel
-normalization."""
-MAX_PASS_S = 0.64
-"""Longest encoder pass. At least ``2 * MIN_PASS_S`` so a backlog splits into even passes."""
+PASS_S = 0.40
+"""Every regular encoder call is exactly this much audio, at fixed offsets from the
+start of speech, so the pass boundaries (and with them the transcript, since the
+library normalizes the log-mel per call) do not depend on how audio was chunked or
+on how busy the GPU was. Calls shorter than about 320 ms corrupt the encoder cache;
+speculative windows shorter than this are zero-padded to it."""
 WARMUP_S = 1.0
 LIBRARY_MIN_SAMPLES = 257
 """``n_fft // 2 + 1``: parakeet-mlx's reflect padding reads out of bounds below this,
@@ -118,17 +123,23 @@ END_OF_SPEECH_DROP = dbfs_to_amplitude(-END_OF_SPEECH_DROP_DB)
 FLUSH_TAIL_S = 0.032
 """One 32 ms gate frame: a chunk whose final frame is quiet flushes the buffered
 speech. One frame keeps the worst-case finalize latency low across chunk alignments."""
+PRE_ROLL_S = 0.3
+"""Audio kept from before the speech-start detector fires. Nothing earlier in the
+session is encoded: a pass of room noise alone looks like speech to the library's
+per-call mel normalization and adds invented words."""
 MAX_BACKLOG_S = 30.0
 """A client streaming faster than real time must not grow the buffer without bound
 while holding the only inference slot; ``add_audio`` rejects audio past this."""
 
-_MIN_PASS = int(MIN_PASS_S * STT_SAMPLE_RATE)
-_MAX_PASS = int(MAX_PASS_S * STT_SAMPLE_RATE)
+HOLD_MAX_S = 2.5
+"""Quiet audio held after a speculative flush before it is replayed anyway."""
+
+_PASS = int(PASS_S * STT_SAMPLE_RATE)
 _FLUSH_TAIL = int(FLUSH_TAIL_S * STT_SAMPLE_RATE)
 _MAX_BACKLOG = int(MAX_BACKLOG_S * STT_SAMPLE_RATE)
-_MAX_HELD = 4 * _MAX_PASS  # quiet audio held after a speculative flush before it is replayed
-if _MAX_PASS < 2 * _MIN_PASS:
-    raise AssertionError("MAX_PASS_S must be at least 2 * MIN_PASS_S")
+_PRE_ROLL = int(PRE_ROLL_S * STT_SAMPLE_RATE)
+_ONSET_HISTORY = _PRE_ROLL + int(0.2 * STT_SAMPLE_RATE)  # covers min_speech_ms
+_MAX_HELD = int(HOLD_MAX_S * STT_SAMPLE_RATE)
 
 ToArray = Callable[[NDArray[np.float32]], Any]
 
@@ -144,6 +155,7 @@ class ParakeetEngine(STTEngine):
         self._model: Any = None
         self._to_array: ToArray = _identity
         self._session: ParakeetStreamSession | None = None
+        self._onset: Endpointer | None = None
 
     @classmethod
     def normalize_language(cls, language: str | None) -> str | None:
@@ -203,9 +215,19 @@ class ParakeetEngine(STTEngine):
     async def stream(self, language: str | None = None) -> STTStreamSession:
         model = self._require_idle()
         lang = self.normalize_language(language)
-        session = ParakeetStreamSession(self, _ChunkedStream(model, self._to_array), lang)
+        onset = self._onset_detector()
+        onset.reset()
+        adapter = _ChunkedStream(model, self._to_array, onset=onset)
+        session = ParakeetStreamSession(self, adapter, lang)
         self._session = session
         return session
+
+    def _onset_detector(self) -> Endpointer:
+        """The speech-start detector streams are gated on: Silero, reused across
+        sessions (the engine runs one at a time) and reset for each."""
+        if self._onset is None:
+            self._onset = Endpointer(silence_ms=200)
+        return self._onset
 
     def _session_closed(self, session: ParakeetStreamSession) -> None:
         if self._session is session:
@@ -223,15 +245,15 @@ class _ChunkedStream:
     underneath it.
 
     The end-of-speech flush is speculative. On a pause the adapter snapshots
-    the library's stream state, then encodes the buffered speech padded to
-    :data:`MIN_PASS_S` (a shorter call corrupts the encoder cache through the
-    per-call mel normalization), so ``flush()`` usually has nothing left to
-    do. If speech resumes instead, the snapshot is restored and the real audio
-    (the speech tail plus the pause) is replayed, so the padding never becomes
-    part of the transcript.
+    the library's stream state, then encodes everything buffered in one call,
+    zero-padded to :data:`PASS_S` if shorter, so ``flush()`` usually has
+    nothing left to do. If speech resumes instead, the snapshot is restored
+    and the held audio replayed on the regular grid, so the padding never
+    becomes part of the transcript and the state is exactly what it would
+    have been with no flush.
     """
 
-    def __init__(self, model: Any, to_array: ToArray) -> None:
+    def __init__(self, model: Any, to_array: ToArray, onset: Endpointer | None = None) -> None:
         self._model = model
         self._to_array = to_array
         self._horizon_s = CONTEXT_SIZE[0] * float(model.time_ratio)
@@ -246,6 +268,11 @@ class _ChunkedStream:
         self.result: Any = None
         self.passes = 0
         self.rollbacks = 0
+        # Speech-start gate: ``None`` means the stream starts at once.
+        self._onset = onset
+        self._started = onset is None
+        self._history = np.zeros(0, dtype=np.float32)
+        self._history_start = 0
 
     @property
     def buffered_s(self) -> float:
@@ -254,13 +281,12 @@ class _ChunkedStream:
     def feed(self, samples: NDArray[np.float32]) -> bool:
         """Buffer ``samples`` and run the encoder passes that are due.
 
-        A regular pass runs for every :data:`MIN_PASS_S` to :data:`MAX_PASS_S`
-        of buffered speech. When the incoming audio drops to a pause (its last
-        :data:`FLUSH_TAIL_S` falls :data:`END_OF_SPEECH_DROP_DB` below the
-        loudest speech seen) the buffered speech is flushed speculatively, so
-        the hypothesis is complete by the time the endpointer's silence window
-        elapses. Pure silence is never encoded on its own. Returns whether a
-        pass ran.
+        A regular call runs for every :data:`PASS_S` of buffered speech. When
+        the incoming audio drops to a pause (its last :data:`FLUSH_TAIL_S`
+        falls :data:`END_OF_SPEECH_DROP_DB` below the loudest speech seen) the
+        whole buffer is flushed speculatively in one call, so the hypothesis
+        is complete by the time the endpointer's silence window elapses.
+        Silence is never encoded on its own. Returns whether a call ran.
         """
         with self._lock:
             return self._feed(samples, replay=False)
@@ -268,6 +294,11 @@ class _ChunkedStream:
     def _feed(self, samples: NDArray[np.float32], *, replay: bool) -> bool:
         if len(samples) == 0:
             return False
+        if not self._started:
+            gated = self._await_speech_start(samples)
+            if gated is None:
+                return False
+            samples = gated
         peak = _loudest_frame(samples)
         self._loudest = max(self._loudest, peak)
         speech = peak >= self._speech_floor()
@@ -292,11 +323,11 @@ class _ChunkedStream:
             self._speech_seen = True
             self._buffer_has_speech = True
         if not self._buffer_has_speech:
-            # Leading silence or noise with no speech yet: keep at most one
-            # pass of it so an idle open microphone cannot grow the buffer.
-            self._buffer = self._buffer[-_MAX_PASS:]
+            # A long pause after speech: keep at most one pass of it, so an
+            # open microphone cannot grow the buffer.
+            self._buffer = self._buffer[-_PASS:]
             return False
-        if len(self._buffer) >= _MIN_PASS:
+        if len(self._buffer) >= _PASS:
             self._encode_due()
             return True
         if not replay and self._tail_is_pause(samples):
@@ -343,6 +374,27 @@ class _ChunkedStream:
                 self.rollbacks,
             )
 
+    def _await_speech_start(self, samples: NDArray[np.float32]) -> NDArray[np.float32] | None:
+        """Hold audio until the detector reports speech, then return it from
+        :data:`PRE_ROLL_S` before the onset; ``None`` while still waiting."""
+        onset = self._onset
+        if onset is None:
+            self._started = True
+            return samples
+        self._history = np.concatenate([self._history, samples])
+        start = next((e for e in onset.feed(samples) if e.kind == "speech_start"), None)
+        if start is None:
+            drop = len(self._history) - _ONSET_HISTORY
+            if drop > 0:
+                self._history = self._history[drop:]
+                self._history_start += drop
+            return None
+        first = max(round(start.speech_start_s * STT_SAMPLE_RATE) - _PRE_ROLL, self._history_start)
+        audio = self._history[first - self._history_start :]
+        self._history = np.zeros(0, dtype=np.float32)
+        self._started = True
+        return audio
+
     def _speech_floor(self) -> float:
         """Frames below this are not speech: :data:`END_OF_SPEECH_DROP_DB` under the
         loudest frame of the session, and never below :data:`SILENCE_FLOOR_DBFS`.
@@ -355,17 +407,16 @@ class _ChunkedStream:
         return _loudest_frame(chunk[-_FLUSH_TAIL:]) < self._speech_floor()
 
     def _encode_due(self) -> None:
-        """Encode every full pass currently buffered (each ``MIN_PASS`` to ``MAX_PASS``)."""
-        while len(self._buffer) >= _MIN_PASS:
-            take = _even_split(len(self._buffer))
-            window, self._buffer = self._buffer[:take], self._buffer[take:]
+        """Encode every full :data:`PASS_S` currently buffered, on the fixed grid."""
+        while len(self._buffer) >= _PASS:
+            window, self._buffer = self._buffer[:_PASS], self._buffer[_PASS:]
             self._encode(window)
         self._buffer_has_speech = (
             len(self._buffer) > 0 and _loudest_frame(self._buffer) >= self._speech_floor()
         )
 
     def _speculate(self) -> None:
-        """Snapshot the stream, then encode the buffered speech padded to the minimum."""
+        """Snapshot the stream, then encode everything buffered in one call."""
         stream = self._ensure_stream()
         self._speculation = _Speculation(
             state=_snapshot(stream, self._to_array),
@@ -585,18 +636,10 @@ def _restore(stream: Any, state: _StreamState) -> None:
 
 
 def _pad(window: NDArray[np.float32]) -> NDArray[np.float32]:
-    """Zero-pad to :data:`MIN_PASS_S`: shorter encoder calls corrupt the cache."""
-    if len(window) >= _MIN_PASS:
+    """Zero-pad to :data:`PASS_S`: much shorter encoder calls corrupt the cache."""
+    if len(window) >= _PASS:
         return window
-    return np.concatenate([window, np.zeros(_MIN_PASS - len(window), dtype=np.float32)])
-
-
-def _even_split(buffered: int) -> int:
-    """Samples for the next regular pass: the whole buffer, or an even share of a
-    backlog so no pass exceeds ``MAX_PASS`` and none is left undersized."""
-    if buffered <= _MAX_PASS:
-        return buffered
-    return math.ceil(buffered / math.ceil(buffered / _MAX_PASS))
+    return np.concatenate([window, np.zeros(_PASS - len(window), dtype=np.float32)])
 
 
 def _generate(model: Any, samples: NDArray[np.float32]) -> Any:

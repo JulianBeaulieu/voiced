@@ -9,14 +9,14 @@ from numpy.typing import NDArray
 
 from voiced.config import STTConfig
 from voiced.engines.base import STT_SAMPLE_RATE
-from voiced.stt.vad import (
+from voiced.testing import EnergyDetector
+from voiced.vad import (
     FRAME_SAMPLES,
     Endpointer,
     EndpointEvent,
     SileroDetector,
     create_endpointer,
 )
-from voiced.testing import EnergyDetector
 
 CHUNK = STT_SAMPLE_RATE // 10  # 100 ms, deliberately not a multiple of the 512-sample frame
 FRAME_S = FRAME_SAMPLES / STT_SAMPLE_RATE

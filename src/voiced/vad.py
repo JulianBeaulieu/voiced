@@ -14,6 +14,10 @@ the :class:`Endpointer` next to the engine's stream session and calls
                 transcript = await session.finalize()
                 break
 
+The STT engine also uses an :class:`Endpointer` internally, for speech start
+only: its stream session encodes nothing until speech begins (see
+``voiced.engines.parakeet``), so the two never disagree about what speech is.
+
 Two layers:
 
 * A :class:`SpeechDetector` turns one fixed-size frame (512 samples, 32 ms at
