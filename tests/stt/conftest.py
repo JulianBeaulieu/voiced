@@ -1,13 +1,7 @@
-"""Shared helpers for the STT tests.
-
-Tests marked ``model`` need the real Parakeet weights and Metal. They are
-skipped unless ``VOICED_MODEL_TESTS=1`` so the default ``pytest`` run passes
-on a CI runner without the ``stt`` extra.
-"""
+"""Shared helpers for the STT tests. The ``model`` marker is handled in ``tests/conftest.py``."""
 
 from __future__ import annotations
 
-import os
 import re
 import wave
 from difflib import SequenceMatcher
@@ -20,16 +14,6 @@ from numpy.typing import NDArray
 from voiced.engines.base import STT_SAMPLE_RATE
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
-MODEL_TESTS_ENV = "VOICED_MODEL_TESTS"
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if os.environ.get(MODEL_TESTS_ENV) == "1":
-        return
-    skip = pytest.mark.skip(reason=f"needs real model weights; set {MODEL_TESTS_ENV}=1")
-    for item in items:
-        if "model" in item.keywords:
-            item.add_marker(skip)
 
 
 def load_fixture(name: str) -> NDArray[np.float32]:

@@ -39,7 +39,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Real inference engines. Apple Silicon only; not installed in CI.
-stt = ["parakeet-mlx>=0.5"]
+stt = ["parakeet-mlx>=0.5,<0.6"]
 # mlx-audio is pinned to a minor: the Kokoro engine relies on its internals
 # (load_voice_tensor, model(..., return_output=True)).
 tts = ["mlx-audio>=0.5,<0.6", "kokoro-onnx>=0.4", "huggingface-hub>=0.23"]

@@ -5,27 +5,31 @@ TDT decoder over the whole utterance in one call and returns sentence
 segments with timestamps.
 
 Streaming: :meth:`ParakeetEngine.stream` wraps ``transcribe_stream`` with
-``context_size=(256, 256)``. Two properties of the library shape the session
-design (measured in docs/decisions/0004-stt-engine-parakeet.md):
+:data:`CONTEXT_SIZE`. Three properties of the library, measured in
+docs/decisions/0004-stt-engine-parakeet.md, are hidden inside
+:class:`_ChunkedStream` and nowhere else:
 
 * Every call to its ``add_audio`` re-encodes and re-decodes the whole retained
   window (up to 20 s), which costs 150 to 300 ms per call regardless of how
-  much audio the call adds. Feeding 100 ms chunks one by one therefore runs
-  slower than real time.
-* The log-mel is normalized per call, so calls with less than about 320 ms of
-  audio produce worse text, and calls with only a few hundred samples read
-  past the end of the buffer and produce garbage.
+  much audio the call adds. Feeding 100 ms chunks one by one runs slower than
+  real time.
+* The log-mel is normalized per call, so calls with less than about
+  :data:`MIN_PASS_S` of audio produce worse text.
+* Calls with fewer than :data:`LIBRARY_MIN_SAMPLES` samples read past the
+  buffer and produce NaN features.
 
 So the session never calls the encoder from ``add_audio``. It buffers, and one
-background pass loop feeds the encoder 320 to 600 ms at a time in a worker
-thread. ``add_audio`` returns in microseconds, ``partial()`` returns the last
-decoded hypothesis, and ``finalize()`` waits for the loop to drain the buffer
-(the final tail is zero-padded to the minimum pass size).
+background task feeds the adapter in a worker thread; the adapter runs encoder
+passes of :data:`MIN_PASS_S` to :data:`MAX_PASS_S`. When the speaker goes
+quiet (a chunk with no frame above :data:`SILENCE_FLOOR_DBFS` after speech)
+the buffered tail is encoded immediately, during the endpointer's silence
+window, so ``finalize()`` normally has nothing left to encode. ``partial()``
+returns the last decoded hypothesis.
 
-The model's attention is switched to local windows while a stream session is
-open and restored when it closes, so a batch call must never run while a
-session is open. The server guarantees that by holding the engine's inference
-slot for the whole session.
+Entering the library's stream context switches the model to local attention
+globally; :meth:`ParakeetStreamSession.close` restores it. The engine refuses
+a second session or a batch call while one is open, and the server holds the
+engine's inference slot until the session's context manager exits.
 """
 
 from __future__ import annotations
@@ -33,7 +37,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -85,17 +91,33 @@ PARAKEET_V3_LANGUAGES: list[str] = [
     "uk",
 ]
 
-DEFAULT_CONTEXT_SIZE: tuple[int, int] = (256, 256)
-WARMUP_S = 1.0
+# All of these are measurements, not derivations: see ADR 0004 before changing.
+CONTEXT_SIZE: tuple[int, int] = (256, 256)
+"""Local-attention context in encoder frames (80 ms each). Smaller is not faster."""
+CONTEXT_DEPTH = 1
 MIN_PASS_S = 0.32
-MAX_PASS_S = 0.60
-# Below one analysis window (25 ms) there is nothing to transcribe, and the
-# library's padding misbehaves on inputs this short.
-MIN_BATCH_SAMPLES = 400
-# Input quieter than this RMS (-60 dBFS) is treated as silence. The model
-# hallucinates short words ("Yeah.") on near-silent noise, and no microphone
-# delivers intelligible speech this quiet.
-SILENCE_RMS = 1e-3
+"""Shortest encoder pass; shorter calls degrade the library's per-call mel normalization."""
+MAX_PASS_S = 0.64
+"""Longest encoder pass. At least ``2 * MIN_PASS_S`` so a backlog splits into even passes."""
+WARMUP_S = 1.0
+LIBRARY_MIN_SAMPLES = 257
+"""``n_fft // 2 + 1``: parakeet-mlx's reflect padding reads out of bounds below this."""
+SILENCE_FLOOR_DBFS = -60.0
+"""Input with no 32 ms frame above this RMS is silence: nothing to transcribe, and
+the model hallucinates short words ("Yeah.") on near-silent noise."""
+SILENCE_FLOOR = 10 ** (SILENCE_FLOOR_DBFS / 20)
+GATE_FRAME_SAMPLES = 512
+
+FLUSH_TAIL_S = 0.096
+"""A chunk whose last 96 ms (three gate frames) are silent flushes the buffered speech."""
+
+_MIN_PASS = int(MIN_PASS_S * STT_SAMPLE_RATE)
+_FLUSH_TAIL = int(FLUSH_TAIL_S * STT_SAMPLE_RATE)
+_MAX_PASS = int(MAX_PASS_S * STT_SAMPLE_RATE)
+if _MAX_PASS < 2 * _MIN_PASS:
+    raise AssertionError("MAX_PASS_S must be at least 2 * MIN_PASS_S")
+
+ToArray = Callable[[NDArray[np.float32]], Any]
 
 
 class ParakeetEngine(STTEngine):
@@ -104,23 +126,11 @@ class ParakeetEngine(STTEngine):
     languages = list(PARAKEET_V3_LANGUAGES)
     license = "CC-BY-4.0"
 
-    def __init__(
-        self,
-        model_id: str | None = None,
-        *,
-        context_size: tuple[int, int] = DEFAULT_CONTEXT_SIZE,
-        depth: int = 1,
-        min_pass_s: float = MIN_PASS_S,
-        max_pass_s: float = MAX_PASS_S,
-    ) -> None:
+    def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
-        if not 0 < min_pass_s <= max_pass_s:
-            raise ValueError("need 0 < min_pass_s <= max_pass_s")
-        self._context_size = (int(context_size[0]), int(context_size[1]))
-        self._depth = depth
-        self._min_pass = int(min_pass_s * STT_SAMPLE_RATE)
-        self._max_pass = int(max_pass_s * STT_SAMPLE_RATE)
         self._model: Any = None
+        self._to_array: ToArray = _identity
+        self._session: ParakeetStreamSession | None = None
         self.load_seconds = 0.0
         self.warmup_seconds = 0.0
 
@@ -135,9 +145,10 @@ class ParakeetEngine(STTEngine):
         return code
 
     async def load(self) -> None:
-        await asyncio.to_thread(self._load_blocking)
+        await _run_blocking(self._load_blocking)
 
     def _load_blocking(self) -> None:
+        import mlx.core as mx
         from parakeet_mlx import from_pretrained
 
         t0 = time.perf_counter()
@@ -149,88 +160,210 @@ class ParakeetEngine(STTEngine):
         # GPU path fails here, before the service reports healthy.
         silence = np.zeros(int(WARMUP_S * STT_SAMPLE_RATE), dtype=np.float32)
         _generate(model, silence)
-        _stream_warmup(model, self._context_size, self._depth, silence)
+        warm = _ChunkedStream(model, mx.array)
+        try:
+            warm.warm_up(silence)
+        finally:
+            warm.close()
         self._model = model
+        self._to_array = mx.array
         self.load_seconds = t1 - t0
         self.warmup_seconds = time.perf_counter() - t1
         log.info(
             "STT model ready: load %.1fs, warm-up %.1fs", self.load_seconds, self.warmup_seconds
         )
 
-    def _require_loaded(self) -> Any:
+    def _require_idle(self) -> Any:
         if self._model is None:
             raise EngineNotLoaded(self.name)
+        if self._session is not None:
+            raise EngineError("a stream session is open on this engine")
         return self._model
 
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
-        model = self._require_loaded()
+        model = self._require_idle()
         lang = self.normalize_language(language)
         if audio.sample_rate != STT_SAMPLE_RATE:
             raise EngineError(f"expected {STT_SAMPLE_RATE} Hz audio, got {audio.sample_rate} Hz")
         samples = _check_samples(audio.samples)
         duration = len(samples) / STT_SAMPLE_RATE
-        if len(samples) < MIN_BATCH_SAMPLES or _is_silent(samples):
+        if len(samples) < LIBRARY_MIN_SAMPLES or _is_silent(samples):
             return Transcript(text="", language=lang, duration_s=duration)
-        result = await asyncio.to_thread(_generate, model, samples)
+        result = await _run_blocking(_generate, model, samples)
         return _to_transcript(result, lang, duration)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
-        model = self._require_loaded()
+        model = self._require_idle()
         lang = self.normalize_language(language)
-        return ParakeetStreamSession(
-            model,
-            lang,
-            context_size=self._context_size,
-            depth=self._depth,
-            min_pass=self._min_pass,
-            max_pass=self._max_pass,
+        session = ParakeetStreamSession(self, _ChunkedStream(model, self._to_array), lang)
+        self._session = session
+        return session
+
+    def _session_closed(self, session: ParakeetStreamSession) -> None:
+        if self._session is session:
+            self._session = None
+
+
+class _ChunkedStream:
+    """Synchronous adapter over the library's ``StreamingParakeet``.
+
+    Owns the audio buffer, pass sizing, zero padding and the silence flush, so
+    this class is the only thing that changes when ``parakeet-mlx`` changes
+    its streaming code. ``feed``, ``flush``, ``warm_up`` and ``close`` take
+    one lock: ``close`` therefore waits for a pass that is still running in
+    another thread instead of exiting the stream context underneath it.
+    """
+
+    def __init__(self, model: Any, to_array: ToArray) -> None:
+        self._model = model
+        self._to_array = to_array
+        self._stream: Any = None
+        self._lock = threading.Lock()
+        self._buffer: list[NDArray[np.float32]] = []
+        self._buffered = 0
+        self._buffer_has_speech = False
+        self._speech_seen = False
+        self.text = ""
+        self.result: Any = None
+        self.passes = 0
+
+    @property
+    def buffered_s(self) -> float:
+        return self._buffered / STT_SAMPLE_RATE
+
+    def feed(self, samples: NDArray[np.float32]) -> bool:
+        """Buffer ``samples`` and run the encoder passes that are due.
+
+        A pass runs for every :data:`MIN_PASS_S` to :data:`MAX_PASS_S` of
+        buffered speech. A chunk that ends in silence (its last
+        :data:`FLUSH_TAIL_S`) flushes the buffered speech at once, zero-padded
+        to the minimum, so the hypothesis is complete by the time the
+        endpointer's silence window elapses. Pure silence is never encoded.
+        Returns whether a pass ran.
+        """
+        with self._lock:
+            if len(samples) == 0:
+                return False
+            self._buffer.append(samples)
+            self._buffered += len(samples)
+            if not _is_silent(samples):
+                self._speech_seen = True
+                self._buffer_has_speech = True
+            if not self._buffer_has_speech:
+                # Silence is never encoded on its own; keep at most one pass of
+                # it as lead-in so an open microphone cannot grow the buffer.
+                self._trim_buffer(_MAX_PASS)
+                return False
+            if self._buffered >= _MIN_PASS:
+                self._run_passes(flush=False)
+                return True
+            if _is_silent(samples[-_FLUSH_TAIL:]):
+                self._run_passes(flush=True)
+                return True
+            return False
+
+    def flush(self) -> Any:
+        """Encode what is still buffered, unless it is all silence.
+
+        Returns the library's ``AlignedResult`` for everything decoded, or
+        ``None`` if no speech was ever heard.
+        """
+        with self._lock:
+            if self._buffer_has_speech:
+                self._run_passes(flush=True)
+            self._buffer = []
+            self._buffered = 0
+            return self.result if self._speech_seen else None
+
+    def warm_up(self, samples: NDArray[np.float32]) -> None:
+        """One pass through the streaming path regardless of the silence gate."""
+        with self._lock:
+            self._encode(samples)
+
+    def close(self) -> None:
+        """Exit the library's stream context, restoring the model's attention mode."""
+        with self._lock:
+            stream, self._stream = self._stream, None
+            if stream is not None:
+                stream.__exit__(None, None, None)
+            log.debug("stream closed after %d encoder passes", self.passes)
+
+    def _trim_buffer(self, keep: int) -> None:
+        if self._buffered <= keep:
+            return
+        buf = np.concatenate(self._buffer) if len(self._buffer) > 1 else self._buffer[0]
+        self._buffer = [buf[-keep:]]
+        self._buffered = keep
+
+    def _run_passes(self, *, flush: bool) -> None:
+        while self._buffered >= _MIN_PASS or (flush and self._buffered):
+            self._encode(self._take())
+
+    def _take(self) -> NDArray[np.float32]:
+        """Pop the next pass: between the minimum and maximum, a backlog split
+        evenly, and a final short tail zero-padded to the minimum."""
+        n = self._buffered
+        buf = np.concatenate(self._buffer) if len(self._buffer) > 1 else self._buffer[0]
+        take = n if n <= _MAX_PASS else math.ceil(n / math.ceil(n / _MAX_PASS))
+        window, rest = buf[:take], buf[take:]
+        self._buffer = [rest] if len(rest) else []
+        self._buffered = len(rest)
+        self._buffer_has_speech = len(rest) > 0 and not _is_silent(rest)
+        if len(window) < _MIN_PASS:
+            window = np.concatenate([window, np.zeros(_MIN_PASS - len(window), dtype=np.float32)])
+        return window
+
+    def _encode(self, window: NDArray[np.float32]) -> None:
+        if self._stream is None:
+            self._stream = self._model.transcribe_stream(
+                context_size=CONTEXT_SIZE, depth=CONTEXT_DEPTH
+            )
+            self._stream.__enter__()
+        t0 = time.perf_counter()
+        self._stream.add_audio(self._to_array(window))
+        self.result = self._stream.result
+        self.text = _normalize_text(self.result.text)
+        self.passes += 1
+        log.debug(
+            "encoder pass %d: %d samples in %.0f ms",
+            self.passes,
+            len(window),
+            (time.perf_counter() - t0) * 1000,
         )
 
 
 class ParakeetStreamSession(STTStreamSession):
-    """One streaming transcription. See the module docstring for the design."""
+    """One streaming transcription: a buffer, a consumer task and the adapter.
+
+    ``finalize()`` returns the transcript; the model's attention mode is
+    restored by ``close()`` (the context manager's exit), which is when the
+    server releases the engine's inference slot. Use ``async with``.
+    """
 
     def __init__(
-        self,
-        model: Any,
-        language: str | None,
-        *,
-        context_size: tuple[int, int] = DEFAULT_CONTEXT_SIZE,
-        depth: int = 1,
-        min_pass: int = int(MIN_PASS_S * STT_SAMPLE_RATE),
-        max_pass: int = int(MAX_PASS_S * STT_SAMPLE_RATE),
+        self, engine: ParakeetEngine, adapter: _ChunkedStream, language: str | None
     ) -> None:
-        self._model = model
+        self._engine = engine
+        self._adapter = adapter
         self._language = language
-        self._context_size = context_size
-        self._depth = depth
-        self._min_pass = min_pass
-        self._max_pass = max_pass
         # Streaming timestamps are relative to the retained window, which only
         # starts at zero while the utterance fits in the left context.
-        self._timestamp_horizon_s = context_size[0] * float(model.time_ratio)
-        self._stream: Any = None
+        self._timestamp_horizon_s = CONTEXT_SIZE[0] * float(adapter._model.time_ratio)
         self._pending: list[NDArray[np.float32]] = []
-        self._pending_samples = 0
-        self._text = ""
-        self._result: Any = None
+        self._consumer: asyncio.Task[None] | None = None
+        self._failure: BaseException | None = None
         self._closed = False
-        self._released = False
-        self._flush = False
-        self._pass_task: asyncio.Task[None] | None = None
-        self._teardown_task: asyncio.Task[None] | None = None
-        # Diagnostics, read by tests and benchmarks.
         self.samples_added = 0
-        self.samples_encoded = 0
-        self.passes = 0
-        self.pass_sizes: list[int] = []
-        self.last_pass_s = 0.0
-        self._energy = 0.0  # sum of squares of everything added, for the silence gate
+
+    @property
+    def passes(self) -> int:
+        return self._adapter.passes
 
     @property
     def backlog_s(self) -> float:
-        """Seconds of audio added but not yet encoded."""
-        return (self.samples_added - self.samples_encoded) / STT_SAMPLE_RATE
+        """Seconds of audio added but not yet encoded (pending plus buffered)."""
+        pending = sum(len(a) for a in self._pending) / STT_SAMPLE_RATE
+        return pending + self._adapter.buffered_s
 
     async def add_audio(self, samples: NDArray[np.float32]) -> None:
         self._check_open()
@@ -238,125 +371,88 @@ class ParakeetStreamSession(STTStreamSession):
         if len(arr) == 0:
             return
         self._pending.append(arr)
-        self._pending_samples += len(arr)
         self.samples_added += len(arr)
-        self._energy += float(np.dot(arr, arr))
-        if self._pending_samples >= self._min_pass:
-            self._kick()
+        if self._consumer is None or self._consumer.done():
+            self._consumer = asyncio.create_task(self._consume())
+
+    async def _consume(self) -> None:
+        try:
+            while self._pending:
+                chunk = (
+                    np.concatenate(self._pending) if len(self._pending) > 1 else self._pending[0]
+                )
+                self._pending = []
+                await _run_blocking(self._adapter.feed, chunk)
+        except Exception as exc:
+            self._failure = exc
+            raise
 
     def partial(self) -> str:
-        return self._text
+        return self._adapter.text
 
     async def finalize(self) -> Transcript:
         self._check_open()
         self._closed = True
-        try:
-            self._flush = True
-            self._kick()
-            if self._pass_task is not None:
-                await self._pass_task
-            duration = self.samples_added / STT_SAMPLE_RATE
-            silent = self.samples_added == 0 or (
-                math.sqrt(self._energy / self.samples_added) < SILENCE_RMS
-            )
-            if self._result is None or silent:
-                return Transcript(text="", language=self._language, duration_s=duration)
-            transcript = _to_transcript(self._result, self._language, duration)
-            if duration > self._timestamp_horizon_s:
-                transcript = replace(transcript, segments=())
-            return transcript
-        finally:
-            await self._release()
+        await self._drain()
+        result = await _run_blocking(self._adapter.flush)
+        duration = self.samples_added / STT_SAMPLE_RATE
+        if result is None:
+            return Transcript(text="", language=self._language, duration_s=duration)
+        transcript = _to_transcript(result, self._language, duration)
+        if duration > self._timestamp_horizon_s:
+            transcript = replace(transcript, segments=())
+        return transcript
 
     async def close(self) -> None:
         self._closed = True
-        await self._release()
+        try:
+            task = self._consumer
+            if task is not None:
+                task.cancel()  # pending audio is discarded; the running pass completes
+                await asyncio.wait({task})
+        finally:
+            try:
+                await _run_blocking(self._adapter.close)
+            finally:
+                self._engine._session_closed(self)
 
     def _check_open(self) -> None:
+        if self._failure is not None:
+            raise self._failure
         if self._closed:
             raise EngineError("stream session is closed")
 
-    def _kick(self) -> None:
-        if self._released:
+    async def _drain(self) -> None:
+        """Wait for the consumer; re-raise an encoder failure, but never swallow a cancel."""
+        task = self._consumer
+        if task is None:
             return
-        if self._pass_task is None or self._pass_task.done():
-            self._pass_task = asyncio.create_task(self._run_passes())
+        await asyncio.wait({task})
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                raise exc
 
-    async def _run_passes(self) -> None:
-        while not self._released:
-            window = self._take_window()
-            if window is None:
-                return
-            real, padded = window
-            await asyncio.to_thread(self._encode, padded, real)
 
-    def _take_window(self) -> tuple[int, NDArray[np.float32]] | None:
-        """Pop the next encoder pass from the buffer: ``(real_samples, audio)``.
+async def _run_blocking(fn: Callable[..., Any], *args: Any) -> Any:
+    """``asyncio.to_thread``, except a cancelled caller waits for the thread to finish.
 
-        Passes are between ``min_pass`` and ``max_pass`` samples; a backlog is
-        split evenly so no pass is undersized. Only when flushing may fewer
-        than ``min_pass`` real samples remain, and then they are zero-padded.
-        """
-        n = self._pending_samples
-        if n == 0 or (n < self._min_pass and not self._flush):
-            return None
-        buf = np.concatenate(self._pending) if len(self._pending) > 1 else self._pending[0]
-        take = n if n <= self._max_pass else math.ceil(n / math.ceil(n / self._max_pass))
-        window, rest = buf[:take], buf[take:]
-        self._pending = [rest] if len(rest) else []
-        self._pending_samples = len(rest)
-        if len(window) < self._min_pass:
-            pad = np.zeros(self._min_pass - len(window), dtype=np.float32)
-            window = np.concatenate([window, pad])
-        return take, window
-
-    def _encode(self, window: NDArray[np.float32], real: int) -> None:
-        """Worker thread: one encoder pass. The only place that touches MLX."""
-        import mlx.core as mx
-
-        if self._stream is None:
-            self._stream = self._model.transcribe_stream(
-                context_size=self._context_size, depth=self._depth
-            )
-            self._stream.__enter__()
-        t0 = time.perf_counter()
-        self._stream.add_audio(mx.array(window))
-        result = self._stream.result
-        self._result = result
-        self._text = _normalize_text(result.text)
-        self.samples_encoded += real
-        self.passes += 1
-        self.pass_sizes.append(len(window))
-        self.last_pass_s = time.perf_counter() - t0
-
-    async def _release(self) -> None:
-        """Stop feeding, wait for the in-flight pass, restore the model.
-
-        The teardown runs as its own task and is shielded, so a cancelled
-        caller still leaves the model usable: the encoder pass cannot be
-        interrupted and the stream context must not be exited underneath it.
-        """
-        if self._released:
-            return
-        self._released = True
-        self._pending = []
-        self._pending_samples = 0
-        self._teardown_task = asyncio.create_task(self._teardown(self._pass_task))
-        await asyncio.shield(self._teardown_task)
-
-    async def _teardown(self, pass_task: asyncio.Task[None] | None) -> None:
-        if pass_task is not None:
-            try:
-                await pass_task
-            except Exception:
-                log.exception("streaming pass failed")
-        if self._stream is not None:
-            await asyncio.to_thread(self._exit_stream)
-
-    def _exit_stream(self) -> None:
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            stream.__exit__(None, None, None)
+    Otherwise a cancel would let the engine's inference slot go while the
+    encoder is still running. Replaced by ``voiced.threads.run_blocking``
+    once the shared primitive is in ``main``.
+    """
+    future = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    cancelled = False
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        if not future.cancelled():
+            future.exception()  # retrieved; the cancel wins
+        raise asyncio.CancelledError
+    return future.result()
 
 
 def _generate(model: Any, samples: NDArray[np.float32]) -> Any:
@@ -368,17 +464,28 @@ def _generate(model: Any, samples: NDArray[np.float32]) -> Any:
     return model.generate(mel)[0]
 
 
-def _stream_warmup(
-    model: Any, context_size: tuple[int, int], depth: int, samples: NDArray[np.float32]
-) -> None:
-    import mlx.core as mx
+def _identity(samples: NDArray[np.float32]) -> Any:
+    return samples
 
-    with model.transcribe_stream(context_size=context_size, depth=depth) as stream:
-        stream.add_audio(mx.array(samples))
+
+def _peak_frame_rms(samples: NDArray[np.float32]) -> float:
+    """The loudest 32 ms frame, so long silence cannot average quiet speech away."""
+    n = len(samples)
+    if n == 0:
+        return 0.0
+    full = n // GATE_FRAME_SAMPLES * GATE_FRAME_SAMPLES
+    peak = 0.0
+    if full:
+        frames = samples[:full].reshape(-1, GATE_FRAME_SAMPLES)
+        peak = float(np.sqrt(np.mean(np.square(frames, dtype=np.float32), axis=1)).max())
+    if full < n:
+        tail = samples[full:]
+        peak = max(peak, float(np.sqrt(np.mean(np.square(tail, dtype=np.float32)))))
+    return peak
 
 
 def _is_silent(samples: NDArray[np.float32]) -> bool:
-    return bool(np.sqrt(np.mean(np.square(samples, dtype=np.float32))) < SILENCE_RMS)
+    return _peak_frame_rms(samples) < SILENCE_FLOOR
 
 
 def _check_samples(samples: object) -> NDArray[np.float32]:
