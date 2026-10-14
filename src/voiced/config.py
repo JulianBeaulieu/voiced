@@ -90,6 +90,33 @@ class LaunchdConfig(_Section):
 class WatchdogConfig(_Section):
     interval_s: float = Field(default=15.0, gt=0)
     failures_before_restart: int = Field(default=3, ge=1)
+    # Per-request timeout for the /health poll.
+    timeout_s: float = Field(default=5.0, gt=0)
+    # A service may report "starting" for this long (measured by its own
+    # uptime) before the watchdog treats the model load as hung.
+    startup_grace_s: float = Field(default=300.0, gt=0)
+    # Continuous "degraded" for longer than this triggers a restart.
+    degraded_window_s: float = Field(default=120.0, gt=0)
+    # Minimum time between two restarts of the same service.
+    restart_cooldown_s: float = Field(default=120.0, ge=0)
+    # Optional small inference request per poll; a timeout counts as a stall.
+    probe: bool = False
+    probe_timeout_s: float = Field(default=20.0, gt=0)
+
+
+class InstallConfig(_Section):
+    # Where `voiced install` creates the virtual environment. Keep it short:
+    # espeak-ng (Kokoro's phonemizer) fails with long data paths.
+    venv_dir: Path = Field(default_factory=lambda: Path("~/.voiced").expanduser())
+    # Interpreter or version spec for the venv ("3.12", or a path). Empty = auto.
+    python: str = ""
+    # Hugging Face cache for model downloads; empty = the Hugging Face default.
+    hf_home: Path | None = None
+
+    @field_validator("venv_dir", "hf_home", mode="after")
+    @classmethod
+    def _expand(cls, value: Path | None) -> Path | None:
+        return value.expanduser() if value is not None else None
 
 
 class Settings(BaseSettings):
@@ -106,6 +133,7 @@ class Settings(BaseSettings):
     tts: TTSConfig = Field(default_factory=TTSConfig)
     launchd: LaunchdConfig = Field(default_factory=LaunchdConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    install: InstallConfig = Field(default_factory=InstallConfig)
 
     @classmethod
     def settings_customise_sources(

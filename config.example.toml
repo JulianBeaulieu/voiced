@@ -64,3 +64,30 @@ label_prefix = "io.github.julianbeaulieu.voiced"
 interval_s = 15
 # Consecutive failed polls before the service is restarted.
 failures_before_restart = 3
+# Timeout for each /health request.
+timeout_s = 5
+# A service may report "starting" (model loading) for this long, measured by
+# its own uptime, before the watchdog treats the load as hung and restarts it.
+startup_grace_s = 300
+# A service that stays "degraded" (last inference failed) for longer than this
+# is restarted.
+degraded_window_s = 120
+# Never restart the same service twice within this many seconds.
+restart_cooldown_s = 120
+# Also send a tiny inference request each poll and treat a timeout as a hang.
+# Off by default; turn on if you have seen the GPU wedge with /health still
+# answering.
+probe = false
+probe_timeout_s = 20
+
+[install]
+# Where `voiced install` creates the virtual environment. Keep the path short:
+# espeak-ng, which Kokoro's phonemizer uses, fails with long data paths.
+venv_dir = "~/.voiced"
+# Python for the venv: a version like "3.12" (uv downloads it if needed) or a
+# path to an interpreter. Empty picks 3.12 with uv, or the running interpreter
+# with pip.
+python = ""
+# Hugging Face cache directory for model downloads. Leave unset to use the
+# Hugging Face default (~/.cache/huggingface). Passed to the daemons as HF_HOME.
+# hf_home = "~/.cache/huggingface"

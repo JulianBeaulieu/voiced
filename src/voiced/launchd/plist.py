@@ -21,15 +21,19 @@ def render_plist(
     working_directory: Path | None = None,
     environment: dict[str, str] | None = None,
     throttle_interval_s: int = 10,
+    keep_alive: bool = True,
 ) -> bytes:
-    """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``."""
+    """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``.
+
+    ``keep_alive=False`` gives a one-shot job (used for the Metal probe).
+    """
     short = label.rsplit(".", 1)[-1]
     plist: dict[str, object] = {
         "Label": label,
         "ProgramArguments": program_arguments,
         "UserName": user_name,
         "RunAtLoad": True,
-        "KeepAlive": True,
+        "KeepAlive": keep_alive,
         "ThrottleInterval": throttle_interval_s,
         "StandardOutPath": str(log_dir / f"{short}.stdout.log"),
         "StandardErrorPath": str(log_dir / f"{short}.stderr.log"),

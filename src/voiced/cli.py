@@ -1,7 +1,7 @@
 """``voiced`` command line.
 
-Phase 0 ships the command tree with every lifecycle command stubbed. ``serve``
-and ``config`` work today so the API can be exercised with the fake engines:
+``serve`` and ``config`` live here; the lifecycle commands (install, start,
+stop, status, logs, uninstall, doctor, watchdog) are in ``voiced.cli_lifecycle``.
 
     VOICED_TTS__ENGINE=fake voiced serve tts
 """
@@ -14,9 +14,10 @@ import sys
 from collections.abc import Sequence
 
 from voiced import __version__
+from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.config import Settings, config_path, load_settings
 
-LIFECYCLE = ("install", "start", "stop", "status", "logs", "uninstall", "doctor")
+LIFECYCLE = ("install", "start", "stop", "status", "logs", "uninstall", "doctor", "watchdog")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,8 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"voiced {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    for name in LIFECYCLE:
-        sub.add_parser(name, help=f"{name} the voiced services (not implemented yet)")
+    add_lifecycle_parsers(sub)
 
     serve = sub.add_parser("serve", help="run one service in the foreground")
     serve.add_argument("service", choices=("stt", "tts"))
@@ -66,10 +66,9 @@ def cmd_config(settings: Settings) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command in LIFECYCLE:
-        print(f"voiced {args.command}: not implemented yet", file=sys.stderr)
-        return 2
     settings = load_settings()
+    if args.command in LIFECYCLE:
+        return run_lifecycle(args, settings)
     if args.command == "serve":
         return cmd_serve(settings, args.service)
     if args.command == "config":
