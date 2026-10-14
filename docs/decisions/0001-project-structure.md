@@ -26,8 +26,12 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.api` | FastAPI app factories, one per modality. |
 | `voiced.wyoming` | Wyoming listeners, run in-process with the HTTP app. |
 | `voiced.stt`, `voiced.tts` | Wire a configured engine into an app. |
-| `voiced.launchd` | Plist rendering. |
-| `voiced.cli` | `voiced install | start | stop | status | logs | uninstall | doctor | serve | config`. |
+| `voiced.launchd` | `plist` rendering, `control` (launchctl argv builders and runners), `install` (the installer plan, scripts, uninstall safety), `metal_probe`. |
+| `voiced.watchdog` | Stdlib-only hang watchdog: health polling, decision rules, restart. |
+| `voiced.doctor` | Machine checks for `voiced doctor`, each an injectable function. |
+| `voiced.table` | Plain-text table rendering shared by `status` and `doctor`. |
+| `voiced.cli` | Command tree and dispatch; `serve` and `config` live here. |
+| `voiced.cli_lifecycle` | `install`, `start`, `stop`, `status`, `logs`, `uninstall`, `doctor`, `watchdog`. |
 | `voiced.testing` | Fake engines so everything above is testable without models. |
 
 Dependencies are split so CI and non-Apple machines can install the core:

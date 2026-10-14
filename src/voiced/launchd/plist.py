@@ -2,14 +2,32 @@
 
 Labels come from ``settings.launchd.label(service)`` so the reverse-DNS prefix
 lives in exactly one place (``voiced.config.DEFAULT_LAUNCHD_LABEL_PREFIX``).
-The installer (Phase 1) writes these to ``/Library/LaunchDaemons`` through a
-printed sudo script, never silently.
+The installer writes these to ``/Library/LaunchDaemons`` through a printed
+sudo script, never silently.
 """
 
 from __future__ import annotations
 
 import plistlib
+from dataclasses import dataclass
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class LogPaths:
+    """Where one service's output ends up under ``log_dir``."""
+
+    app: Path  # written by voiced.logging (rotating)
+    stdout: Path  # launchd's capture of the process stdout
+    stderr: Path  # launchd's capture of the process stderr
+
+
+def log_paths(log_dir: Path, service: str) -> LogPaths:
+    return LogPaths(
+        app=log_dir / f"{service}.log",
+        stdout=log_dir / f"{service}.stdout.log",
+        stderr=log_dir / f"{service}.stderr.log",
+    )
 
 
 def render_plist(
@@ -21,18 +39,22 @@ def render_plist(
     working_directory: Path | None = None,
     environment: dict[str, str] | None = None,
     throttle_interval_s: int = 10,
+    keep_alive: bool = True,
 ) -> bytes:
-    """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``."""
-    short = label.rsplit(".", 1)[-1]
+    """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``.
+
+    ``keep_alive=False`` gives a one-shot job (used for the Metal probe).
+    """
+    logs = log_paths(log_dir, label.rsplit(".", 1)[-1])
     plist: dict[str, object] = {
         "Label": label,
         "ProgramArguments": program_arguments,
         "UserName": user_name,
         "RunAtLoad": True,
-        "KeepAlive": True,
+        "KeepAlive": keep_alive,
         "ThrottleInterval": throttle_interval_s,
-        "StandardOutPath": str(log_dir / f"{short}.stdout.log"),
-        "StandardErrorPath": str(log_dir / f"{short}.stderr.log"),
+        "StandardOutPath": str(logs.stdout),
+        "StandardErrorPath": str(logs.stderr),
         "ProcessType": "Interactive",
     }
     if working_directory is not None:

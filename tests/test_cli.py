@@ -7,14 +7,6 @@ import pytest
 from voiced.cli import main
 
 
-@pytest.mark.parametrize(
-    "cmd", ["install", "start", "stop", "status", "logs", "uninstall", "doctor"]
-)
-def test_lifecycle_commands_are_stubbed(cmd: str, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main([cmd]) == 2
-    assert "not implemented" in capsys.readouterr().err
-
-
 def test_config_prints_effective_settings(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -11,6 +11,7 @@ See ``config.example.toml`` at the repository root for the documented copy.
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
@@ -33,6 +34,15 @@ DEFAULT_CONFIG_PATH = Path("~/.config/voiced/config.toml")
 DEFAULT_LAUNCHD_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
 
 LogLevel = Literal["debug", "info", "warning", "error"]
+ServiceName = Literal["stt", "tts"]
+DaemonName = Literal["stt", "tts", "watchdog", "metalprobe"]
+
+# The two inference services, and the daemons the installer manages.
+HTTP_SERVICES: tuple[ServiceName, ...] = ("stt", "tts")
+SERVICES: tuple[DaemonName, ...] = ("stt", "tts", "watchdog")
+
+# Labels end up in launchd plists and in shell scripts the user runs with sudo.
+_LABEL_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 
 # The TOML file for the Settings instance currently being built. Set by
 # load_settings() so that Settings() itself stays usable (env and defaults only).
@@ -83,13 +93,51 @@ class TTSConfig(_Section):
 class LaunchdConfig(_Section):
     label_prefix: str = DEFAULT_LAUNCHD_LABEL_PREFIX
 
-    def label(self, service: Literal["stt", "tts", "watchdog"]) -> str:
+    @field_validator("label_prefix", mode="after")
+    @classmethod
+    def _safe_label(cls, value: str) -> str:
+        if not _LABEL_PREFIX_RE.fullmatch(value):
+            raise ValueError("label_prefix may contain only letters, digits, '.' and '-'")
+        return value
+
+    def label(self, service: DaemonName) -> str:
         return f"{self.label_prefix}.{service}"
 
 
 class WatchdogConfig(_Section):
     interval_s: float = Field(default=15.0, gt=0)
     failures_before_restart: int = Field(default=3, ge=1)
+    # Per-request timeout for the /health poll.
+    timeout_s: float = Field(default=5.0, gt=0)
+    # A service may report "starting" for this long (measured by its own
+    # uptime) before the watchdog treats the model load as hung.
+    startup_grace_s: float = Field(default=300.0, gt=0)
+    # Continuous "degraded" for longer than this triggers a restart.
+    degraded_window_s: float = Field(default=120.0, gt=0)
+    # Minimum time between two restarts of the same service.
+    restart_cooldown_s: float = Field(default=120.0, ge=0)
+    # A service whose queue is non-empty but has not completed an inference
+    # for this long is considered stalled (the GPU is wedged).
+    stall_after_s: float = Field(default=60.0, gt=0)
+    # Optional small inference request per poll (only while the queue is
+    # empty); a timeout counts as a stall.
+    probe: bool = False
+    probe_timeout_s: float = Field(default=20.0, gt=0)
+
+
+class InstallConfig(_Section):
+    # Where `voiced install` creates the virtual environment. Keep it short:
+    # espeak-ng (Kokoro's phonemizer) fails with long data paths.
+    venv_dir: Path = Field(default_factory=lambda: Path("~/.voiced").expanduser())
+    # Interpreter or version spec for the venv ("3.12", or a path). Empty = auto.
+    python: str = ""
+    # Hugging Face cache for model downloads; empty = the Hugging Face default.
+    hf_home: Path | None = None
+
+    @field_validator("venv_dir", "hf_home", mode="after")
+    @classmethod
+    def _expand(cls, value: Path | None) -> Path | None:
+        return value.expanduser() if value is not None else None
 
 
 class Settings(BaseSettings):
@@ -106,6 +154,19 @@ class Settings(BaseSettings):
     tts: TTSConfig = Field(default_factory=TTSConfig)
     launchd: LaunchdConfig = Field(default_factory=LaunchdConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    install: InstallConfig = Field(default_factory=InstallConfig)
+
+    def http_port(self, service: ServiceName) -> int:
+        return self.stt.http_port if service == "stt" else self.tts.http_port
+
+    def http_url(self, service: ServiceName) -> str:
+        """Base URL for talking to a service from this machine.
+
+        ``0.0.0.0`` means "all interfaces" to the listener but is not an
+        address a client can connect to, so loopback is used instead.
+        """
+        host = "127.0.0.1" if self.server.bind in ("0.0.0.0", "") else self.server.bind
+        return f"http://{host}:{self.http_port(service)}"
 
     @classmethod
     def settings_customise_sources(

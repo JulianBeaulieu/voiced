@@ -67,6 +67,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/voiced"]
 
+# `voiced install` copies this into ~/.config/voiced/config.toml on first run.
+[tool.hatch.build.targets.wheel.force-include]
+"config.example.toml" = "voiced/config.example.toml"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
