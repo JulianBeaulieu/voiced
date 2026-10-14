@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["DEFAULT_MAX_LEN", "split_sentences"]
+__all__ = ["DEFAULT_MAX_LEN", "cut_to_length", "split_sentences"]
 
 DEFAULT_MAX_LEN = 300
 """Longest chunk returned, in characters. Kokoro accepts 510 phonemes and a
 phoneme string is at most about 1.2 times the length of its text."""
 
 # A token followed by a period that does not end a sentence. Compared in
-# lowercase without the period.
+# lowercase without the period. ``normalize`` expands a few of these ("e.g.",
+# "etc.", "vs.") before text gets here; the list is kept complete so the
+# splitter also works on text that was not normalized.
 _ABBREVIATIONS = frozenset(
     {
         "mr",
@@ -107,7 +109,7 @@ def split_sentences(text: str, *, max_len: int = DEFAULT_MAX_LEN) -> list[str]:
         if not paragraph:
             continue
         for sentence in _split_paragraph(paragraph):
-            out.extend(_limit_length(sentence, max_len))
+            out.extend(cut_to_length(sentence, max_len))
     return out
 
 
@@ -169,9 +171,15 @@ def _first_word(text: str) -> str:
     return re.split(r"\s", text.lstrip("\"'\u201c\u2018(["), maxsplit=1)[0] if text else ""
 
 
-def _limit_length(sentence: str, max_len: int) -> list[str]:
+def cut_to_length(text: str, max_len: int) -> list[str]:
+    """Cut ``text`` into pieces of at most ``max_len`` characters: at the last
+    clause boundary before the limit, else the last space, else hard. Used
+    for over-long sentences here and for over-long phoneme strings by the
+    Kokoro engine."""
+    if max_len < 1:
+        raise ValueError("max_len must be >= 1")
     parts: list[str] = []
-    rest = sentence
+    rest = text.strip()
     while len(rest) > max_len:
         cut = _best_cut(rest, max_len)
         head, rest = rest[:cut].rstrip(), rest[cut:].lstrip()
@@ -185,13 +193,17 @@ def _limit_length(sentence: str, max_len: int) -> list[str]:
 
 
 def _best_cut(text: str, max_len: int) -> int:
-    """Index to cut ``text`` at so the head is at most ``max_len`` long."""
+    """Index to cut ``text`` at so the stripped head is at most ``max_len``
+    long: after the last clause punctuation that fits, else at the last space
+    that fits, else at ``max_len``."""
     window = text[: max_len + 1]
     for pattern in (_CLAUSE_BREAK, _WORD_BREAK):
-        candidates = [m for m in pattern.finditer(window) if 0 < m.start() <= max_len]
-        if candidates:
-            # The cut goes after the punctuation and before the whitespace,
-            # or at the whitespace itself for a plain word break.
-            m = candidates[-1]
-            return m.end() if pattern is _CLAUSE_BREAK else m.start()
+        best: int | None = None
+        for m in pattern.finditer(window):
+            # A clause cut keeps the punctuation; a word cut drops the space.
+            head_end = m.end() if pattern is _CLAUSE_BREAK else m.start()
+            if 0 < len(window[:head_end].rstrip()) <= max_len:
+                best = head_end
+        if best is not None:
+            return best
     return max_len

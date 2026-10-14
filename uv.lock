@@ -1927,8 +1927,6 @@ tts = [
     { name = "huggingface-hub" },
     { name = "kokoro-onnx" },
     { name = "mlx-audio" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [package.dev-dependencies]
@@ -1947,13 +1945,12 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=0.23" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
-    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5" },
+    { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5,<0.6" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "parakeet-mlx", marker = "extra == 'stt'", specifier = ">=0.5" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "scipy", marker = "extra == 'tts'", specifier = ">=1.10" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=13" },
     { name = "wyoming", specifier = ">=1.6" },

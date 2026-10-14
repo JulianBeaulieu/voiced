@@ -26,7 +26,8 @@ espeak-ng through the `phonemizer` package and filters the result to
 Kokoro's vocabulary, and calls the MLX model directly:
 
 ```python
-phonemes = tokenizer.phonemize(sentence, "en-gb" if voice.startswith("b") else "en-us")
+language = KOKORO_LANGUAGES[voice[0]]  # "a" -> en-US / espeak "en-us", "b" -> en-GB / "en-gb"
+phonemes = tokenizer.phonemize(sentence, language.espeak)
 audio = model(phonemes, voice_pack[len(phonemes) - 1], speed, return_output=True).audio
 ```
 
@@ -34,39 +35,42 @@ Voice packs are loaded with mlx-audio's `load_voice_tensor` from the model
 snapshot; all enabled packs are loaded and evaluated at `load()` so no
 request pays for a first-use stall. misaki is not a dependency.
 
-Text normalization (`voiced.tts.normalize`) runs before phonemization and
-spells acronyms itself ("CO2" becomes "C O two"), because espeak reads
-"CO2" as a word. An isolated capital "A" is written "eh" because espeak
-reads it as the article.
+Text normalization (`voiced.text.normalize`) runs in the HTTP and Wyoming
+layers before the engine sees the text, as `engines/base.py` specifies; the
+engine only splits sentences. The normalizer spells acronyms ("CO2"
+becomes "C O two") because espeak reads "CO2" as a word, and writes an
+isolated capital "A" as "eh" because espeak reads it as the article.
 
 Only the English voices (`af_*`, `am_*`, `bf_*`, `bm_*`) are exposed in
 version 1. The voice table in `voiced/engines/kokoro.py` lists all 54 voices
-and all nine languages with their espeak voice names; a language is enabled
-by adding its tag to `KokoroEngine.languages`. Japanese and Chinese would
-also need a check that espeak-ng's phoneme inventory matches what the model
-was trained on (misaki uses different G2Ps for them).
+and all nine languages with their espeak voice names. Enabling another
+language takes three things: its tag in `KokoroEngine.languages`, a text
+normalizer for it (`normalize(text, language=...)` accepts only `en` today
+and raises for anything else), and for Japanese and Chinese a check that
+espeak-ng's phoneme inventory matches what the model was trained on (misaki
+uses different G2Ps for them).
 
 ## espeak-ng and the GPL
 
 espeak-ng is GPL-3. voiced is MIT. espeak-ng is used as an external shared
 library loaded at run time, never copied into this repository, so the
-voiced code stays MIT and the user installs espeak-ng separately. The engine
-looks for it in this order and fails at `load()` with the install command if
-none works:
+voiced code stays MIT and the user installs espeak-ng separately. There is
+one documented way and one override, and `load()` fails with the install
+command if neither works:
 
-1. `VOICED_ESPEAK_LIBRARY` and `VOICED_ESPEAK_DATA` (or the `phonemizer`
-   package's `PHONEMIZER_ESPEAK_LIBRARY` / `PHONEMIZER_ESPEAK_DATA_PATH`).
-2. The Homebrew keg, `brew install espeak-ng`: `/opt/homebrew/opt/espeak-ng`
+1. The Homebrew keg, `brew install espeak-ng`: `/opt/homebrew/opt/espeak-ng`
    on Apple Silicon, `/usr/local/opt/espeak-ng` on Intel.
-3. Whatever `ctypes.util.find_library("espeak-ng")` finds.
-4. The copy inside the `espeakng-loader` wheel that `kokoro-onnx` depends on.
+2. `VOICED_ESPEAK_LIBRARY` (and optionally `VOICED_ESPEAK_DATA`) when set.
+   A configured path that does not exist is an error naming the path.
 
-The wheel copy is listed last for a practical reason: espeak-ng has a fixed
+Each candidate is self-tested by phonemizing one word before it is accepted.
+The `kokoro-onnx` package also depends on the `espeakng-loader` wheel, which
+bundles its own espeak-ng; the engine does not use it. espeak-ng has a fixed
 size path buffer and silently falls back to its compiled-in data path when
-the data directory's path is long, which is what happens inside a deeply
-nested virtual environment. The Homebrew data lives at a short path and does
-not have the problem. The installer should still create the venv at a short
-path (HANDOFF section 6) for the same reason.
+the data directory's path is long, which is what happens to the wheel copy
+inside a deeply nested virtual environment, while the Homebrew data lives at
+a short path. The installer should still create the venv at a short path
+(HANDOFF section 6).
 
 Note that Homebrew's deprecated `espeak` formula conflicts with `espeak-ng`
 (both install an `espeak` binary); `brew unlink espeak` first if it is
@@ -80,5 +84,9 @@ installed.
 - `doctor` must check for a working espeak-ng (the engine's `find_espeak`
   helper can be reused).
 - Kokoro's 510-phoneme limit is enforced by the sentence splitter (300
-  characters per chunk) and, as a last resort, by splitting the phoneme
-  string at spaces.
+  characters per chunk) and, because acronym-heavy text phonemizes to more
+  than 1.7 characters per character, by cutting the phoneme string at spaces
+  with the same `cut_to_length` helper.
+- Measured 2026-10-14 on an M1 Max laptop, one engine per process, warm:
+  load 1.9 s including warm-up, first chunk 106 ms median, real-time factor
+  0.046, 469 MB maximum resident set size, 326 MB active MLX memory.

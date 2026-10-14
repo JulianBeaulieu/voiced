@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from voiced.tts import normalize
-from voiced.tts.normalize import number_to_words, ordinal_to_words, year_to_words
+from voiced.text import normalize
+from voiced.text.normalize import number_to_words, ordinal_to_words, year_to_words
 
 CASES: list[tuple[str, str]] = [
     # acronyms
@@ -17,6 +17,8 @@ CASES: list[tuple[str, str]] = [
     ),
     ("The APIs are fast.", "The eh P I's are fast."),
     ("I AM HERE NOW.", "I am here now."),
+    ("Compare CPU, GPU, RAM and SSD.", "Compare C P U, G P U, RAM and S S D."),
+    ("The PDF needs IT support.", "The P D F needs I T support."),
     ("WARNING: the file is gone.", "WARNING: the file is gone."),
     ("World War II ended.", "World War two ended."),
     # numbers
@@ -32,6 +34,9 @@ CASES: list[tuple[str, str]] = [
     ("x86 and mp3 stay.", "x86 and mp3 stay."),
     ("There are 2048 tokens.", "There are two thousand forty eight tokens."),
     ("Use \u00bd cup, then 2\u00bd hours.", "Use one half cup, then two and a half hours."),
+    ("Version 3.11.2 is out.", "Version three point eleven point two is out."),
+    ("It sold 1,000,000,000 copies.", "It sold one billion copies."),
+    ("It is 2.5x faster, 2x more.", "It is two point five x faster, two x more."),
     # ordinals, years, decades
     (
         "The 21st century, 2nd place, 103rd.",
@@ -48,7 +53,10 @@ CASES: list[tuple[str, str]] = [
     ("At 14:30 sharp.", "At fourteen thirty sharp."),
     ("It's 10 am and 3 AM.", "It's ten eh M and three eh M."),
     ("At 9:05.", "At nine oh five."),
-    ("A 16:9 screen.", "A sixteen:nine screen."),
+    ("A 16:9 screen and a 3:1 ratio.", "A sixteen to nine screen and a three to one ratio."),
+    ("Ends at 5 pm. Bring snacks.", "Ends at five P M. Bring snacks."),
+    ("Ends at 5 p.m. Bring snacks.", "Ends at five P M. Bring snacks."),
+    ("He left at 3 p.m. on Monday.", "He left at three P M on Monday."),
     # dates
     ("On 2026-10-14.", "On October fourteenth, twenty twenty six."),
     ("On 10/14/2026.", "On October fourteenth, twenty twenty six."),
@@ -65,6 +73,7 @@ CASES: list[tuple[str, str]] = [
         "Worth five million dollars or one point five billion dollars or five thousand dollars.",
     ),
     ("That is \u00a32.50 or \u20ac3.", "That is two pounds and fifty pence or three euros."),
+    ("Pay -$5 or $-5.", "Pay minus five dollars or minus five dollars."),
     # percent, degrees, units
     ("Humidity 45%.", "Humidity forty five percent."),
     (
@@ -82,6 +91,7 @@ CASES: list[tuple[str, str]] = [
     ),
     ("Wait 5 min, not 5 minutes.", "Wait five minutes, not five minutes."),
     ("It is 412 ppm.", "It is four hundred twelve parts per million."),
+    ("He is 6 ft. tall.", "He is six feet tall."),
     # abbreviations and symbols
     (
         "Fruit, e.g. apples, i.e. food, etc. Next.",
@@ -188,6 +198,12 @@ def test_ordinal_to_words(n: int, words: str) -> None:
 )
 def test_year_to_words(year: int, words: str) -> None:
     assert year_to_words(year) == words
+
+
+def test_language_parameter() -> None:
+    assert normalize("5 cats", language="en-GB") == "five cats."
+    with pytest.raises(ValueError, match="de"):
+        normalize("5 Katzen", language="de")
 
 
 def test_output_has_no_digits_for_plain_prose() -> None:

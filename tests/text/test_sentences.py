@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from voiced.tts import split_sentences
-from voiced.tts.sentences import DEFAULT_MAX_LEN
+from voiced.text import split_sentences
+from voiced.text.sentences import DEFAULT_MAX_LEN, cut_to_length
 
 CASES: list[tuple[str, list[str]]] = [
     ("Hello there. How are you? I'm fine!", ["Hello there.", "How are you?", "I'm fine!"]),
@@ -94,3 +94,14 @@ def test_max_len_must_be_positive() -> None:
 def test_no_empty_chunks() -> None:
     assert split_sentences(". . . ! ? ") == [".", ".", ".", "!", "?"]
     assert all(s.strip() for s in split_sentences("a.  \n\n  b.  ."))
+
+
+def test_cut_to_length_prefers_clause_then_word_then_hard() -> None:
+    assert cut_to_length("", 10) == []
+    assert cut_to_length("short", 10) == ["short"]
+    assert cut_to_length("abc def, ghi jkl", 10) == ["abc def,", "ghi jkl"]
+    assert cut_to_length("abc def ghi", 7) == ["abc def", "ghi"]
+    assert cut_to_length("abcdefghij", 4) == ["abcd", "efgh", "ij"]
+    assert cut_to_length("abcdefghij klm", 10) == ["abcdefghij", "klm"]
+    with pytest.raises(ValueError):
+        cut_to_length("x", 0)

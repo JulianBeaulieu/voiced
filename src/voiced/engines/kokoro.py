@@ -1,15 +1,16 @@
 """Kokoro-82M on MLX, with espeak-ng phonemes.
 
 Pronunciation path (see ``docs/decisions/0004-tts-kokoro-espeak-tokens.md``):
-text is normalized, split into sentences, phonemized with espeak-ng through
-``kokoro_onnx.tokenizer.Tokenizer``, and the phoneme string is fed straight to
-the MLX model together with the voice's style vector. mlx-audio's own
-pipeline (misaki G2P) is bypassed entirely.
+the already normalized text is split into sentences, each sentence is
+phonemized with espeak-ng through ``kokoro_onnx.tokenizer.Tokenizer``, and
+the phoneme string is fed straight to the MLX model together with the
+voice's style vector. mlx-audio's own pipeline (misaki G2P) is bypassed.
 
-espeak-ng is an external, GPL-3 program. It is never vendored: the engine
-looks for the Homebrew installation first, then an explicit path from the
-environment, then the copy bundled with the ``espeakng-loader`` wheel, and
-fails at ``load()`` with the install command if none works.
+espeak-ng is an external, GPL-3 program and is never vendored. The engine
+uses the Homebrew installation (``brew install espeak-ng``), or the library
+and data directory named by ``VOICED_ESPEAK_LIBRARY`` and
+``VOICED_ESPEAK_DATA`` when those are set, and fails at ``load()`` with the
+install command if neither works.
 
 Everything that touches MLX or espeak is imported inside ``load()`` so this
 module can be imported (the entry point registry does so) on machines
@@ -19,16 +20,17 @@ without the ``tts`` extra.
 from __future__ import annotations
 
 import asyncio
-import ctypes.util
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from voiced.engines.audio import to_pcm16
+import numpy as np
+from numpy.typing import NDArray
+
 from voiced.engines.base import (
     TTS_SAMPLE_RATE,
     EngineError,
@@ -38,8 +40,7 @@ from voiced.engines.base import (
     UnknownVoice,
     Voice,
 )
-from voiced.tts.normalize import normalize
-from voiced.tts.sentences import split_sentences
+from voiced.text.sentences import cut_to_length, split_sentences
 
 log = logging.getLogger(__name__)
 
@@ -48,15 +49,18 @@ __all__ = [
     "EspeakNotFound",
     "KokoroEngine",
     "KokoroLanguage",
-    "find_espeak",
+    "espeak_candidates",
     "kokoro_voices",
 ]
 
 ESPEAK_INSTALL_HINT = "brew install espeak-ng"
 ENV_ESPEAK_LIBRARY = "VOICED_ESPEAK_LIBRARY"
 ENV_ESPEAK_DATA = "VOICED_ESPEAK_DATA"
+HOMEBREW_PREFIXES = ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng")
 MAX_PHONEMES = 510
 """Kokoro's context is 512 tokens including the two padding tokens."""
+MIN_SPEED = 0.25
+MAX_SPEED = 4.0
 WARMUP_TEXT = "Warming up."
 
 
@@ -76,9 +80,10 @@ class KokoroLanguage:
 
 # Every language Kokoro-82M ships voices for, keyed by the first letter of
 # the voice id. Only those whose ``tag`` is in ``KokoroEngine.languages`` are
-# exposed; enabling another one is a change to that list (and a check that
-# espeak-ng's phonemes for it fit the model's training data, which is what
-# misaki provides for ja and zh).
+# exposed. Enabling another one also needs a text normalizer for it
+# (``voiced.text.normalize`` is English only) and a check that espeak-ng's
+# phonemes for it fit the model's training data (misaki uses other G2Ps for
+# ja and zh).
 KOKORO_LANGUAGES: dict[str, KokoroLanguage] = {
     "a": KokoroLanguage("a", "en-US", "en-us"),
     "b": KokoroLanguage("b", "en-GB", "en-gb"),
@@ -132,35 +137,36 @@ def kokoro_voices(languages: list[str]) -> list[Voice]:
     return out
 
 
-def find_espeak(
-    library: str | None = None, data: str | None = None
-) -> list[tuple[str, str | None]]:
-    """Candidate ``(library_path, data_path)`` pairs, most preferred first.
+def espeak_candidates() -> list[tuple[str, str | None]]:
+    """``(library_path, data_path)`` pairs to try, most preferred first.
 
-    Explicit arguments win, then ``VOICED_ESPEAK_LIBRARY`` /
-    ``VOICED_ESPEAK_DATA``, then the Homebrew keg, then whatever the dynamic
-    linker finds, then the copy inside the ``espeakng-loader`` wheel. Each
-    candidate is only listed if the library file exists.
+    ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``) is the one
+    override and is the only candidate when set; a path that does not exist
+    is an error naming it. Otherwise the Homebrew keg for Apple Silicon and
+    for Intel, whichever exists.
     """
-    candidates: list[tuple[str, str | None]] = []
-    if library:
-        candidates.append((library, data))
-    env_lib = os.environ.get(ENV_ESPEAK_LIBRARY) or os.environ.get("PHONEMIZER_ESPEAK_LIBRARY")
-    if env_lib:
-        env_data = os.environ.get(ENV_ESPEAK_DATA) or os.environ.get("PHONEMIZER_ESPEAK_DATA_PATH")
-        candidates.append((env_lib, env_data))
-    for prefix in ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng"):
-        candidates.append((f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data"))
-    found = ctypes.util.find_library("espeak-ng")
-    if found:
-        candidates.append((found, None))
-    try:
-        import espeakng_loader
+    override = os.environ.get(ENV_ESPEAK_LIBRARY)
+    if override:
+        data = os.environ.get(ENV_ESPEAK_DATA) or None
+        if not Path(override).is_file():
+            raise EspeakNotFound(f"{ENV_ESPEAK_LIBRARY}={override} is not a file")
+        if data and not Path(data).is_dir():
+            raise EspeakNotFound(f"{ENV_ESPEAK_DATA}={data} is not a directory")
+        return [(override, data)]
+    return [
+        (f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data")
+        for prefix in HOMEBREW_PREFIXES
+        if Path(f"{prefix}/lib/libespeak-ng.dylib").is_file()
+    ]
 
-        candidates.append((espeakng_loader.get_library_path(), espeakng_loader.get_data_path()))
-    except Exception:
-        pass
-    return [(lib, data) for lib, data in candidates if Path(lib).is_file()]
+
+def _float32_to_pcm16(samples: NDArray[np.floating]) -> bytes:
+    """Mono float audio in [-1, 1] to int16 little-endian bytes. NaN becomes
+    silence, out-of-range values clip, and rounding is to nearest. Temporary:
+    replaced by ``voiced.audio.float32_to_pcm16`` once the core primitives
+    land."""
+    flat = np.nan_to_num(np.asarray(samples, dtype=np.float32).reshape(-1))
+    return np.rint(np.clip(flat, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
 
 
 class KokoroEngine(TTSEngine):
@@ -169,23 +175,13 @@ class KokoroEngine(TTSEngine):
     languages = ["en-US", "en-GB"]
     license = "Apache-2.0"
 
-    def __init__(
-        self,
-        model_id: str | None = None,
-        *,
-        espeak_library: str | None = None,
-        espeak_data: str | None = None,
-        warmup: bool = True,
-    ) -> None:
+    def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
-        self._espeak_library = espeak_library
-        self._espeak_data = espeak_data
         self._warmup = warmup
         self._model: Any = None
         self._tokenizer: Any = None
         self._packs: dict[str, Any] = {}
-        self._voices: list[Voice] = kokoro_voices(self.languages)
-        self._voice_by_id = {v.id: v for v in self._voices}
+        self._voices: list[Voice] = []
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -193,64 +189,41 @@ class KokoroEngine(TTSEngine):
         await asyncio.to_thread(self._load_sync)
 
     def _load_sync(self) -> None:
+        """Build everything in locals and assign at the end, so a failure
+        part-way leaves the engine unloaded rather than half loaded."""
         started = time.perf_counter()
-        self._tokenizer = self._load_espeak()
+        tokenizer = _load_espeak()
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
-        self._model = load_model(self.model_id)
-        rate = int(self._model.sample_rate)
+        model = load_model(self.model_id)
+        rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:
             raise RuntimeError(f"Kokoro model reports {rate} Hz, expected {TTS_SAMPLE_RATE}")
-        self._packs = self._load_voice_packs()
-        missing = [v.id for v in self._voices if v.id not in self._packs]
-        if missing:
-            self._voices = [v for v in self._voices if v.id in self._packs]
-            self._voice_by_id = {v.id: v for v in self._voices}
-            log.warning(
-                "kokoro: %d voices missing from %s: %s", len(missing), self.model_id, missing
-            )
-        if not self._voices:
+        packs = self._load_voice_packs(kokoro_voices(self.languages))
+        voices = [v for v in kokoro_voices(self.languages) if v.id in packs]
+        if not voices:
             raise RuntimeError(f"no usable voices found in {self.model_id}")
-        mx.eval(*self._packs.values())
+        mx.eval(*packs.values())
         if self._warmup:
             # One sentence per enabled language so the first real request of
             # either kind does not pay for graph construction.
-            for lang in self._enabled_languages():
-                voice = next(v.id for v in self._voices if v.language == lang.tag)
-                self._synth_sentence(WARMUP_TEXT, voice, 1.0)
+            for tag in self.languages:
+                voice = next((v.id for v in voices if v.language == tag), None)
+                if voice is not None:
+                    _synth(model, tokenizer, packs[voice], WARMUP_TEXT, voice, 1.0)
+        self._model = model
+        self._tokenizer = tokenizer
+        self._packs = packs
+        self._voices = voices
         log.info(
             "kokoro: loaded %s with %d voices in %.1fs",
             self.model_id,
-            len(self._voices),
+            len(voices),
             time.perf_counter() - started,
         )
 
-    def _load_espeak(self) -> Any:
-        from kokoro_onnx.config import EspeakConfig
-        from kokoro_onnx.tokenizer import Tokenizer
-
-        errors: list[str] = []
-        for library, data in find_espeak(self._espeak_library, self._espeak_data):
-            try:
-                tokenizer = Tokenizer(EspeakConfig(lib_path=library, data_path=data))
-                probe = tokenizer.phonemize("hello", "en-us")
-            except Exception as exc:
-                errors.append(f"{library}: {type(exc).__name__}: {exc}")
-                continue
-            if not probe:
-                errors.append(f"{library}: phonemizer returned nothing (data path {data!r})")
-                continue
-            log.info("kokoro: espeak-ng at %s", library)
-            return tokenizer
-        detail = "; ".join(errors) if errors else "no espeak-ng library found"
-        raise EspeakNotFound(
-            "Kokoro needs espeak-ng for pronunciation but it is not installed or not "
-            f"working ({detail}). Install it with `{ESPEAK_INSTALL_HINT}`, or point "
-            f"{ENV_ESPEAK_LIBRARY} and {ENV_ESPEAK_DATA} at a working copy."
-        )
-
-    def _load_voice_packs(self) -> dict[str, Any]:
+    def _load_voice_packs(self, voices: list[Voice]) -> dict[str, Any]:
         from mlx_audio.tts.models.kokoro.voice import load_voice_tensor
 
         root = Path(self.model_id)
@@ -259,14 +232,16 @@ class KokoroEngine(TTSEngine):
 
             root = Path(snapshot_download(self.model_id, allow_patterns=["voices/*.safetensors"]))
         packs: dict[str, Any] = {}
-        for voice in self._voices:
+        missing: list[str] = []
+        for voice in voices:
             path = root / "voices" / f"{voice.id}.safetensors"
             if path.is_file():
                 packs[voice.id] = load_voice_tensor(str(path))
+            else:
+                missing.append(voice.id)
+        if missing:
+            log.warning("kokoro: %d voices missing from %s: %s", len(missing), root, missing)
         return packs
-
-    def _enabled_languages(self) -> list[KokoroLanguage]:
-        return [lang for lang in KOKORO_LANGUAGES.values() if lang.tag in self.languages]
 
     # -- interface -----------------------------------------------------------
 
@@ -277,53 +252,76 @@ class KokoroEngine(TTSEngine):
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
+        """``text`` is already normalized by the caller; this only splits it
+        into sentences and synthesizes one chunk per sentence."""
         self._check_loaded()
-        if voice not in self._voice_by_id:
+        if voice not in self._packs:
             raise UnknownVoice(voice)
-        if not speed > 0:
-            raise EngineError("speed must be positive")
-        for sentence in split_sentences(normalize(text)):
+        if not MIN_SPEED <= speed <= MAX_SPEED:
+            raise EngineError(f"speed must be between {MIN_SPEED} and {MAX_SPEED}")
+        for sentence in split_sentences(text):
             pcm = await asyncio.to_thread(self._synth_sentence, sentence, voice, speed)
             if pcm:
                 yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
 
-    # -- synthesis (blocking, runs in a worker thread) -----------------------
-
     def phonemize(self, text: str, voice: str) -> str:
         """espeak-ng phonemes for ``text`` in the language of ``voice``."""
         self._check_loaded()
-        lang = KOKORO_LANGUAGES[voice[0]].espeak
-        return str(self._tokenizer.phonemize(text, lang))
+        return _phonemize(self._tokenizer, text, voice)
 
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        import numpy as np
-
-        phonemes = self.phonemize(sentence, voice)
-        if not phonemes:
-            return b""
-        pack = self._packs[voice]
-        parts: list[Any] = []
-        for chunk in _chunk_phonemes(phonemes, MAX_PHONEMES):
-            out = self._model(chunk, pack[len(chunk) - 1], speed, return_output=True)
-            parts.append(np.array(out.audio, copy=False).reshape(-1))
-        audio = np.concatenate(parts) if len(parts) > 1 else parts[0]
-        return to_pcm16(audio, TTS_SAMPLE_RATE)
+        """Blocking; runs in a worker thread."""
+        return _synth(self._model, self._tokenizer, self._packs[voice], sentence, voice, speed)
 
     def _check_loaded(self) -> None:
-        if self._model is None or self._tokenizer is None:
+        if self._model is None:
             raise EngineNotLoaded(self.name)
 
 
-def _chunk_phonemes(phonemes: str, limit: int) -> Iterator[str]:
-    """Split a phoneme string at spaces so no piece exceeds ``limit``. The
-    sentence splitter keeps this from happening for normal text; it is a
-    guard for a 300-character sentence with no spaces at all."""
-    while len(phonemes) > limit:
-        cut = phonemes.rfind(" ", 1, limit + 1)
-        if cut <= 0:
-            cut = limit
-        head, phonemes = phonemes[:cut].strip(), phonemes[cut:].strip()
-        if head:
-            yield head
-    if phonemes:
-        yield phonemes
+# -- blocking helpers ----------------------------------------------------------
+
+
+def _load_espeak() -> Any:
+    from kokoro_onnx.config import EspeakConfig
+    from kokoro_onnx.tokenizer import Tokenizer
+
+    errors: list[str] = []
+    for library, data in espeak_candidates():
+        try:
+            tokenizer = Tokenizer(EspeakConfig(lib_path=library, data_path=data))
+            probe = tokenizer.phonemize("hello", "en-us")
+        except Exception as exc:  # the tokenizer raises RuntimeError and OSError
+            errors.append(f"{library}: {type(exc).__name__}: {exc}")
+            continue
+        if not probe:
+            errors.append(f"{library}: phonemizer returned nothing (data path {data!r})")
+            continue
+        # kokoro_onnx's Tokenizer silently prefers PHONEMIZER_ESPEAK_LIBRARY
+        # when that is set; log the library actually in use.
+        log.info("kokoro: espeak-ng at %s", os.environ.get("PHONEMIZER_ESPEAK_LIBRARY") or library)
+        return tokenizer
+    detail = "; ".join(errors) if errors else "no espeak-ng library found"
+    raise EspeakNotFound(
+        "Kokoro needs espeak-ng for pronunciation but it is not installed or not "
+        f"working ({detail}). Install it with `{ESPEAK_INSTALL_HINT}`, or point "
+        f"{ENV_ESPEAK_LIBRARY} and {ENV_ESPEAK_DATA} at a working copy."
+    )
+
+
+def _phonemize(tokenizer: Any, text: str, voice: str) -> str:
+    return str(tokenizer.phonemize(text, KOKORO_LANGUAGES[voice[0]].espeak))
+
+
+def _synth(model: Any, tokenizer: Any, pack: Any, sentence: str, voice: str, speed: float) -> bytes:
+    phonemes = _phonemize(tokenizer, sentence, voice)
+    if not phonemes:
+        return b""
+    parts: list[NDArray[np.float32]] = []
+    # Sentences are at most 300 characters and phoneme strings run up to about
+    # 1.2 times the text (more for acronym-heavy text), so a sentence can
+    # exceed the model's 510-phoneme context; cut at spaces when it does.
+    for chunk in cut_to_length(phonemes, MAX_PHONEMES):
+        out = model(chunk, pack[len(chunk) - 1], speed, return_output=True)
+        parts.append(np.array(out.audio, copy=False).reshape(-1))
+    audio = np.concatenate(parts) if len(parts) > 1 else parts[0]
+    return _float32_to_pcm16(audio)

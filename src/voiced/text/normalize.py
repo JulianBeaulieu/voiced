@@ -7,10 +7,12 @@ such tokens into words so the engines only ever see what a person would read
 aloud. It also strips the Markdown that language models produce.
 
 The function is idempotent: ``normalize(normalize(s)) == normalize(s)``. The
-server calls it once; engines call it again defensively.
+HTTP and Wyoming layers call it before handing text to an engine; engines
+only chunk what they receive.
 
-Pure Python, no model, no dependencies. Everything here is English; other
-languages will need their own module behind the same signature.
+Pure Python, no model, no dependencies. Only English is implemented; the
+``language`` parameter exists so other languages can be added behind the
+same call without changing callers.
 """
 
 from __future__ import annotations
@@ -19,7 +21,13 @@ import re
 import unicodedata
 from collections.abc import Callable
 
-__all__ = ["normalize", "number_to_words", "ordinal_to_words", "year_to_words"]
+__all__ = [
+    "SUPPORTED_LANGUAGES",
+    "normalize",
+    "number_to_words",
+    "ordinal_to_words",
+    "year_to_words",
+]
 
 # --------------------------------------------------------------------------
 # Numbers
@@ -95,10 +103,12 @@ def _digits_to_words(digits: str) -> str:
     return " ".join(_ONES[int(d)] for d in digits)
 
 
-def _integer_to_words(digits: str) -> str:
-    """Digit string (no separators) to words. Leading zeros and very long
-    strings (ids, phone numbers) are read digit by digit."""
-    if (len(digits) > 1 and digits[0] == "0") or len(digits) >= 10:
+def _integer_to_words(token: str) -> str:
+    """Integer token (optionally comma grouped) to words. A comma-grouped
+    number is always read as a number; a bare digit string with a leading
+    zero or ten or more digits (ids, phone numbers) is read digit by digit."""
+    digits = token.replace(",", "")
+    if "," not in token and ((len(digits) > 1 and digits[0] == "0") or len(digits) >= 10):
         return _digits_to_words(digits)
     return number_to_words(int(digits))
 
@@ -122,18 +132,25 @@ def _plural(count_words: str, singular: str, plural: str) -> str:
 # article (a schwa), so it is written phonetically.
 _LETTER_WORDS = {"A": "eh"}
 
-# Upper-case tokens that are spoken as words, not spelled. Anything else of
-# two to five capitals (optionally with digits) is spelled: HVAC, CO2, USB.
-_KEEP_WORDS = frozenset(
+# Acronyms that are pronounced as words, not spelled. Anything else of two
+# to five capitals (optionally with digits) is spelled: HVAC, CO2, USB.
+_SPOKEN_ACRONYMS = frozenset(
     """
     NASA NATO OK OKAY RAM ROM GIF PIN SIM LIDAR RADAR SCUBA LASER UNESCO FIFA
     NAFTA ASAP POTUS SCOTUS JSON YAML NASDAQ SWAT AIDS COVID SARS NASCAR IKEA
-    LEGO UNIX LINUX GNOME DOS BIOS GUI WIFI PDF SQL JPEG MPEG NOAA OSHA FEMA
-    NO YES NOW NOT THE AND OR IT IS TO AT IN ON OF BE DO GO SO UP WE YOU ALL
+    LEGO UNIX LINUX GNOME DOS BIOS GUI WIFI SQL JPEG MPEG NOAA OSHA FEMA
+    """.split()
+)
+# Ordinary English words that show up in capitals (headings, emphasis) and
+# must not be spelled.
+_UPPERCASE_WORDS = frozenset(
+    """
+    NO YES NOW NOT THE AND OR IS TO AT IN ON OF BE DO GO SO UP WE YOU ALL
     ANY CAN BUT FOR HAS HAD HIS HER HOW MAY NEW OLD ONE OUR OUT SEE TWO WAS
     WHO WHY WIN DONE STOP HELP OPEN FREE HOME ERROR NOTE TODO END TIP WARN
     """.split()
 )
+_KEEP_WORDS = _SPOKEN_ACRONYMS | _UPPERCASE_WORDS
 _ROMAN = {"II": "two", "III": "three", "VII": "seven", "VIII": "eight"}
 
 _MONTHS = (
@@ -327,10 +344,13 @@ _INLINE_MARKDOWN: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def _currency(m: re.Match[str]) -> str:
-    symbol, whole, fraction = m.group(1), m.group(2), m.group(3)
-    scale = m.group(4) or m.group(5)
+    symbol, negative, whole, fraction = m.group(1), m.group(2), m.group(3), m.group(4)
+    scale = m.group(5) or m.group(6)
+    return ("minus " if negative else "") + _amount(symbol, whole, fraction, scale)
+
+
+def _amount(symbol: str, whole: str, fraction: str | None, scale: str | None) -> str:
     singular, plural, minor_singular, minor_plural = _CURRENCIES[symbol]
-    whole = whole.replace(",", "")
     if scale:
         amount = _decimal_to_words(whole, fraction)
         scale_word = _SCALE_WORDS.get(scale.lower(), scale.lower())
@@ -340,7 +360,7 @@ def _currency(m: re.Match[str]) -> str:
     if cents and minor_singular and minor_plural:
         minor = number_to_words(cents)
         minor_unit = _plural(minor, minor_singular, minor_plural)
-        if whole == "0":
+        if whole.strip("0,") == "":
             return f"{minor} {minor_unit}"
         return f"{major} {_plural(major, singular, plural)} and {minor} {minor_unit}"
     if fraction and ((cents == 0 and len(fraction) > 2) or not minor_singular):
@@ -349,23 +369,28 @@ def _currency(m: re.Match[str]) -> str:
 
 
 def _unit(m: re.Match[str]) -> str:
-    amount = _decimal_to_words(m.group(1).replace(",", ""), m.group(2))
+    amount = _decimal_to_words(m.group(1), m.group(2))
     singular, plural = _UNITS[m.group(3)]
     return f"{amount} {_plural(amount, singular, plural)}"
 
 
 def _degrees(m: re.Match[str]) -> str:
-    amount = _decimal_to_words(m.group(1).replace(",", ""), m.group(2))
+    amount = _decimal_to_words(m.group(1), m.group(2))
     scale = {"C": " Celsius", "F": " Fahrenheit"}.get(m.group(3) or "", "")
     return f"{amount} {_plural(amount, 'degree', 'degrees')}{scale}"
 
 
 def _percent(m: re.Match[str]) -> str:
-    return f"{_decimal_to_words(m.group(1).replace(',', ''), m.group(2))} percent"
+    return f"{_decimal_to_words(m.group(1), m.group(2))} percent"
 
 
 def _time(m: re.Match[str]) -> str:
     hour, minute, meridiem = int(m.group(1)), m.group(2), m.group(3)
+    # "5 p.m." consumed its final period; give it back when it also ended the
+    # sentence ("Ends at 5 p.m. Bring snacks.").
+    tail = ""
+    if m.group(0).endswith(".") and re.match(r"\s*(?:[A-Z\"'(\[]|$)", m.string[m.end() :]):
+        tail = "."
     if hour > 24 or (minute is not None and int(minute) > 59):
         return m.group(0)
     if meridiem and hour > 12:
@@ -381,7 +406,7 @@ def _time(m: re.Match[str]) -> str:
         words += " " + number_to_words(minutes)
     if meridiem:
         words += " eh M" if meridiem[0].lower() == "a" else " P M"
-    return words
+    return words + tail
 
 
 def _iso_date(m: re.Match[str]) -> str:
@@ -452,15 +477,27 @@ def _number_range(m: re.Match[str]) -> str:
     return f"{m.group(1)} to {m.group(2)}"
 
 
+def _version(m: re.Match[str]) -> str:
+    """Dotted versions: ``3.11.2`` -> ``three point eleven point two``."""
+    return " point ".join(number_to_words(int(part)) for part in m.group(0).split("."))
+
+
 def _number(m: re.Match[str]) -> str:
-    return _decimal_to_words(m.group(1).replace(",", ""), m.group(2))
+    return _decimal_to_words(m.group(1), m.group(2))
 
 
 _SHOUTING = re.compile(r"\b[A-Z]{2,}(?:[\s,]+[A-Z]{2,}\b){2,}")
 
 
 def _unshout(m: re.Match[str]) -> str:
-    return m.group(0).lower()
+    """Three or more capitalised words in a row are shouting ("I AM HERE NOW"),
+    unless every token could be an acronym ("CPU, GPU, RAM and SSD" is a list
+    of them). A run is shouting when it contains a word longer than five
+    letters or a known English word."""
+    words = re.findall(r"[A-Z]+", m.group(0))
+    if any(len(w) > 5 or w in _UPPERCASE_WORDS for w in words):
+        return m.group(0).lower()
+    return m.group(0)
 
 
 def _acronym(m: re.Match[str]) -> str:
@@ -485,19 +522,26 @@ def _fraction(m: re.Match[str]) -> str:
     return f"{whole} and {article}{frac.removeprefix('one ')}"
 
 
-_PASSES: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...] = (
-    # Abbreviations that are read as phrases.
+_Pass = tuple[re.Pattern[str], "str | Callable[[re.Match[str]], str]"]
+
+# Abbreviations that are read as phrases.
+_ABBREVIATION_PASSES: tuple[_Pass, ...] = (
     (re.compile(r"\be\.g\.,?\s*", re.I), "for example, "),
     (re.compile(r"\bi\.e\.,?\s*", re.I), "that is, "),
     (re.compile(r"\betc\.(?=\s*[a-z])"), "etcetera"),
     (re.compile(r"\betc\.?(?=\s*[.!?,;:]|\s*$)"), "etcetera"),
     (re.compile(r"\bvs\.?\s", re.I), "versus "),
-    # Web addresses: the scheme is already gone; make the dot audible.
+)
+
+# Web addresses and mail: the scheme is already gone; make the dot audible.
+_WEB_PASSES: tuple[_Pass, ...] = (
     (re.compile(r"(\w)\.(com|org|net|io|dev|ai|app|edu|gov|co\.uk|de)\b"), r"\1 dot \2"),
     (re.compile(r"(\w)@(\w)"), r"\1 at \2"),
-    # Phone numbers before anything else eats the digits.
+)
+
+# Phone numbers and dates, before anything else eats their digits.
+_DATE_PASSES: tuple[_Pass, ...] = (
     (re.compile(r"\b(\d{3})[-. ](\d{3})[-. ](\d{4})\b"), _phone),
-    # Dates.
     (re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), _iso_date),
     (re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"), _slash_date),
     (
@@ -511,15 +555,22 @@ _PASSES: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...
         _day_month,
     ),
     (re.compile(rf"\b({_MONTH_PATTERN})\s+(1[5-9]\d\d|20\d\d)\b"), _month_year),
-    # Times: 8:14, 8:14 pm, 8 pm, 14:30.
-    (re.compile(r"(?<![\d:.])(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?(?![a-z])", re.I), _time),
+)
+
+# Times: 8:14, 8:14 pm, 8 p.m., 14:30. Then ratios and scores: 16:9, 3:1.
+_TIME_PASSES: tuple[_Pass, ...] = (
+    (re.compile(r"(?<![\d:.])(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?", re.I), _time),
     (re.compile(r"(?<![\d:.])(\d{1,2}):(\d{2})(?![\d:])()"), _time),
-    # A leading minus, before the units below hide the digit behind a word.
-    (re.compile(r"(?<![\w.])-(?=\d)"), "minus "),
-    # Money, percentages, temperatures, units.
+    (re.compile(r"(?<![\d:.])(\d+):(\d+)(?![\d:])"), r"\1 to \2"),
+)
+
+# Money, percentages, temperatures, units. A leading minus comes first,
+# before the units hide the digit behind a word.
+_QUANTITY_PASSES: tuple[_Pass, ...] = (
+    (re.compile(r"(?<![\w.$\u20ac\u00a3\u00a5])-(?=[\d$\u20ac\u00a3\u00a5])"), "minus "),
     (
         re.compile(
-            r"([$\u20ac\u00a3\u00a5])\s?(\d+(?:,\d{3})*)(?:\.(\d+))?"
+            r"([$\u20ac\u00a3\u00a5])\s?(-?)(\d+(?:,\d{3})*)(?:\.(\d+))?"
             r"(?:\s*(thousand|million|billion|trillion)\b|(k|K|m|M|bn|B)(?![A-Za-z]))?"
         ),
         _currency,
@@ -530,11 +581,18 @@ _PASSES: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...
         _degrees,
     ),
     (
-        re.compile(rf"(?<![\w.])(\d+(?:,\d{{3}})*)(?:\.(\d+))?\s?({_UNIT_PATTERN})(?![A-Za-z])"),
+        re.compile(
+            rf"(?<![\w.])(\d+(?:,\d{{3}})*)(?:\.(\d+))?\s?({_UNIT_PATTERN})"
+            r"(?:\.(?=\s+[a-z]))?(?![A-Za-z])"
+        ),
         _unit,
     ),
     (re.compile(r"(\d+)?([\u00bd\u2153\u2154\u00bc\u00be])"), _fraction),
-    # Ordinals, years, decades, ranges.
+)
+
+# Ordinals, years, decades, ranges, versions, multipliers, then plain
+# numbers. Alphanumerics like x86 or mp3 are left to the engine.
+_NUMBER_PASSES: tuple[_Pass, ...] = (
     (re.compile(r"\b(\d+)(?:st|nd|rd|th)\b"), _ordinal),
     (re.compile(r"\b(1[5-9]\d0|20\d0)s\b"), _decade),
     (re.compile(r"\b(1[5-9]\d\d|20\d\d)\s?[-\u2013]\s?(1[5-9]\d\d|20\d\d)\b"), _year_range),
@@ -547,11 +605,14 @@ _PASSES: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...
         _year_in_context,
     ),
     (re.compile(rf"(?<![\w.])({_NUMBER})[-\u2013]({_NUMBER})(?!\w|\.\d)"), _number_range),
-    # Plain numbers; alphanumerics like x86 or mp3 are left to the engine.
+    (re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?![\w.])"), _version),
+    (re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)x\b"), r"\1 x"),
     (re.compile(r"#\s?(?=\d)"), "number "),
-    (re.compile(r"(?<![\w.])(\d+(?:,\d{3})*)(?:\.(\d+))?(?![\w])"), _number),
-    # Acronyms and symbols. Three or more capitalised words in a row are
-    # shouting, not acronyms.
+    (re.compile(r"(?<![\w.])(\d+(?:,\d{3})*)(?:\.(\d+))?(?!\w|\.\d)"), _number),
+)
+
+# Acronyms and symbols.
+_SYMBOL_PASSES: tuple[_Pass, ...] = (
     (_SHOUTING, _unshout),
     (re.compile(r"(?<![\w'])((?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,6})('?s)?(?![\w'])"), _acronym),
     (re.compile(r"\s*&\s*"), " and "),
@@ -565,6 +626,16 @@ _PASSES: tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...
     (re.compile(r"_"), " "),
     (re.compile(r"\s*\u2014\s*|\s+[-\u2013]\s+"), ", "),
     (re.compile(r"\u2026"), "..."),
+)
+
+_PASSES: tuple[_Pass, ...] = (
+    _ABBREVIATION_PASSES
+    + _WEB_PASSES
+    + _DATE_PASSES
+    + _TIME_PASSES
+    + _QUANTITY_PASSES
+    + _NUMBER_PASSES
+    + _SYMBOL_PASSES
 )
 
 _KEEP_SYMBOLS = frozenset("\u00b0")  # the degree sign is a symbol too
@@ -595,14 +666,22 @@ _PUNCT_CLEANUP: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
-def normalize(text: str) -> str:
+SUPPORTED_LANGUAGES = frozenset({"en"})
+
+
+def normalize(text: str, *, language: str = "en") -> str:
     """Rewrite ``text`` so a TTS engine reads it the way a person would.
 
     Numbers, times, dates, money, percentages, temperatures and units become
     words; acronyms such as ``CO2`` and ``HVAC`` are spelled; Markdown is
     stripped; smart punctuation and whitespace are tidied. See the module
     docstring for the guarantees.
+
+    ``language`` is a BCP-47 tag; only English (``en`` and any ``en-*``) is
+    implemented and anything else raises ``ValueError``.
     """
+    if language.split("-")[0].lower() not in SUPPORTED_LANGUAGES:
+        raise ValueError(f"no text normalizer for language {language!r}")
     text = unicodedata.normalize("NFC", text)
     text = text.translate(_SUBSCRIPT_DIGITS).translate(_SUPERSCRIPT_DIGITS).translate(_QUOTES)
     text = _strip_markdown(text)
