@@ -30,6 +30,13 @@ log_level = "info"
 # unreachable from other machines, so there is nothing worth announcing.
 zeroconf = true
 
+# Show a settings form on each service's status page (http://<host>:8880/).
+# Off by default. When on, the form asks for api_key if one is set, and it is
+# refused when bind is not a loopback address and no api_key is set. The
+# menu bar app and `voiced settings` use the local control socket instead and
+# do not need this.
+browser_settings = false
+
 # While a streaming client holds the inference slot (Wyoming STT, the
 # WebSocket stream), drop it after this many seconds without input, and drop
 # any client that does not accept a write within write_timeout_s. Otherwise a
