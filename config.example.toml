@@ -24,6 +24,12 @@ log_dir = "~/Library/Logs/voiced"
 # debug, info, warning, error
 log_level = "info"
 
+# Advertise the Wyoming listeners on the local network (mDNS, service type
+# _wyoming._tcp.local.) so Home Assistant offers to add them automatically.
+# Only active when bind is not a loopback address: a listener on 127.0.0.1 is
+# unreachable from other machines, so there is nothing worth announcing.
+zeroconf = true
+
 # While a streaming client holds the inference slot (Wyoming STT, the
 # WebSocket stream), drop it after this many seconds without input, and drop
 # any client that does not accept a write within write_timeout_s. Otherwise a
@@ -45,7 +51,8 @@ languages = ["en"]
 vad_silence_ms = 200
 # Requests waiting for the GPU beyond this number get HTTP 503.
 queue_depth = 8
-# Largest upload accepted by /v1/audio/transcriptions.
+# Largest upload accepted by /v1/audio/transcriptions. Also caps one Wyoming
+# utterance at the same amount of 16-bit 16 kHz audio (about 26 minutes at 50).
 max_upload_mb = 50
 
 [tts]

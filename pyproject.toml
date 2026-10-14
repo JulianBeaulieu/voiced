@@ -31,6 +31,7 @@ dependencies = [
     # uvicorn's WebSocket backend; without it WebSocket routes (and the 403
     # for a handshake refused before accept) do not work.
     "websockets>=13",
+    "zeroconf>=0.132",
 ]
 
 [project.optional-dependencies]

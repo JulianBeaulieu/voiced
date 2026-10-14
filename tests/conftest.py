@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -27,6 +28,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip)
 
 
+def free_port() -> int:
+    """An ephemeral TCP port that was free a moment ago."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+    return port
+
+
 @pytest.fixture
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Settings with the fake engines, a temp log dir, and no env leakage."""
@@ -40,6 +49,10 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     s.tts.engine = "fake"
     s.stt.queue_depth = 2
     s.tts.queue_depth = 2
+    # Ephemeral Wyoming ports, so a test that runs an app lifespan never binds
+    # the real 10300/10200 (which `voiced serve` may hold in another terminal).
+    s.stt.wyoming_port = free_port()
+    s.tts.wyoming_port = free_port()
     return s
 
 
