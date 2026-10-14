@@ -73,6 +73,14 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 `voiced install --dry-run` shows everything it would do without writing
 anything.
 
+For a menu bar icon that shows whether both services are up, restarts them,
+opens the logs and changes the common settings, build the menu bar app from
+the same checkout with `~/voiced/menubar/Scripts/bundle.sh` and open
+`~/voiced/menubar/build/voiced.app`. It needs Swift 6 (Xcode 16 or newer)
+until there is a signed release, and it talks only to the watchdog's local
+control socket, never to the network. See
+[menubar/README.md](menubar/README.md).
+
 ## What you get
 
 | Endpoint | Service | Port | Purpose |
@@ -316,6 +324,7 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 | [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
 | [docs/operations.md](docs/operations.md) | Commands, launchd, watchdog, control channel, logs, FileVault, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
+| [menubar/README.md](menubar/README.md) | The macOS menu bar app: building, running it against the fake control server |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, conventions |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
