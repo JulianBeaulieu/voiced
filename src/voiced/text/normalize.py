@@ -308,10 +308,11 @@ def _strip_markdown(text: str) -> str:
 
 
 def _end_block(text: str) -> str:
+    """Add a sentence-final period unless one is already there (possibly behind
+    a closing quote or bracket)."""
     text = text.strip()
-    if text and text[-1] not in _TERMINAL and text[-1] not in "\"')]":
-        text += "."
-    elif text and text[-1] in "\"')]" and (len(text) < 2 or text[-2] not in _TERMINAL):
+    last = text.rstrip("\"')]")[-1:]
+    if last and last not in _TERMINAL:
         text += "."
     return text
 
@@ -386,11 +387,6 @@ def _percent(m: re.Match[str]) -> str:
 
 def _time(m: re.Match[str]) -> str:
     hour, minute, meridiem = int(m.group(1)), m.group(2), m.group(3)
-    # "5 p.m." consumed its final period; give it back when it also ended the
-    # sentence ("Ends at 5 p.m. Bring snacks.").
-    tail = ""
-    if m.group(0).endswith(".") and re.match(r"\s*(?:[A-Z\"'(\[]|$)", m.string[m.end() :]):
-        tail = "."
     if hour > 24 or (minute is not None and int(minute) > 59):
         return m.group(0)
     if meridiem and hour > 12:
@@ -406,7 +402,7 @@ def _time(m: re.Match[str]) -> str:
         words += " " + number_to_words(minutes)
     if meridiem:
         words += " eh M" if meridiem[0].lower() == "a" else " P M"
-    return words + tail
+    return words
 
 
 def _iso_date(m: re.Match[str]) -> str:
@@ -559,7 +555,12 @@ _DATE_PASSES: tuple[_Pass, ...] = (
 
 # Times: 8:14, 8:14 pm, 8 p.m., 14:30. Then ratios and scores: 16:9, 3:1.
 _TIME_PASSES: tuple[_Pass, ...] = (
-    (re.compile(r"(?<![\d:.])(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?", re.I), _time),
+    (
+        re.compile(
+            r"(?<![\d:.])(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b(?:\.(?=\s*(?-i:[a-z])))?", re.I
+        ),
+        _time,
+    ),
     (re.compile(r"(?<![\d:.])(\d{1,2}):(\d{2})(?![\d:])()"), _time),
     (re.compile(r"(?<![\d:.])(\d+):(\d+)(?![\d:])"), r"\1 to \2"),
 )
@@ -605,7 +606,7 @@ _NUMBER_PASSES: tuple[_Pass, ...] = (
         _year_in_context,
     ),
     (re.compile(rf"(?<![\w.])({_NUMBER})[-\u2013]({_NUMBER})(?!\w|\.\d)"), _number_range),
-    (re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?![\w.])"), _version),
+    (re.compile(r"(?<![\w.])\d+(?:\.\d+){2,}(?!\w|\.\d)"), _version),
     (re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)x\b"), r"\1 x"),
     (re.compile(r"#\s?(?=\d)"), "number "),
     (re.compile(r"(?<![\w.])(\d+(?:,\d{3})*)(?:\.(\d+))?(?!\w|\.\d)"), _number),
@@ -666,6 +667,9 @@ _PUNCT_CLEANUP: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+# C0 control characters except tab and newline; a NUL byte stops espeak.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 SUPPORTED_LANGUAGES = frozenset({"en"})
 
 
@@ -681,7 +685,12 @@ def normalize(text: str, *, language: str = "en") -> str:
     implemented and anything else raises ``ValueError``.
     """
     if language.split("-")[0].lower() not in SUPPORTED_LANGUAGES:
+        # A programmer error: the API layer resolves the client's language
+        # against the engine before any text reaches here, so this guards an
+        # internal invariant rather than client input. voiced.text stays free
+        # of a dependency on voiced.engines, so it does not raise EngineError.
         raise ValueError(f"no text normalizer for language {language!r}")
+    text = _CONTROL_CHARS.sub("", text)
     text = unicodedata.normalize("NFC", text)
     text = text.translate(_SUBSCRIPT_DIGITS).translate(_SUPERSCRIPT_DIGITS).translate(_QUOTES)
     text = _strip_markdown(text)

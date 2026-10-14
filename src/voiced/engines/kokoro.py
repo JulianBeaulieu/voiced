@@ -192,8 +192,9 @@ class KokoroEngine(TTSEngine):
         rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:
             raise RuntimeError(f"Kokoro model reports {rate} Hz, expected {TTS_SAMPLE_RATE}")
-        packs = self._load_voice_packs(kokoro_voices(self.languages))
-        voices = [v for v in kokoro_voices(self.languages) if v.id in packs]
+        all_voices = kokoro_voices(self.languages)
+        packs = self._load_voice_packs(all_voices)
+        voices = [v for v in all_voices if v.id in packs]
         if not voices:
             raise RuntimeError(f"no usable voices found in {self.model_id}")
         mx.eval(*packs.values())
@@ -259,7 +260,13 @@ class KokoroEngine(TTSEngine):
                 yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
 
     def phonemize(self, text: str, voice: str) -> str:
-        """espeak-ng phonemes for ``text`` in the language of ``voice``."""
+        """espeak-ng phonemes for ``text`` in the language of ``voice``.
+
+        For tests and diagnostics only: it runs the phonemizer on the calling
+        thread, and espeak-ng holds process-global state that is not safe to
+        call concurrently with a synthesis in flight. Synthesis itself
+        phonemizes inside the worker thread the slot already serializes.
+        """
         self._check_loaded()
         return _phonemize(self._tokenizer, text, voice)
 
@@ -284,7 +291,7 @@ def _load_espeak() -> Any:
         try:
             tokenizer = Tokenizer(EspeakConfig(lib_path=library, data_path=data))
             probe = tokenizer.phonemize("hello", "en-us")
-        except Exception as exc:  # the tokenizer raises RuntimeError and OSError
+        except (RuntimeError, OSError) as exc:  # how the tokenizer reports a bad library
             errors.append(f"{library}: {type(exc).__name__}: {exc}")
             continue
         if not probe:
@@ -292,7 +299,8 @@ def _load_espeak() -> Any:
             continue
         # kokoro_onnx's Tokenizer silently prefers PHONEMIZER_ESPEAK_LIBRARY
         # when that is set; log the library actually in use.
-        log.info("kokoro: espeak-ng at %s", os.environ.get("PHONEMIZER_ESPEAK_LIBRARY") or library)
+        in_use = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY") or library
+        log.info("kokoro: espeak-ng at %s", in_use)
         return tokenizer
     detail = "; ".join(errors) if errors else "no espeak-ng library found"
     raise EspeakNotFound(
@@ -317,5 +325,4 @@ def _synth(model: Any, tokenizer: Any, pack: Any, sentence: str, voice: str, spe
     for chunk in cut_to_length(phonemes, MAX_PHONEMES):
         out = model(chunk, pack[len(chunk) - 1], speed, return_output=True)
         parts.append(np.array(out.audio, copy=False).reshape(-1))
-    audio = np.concatenate(parts) if len(parts) > 1 else parts[0]
-    return float32_to_pcm16(audio)
+    return float32_to_pcm16(np.concatenate(parts))

@@ -35,6 +35,7 @@ CASES: list[tuple[str, str]] = [
     ("There are 2048 tokens.", "There are two thousand forty eight tokens."),
     ("Use \u00bd cup, then 2\u00bd hours.", "Use one half cup, then two and a half hours."),
     ("Version 3.11.2 is out.", "Version three point eleven point two is out."),
+    ("Upgrade to Python 3.11.2.", "Upgrade to Python three point eleven point two."),
     ("It sold 1,000,000,000 copies.", "It sold one billion copies."),
     ("It is 2.5x faster, 2x more.", "It is two point five x faster, two x more."),
     # ordinals, years, decades
@@ -57,6 +58,7 @@ CASES: list[tuple[str, str]] = [
     ("Ends at 5 pm. Bring snacks.", "Ends at five P M. Bring snacks."),
     ("Ends at 5 p.m. Bring snacks.", "Ends at five P M. Bring snacks."),
     ("He left at 3 p.m. on Monday.", "He left at three P M on Monday."),
+    ("All\x00 clear now.", "All clear now."),
     # dates
     ("On 2026-10-14.", "On October fourteenth, twenty twenty six."),
     ("On 10/14/2026.", "On October fourteenth, twenty twenty six."),

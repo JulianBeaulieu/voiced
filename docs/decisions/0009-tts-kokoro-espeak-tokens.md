@@ -1,4 +1,4 @@
-# 0004: Kokoro pronounces espeak-ng phonemes, not misaki's
+# 0009: Kokoro pronounces espeak-ng phonemes, not misaki's
 
 Date: 2026-10-14. Status: accepted.
 
@@ -52,6 +52,10 @@ uses different G2Ps for them).
 
 ## espeak-ng and the GPL
 
+The Kokoro-82M weights are Apache-2.0. They are not committed to this
+repository; `load()` downloads them from the Hugging Face repo
+`mlx-community/Kokoro-82M-bf16` into the local cache on first run.
+
 espeak-ng is GPL-3. voiced is MIT. espeak-ng is used as an external shared
 library loaded at run time, never copied into this repository, so the
 voiced code stays MIT and the user installs espeak-ng separately. There is
@@ -69,8 +73,8 @@ bundles its own espeak-ng; the engine does not use it. espeak-ng has a fixed
 size path buffer and silently falls back to its compiled-in data path when
 the data directory's path is long, which is what happens to the wheel copy
 inside a deeply nested virtual environment, while the Homebrew data lives at
-a short path. The installer should still create the venv at a short path
-(HANDOFF section 6).
+a short path. For the same reason the installer should create its virtual
+environment at a short filesystem path.
 
 Note that Homebrew's deprecated `espeak` formula conflicts with `espeak-ng`
 (both install an `espeak` binary); `brew unlink espeak` first if it is
@@ -81,8 +85,8 @@ installed.
 - Pronunciation quality depends on espeak-ng's English dictionaries, which
   are good for common words and acronyms and occasionally wrong for names.
   The normalizer is the place to fix systematic cases.
-- `doctor` must check for a working espeak-ng (the engine's `find_espeak`
-  helper can be reused).
+- `doctor` must check for a working espeak-ng (the engine's
+  `espeak_candidates()` helper can be reused).
 - Kokoro's 510-phoneme limit is enforced by the sentence splitter (300
   characters per chunk) and, because acronym-heavy text phonemizes to more
   than 1.7 characters per character, by cutting the phoneme string at spaces
