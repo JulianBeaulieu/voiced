@@ -6,8 +6,11 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from voiced import doctor
 from voiced.config import Settings
+from voiced.engines.kokoro import ENV_ESPEAK_LIBRARY
 from voiced.launchd.control import CommandResult
 from voiced.watchdog import Observation
 
@@ -57,10 +60,62 @@ def test_python_version() -> None:
     assert doctor.check_python((3, 14, 0)).result == "fail"
 
 
+KEG = "/opt/homebrew/opt/espeak-ng"
+
+
+def test_espeak_unlinked_keg_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keg is what the engine loads, linked or not; no binary on PATH needed."""
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    keg_lib = f"{KEG}/lib/libespeak-ng.dylib"
+    monkeypatch.setattr(Path, "is_file", lambda self: str(self) == keg_lib)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    check = doctor.check_espeak()
+    assert check.result == "pass"
+    assert check.detail == f"{keg_lib} (Homebrew), data {KEG}/share/espeak-ng-data"
+
+
+def test_espeak_binary_on_path_without_library_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An espeak-ng binary the engine cannot load is not enough."""
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+    monkeypatch.setattr("shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+    check = doctor.check_espeak()
+    assert check.result == "fail"
+    assert "brew install espeak-ng" in check.detail and ENV_ESPEAK_LIBRARY in check.detail
+    assert doctor.check_espeak(required=False).result == "warn"
+
+
+def test_espeak_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    lib = tmp_path / "libespeak-ng.dylib"
+    lib.write_bytes(b"")
+    monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
+    check = doctor.check_espeak()
+    assert check == doctor.Check("espeak-ng", "pass", f"{lib} ({ENV_ESPEAK_LIBRARY})")
+    monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(tmp_path / "missing.dylib"))
+    broken = doctor.check_espeak()
+    assert broken.result == "fail" and "missing.dylib" in broken.detail
+
+
+def test_espeak_required_follows_tts_engine(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[bool] = []
+
+    def fake(required: bool = True) -> doctor.Check:
+        seen.append(required)
+        return doctor.Check("espeak-ng", "pass")
+
+    monkeypatch.setattr(doctor, "check_espeak", fake)
+    monkeypatch.setattr(doctor, "daemon_evidence", lambda s, r: [])
+    runner = make_runner({})
+    settings.tts.engine = "kokoro"
+    doctor.run_all(settings, runner)
+    settings.tts.engine = "soprano"
+    doctor.run_all(settings, runner)
+    assert seen == [True, False]
+
+
 def test_external_programs() -> None:
-    assert doctor.check_espeak(lambda n: "/opt/homebrew/bin/espeak-ng").result == "pass"
-    missing = doctor.check_espeak(lambda n: None)
-    assert missing.result == "warn" and "brew install espeak-ng" in missing.detail
     no_ffmpeg = doctor.check_ffmpeg(lambda n: None)
     assert no_ffmpeg.result == "fail" and "brew install ffmpeg" in no_ffmpeg.detail
     assert doctor.check_ffmpeg(lambda n: "/usr/local/bin/ffmpeg").result == "pass"
