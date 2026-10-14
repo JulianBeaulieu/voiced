@@ -16,9 +16,9 @@ boring: no model, no pydantic, fast to start, impossible to wedge.
 the `voiced.launchd.control` helpers it uses import only the standard library
 (`urllib`, `json`, `logging`, `subprocess`). The process is started through
 the normal `voiced` entry point, which loads the TOML config with pydantic
-and converts it to plain values (`Policy`, `ServiceSpec`) before handing
-over; the module itself has no third-party imports and is testable without
-any. Re-implementing the config parser to avoid pydantic at startup was
+and hands over its `WatchdogConfig` section plus plain `ServiceSpec` values;
+the module itself has no third-party imports at runtime and is testable
+without any. Re-implementing the config parser to avoid pydantic at startup was
 judged more code than it is worth.
 
 Every `interval_s` (default 15 s) it polls each service's `/health` with

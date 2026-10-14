@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 import voiced
-from voiced.config import SERVICES, DaemonName, Settings, config_path
+from voiced.config import HTTP_SERVICES, SERVICES, DaemonName, Settings, config_path
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -32,7 +32,7 @@ from voiced.launchd.control import (
 from voiced.launchd.plist import log_paths, render_plist
 
 Service = DaemonName
-EXTRAS: tuple[str, ...] = ("stt", "tts")
+EXTRAS: tuple[str, ...] = HTTP_SERVICES  # one package extra per inference service
 METAL_PROBE_FILE = "metal-probe.json"
 # espeak-ng (Kokoro's phonemizer) uses a fixed-size buffer for its data path;
 # the venv path plus site-packages/espeakng_loader/espeak-ng-data must fit.
@@ -387,7 +387,9 @@ def plan_install(
     """Resolve CLI flags, config and defaults into an :class:`InstallPlan`."""
     config_file = config_file or config_path()
     env_hf_home = os.environ.get("HF_HOME")
-    hf_home = settings.install.hf_home or (Path(env_hf_home).expanduser() if env_hf_home else None)
+    hf_home = settings.install.hf_home or (Path(env_hf_home) if env_hf_home else None)
+    if hf_home is not None:
+        hf_home = hf_home.expanduser().absolute()  # the daemon has a different cwd
     return InstallPlan(
         user=user or getpass.getuser(),
         home=home or Path.home(),

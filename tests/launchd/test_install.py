@@ -177,6 +177,12 @@ def test_hf_home_resolved_once_for_plist_and_download(
     assert p.environment()["HF_HOME"] == str(tmp_path / "from-config")
     assert f"HF_HOME={tmp_path / 'from-config'}" in p.model_download_command()
 
+    settings.install.hf_home = None
+    monkeypatch.setenv("HF_HOME", "relative/cache")
+    monkeypatch.chdir(tmp_path)
+    p = make()  # a relative HF_HOME is made absolute: the daemon's cwd differs
+    assert p.environment()["HF_HOME"] == str(tmp_path / "relative/cache")
+
 
 def test_venv_commands_with_uv(plan: InstallPlan) -> None:
     cmds = plan.venv_commands()

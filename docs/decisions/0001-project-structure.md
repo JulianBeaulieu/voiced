@@ -31,7 +31,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.doctor` | Machine checks for `voiced doctor`, each an injectable function. |
 | `voiced.table` | Plain-text table rendering shared by `status` and `doctor`. |
 | `voiced.cli` | Command tree and dispatch; `serve` and `config` live here. |
-| `voiced.cli_lifecycle` | `install | start | stop | status | logs | uninstall | doctor | watchdog`. |
+| `voiced.cli_lifecycle` | `install`, `start`, `stop`, `status`, `logs`, `uninstall`, `doctor`, `watchdog`. |
 | `voiced.testing` | Fake engines so everything above is testable without models. |
 
 Dependencies are split so CI and non-Apple machines can install the core:

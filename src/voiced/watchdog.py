@@ -26,7 +26,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from voiced.launchd.control import Runner, kickstart_argv, print_service, run_command
+from voiced.launchd.control import (
+    Runner,
+    kickstart_argv,
+    parse_print_output,
+    print_argv,
+    print_service,
+    run_command,
+)
 
 if TYPE_CHECKING:
     from voiced.config import WatchdogConfig
@@ -112,6 +119,7 @@ class Decision:
     action: Action
     reason: str
     recovered: bool = False
+    quiet: bool = False  # repeat of something already reported; log at DEBUG
 
 
 # Pure decision logic ------------------------------------------------------
@@ -126,10 +134,11 @@ def classify_stall(
     ``last_inference_at`` (last completed inference). The queue is stuck when
     it has been non-empty for ``stall_after_s`` with no completion in that
     time. Progress (a newer ``last_inference_at``) or an empty queue resets
-    the timer.
+    the timer; a poll that does not answer at all leaves it alone, so a
+    service that is wedged and only answers ``/health`` every other poll is
+    still caught.
     """
     if obs.kind != "ok" or obs.payload is None:
-        state.busy_since = None
         return obs
     depth = obs.payload.get("queue_depth")
     completion = obs.payload.get("last_inference_at")
@@ -179,6 +188,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         if state.last_pid is not None:
             state.grace_started_at = now
             state.failures = 0
+            state.busy_since = None
         state.last_pid = obs.pid
     obs = classify_stall(state, obs, policy, now)
 
@@ -194,11 +204,10 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
 
     if obs.loaded is False:
         state.failures = 0
-        reason = f"{obs.kind} and not loaded in launchd (stopped?); not restarting"
         if state.not_loaded_reported:
-            reason = "not loaded in launchd"
+            return Decision("none", "not loaded in launchd", quiet=True)
         state.not_loaded_reported = True
-        return Decision("none", reason)
+        return Decision("none", f"{obs.kind} and not loaded in launchd (stopped?); not restarting")
 
     in_grace = now - state.grace_started_at < policy.startup_grace_s
     if obs.kind == "unreachable" and in_grace:
@@ -318,6 +327,24 @@ def run_probe(spec: ServiceSpec, *, timeout_s: float) -> Observation | None:
     return None
 
 
+NOT_FOUND_EXIT = 113  # launchctl print: "Could not find service"
+
+
+def launchd_view(label: str, runner: Runner) -> tuple[bool | None, int | None]:
+    """``(loaded, pid)`` from ``launchctl print``.
+
+    Only the explicit "not found" exit means not loaded. Any other failure
+    (timeout, launchctl missing) is unknown, so the caller keeps counting
+    failures instead of treating the service as stopped.
+    """
+    result = runner(print_argv(label))
+    if result.returncode == NOT_FOUND_EXIT:
+        return False, None
+    if not result.ok:
+        return None, None
+    return True, parse_print_output(label, result).pid
+
+
 def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_command) -> Observation:
     """Health poll, launchd pid, then the optional probe.
 
@@ -325,8 +352,8 @@ def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_comm
     probe timeout would just be queueing, and restarting would kill real work.
     """
     obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
-    status = print_service(spec.label, runner)
-    obs = Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, status.loaded, status.pid)
+    loaded, pid = launchd_view(spec.label, runner)
+    obs = Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
     if policy.probe and obs.kind == "ok" and obs.payload and obs.payload.get("queue_depth") == 0:
         stalled = run_probe(spec, timeout_s=policy.probe_timeout_s)
         if stalled is not None:
@@ -425,7 +452,7 @@ class Watchdog:
                     log.warning("%s: %s", spec.name, result.detail)
             elif decision.action == "cooldown":
                 log.warning("%s: not restarting: %s", spec.name, decision.reason)
-            elif decision.reason == "not loaded in launchd":
+            elif decision.quiet:
                 log.debug("%s: %s", spec.name, decision.reason)
             elif obs.kind != "ok" or decision.recovered:
                 log.info("%s: %s", spec.name, decision.reason)

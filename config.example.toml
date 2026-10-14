@@ -66,8 +66,10 @@ interval_s = 15
 failures_before_restart = 3
 # Timeout for each /health request.
 timeout_s = 5
-# A service may report "starting" (model loading) for this long, measured by
-# its own uptime, before the watchdog treats the load as hung and restarts it.
+# Model-load allowance. For this long after the watchdog starts, after it
+# restarts a service, or after launchd gives a service a new pid, refused
+# connections are treated as "still loading", not as failures. A service that
+# answers "starting" for longer than this (by its own uptime) is restarted.
 startup_grace_s = 300
 # A service that stays "degraded" (last inference failed) for longer than this
 # is restarted.
@@ -80,6 +82,7 @@ stall_after_s = 60
 # Also send a tiny inference request each poll (only while the queue is empty)
 # and treat a timeout as a hang. Off by default.
 probe = false
+# How long the probe request may take before it counts as a hang.
 probe_timeout_s = 20
 
 [install]

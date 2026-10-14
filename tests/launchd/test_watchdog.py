@@ -124,7 +124,7 @@ def test_unloaded_service_is_never_restarted_and_reported_once() -> None:
     assert first.action == "none" and "not loaded in launchd (stopped?)" in first.reason
     for t in range(1, 50):
         d = decide(state, stopped, T0 + t, POLICY)
-        assert d == Decision("none", "not loaded in launchd")
+        assert d == Decision("none", "not loaded in launchd", quiet=True)
     assert state.failures == 0
     assert decide(state, ok(), T0 + 60, POLICY).recovered is False
     assert decide(state, stopped, T0 + 61, POLICY).reason.endswith("not restarting")
@@ -235,6 +235,48 @@ def test_empty_queue_clears_busy_timer_and_stall_counts_as_failure() -> None:
     for t in (100, 140, 180, 220):  # busy from 100; stalled at 140, 180, 220
         d = decide(state, busy(T0 + t, last=T0 - 1), T0 + t, POLICY)
     assert d.action == "restart" and "stalled 3x" in d.reason
+
+
+def test_wedged_service_answering_every_other_poll_is_still_caught() -> None:
+    """A wedged process may time out on /health on alternate polls; the busy
+    timer must survive the timeouts or the service is never restarted."""
+    state = fresh()
+    stuck = T0 - 1
+    actions: list[str] = []
+    for i, t in enumerate(range(0, 200, 10)):
+        obs = busy(T0 + t, last=stuck) if i % 2 == 0 else down("timed out after 0.5s")
+        actions.append(decide(state, obs, T0 + t, POLICY).action)
+    assert "restart" in actions
+    assert state.busy_since == T0  # never cleared by the timeouts
+
+
+def test_pid_change_clears_busy_timer() -> None:
+    state = fresh()
+    decide(state, busy(T0, last=T0 - 1), T0, POLICY)
+    assert state.busy_since == T0
+    decide(state, down(pid=777), T0 + 5, POLICY)
+    assert state.busy_since is None
+
+
+def test_launchd_view_fails_closed() -> None:
+    def rc(code: int, out: str = "") -> wd.Runner:
+        return lambda argv: CommandResult(code, out)
+
+    assert wd.launchd_view("x", rc(113)) == (False, None)  # not found: stopped
+    assert wd.launchd_view("x", rc(124)) == (None, None)  # timeout: unknown
+    assert wd.launchd_view("x", rc(127)) == (None, None)  # no launchctl: unknown
+    assert wd.launchd_view("x", rc(0, "system/x = {\n\tstate = running\n\tpid = 9\n}")) == (
+        True,
+        9,
+    )
+
+
+def test_unknown_launchd_state_keeps_counting_failures() -> None:
+    state = fresh()
+    unknown = Observation("unreachable", "refused", loaded=None, pid=None)
+    decide(state, unknown, T0, POLICY)
+    decide(state, unknown, T0 + 1, POLICY)
+    assert decide(state, unknown, T0 + 2, POLICY).action == "restart"
 
 
 # Watchdog.tick ---------------------------------------------------------------
