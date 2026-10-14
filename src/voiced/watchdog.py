@@ -3,7 +3,7 @@
 Runs as its own LaunchDaemon (``voiced watchdog``). Every ``interval_s`` it
 polls each service's ``/health`` and decides, per service, whether to restart
 it. The decision logic is a pure function of the previous state and the new
-observation so it can be unit-tested without a network (ADR 0005).
+observation so it can be unit-tested without a network (ADR 0012).
 
 This module and ``voiced.launchd.control`` import only the standard library
 at runtime: the watchdog is the thing that must keep working when everything

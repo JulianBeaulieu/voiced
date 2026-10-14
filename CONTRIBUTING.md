@@ -48,12 +48,15 @@ uv run pytest
 ## Tests
 
 The default `pytest` run must pass on a machine with no model, no GPU and no
-MLX packages installed, because that is what CI is. Use `FakeSTTEngine` and
+MLX packages installed, because that is what CI is. Tests that need ffmpeg
+skip when it is absent; CI installs it, so install it locally too
+(`brew install ffmpeg`) to run them. Use `FakeSTTEngine` and
 `FakeTTSEngine` from `voiced.testing` and the `lifespan_client` helper for
 HTTP tests.
 
-Tests that need real models or Metal carry the `model` marker and are
-skipped unless `VOICED_MODEL_TESTS=1` is set:
+Tests that need real models or Metal carry the `model` marker (registered
+in `pyproject.toml`) and are skipped by `tests/conftest.py` unless
+`VOICED_MODEL_TESTS=1` is set:
 
 ```python
 import pytest
@@ -96,6 +99,10 @@ under 300 KB each, free of personal content. Never commit model weights.
   them.
 - Non-obvious design choices get an ADR under `docs/decisions/` with the
   next free number, and a line in `docs/decisions/README.md`.
+- Engines run every blocking model call through
+  `voiced.threads.run_blocking`, and transports call engines only inside
+  `voiced.inference.inference()`; see
+  [ADR 0005](docs/decisions/0005-shared-inference-and-audio-primitives.md).
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
   the `stt` or `tts` extras; test and lint tools in the `dev` group.
 - Documentation that describes behaviour which has not landed yet carries an

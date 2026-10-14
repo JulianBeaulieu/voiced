@@ -6,8 +6,8 @@ described at the [end of this page](#wyoming-protocol).
 
 | Service | Default base URL | Endpoints |
 |---|---|---|
-| stt | `http://127.0.0.1:8881` | `/v1/audio/transcriptions`, `/v1/audio/transcriptions/stream`, `/v1/models`, `/health`, `/` |
-| tts | `http://127.0.0.1:8880` | `/v1/audio/speech`, `/v1/audio/voices`, `/v1/models`, `/health`, `/` |
+| stt | `http://127.0.0.1:8881` | `/v1/audio/transcriptions`, `/v1/audio/transcriptions/stream`, `/v1/models`, `/health`, `/`, `/metrics.json` |
+| tts | `http://127.0.0.1:8880` | `/v1/audio/speech`, `/v1/audio/voices`, `/v1/models`, `/health`, `/`, `/metrics.json` |
 
 The `/v1` routes follow the OpenAI audio API closely enough that the official
 clients work unmodified. Point the client at the service for the modality you
@@ -15,12 +15,18 @@ need; a client configured for the tts port cannot transcribe, and the other
 way round. The `api_key` argument is required by the client library; any
 value works unless you configured one (see [Authentication](#authentication)).
 
+While the model is still loading, every `/v1` route answers `503`
+`server_busy` with the message `EngineNotLoaded: model is still loading`
+and `Retry-After: 1`. `/health` shows the same state as `starting`.
+
 ## Authentication
 
 Off by default. Set `api_key` under `[server]` in the config (or
-`VOICED_SERVER__API_KEY`) and every `/v1` route requires a bearer token.
-`/health` and `/` never require one, so the watchdog and the status page keep
-working.
+`VOICED_SERVER__API_KEY`) and every `/v1` route requires a bearer token,
+including the WebSocket handshake. `/health`, `/` and `/metrics.json` never
+require one, so the watchdog and the status page keep working. With a key
+set, `/metrics.json` leaves out each error's detail text, which could echo
+what a client sent.
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/models -H 'Authorization: Bearer <key>'
@@ -33,36 +39,53 @@ tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="<key>")
 print([m.id for m in tts.models.list()])
 ```
 
-A missing or wrong token gets `401` with the standard
-[error shape](#errors). The Wyoming listeners are not affected: the protocol
-has no authentication.
+A missing or wrong token gets `401` with type `auth_error` in the standard
+[error shape](#errors); a WebSocket handshake gets HTTP `403`. The Wyoming
+listeners are not affected: the protocol has no authentication.
+
+## The `model` field
+
+Each service runs exactly one model, so `model` in a request is ignored:
+`whisper-1`, `tts-1`, `kokoro` or anything else selects the running engine.
+The one exception is a name that belongs to another engine installed on the
+same machine (its engine name or model id). That is a `400`
+`model_not_served`, because the caller clearly expected a different model.
+
+## Languages
+
+A service advertises the engine's languages that match the configured
+`languages` list, compared on the primary subtag and reported in the
+engine's more specific form. With `languages = ["en"]` and Kokoro, that is
+`["en-US", "en-GB"]`. A `language` hint is resolved the same way: `en`,
+`en-us` and `en_GB` are accepted; anything without a match is `400` with
+`UnsupportedLanguage` in the message. Voices are filtered by the same rule.
 
 ## POST /v1/audio/transcriptions
 
 Transcribe one complete audio file. Multipart form.
 
-| Field | Required | Description |
-|---|---|---|
-| `file` | yes | Any format ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, ...). Decoded to mono 16 kHz before inference. Limited by `max_upload_mb` (default 50). |
-| `model` | yes | Accepted for compatibility. The configured engine answers every request. |
-| `language` | no | BCP-47 code such as `en`. Must be in the configured list; otherwise `400`. Omit to let the engine decide. |
-| `response_format` | no | `json` (default), `text`, `verbose_json`, `srt`, `vtt`. |
-| `prompt`, `temperature` | no | Accepted and ignored. |
-
-<!-- TODO(phase2): verify how `model` is matched in the merged API -->
-
 ```sh
 curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
-  -F file=@clip.wav -F model=parakeet
+  -F file=@clip.wav -F model=whisper-1
 ```
 
 ```json
 {"text": "hello world"}
 ```
 
+| Field | Required | Description |
+|---|---|---|
+| `file` | yes | Any format ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, ...). Decoded to mono 16 kHz float32. Limited to `stt.max_upload_mb` (default 50). |
+| `model` | no | See [The `model` field](#the-model-field). |
+| `language` | no | Language hint; see [Languages](#languages). |
+| `response_format` | no | `json` (default), `text`, `verbose_json`, `srt`, `vtt`. |
+| `timestamp_granularities[]` | no | Accepted and ignored; `verbose_json` always has segment times. |
+
+Other OpenAI fields such as `prompt` and `temperature` are ignored.
+
 ```sh
 curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
-  -F file=@clip.wav -F model=parakeet -F response_format=verbose_json
+  -F file=@clip.wav -F response_format=verbose_json
 ```
 
 ```json
@@ -77,8 +100,16 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 }
 ```
 
-`text` returns the plain transcript with `Content-Type: text/plain`; `srt`
-and `vtt` return subtitle files built from the segments.
+`text` and `srt` return `text/plain`, `vtt` returns `text/vtt`, both
+subtitle formats built from the segments. Silence returns an empty `text`,
+not an error.
+
+| Status | `type` | When |
+|---|---|---|
+| 400 | `invalid_audio` | ffmpeg could not decode the upload. |
+| 400 | `invalid_request_error` | Missing `file`, bad `response_format`, unsupported language, malformed multipart. |
+| 413 | `payload_too_large` | The upload is over `stt.max_upload_mb`. The body is cut off while it is read, before parsing. |
+| 500 | `ffmpeg_missing` | ffmpeg is not installed on the server. |
 
 ```python
 from openai import OpenAI
@@ -86,18 +117,16 @@ from openai import OpenAI
 stt = OpenAI(base_url="http://127.0.0.1:8881/v1", api_key="unused")
 
 with open("clip.wav", "rb") as f:
-    result = stt.audio.transcriptions.create(model="parakeet", file=f)
+    result = stt.audio.transcriptions.create(model="whisper-1", file=f)
 print(result.text)
 
 with open("clip.wav", "rb") as f:
     verbose = stt.audio.transcriptions.create(
-        model="parakeet", file=f, response_format="verbose_json"
+        model="whisper-1", file=f, response_format="verbose_json"
     )
 for segment in verbose.segments:
     print(segment.start, segment.end, segment.text)
 ```
-
-Silence returns an empty `text`, not an error.
 
 ## WS /v1/audio/transcriptions/stream
 
@@ -105,32 +134,41 @@ Live transcription over a WebSocket. Send audio as it is captured, receive
 partial hypotheses while speaking and a final transcript at the end. Built for
 voice-agent frameworks such as Pipecat.
 
-<!-- TODO(phase2): verify the message schema against the merged implementation -->
-
 Connect to `ws://127.0.0.1:8881/v1/audio/transcriptions/stream`. With an API
-key, send it as the `Authorization: Bearer <key>` header on the upgrade
-request. The connection holds one inference slot for its whole life, so the
-queue limit applies to concurrent streams.
+key, send `Authorization: Bearer <key>` on the upgrade request. A bad key, or
+a model that is still loading, refuses the handshake with HTTP `403`.
 
 ### Messages from the client
 
-| Type | Payload | Meaning |
+| Frame | Payload | Meaning |
 |---|---|---|
-| text frame | `{"type": "start", "language": "en", "sample_rate": 16000, "encoding": "pcm_s16le"}` | Must be the first message. `language` is optional. `sample_rate` and `encoding` describe the binary frames; the defaults shown are the only values guaranteed in v1. |
-| binary frame | raw PCM | Audio chunks. Any size; 20 to 100 ms per frame keeps latency low. |
-| text frame | `{"type": "stop"}` | End of speech. The server finalizes and closes after sending `final`. |
+| text, optional, first | `{"type": "config", "sample_rate": 48000, "language": "en"}` | Both keys optional. `sample_rate` is the rate of the binary frames, 8000 to 192000, default 16000; other rates are resampled on the server. `language` is a hint as in [Languages](#languages). Must come before any audio. |
+| binary | raw PCM | Mono int16 little-endian at the configured rate. Any frame size; a partial sample is carried into the next frame. |
+| text | `{"type": "end"}` | End of the utterance. The server finalizes, sends `final` and closes. |
 
-The server does not run end-of-speech detection on this endpoint. The client
-decides when the utterance ends and sends `stop`. Use the Wyoming listener if
-you want the caller to supply end-of-speech, or add a VAD on the client.
+The server does not detect end of speech on this endpoint; the client
+decides and sends `end`.
 
 ### Messages from the server
 
 | Type | Payload | When |
 |---|---|---|
-| `partial` | `{"type": "partial", "text": "hello wor"}` | After audio arrives and the hypothesis changed. Text may be revised. |
-| `final` | `{"type": "final", "text": "hello world", "language": "en", "duration": 2.4, "segments": [...]}` | Once, after `stop`. Same fields as `verbose_json`. |
-| `error` | `{"type": "error", "error": {"message": "...", "type": "..."}}` | On any failure, followed by a close. `type` values match the [HTTP errors](#errors). |
+| `partial` | `{"type": "partial", "text": "hello wor"}` | When the hypothesis changes, at most every 250 ms. Text may be revised. |
+| `final` | `{"type": "final", "text": "hello world", "language": "en", "duration": 2.4, "segments": [{"start": 0.0, "end": 2.4, "text": "hello world"}]}` | Once, after `end`, followed by a normal close (1000). |
+
+Errors are reported only as the close code, with `ExceptionName: message` as
+the close reason:
+
+| Close code | Meaning |
+|---|---|
+| 1000 | Normal end after `final`. |
+| 1001 | The client sent nothing for `server.session_idle_s` (default 30), or did not accept a write within `server.write_timeout_s` (default 10). Treated as a disconnect. |
+| 1008 | Client error: a text frame that is not a JSON object, an unknown `type`, `config` after audio, a bad `sample_rate`, an unsupported language. |
+| 1011 | The engine failed. `/health` turns `degraded`. |
+| 1013 | The inference queue is full; retry later. |
+
+The connection holds one inference slot for its whole life, so `queue_depth`
+also limits concurrent streams.
 
 ```python
 import asyncio
@@ -142,11 +180,11 @@ import websockets
 async def main() -> None:
     uri = "ws://127.0.0.1:8881/v1/audio/transcriptions/stream"
     async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({"type": "start", "language": "en"}))
+        await ws.send(json.dumps({"type": "config", "sample_rate": 16000}))
         with open("clip.pcm", "rb") as f:  # mono int16 16 kHz
             while chunk := f.read(3200):  # 100 ms
                 await ws.send(chunk)
-        await ws.send(json.dumps({"type": "stop"}))
+        await ws.send(json.dumps({"type": "end"}))
         async for message in ws:
             event = json.loads(message)
             print(event["type"], event.get("text"))
@@ -157,45 +195,65 @@ asyncio.run(main())
 
 ## POST /v1/audio/speech
 
-Synthesize text. JSON body.
-
-| Field | Required | Description |
-|---|---|---|
-| `input` | yes | Text to speak. Limited by `max_input_chars` (default 4096). Numbers, times and acronyms are normalized before synthesis; markdown is stripped. |
-| `model` | yes | Accepted for compatibility. The configured engine answers every request. |
-| `voice` | no | A voice id from `/v1/audio/voices`. Defaults to `default_voice` from the config (`af_heart`). Unknown voices get `400`. |
-| `speed` | no | Multiplier, default `1.0`. |
-| `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
-
-<!-- TODO(phase2): verify how `model` is matched in the merged API -->
+Synthesize text. JSON body. Every format streams: the first bytes leave as
+soon as the first sentence is synthesized.
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/audio/speech \
   -H 'Content-Type: application/json' \
-  -d '{"model": "kokoro", "input": "The meeting is at 8:14.", "voice": "af_heart"}' \
+  -d '{"model": "tts-1", "input": "The meeting is at 8:14.", "voice": "af_heart"}' \
   -o out.wav
 ```
+
+| Field | Required | Description |
+|---|---|---|
+| `input` | yes | Text to speak, not empty, at most `tts.max_input_chars` (default 4096). Numbers, times, units and acronyms are spelled out before synthesis and Markdown is stripped. |
+| `model` | no | See [The `model` field](#the-model-field). |
+| `voice` | no | An id from [`/v1/audio/voices`](#get-v1audiovoices). Defaults to `tts.default_voice` (`af_heart`). |
+| `speed` | no | Multiplier above 0 and up to 4. Defaults to `tts.speed` (1.0). |
+| `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
+
+| Format | `Content-Type` | Body |
+|---|---|---|
+| `wav` | `audio/wav` | 24 kHz 16-bit mono PCM behind a header whose size fields are `0xFFFFFFFF` (length unknown); players read to the end of the stream. |
+| `pcm` | `audio/pcm` | Raw int16 little-endian mono at 24 kHz. |
+| `mp3` | `audio/mpeg` | Encoded by ffmpeg while synthesis runs. |
+| `opus` | `audio/ogg` | Opus in an Ogg container, encoded by ffmpeg while synthesis runs. |
+
+Errors are decided before any audio is sent, so a failed request never
+arrives as a truncated file:
+
+| Status | `type` | When |
+|---|---|---|
+| 400 | `invalid_request_error` | Empty `input`, a bad field, or a voice that is not served (`UnknownVoice` in the message), including a `tts.default_voice` outside the configured languages. |
+| 413 | `payload_too_large` | `input` is longer than `tts.max_input_chars`. |
+| 500 | `ffmpeg_missing` | `mp3` or `opus` requested and ffmpeg is not installed. |
+| 503 | `server_busy` | The inference queue is full, or the model is loading. |
+
+A client that hangs up while synthesis is still running stops the
+synthesis at the next chunk and is counted as a `disconnect` on the status
+page. A hang-up after synthesis finished counts as `ok`: the audio was
+produced and only its delivery failed. A client that stays connected but
+stops reading is cut off after `server.write_timeout_s` (default 10 s),
+which frees its encoder and buffered audio; uvicorn then logs
+`ASGI callable returned without completing response` at ERROR level. That
+line is a client that stopped reading, not a server error, and health is
+untouched.
 
 ```python
 from openai import OpenAI
 
 tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
-response = tts.audio.speech.create(
-    model="kokoro", voice="af_heart", input="The meeting is at 8:14."
-)
+response = tts.audio.speech.create(model="tts-1", voice="af_heart", input="The meeting is at 8:14.")
 response.write_to_file("out.wav")
 ```
 
-### Streaming
-
-`pcm` streams: the response is `audio/pcm` sent chunked, mono int16
-little-endian at 24 kHz, and the first bytes arrive as soon as the first
-sentence is synthesized. Play it as it comes in:
+Play `pcm` as it arrives:
 
 ```sh
 curl -sN http://127.0.0.1:8880/v1/audio/speech \
   -H 'Content-Type: application/json' \
-  -d '{"model": "kokoro", "input": "First sentence. Second sentence.", "response_format": "pcm"}' \
+  -d '{"input": "First sentence. Second sentence.", "response_format": "pcm"}' \
   | ffplay -f s16le -ar 24000 -ch_layout mono -nodisp -autoexit -
 ```
 
@@ -204,7 +262,7 @@ from openai import OpenAI
 
 tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
 with tts.audio.speech.with_streaming_response.create(
-    model="kokoro",
+    model="tts-1",
     voice="af_heart",
     input="First sentence. Second sentence.",
     response_format="pcm",
@@ -212,12 +270,6 @@ with tts.audio.speech.with_streaming_response.create(
     for chunk in response.iter_bytes(chunk_size=4800):
         play(chunk)  # your audio sink
 ```
-
-`wav`, `mp3` and `opus` are encoded once the whole text is synthesized, so
-they do not stream. The `Content-Type` is `audio/wav`, `audio/mpeg` or
-`audio/ogg` respectively.
-
-<!-- TODO(phase2): verify which formats stream in the merged API -->
 
 ## GET /v1/audio/voices
 
@@ -227,24 +279,25 @@ curl -s http://127.0.0.1:8880/v1/audio/voices
 
 ```json
 {
-  "voices": [
-    {"id": "af_heart", "name": "Heart", "language": "en-US", "gender": "female"},
-    {"id": "bf_emma", "name": "Emma", "language": "en-GB", "gender": "female"}
+  "object": "list",
+  "data": [
+    {"object": "voice", "id": "af_heart", "name": "Heart", "language": "en-US", "gender": "female"},
+    {"object": "voice", "id": "bf_emma", "name": "Emma", "language": "en-GB", "gender": "female"}
   ]
 }
 ```
 
-Only voices whose language is in the configured `languages` list are
-returned. Kokoro voice ids start with a language and gender code: `af_` and
-`am_` are American English female and male, `bf_` and `bm_` British.
+Only voices in a configured language are listed. Kokoro voice ids start with
+a language and gender code: `af_` and `am_` are American English female and
+male, `bf_` and `bm_` British. Version 1 serves the 28 English voices.
 
 ## GET /v1/models
 
-Available on both services. Lists the one model the service runs, plus the
-engine name, its languages and the weights license.
+Available on both services. Lists the one model the service runs, with the
+engine name, the [languages](#languages) it serves and the weights license.
 
 ```sh
-curl -s http://127.0.0.1:8881/v1/models
+curl -s http://127.0.0.1:8880/v1/models
 ```
 
 ```json
@@ -252,30 +305,35 @@ curl -s http://127.0.0.1:8881/v1/models
   "object": "list",
   "data": [
     {
-      "id": "mlx-community/parakeet-tdt-0.6b-v3",
+      "id": "mlx-community/Kokoro-82M-bf16",
       "object": "model",
       "owned_by": "voiced",
-      "engine": "parakeet",
-      "task": "transcription",
-      "languages": ["en"],
-      "license": "CC-BY-4.0"
+      "engine": "kokoro",
+      "task": "speech",
+      "languages": ["en-US", "en-GB"],
+      "license": "Apache-2.0"
     }
   ]
 }
 ```
 
+The stt service reports `"task": "transcription"`.
+
 ```python
 from openai import OpenAI
 
-stt = OpenAI(base_url="http://127.0.0.1:8881/v1", api_key="unused")
-for model in stt.models.list():
+tts = OpenAI(base_url="http://127.0.0.1:8880/v1", api_key="unused")
+for model in tts.models.list():
     print(model.id)
 ```
 
 ## GET /health
 
-No authentication. Returns `200` once the model is loaded and warm, `503`
-with `"status": "starting"` before that. The watchdog polls this.
+No authentication. `200` once the model is loaded and warm, `503` with
+`"status": "starting"` before that; the body is the same document either
+way. The services bind their ports before loading the model, so a loading
+service answers `starting` rather than refusing connections. The watchdog
+polls this.
 
 ```sh
 curl -s http://127.0.0.1:8880/health
@@ -300,59 +358,73 @@ curl -s http://127.0.0.1:8880/health
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `degraded` if the most recent inference raised, `ok` otherwise. |
+| `status` | `starting` until the model is loaded and warm, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
-| `last_inference_ms` | Duration of that inference. |
+| `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
 | `last_error` | Exception name and message of the last failed inference, cleared by the next success. |
 
 The schema is frozen because the watchdog and the status page depend on it.
 
-## GET /
+## GET / and GET /metrics.json
 
-The status page: models, memory, p50 and p95 latency, recent errors, and a
-test box to type text and hear it or upload audio and read the transcript.
-HTML, no authentication.
+`/` is the status page: service, engine, model, license, health, uptime,
+resident memory, queue depth, p50 and p95 latency, recent errors, and a test
+box (type text and hear it on tts, upload audio and read the transcript on
+stt). It is one self-contained HTML file and fetches nothing from the
+internet. If an API key is set, type it into the page to use the test box.
 
-<!-- TODO(phase2): verify against the merged status page -->
+`/metrics.json` is the data behind it:
+
+| Key | Contents |
+|---|---|
+| `service` | `stt` or `tts` |
+| `engine` | `name`, `model`, `license`, `languages` |
+| `health` | The `/health` document |
+| `metrics` | Per-operation (`transcribe`, `stream`, `speech`) counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`), p50 and p95 latency over the last 1000 inferences, the last 50 errors, resident memory |
+| `api_key_required` | Whether the `/v1` routes need a key |
+| `default_voice` | The tts default voice, `null` on stt |
+
+Metrics live in memory and reset when the service restarts.
 
 ## Errors
 
-Every error is JSON with one `error` object, in the shape OpenAI clients
-expect:
+Every HTTP error is JSON with one `error` object, in the shape OpenAI clients
+parse:
 
 ```json
-{"error": {"message": "unknown voice 'xx_nobody'", "type": "UnknownVoice"}}
+{"error": {"message": "UnknownVoice: voice 'xx_nobody' is not served; see /v1/audio/voices", "type": "invalid_request_error"}}
 ```
 
-`type` is a snake_case code for errors the server detects itself, and the
-exception class name for errors an engine raised about the request.
-
-<!-- TODO(phase2): verify the `type` casing convention and the full code list against the merged API -->
+`type` is a snake_case code. Errors an engine raised about the request start
+the message with the exception name (`UnknownVoice`, `UnsupportedLanguage`,
+`EngineNotLoaded`).
 
 | Status | `type` | Cause |
 |---|---|---|
-| 400 | `UnknownVoice`, `UnsupportedLanguage`, `EngineError` | The request asked for something the engine cannot do. |
-| 400 | `invalid_request` | Malformed body, undecodable audio, text over `max_input_chars`. |
-| 401 | `unauthorized` | `api_key` is set and the bearer token is missing or wrong. |
-| 413 | `payload_too_large` | Upload over `max_upload_mb`. |
-| 422 | validation error | FastAPI's validation response for missing or mistyped fields. |
-| 500 | `engine_error` | The engine failed. `/health` turns `degraded`; the watchdog may restart the service. |
-| 503 | `server_busy` | The inference queue is full. The response carries `Retry-After: 1`. |
-| 503 | `starting` | Only from `/health` while the model loads. |
+| 400 | `invalid_request_error` | Bad or missing fields (FastAPI validation errors are 400, not 422, as with OpenAI), unknown voice, unsupported language, malformed multipart. |
+| 400 | `invalid_audio` | Undecodable upload. |
+| 400 | `model_not_served` | `model` names another installed engine. |
+| 401 | `auth_error` | `api_key` is set and the bearer token is missing or wrong. |
+| 404, 405 | `invalid_request_error` | Unknown path or method. |
+| 413 | `payload_too_large` | Upload over `stt.max_upload_mb`, or `input` over `tts.max_input_chars`. |
+| 500 | `server_error` | The engine failed, or an unexpected error in the server. An engine failure turns `/health` `degraded`. |
+| 500 | `ffmpeg_missing` | ffmpeg is needed and not installed. |
+| 503 | `server_busy` | The inference queue is full, or the model is still loading. Carries `Retry-After: 1`. |
 
 The `openai` client raises `openai.BadRequestError`,
 `openai.AuthenticationError`, `openai.InternalServerError` and
-`openai.APIStatusError` (for 503) accordingly, with `error.message` in the
+`openai.APIStatusError` (for 413 and 503) accordingly, with the message in the
 exception.
 
 ## Concurrency
 
 Each service runs one inference at a time and queues the rest, up to
-`queue_depth`; beyond that, requests fail at once with `503`. Streaming
-requests hold their place for the whole stream. Wyoming requests share the
-same queue. How the queue works is described in
-[architecture.md](architecture.md#inference-queue).
+`queue_depth` (default 8) waiting or running; beyond that, requests fail at
+once with `503`. A WebSocket stream holds its place for the whole session.
+HTTP speech holds it only while synthesizing, not while the client
+downloads. Wyoming requests share the same queue. How the queue works is
+described in [architecture.md](architecture.md#inference-queue).
 
 ## Wyoming protocol
 
@@ -360,27 +432,60 @@ The stt service listens on TCP 10300 and the tts service on TCP 10200
 (`wyoming_port` in each section). The listeners share the loaded model and
 the queue with the HTTP routes. Home Assistant setup is in
 [home-assistant.md](home-assistant.md); this section is for other Wyoming
-clients.
+clients. The design notes and what Home Assistant's integration expects are
+in [ADR 0011](decisions/0011-wyoming.md).
 
-- STT: `Describe` answers `Info` with one `AsrProgram` named `voiced`, the
-  model id and the configured languages. Send `Transcribe`, `AudioStart`,
-  `AudioChunk` events, then `AudioStop`; the answer is `Transcript`. Any
-  sample width, channel count and rate is accepted and converted to mono
-  16 kHz. `requires_external_vad` is true: the client decides when speech
-  ends.
-- TTS: `Info` lists one `TtsProgram` with a `TtsVoice` per voice and
-  `supports_synthesize_streaming` true. Plain `Synthesize` answers
-  `AudioStart`, `AudioChunk` events, `AudioStop` at 24 kHz, 16-bit, mono.
-  Streaming `SynthesizeStart`, `SynthesizeChunk`, `SynthesizeStop` synthesizes
-  sentence by sentence as text arrives and ends with `AudioStop` then
-  `SynthesizeStopped`.
-- Errors come back as a Wyoming `Error` event with `code` set to
-  `queue_full`, `engine_error` or the engine exception name.
-- Discovery: with `bind` set to a non-loopback address and `zeroconf = true`
-  (the default), `voiced-stt` and `voiced-tts` are advertised as
-  `_wyoming._tcp.local.`.
+**Speech-to-text.** `Describe` answers `Info` with one `AsrProgram` named
+`voiced` and one model whose name is the model id and whose languages are
+the [served languages](#languages). Send `Transcribe` (with an optional
+`language`), `AudioStart`, `AudioChunk` events, then `AudioStop`; the answer
+is `Transcript`. Any sample width, channel count and rate is accepted and
+converted to mono 16 kHz. `requires_external_vad` is true: the client
+decides when speech ends.
 
-The design notes and what Home Assistant's integration actually expects are
-in ADR 0004, `docs/decisions/0004-wyoming.md`.
+Bounds on one utterance, so a client cannot hold the GPU indefinitely:
 
-<!-- TODO(phase2): link the ADR once it is on main -->
+| Bound | Value |
+|---|---|
+| Audio per utterance | `stt.max_upload_mb` worth of 16-bit 16 kHz audio, about 26 minutes at the default 50 MB |
+| Wall-clock time per utterance | that duration plus `server.session_idle_s` |
+| Silence between chunks | `server.session_idle_s` (default 30 s); then the connection is dropped as a disconnect |
+| One chunk | 1 MB; Home Assistant sends about 2 KB |
+| Chunks queued ahead of the engine | 64; a client that outruns a busy GPU is slowed down through TCP, and gets `server_busy` if the wait exceeds `session_idle_s` |
+| Audio format | Rate, width and channels must stay as announced in `AudioStart` |
+
+A session that fails for any reason ends with an `Error` and the connection
+closes; send the next utterance on a new connection.
+
+**Text-to-speech.** `Info` lists one `TtsProgram` named `voiced` with a
+`TtsVoice` per served voice (name is the voice id, description is the voice
+name and gender) and `supports_synthesize_streaming` true. While the model
+is loading, `Describe` answers `Error` `server_busy`, because the voice list
+needs the loaded engine.
+
+- Plain `Synthesize` answers `AudioStart`, `AudioChunk` events and
+  `AudioStop`, 24 kHz 16-bit mono.
+- Streaming `SynthesizeStart`, `SynthesizeChunk`..., `SynthesizeStop`
+  synthesizes sentence by sentence as text arrives and ends with `AudioStop`
+  then `SynthesizeStopped`. A plain `Synthesize` received inside a stream is
+  ignored, since Home Assistant sends the whole message again that way.
+  Each sentence takes the GPU separately, so a conversation agent pausing
+  between sentences does not block other requests.
+- Text is capped at `tts.max_input_chars`: the whole message for
+  `Synthesize`, the running total for a stream.
+
+**Errors.** An `Error` event whose `text` starts with the exception name and
+whose `code` is one of:
+
+| Code | Cause | Connection |
+|---|---|---|
+| `server_busy` | Queue full, or model still loading | closed |
+| `invalid_request_error` | Unknown voice, unsupported language, text too long, unconvertible or oversized audio | kept open, except after a failed STT session or stream |
+| `engine_error` | The engine failed; health turns `degraded` | closed |
+
+A client that disconnects or stalls past the timeouts is dropped without an
+`Error`. Every write is bounded by `server.write_timeout_s`.
+
+**Discovery.** With `bind` set to a non-loopback address and `zeroconf =
+true` (the default), the listeners are advertised over mDNS as `voiced-stt`
+and `voiced-tts` with service type `_wyoming._tcp.local.`.

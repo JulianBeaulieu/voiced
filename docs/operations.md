@@ -3,23 +3,36 @@
 Running voiced on a Mac that nobody logs in to. "Service" below means the
 stt or tts process; "daemon" means the launchd job that keeps it running.
 
-## Install and lifecycle
+## Commands
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Creates the service environment at `~/.voiced` (a short path, because espeak-ng breaks on long ones), downloads the models, renders the plists into `~/.config/voiced/launchd/` and prints the one root step: `sudo bash ~/.config/voiced/launchd/install-daemons.sh`. |
-| `voiced start`, `voiced stop` | Start or stop both services (or one, by name) through `launchctl`. |
-| `voiced status` | Both services' launchd state and `/health`. |
-| `voiced logs [stt\|tts\|watchdog]` | Tails the log files. |
-| `voiced doctor` | Checks the machine (see below). |
-| `voiced uninstall` | Prints the root step that unloads and removes the plists, then removes the environment and models on request. |
-| `voiced serve stt\|tts` | Runs one service in the foreground. For development and for checking an engine before installing. |
-
-<!-- TODO(phase2): verify the command table against the merged CLI -->
+| `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--user`, `--staging-dir`, `--skip-models`, `--no-uv`. |
+| `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
+| `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
+| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`. |
+| `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
+| `voiced doctor [--json]` | Checks the machine (see below). |
+| `voiced doctor --metal-probe` | Stages a one-shot LaunchDaemon that tests Metal from a real daemon context and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
+| `voiced uninstall` | Prints the root script that unloads and removes the daemons, then lists what it would delete. `--yes` deletes the service environment; `--remove-config`, `--remove-logs` and `--remove-models` add those. It refuses to delete anything while a daemon is still loaded. |
+| `voiced watchdog [--once]` | Runs the watchdog in the foreground; `--once` polls once and prints its decisions. |
+| `voiced serve stt\|tts` | Runs one service in the foreground. For development and for trying an engine before installing. |
+| `voiced config` | Prints the effective configuration as JSON. |
 
 voiced never runs root steps itself. Anything that touches
-`/Library/LaunchDaemons` is printed as a short script for you to read and
-run with `sudo`.
+`/Library/LaunchDaemons` is printed as a short script or command for you to
+read and run with `sudo`. To apply a config change, re-run the install
+script; it unloads and reloads all three daemons:
+
+```sh
+sudo bash ~/.config/voiced/launchd/install-daemons.sh
+```
+
+`voiced doctor` checks Apple Silicon, the macOS version, Python, espeak-ng,
+ffmpeg, memory, the four ports (and which process holds them), FileVault,
+whether the daemons are installed and loaded, Metal from the service
+environment, and the last `--metal-probe` result. It exits non-zero only on
+a failed check, not on a warning.
 
 ## launchd
 
@@ -32,64 +45,98 @@ Each plist sets:
 
 | Key | Value | Why |
 |---|---|---|
-| `UserName` | the installing user | The models and config live in that user's home. |
+| `UserName` | the installing user | The models and config live in that user's home; nothing runs as root. |
 | `RunAtLoad` | true | Start at boot. |
 | `KeepAlive` | true | Restart on exit, whatever the exit status. |
 | `ThrottleInterval` | 10 | Wait 10 s between restarts so a crash loop does not spin. |
-| `StandardOutPath`, `StandardErrorPath` | `~/Library/Logs/voiced/<service>.std*.log` | Catch output before logging is configured. |
 | `ProcessType` | Interactive | Full CPU and GPU scheduling priority. |
+| `WorkingDirectory` | the user's home | |
+| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, and `HF_HOME` when configured | The daemon reads the same config file and model cache as the CLI. |
+| `StandardOutPath`, `StandardErrorPath` | `~/Library/Logs/voiced/<service>.stdout.log`, `.stderr.log` | Catch output before logging is configured. |
 
-Daemons rather than LaunchAgents because agents only run inside a logged-in
-GUI session. Metal is available from a daemon context on Apple Silicon; this
-was verified on macOS 15 with MLX 0.32 (GPU device visible, matrix multiply
-runs). `voiced doctor` can repeat that probe from a real daemon context so
-you can confirm it on a new macOS version before relying on it. If a future
-macOS breaks it, the fallback is a LaunchAgent plus auto-login, which the
-installer does not do today.
+Daemons rather than LaunchAgents because agents only start once their user
+logs in to the GUI. Metal works from a daemon context on Apple Silicon: a
+probe daemon on macOS 15.7 with MLX 0.32 saw the GPU and ran a matrix
+multiply as a normal user with no GUI session
+([ADR 0004](decisions/0004-launchd-daemon-vs-agent.md)). Run
+`voiced doctor --metal-probe` to confirm it on your machine and macOS
+version; `voiced doctor` only accepts a probe result recorded by launchd's
+system manager on the macOS version that is running now.
 
 Useful launchctl commands, with the default prefix:
 
 ```sh
-sudo launchctl print system/io.github.julianbeaulieu.voiced.tts   # state, pid, last exit
+launchctl print system/io.github.julianbeaulieu.voiced.tts           # state, pid, last exit
 sudo launchctl kickstart -k system/io.github.julianbeaulieu.voiced.tts   # force restart
-sudo launchctl bootout system/io.github.julianbeaulieu.voiced.tts  # unload
+sudo launchctl bootout system/io.github.julianbeaulieu.voiced.tts        # unload
 ```
 
 ## Watchdog
 
-The third daemon polls `/health` on both services every 15 s (config
-`[watchdog] interval_s`). After three consecutive failures
-(`failures_before_restart`) it restarts that service with
-`launchctl kickstart -k`. A failure is a timeout, a refused connection, or a
-service stuck in `starting` well past its usual load time. `degraded` alone
-is not a failure: one bad request should not restart a working model.
+`KeepAlive` only restarts a process that exits. MLX can wedge a process that
+stays alive: the GPU queue never drains while the process keeps running. The
+watchdog daemon catches that. Every `interval_s` it requests `/health` from
+each service with a `timeout_s` limit and applies these rules:
 
-<!-- TODO(phase2): verify the restart rules, the config keys and how the watchdog gets permission to kickstart system daemons -->
+| Observation | Action |
+|---|---|
+| `ok` | Reset the failure count. |
+| Connection refused within `startup_grace_s` of the watchdog starting, of its last restart of the service, or of launchd giving the service a new pid | Nothing. The service is starting. |
+| `starting` while the service's own uptime is below `startup_grace_s` | Nothing. The model is loading. |
+| `starting` beyond `startup_grace_s` | Restart: the load is hung. |
+| `degraded` | Start a timer; restart once it exceeds `degraded_window_s`. |
+| Queue not empty for `stall_after_s` with no inference completing | One failure: stalled. |
+| Optional probe request times out after `probe_timeout_s` | One failure: stalled. |
+| Connection refused after the grace period, timeout, or a non-health answer | One failure. |
+| `failures_before_restart` consecutive failures | Restart. |
+| The daemon is not loaded (after `voiced stop`) | Never restart; logged once. |
 
-The watchdog exists because `KeepAlive` only restarts processes that exit.
-MLX can wedge a process that stays alive and stops answering; `kill -9` is
-handled by launchd within the throttle interval, a hang is handled by the
-watchdog within roughly `interval_s * failures_before_restart` plus load time.
+| Key under `[watchdog]` | Default |
+|---|---|
+| `interval_s` | 15 |
+| `timeout_s` | 5 |
+| `failures_before_restart` | 3 |
+| `startup_grace_s` | 300 |
+| `degraded_window_s` | 120 |
+| `stall_after_s` | 60 |
+| `restart_cooldown_s` | 120 |
+| `probe` | false |
+| `probe_timeout_s` | 20 |
+
+A restart reads the pid from `launchctl print`, sends it `SIGKILL` and runs
+`launchctl kickstart` so the service comes back at once instead of after the
+throttle interval. The watchdog runs as the installing user, which can kill
+its own processes and kickstart a loaded daemon but cannot use
+`kickstart -k`; running it as root would mean executing the user-writable
+service environment as root. A second restart of the same service within
+`restart_cooldown_s` waits for the cooldown.
+
+The optional probe (`probe = true`) sends a tiny real request each poll
+while the queue is empty, which finds a GPU that wedged while idle. It is
+off by default because it costs an inference per poll; without it, an idle
+wedge is found at the first real request plus `stall_after_s`.
+
+`voiced watchdog --once` shows what the watchdog thinks of the machine right
+now. The design is in [ADR 0012](decisions/0012-watchdog.md).
 
 ## Logs
 
 | File | Contents |
 |---|---|
-| `~/Library/Logs/voiced/stt.log`, `tts.log`, `watchdog.log` | Application log, rotated at 10 MB, five backups kept. |
-| `~/Library/Logs/voiced/<service>.stdout.log`, `.stderr.log` | Whatever escaped the logger, including Python tracebacks during startup. |
+| `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
+| `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
+| `~/Library/Logs/voiced/<service>.stdout.log`, `.stderr.log` | launchd's capture of whatever escaped the logger, including tracebacks from a failed startup. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
-`debug` logs every request with its duration and queue wait, and the audio
-parameters Wyoming clients send.
+`voiced logs -f` follows all service logs; `tail -f
+~/Library/Logs/voiced/*.log` shows everything at once.
 
-`voiced logs tts` tails the application log. For everything at once:
-
-```sh
-tail -f ~/Library/Logs/voiced/*.log
-```
-
-The logs contain transcripts and synthesized text at `debug` level. Keep the
-level at `info` if that matters to you.
+One line is expected and harmless: uvicorn logs
+`ASGI callable returned without completing response` at ERROR level for each
+speech client that stopped reading and was cut off after
+`server.write_timeout_s`. That is a client going away, not a server error;
+health is untouched. Do not alert on it. Alert on `/health` reporting
+`degraded` or on the `failure` counts on the status page instead.
 
 ## FileVault
 
@@ -105,14 +152,12 @@ reboots need a person. voiced does not change this setting.
 
 ## Memory budget
 
-Resident memory per service with the default models:
-
-| Service | Model | Resident |
+| Service | Model | Peak resident |
 |---|---|---|
-| tts | Kokoro-82M (plus Soprano-80M if loaded) | about 0.55 GB for both |
+| tts | Kokoro-82M | 469 MB, measured on an M1 Max |
 | stt | Parakeet TDT 0.6B v3 | pending |
 
-<!-- TODO(phase2): fill in the stt figure and re-measure both from the packaged services -->
+<!-- TODO(phase2): fill in the stt figure when the Parakeet engine is on main -->
 
 Plan for the two services together to stay under 3 GB. On a Mac that also
 runs an LLM server, add up what each resident model needs on top of the few
@@ -138,14 +183,19 @@ They are the usual steps for a Mac that runs as a server:
 
 ## Updating
 
+Re-running `voiced install` upgrades in place: it reuses the service
+environment, upgrades the package, re-stages the plists and prints the
+install script, which unloads and reloads the daemons. Models and the
+config file are kept.
+
+From a checkout, before the first release:
+
 ```sh
-voiced stop
-uv tool upgrade voiced          # the CLI
-voiced install                  # re-creates the service environment, keeps models and config
-voiced start
+cd voiced
+git pull
+uv tool install --reinstall .
+voiced install --source "$PWD"
+sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 
-<!-- TODO(phase2): verify the upgrade path against the merged installer -->
-
-The config file and the Hugging Face cache survive upgrades. Read
-[CHANGELOG.md](../CHANGELOG.md) for anything that needs a manual step.
+Read [CHANGELOG.md](../CHANGELOG.md) for anything that needs a manual step.

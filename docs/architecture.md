@@ -19,34 +19,34 @@ flowchart TB
 
     subgraph stt [stt service: one process, one event loop]
         direction TB
-        s_http[FastAPI :8881<br/>/v1/audio/transcriptions<br/>/v1/audio/transcriptions/stream<br/>/v1/models /health /]
+        s_http[FastAPI :8881<br/>/v1/audio/transcriptions<br/>/v1/audio/transcriptions/stream<br/>/v1/models /health / /metrics.json]
         s_wy[Wyoming listener :10300<br/>AudioStart AudioChunk AudioStop]
-        s_ctx[ServiceContext<br/>settings, engine, queue, health]
-        s_q[InferenceQueue<br/>capacity 8, FIFO, 503 on overflow]
+        s_ctx[ServiceContext<br/>settings, engine, queue, health, metrics]
+        s_inf["inference()<br/>slot, timing, outcome"]
         s_eng[STTEngine: parakeet<br/>Parakeet TDT 0.6B v3 on MLX]
         s_http --> s_ctx
         s_wy --> s_ctx
-        s_ctx --> s_q --> s_eng
+        s_ctx --> s_inf --> s_eng
     end
 
     subgraph tts [tts service: one process, one event loop]
         direction TB
-        t_http[FastAPI :8880<br/>/v1/audio/speech<br/>/v1/audio/voices<br/>/v1/models /health /]
+        t_http[FastAPI :8880<br/>/v1/audio/speech<br/>/v1/audio/voices<br/>/v1/models /health / /metrics.json]
         t_wy[Wyoming listener :10200<br/>Synthesize, SynthesizeStart/Chunk/Stop]
         t_ctx[ServiceContext]
-        t_q[InferenceQueue]
+        t_inf["inference()"]
         t_eng[TTSEngine: kokoro<br/>Kokoro-82M on MLX, espeak-ng phonemes]
         t_http --> t_ctx
         t_wy --> t_ctx
-        t_ctx --> t_q --> t_eng
+        t_ctx --> t_inf --> t_eng
     end
 
     d_stt -->|RunAtLoad, KeepAlive| stt
     d_tts -->|RunAtLoad, KeepAlive| tts
     d_wd -->|GET /health| s_http
     d_wd -->|GET /health| t_http
-    d_wd -.->|launchctl kickstart -k| d_stt
-    d_wd -.->|launchctl kickstart -k| d_tts
+    d_wd -.->|SIGKILL, then kickstart| d_stt
+    d_wd -.->|SIGKILL, then kickstart| d_tts
 
     zc[zeroconf<br/>_wyoming._tcp.local.] -.- s_wy
     zc -.- t_wy
@@ -55,71 +55,103 @@ flowchart TB
 Two services rather than one so that a crash or hang in one modality does
 not take down the other, and so the watchdog can restart them independently.
 They never share a loaded model, which costs nothing because they load
-different ones. Everything they have in common is in the top-level modules:
+different ones. The module map is in
+[ADR 0001](decisions/0001-project-structure.md); the parts that matter for
+understanding a request are below.
 
-| Module | Role |
-|---|---|
-| `voiced.config` | `Settings`: one TOML file plus `VOICED_<SECTION>__<KEY>` environment overrides. Unknown keys are errors. |
-| `voiced.logging` | Stderr plus a rotating file under `~/Library/Logs/voiced/`. |
-| `voiced.health` | `HealthState` and the frozen `/health` schema. |
-| `voiced.queue` | `InferenceQueue`: serialized, bounded, FIFO. |
-| `voiced.engines` | The frozen engine interfaces and the entry-point registry. |
-| `voiced.api` | FastAPI app factories, one per modality, and the `ServiceContext`. |
-| `voiced.wyoming` | Wyoming listeners that attach to the app lifespan. |
-| `voiced.stt`, `voiced.tts` | Wire the configured engine into an app. |
-| `voiced.launchd` | Plist rendering, installer, watchdog. |
-| `voiced.cli` | `voiced install`, `start`, `stop`, `status`, `logs`, `uninstall`, `doctor`, `serve`, `config`. |
-| `voiced.testing` | Fake engines so every layer above is testable without a model. |
+## Startup
+
+The FastAPI lifespan starts the engine's `load()` as a background task and
+returns at once, so the HTTP port and the Wyoming port are bound within a
+second of the process starting. Until the load finishes, `/health` answers
+`503` with `status: "starting"` and every `/v1` route and Wyoming request
+answers `server_busy`. `load()` downloads the weights if needed, loads them
+and runs a warm-up inference, so "healthy" means "warm".
+
+If `load()` raises, the process logs the traceback and exits with status 1,
+so launchd restarts it. A stop request during a load exits immediately
+rather than waiting for a load thread that cannot be interrupted.
 
 ## Request path
 
 1. A request arrives over HTTP or Wyoming. Both handlers get the same
-   `ServiceContext` (settings, engine, queue, health) from the app state.
-2. The HTTP layer decodes the input: ffmpeg turns any upload into mono
-   float32 16 kHz for STT; text is normalized (numbers, times, acronyms,
-   markdown) for TTS. The Wyoming layer converts incoming PCM of any width,
-   channel count and rate to the same STT format.
-3. The handler takes a slot in the `InferenceQueue`. If the queue is at
-   capacity the request fails immediately: HTTP `503` with `Retry-After`, or a
-   Wyoming `Error` with code `queue_full`. Otherwise it waits its turn.
-4. The engine runs. Blocking MLX calls happen in a thread via
-   `asyncio.to_thread`, so the event loop keeps serving `/health` and
-   accepting connections.
-5. The handler encodes the output (WAV, MP3, Opus, subtitle formats, Wyoming
-   events) and records the duration in `HealthState`. An engine exception
-   marks the service `degraded`.
+   `ServiceContext` (settings, engine, queue, health, metrics) from the app.
+2. The transport validates and decodes the input outside the GPU slot:
+   ffmpeg turns an upload into mono float32 16 kHz; `voiced.audio` converts
+   Wyoming PCM of any width, channel count and rate to the same format;
+   `voiced.text.normalize` spells out numbers, times, units and acronyms and
+   strips Markdown before TTS. Errors here (a bad field, an oversized
+   upload) never reach metrics or health.
+3. The engine call runs inside `async with inference(ctx, operation):` from
+   `voiced.inference`. It takes the queue slot, times the block, records the
+   outcome in health and metrics, and re-raises. It is the only code that
+   writes either.
+4. Blocking MLX work runs through `voiced.threads.run_blocking`, which keeps
+   the event loop free and, unlike `asyncio.to_thread`, holds the slot until
+   the thread finishes even when the caller is cancelled. A cancelled client
+   therefore cannot start a second MLX call next to a running one.
+5. The transport maps the outcome to its wire format with one table: the
+   HTTP status and error type, the WebSocket close code, or the Wyoming
+   `Error` code.
 
-Streaming requests hold their slot for the whole stream: the WebSocket
-endpoint and the Wyoming STT session hold it from first audio to finalize.
-Streaming TTS over Wyoming takes one slot per sentence instead, so a
-conversation agent that pauses between sentences does not block the GPU for
-everyone else.
+| Outcome | Raised by | Health | HTTP | Wyoming |
+|---|---|---|---|---|
+| `ok` | nothing | last inference updated | 200 | result event |
+| `busy` | queue full, model loading | untouched | 503 `server_busy` | `server_busy`, close |
+| `client_error` | `EngineError` (unknown voice, unsupported language, bad audio) | untouched | 400 | `invalid_request_error` |
+| `disconnect` | the client hung up or timed out | untouched | nothing sent | nothing sent, close |
+| `failure` | anything else | `degraded` | 500 `server_error` | `engine_error`, close |
+
+The full rules, including the obligations of streaming transports, are in
+[ADR 0005](decisions/0005-shared-inference-and-audio-primitives.md).
+
+## Streaming and timeouts
+
+Every socket read or write made while holding the GPU slot is bounded:
+reads by `server.session_idle_s` (default 30 s), writes by
+`server.write_timeout_s` (default 10 s). Running out of time is a
+`disconnect`, so a silent or half-open client releases the GPU instead of
+pinning it.
+
+| Stream | Holds the slot |
+|---|---|
+| WebSocket transcription | from the first frame to `final` |
+| Wyoming STT utterance | from `AudioStart` to `Transcript`, with size and wall-clock limits ([details](api.md#wyoming-protocol)) |
+| HTTP speech | while synthesizing; the response is delivered from a buffer after the slot is released |
+| Wyoming streaming TTS | one sentence at a time, so a conversation agent pausing between sentences does not block others |
+
+HTTP speech runs the engine in its own task that feeds the response body
+through a queue. The route waits for the first chunk before sending
+headers, so a full queue is still a 503 and an unknown voice still a 400.
+A client that hangs up while the engine is producing stops the task at the
+next chunk, which is counted as a `disconnect`; a client that stops reading
+is cut off after the write timeout ([ADR 0007](decisions/0007-http-api.md)).
 
 ## Inference queue
 
 MLX runs one kernel stream per process and model objects are not
 thread-safe, so each service runs exactly one inference at a time. The queue
-is an `asyncio.Lock` with a counter in front of it:
+behind `inference()` is an `asyncio.Lock` with a counter in front of it:
 
-- `async with queue.slot():` holds the GPU for the block. Used by streams.
-- `await queue.run(fn, *args)` runs a blocking callable in a thread while
-  holding a slot. Used by one-shot requests.
-- When `depth` reaches `capacity` (config `queue_depth`, default 8 per
-  service), `slot()` raises `QueueFull` without waiting.
+- `async with queue.slot():` holds the GPU for the block. `inference()` is
+  its only caller.
+- `depth` counts requests waiting or running. When it reaches `capacity`
+  (config `queue_depth`, default 8 per service), `slot()` raises
+  `QueueFull` at once instead of waiting.
+- A task that already holds the slot and asks for it again gets a
+  `RuntimeError` rather than deadlocking.
 
 A client that disconnects while waiting leaves the queue without running.
-A call that already started runs to completion in its thread, but the slot
-is released the moment it returns, so a cancelled client never wedges the
-queue.
 
-## Health
+## Health and metrics
 
 Each service keeps one `HealthState` that `GET /health` serializes; the
 fields and the `starting`, `ok` and `degraded` rules are in the
-[API reference](api.md#get-health). The engine's `load()` runs inside the
-FastAPI lifespan before the Wyoming listener starts and before `/health`
-turns 200. Engines download their weights if needed, load them, and run a
-dummy inference, so "healthy" means "warm".
+[API reference](api.md#get-health). Only a `failure` outcome makes a service
+`degraded`; a stream of bad requests cannot make the watchdog restart a
+healthy model. `voiced.metrics` keeps per-operation outcome counts, p50 and
+p95 latency over the last 1000 inferences and the last 50 errors, in memory,
+for the status page.
 
 ## launchd and the watchdog
 
@@ -127,9 +159,11 @@ dummy inference, so "healthy" means "warm".
 `<prefix>.tts` and `<prefix>.watchdog`, with the prefix from
 `[launchd] label_prefix`. launchd starts them at boot with no GUI login and
 restarts a service that exits. The watchdog, a third daemon, polls `/health`
-and restarts a service that is alive but no longer answers, which `KeepAlive`
-alone cannot detect. The plist keys, the restart rules and the Metal probe
-are documented in [operations.md](operations.md#launchd).
+and restarts a service that is alive but stuck: a hung load, a queue that
+stops draining, or a service that stays `degraded`. It runs as the
+installing user, not root, and restarts a service by killing its process and
+asking launchd to start it again. The plist keys, the restart rules and the
+Metal probe are documented in [operations.md](operations.md#launchd).
 
 ## Engine registry
 
@@ -137,19 +171,24 @@ Engines are discovered through Python entry points in two groups,
 `voiced.stt_engines` and `voiced.tts_engines`. The entry-point name is the
 `engine` value in the config. `voiced.engines.registry` reads the installed
 entry points on every lookup, so a newly installed plugin package is visible
-without a reinstall of voiced. `register_stt_engine` and
-`register_tts_engine` add a class in-process, which tests use.
+without a reinstall of voiced. An `engine` name that is not installed stops
+the service at startup with the list of installed names.
 
-voiced itself registers:
+Registered on `main` today:
 
-| Name | Group | Class |
+| Name | Group | Engine |
 |---|---|---|
-| `parakeet` | `voiced.stt_engines` | Parakeet TDT 0.6B v3 via `parakeet-mlx` |
-| `kokoro` | `voiced.tts_engines` | Kokoro-82M via `mlx-audio` with espeak-ng phonemes |
-| `soprano` | `voiced.tts_engines` | Soprano-80M via `mlx-audio` with a repetition penalty and duration cap |
+| `kokoro` | `voiced.tts_engines` | Kokoro-82M via MLX with espeak-ng phonemes ([ADR 0009](decisions/0009-tts-kokoro-espeak-tokens.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
-<!-- TODO(phase2): verify the registered engines against main after the engine PRs merge -->
+The default config also names `parakeet` for speech-to-text; that engine,
+and the optional `soprano` voice, are still in review.
+
+<!-- TODO(phase2): add the parakeet and soprano rows when their engines are on main -->
+
+Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
+which provides `load()`, the loaded, voice and speed checks and the
+split-synthesize-yield loop; Kokoro does.
 
 The MLX engines live in the optional extras `stt` and `tts`, so the core
 package installs on any machine and CI runs against the fakes.
@@ -181,17 +220,21 @@ class TTSEngine:
 
 Rules every engine follows:
 
-- All methods are `async`. Blocking work goes through `asyncio.to_thread`.
-  The server never calls two inference methods on one engine at once, so
-  engines need no locking.
+- All methods are `async`. Every blocking model call, including the ones in
+  `load()`, goes through `voiced.threads.run_blocking`. The server never
+  calls two inference methods on one engine at once, so engines need no
+  locking.
 - `load()` is called once, before anything else, and must warm the model.
+  It must not block the event loop, or `/health` stalls during the load.
 - Errors the client caused (`UnknownVoice`, `UnsupportedLanguage`, bad
   input) are `EngineError` subclasses and become `400`. Any other exception
-  is an engine failure: `500`, `degraded`, and possibly a restart.
+  is an engine failure: `500`, `degraded`, and possibly a restart. An engine
+  should wrap its own subprocess pipe errors, which would otherwise look
+  like a client disconnect.
 - Cancellation follows asyncio. A disconnected client cancels the awaiting
   task; engines clean up in `finally` and never swallow `CancelledError`.
 - `synthesize` is an async generator so the server can stop it early.
-- `languages` are BCP-47 codes. The server intersects them with the
+- `languages` are BCP-47 codes. The server matches them against the
   configured list and advertises the result in `/v1/models` and the Wyoming
   `Info` message. Adding a language is therefore an engine change, not a
   server change.
@@ -206,7 +249,7 @@ independently:
 | STT input | mono float32 PCM, 16 000 Hz, range -1.0 to 1.0, one-dimensional numpy array |
 | TTS output | mono signed 16-bit little-endian PCM, 24 000 Hz, `bytes`, in `PCMChunk` objects that concatenate directly |
 
-Decoding uploads and encoding responses is the API layer's job; engines
+Decoding uploads and encoding responses is the transport's job; engines
 never see files or container formats. An engine that natively produces a
 different rate resamples before yielding.
 
@@ -219,10 +262,11 @@ as voiced.
 `my_package/piper.py`:
 
 ```python
-import asyncio
 from collections.abc import AsyncIterator
 
 from voiced.engines.base import PCMChunk, TTSEngine, UnknownVoice, Voice
+from voiced.text import split_sentences
+from voiced.threads import run_blocking
 
 
 class PiperEngine(TTSEngine):
@@ -231,7 +275,7 @@ class PiperEngine(TTSEngine):
     languages = ["en", "de"]
     license = "MIT"
 
-    async def load(self) -> None: ...  # download, load, warm up
+    async def load(self) -> None: ...  # download, load and warm up via run_blocking
 
     async def voices(self) -> list[Voice]:
         return [Voice(id="en_US-lessac-medium", name="Lessac", language="en-US")]
@@ -241,8 +285,8 @@ class PiperEngine(TTSEngine):
     ) -> AsyncIterator[PCMChunk]:
         if voice not in {v.id for v in await self.voices()}:
             raise UnknownVoice(voice)
-        for sentence in split(text):
-            pcm = await asyncio.to_thread(self._synth, sentence, voice, speed)
+        for sentence in split_sentences(text):
+            pcm = await run_blocking(self._synth, sentence, voice, speed)
             yield PCMChunk(data=pcm)  # int16 LE mono 24 kHz
 ```
 
@@ -262,6 +306,7 @@ engine = "piper"
 languages = ["en", "de"]
 ```
 
-`voiced doctor` lists the engines it can see. `voiced.testing.fakes` is the
-smallest complete implementation of both interfaces and a good template; the
-docstrings in `voiced/engines/base.py` are the authoritative contract.
+`voiced.testing.fakes` is the smallest complete implementation of both
+interfaces and a good template; `voiced.engines.kokoro` is a real one built
+on `SentenceTTSEngine`. The docstrings in `voiced/engines/base.py` are the
+authoritative contract.

@@ -54,7 +54,7 @@ Also measured while the probe daemon was loaded, as the unprivileged user:
 | `launchctl kickstart -k system/<label>` | denied while a process is running ("Operation not permitted"); succeeds when nothing is running, where it is the same as plain `kickstart` |
 | `launchctl bootout system/<label>` | denied |
 
-These shape the watchdog (ADR 0005): it never relies on `kickstart -k`. They
+These shape the watchdog (ADR 0012): it never relies on `kickstart -k`. They
 also shape the CLI: `start` can kickstart a loaded service without root, but
 `stop` (bootout) and first-time `bootstrap` are printed as `sudo` commands
 for the user.

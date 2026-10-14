@@ -1,6 +1,6 @@
 """Kokoro-82M on MLX, with espeak-ng phonemes.
 
-Pronunciation path (see ``docs/decisions/0004-tts-kokoro-espeak-tokens.md``):
+Pronunciation path (see ``docs/decisions/0009-tts-kokoro-espeak-tokens.md``):
 the already normalized text is split into sentences, each sentence is
 phonemized with espeak-ng through ``kokoro_onnx.tokenizer.Tokenizer``, and
 the phoneme string is fed straight to the MLX model together with the

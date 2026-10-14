@@ -7,9 +7,13 @@ a pair of launchd services that start at boot without anyone logging in and
 restart themselves after a crash or a hang. Home Assistant talks to it over
 Wyoming, the protocol its Assist pipelines use for local speech services.
 
-**Status:** pre-alpha. The interfaces are frozen and the skeleton runs with
-fake engines; the real engines, the installer and the Home Assistant
-integration are being merged. Do not deploy yet.
+**Status:** pre-alpha. The HTTP API, the Wyoming listeners, the installer,
+the watchdog, `voiced doctor` and the Kokoro text-to-speech engine are in
+place. The Parakeet speech-to-text engine and the optional Soprano voice are
+still in review; until Parakeet lands, the stt service cannot start with the
+default config. Do not deploy yet.
+
+<!-- TODO(phase2): update the status line once the Parakeet and Soprano engines are on main -->
 
 ## Quickstart
 
@@ -25,21 +29,21 @@ Until the first release, install from a checkout:
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced
 uv tool install ./voiced
-voiced install --source ./voiced
+voiced install --source "$PWD/voiced"
 ```
 
-<!-- TODO(phase2): verify against the merged installer; after the first release this becomes `uv tool install voiced` and plain `voiced install` -->
-
-`voiced install` builds the service environment in `~/.voiced`, downloads
-the models, writes the launchd plists and prints one root step. Run it:
+`voiced install` builds the service environment in `~/.voiced` with the
+engines, downloads the models into the Hugging Face cache, writes the
+launchd plists to `~/.config/voiced/launchd/` and prints one root step. Run
+it:
 
 ```sh
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 
 The script copies the three plists into `/Library/LaunchDaemons` and loads
-them. It is a few lines long; read it first. voiced never runs anything as
-root itself. Then:
+them. It is short; read it first. voiced never runs anything as root
+itself. Then:
 
 ```sh
 voiced status
@@ -57,23 +61,27 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
   -F file=@hello.wav -F model=parakeet
 ```
 
+`voiced install --dry-run` shows everything it would do without writing
+anything.
+
 ## What you get
 
 | Endpoint | Service | Port | Purpose |
 |---|---|---|---|
 | `POST /v1/audio/transcriptions` | stt | 8881 | Transcribe a file (json, text, verbose_json, srt, vtt) |
 | `WS /v1/audio/transcriptions/stream` | stt | 8881 | Live transcription with partial and final events |
-| `POST /v1/audio/speech` | tts | 8880 | Synthesize text (wav, pcm, mp3, opus); `pcm` streams |
+| `POST /v1/audio/speech` | tts | 8880 | Synthesize text as wav, pcm, mp3 or opus; every format streams |
 | `GET /v1/audio/voices` | tts | 8880 | List voices |
-| `GET /v1/models` | both | | Installed model, languages, license |
+| `GET /v1/models` | both | | The model this service runs, its languages and license |
 | `GET /health` | both | | Model loaded, queue depth, last inference |
-| `GET /` | both | | Status page |
+| `GET /` and `GET /metrics.json` | both | | Status page and its data |
 | Wyoming STT | stt | 10300 | Home Assistant speech-to-text |
 | Wyoming TTS | tts | 10200 | Home Assistant text-to-speech, streaming |
 
-Every port is configurable. The full HTTP reference, including the WebSocket
-message schema and error shapes, is in [docs/api.md](docs/api.md). The Home
-Assistant walkthrough is in [docs/home-assistant.md](docs/home-assistant.md).
+Every port is configurable. The full reference, including the WebSocket
+messages, the error shapes and the Wyoming behaviour, is in
+[docs/api.md](docs/api.md). The Home Assistant walkthrough is in
+[docs/home-assistant.md](docs/home-assistant.md).
 
 Works unmodified with the official `openai` clients, LiteLLM, Open WebUI and
 anything else that speaks the OpenAI audio API:
@@ -124,13 +132,13 @@ flowchart LR
     launchd -->|KeepAlive| tts
     watchdog[watchdog] -->|GET /health| stt_http
     watchdog -->|GET /health| tts_http
-    watchdog -.->|kickstart -k| launchd
+    watchdog -.->|SIGKILL, kickstart| launchd
 ```
 
 Two services, one package. Each service is one process that loads one
 model, serves it over HTTP and Wyoming from the same event loop, and
 serializes GPU work through a bounded queue. launchd restarts a service that
-exits; the watchdog restarts one that stops answering. Engines are
+exits; the watchdog restarts one that is alive but stuck. Engines are
 entry-point plugins behind a frozen interface. Details, including the audio
 conventions and how to add an engine, are in
 [docs/architecture.md](docs/architecture.md).
@@ -138,9 +146,10 @@ conventions and how to add an engine, are in
 ## Configuration
 
 One file, `~/.config/voiced/config.toml`, plus environment variables that
-override it. Every key has a default, so the services start with no file at
-all. [`config.example.toml`](config.example.toml) lists every key with its
-default and a comment.
+override it. `voiced install` creates the file from
+[`config.example.toml`](config.example.toml), which lists every key with its
+default and a comment. Every key has a default, so the services also start
+with no file at all.
 
 Environment variables are named `VOICED_<SECTION>__<KEY>`:
 
@@ -151,7 +160,8 @@ VOICED_STT__LANGUAGES='["en"]'    # lists are JSON
 VOICED_CONFIG=/path/to/other.toml # use a different config file
 ```
 
-`voiced config` prints the effective configuration as JSON.
+`voiced config` prints the effective configuration as JSON. Unknown keys are
+errors, so a typo stops the service with a message instead of being ignored.
 
 ### Security note on `bind`
 
@@ -160,7 +170,8 @@ Mac itself. Home Assistant on another machine needs `bind = "0.0.0.0"`, which
 exposes the services to your whole network:
 
 - The HTTP API has no authentication unless `api_key` is set. Set it before
-  you bind to the LAN.
+  you bind to the LAN. `/health`, `/` and `/metrics.json` stay open either
+  way; they show latencies and error counts, not what clients said.
 - The Wyoming protocol has no authentication at all. Only expose it on a
   network you trust.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
@@ -168,7 +179,7 @@ exposes the services to your whole network:
 ## Models and licenses
 
 Weights are not vendored. Each engine downloads its model from Hugging Face
-on first run into the standard Hugging Face cache.
+into the local cache, during `voiced install` or on first start.
 
 | Model | Role | Default | Weights license |
 |---|---|---|---|
@@ -176,56 +187,59 @@ on first run into the standard Hugging Face cache.
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | Soprano-80M | TTS | no, selectable | see model card |
 
-<!-- TODO(phase2): verify the Soprano license once its engine PR lands -->
+<!-- TODO(phase2): confirm the Parakeet and Soprano rows when their engines are on main -->
 
 CC-BY-4.0 covers the Parakeet weights: attribute NVIDIA if you redistribute
 them. It says nothing about the transcripts you produce.
 
-Kokoro's phonemizer is espeak-ng, which is GPL-3. voiced does not vendor or
-redistribute it. The preferred source is Homebrew (`brew install espeak-ng`),
-which voiced finds and loads at run time. The `tts` extra also pulls in the
-`espeakng-loader` wheel, which carries its own GPL-3 espeak-ng binary; voiced
-uses it only as a last resort when no Homebrew install is found. Either way
-espeak-ng is loaded dynamically from a separately licensed package and the
-voiced code stays MIT.
+Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
+vendor or redistribute it, and the voiced code stays MIT. The engine loads
+espeak-ng at run time as a shared library from Homebrew
+(`brew install espeak-ng`), or from the path in `VOICED_ESPEAK_LIBRARY`, and
+fails at startup with the install command if neither works. The `tts` extra
+also pulls in the `espeakng-loader` wheel as a dependency of `kokoro-onnx`;
+that wheel carries its own GPL-3 copy of espeak-ng, which voiced does not
+use.
 
 ## Benchmarks
 
-Prototype measurements, M1 Max MacBook Pro with 64 GB, macOS 15.7,
-2026-10-13, warm model, local request. "First audio" is the time to the
-first PCM chunk of a three-sentence text; "short synth" is a complete
-six-word sentence.
+M1 Max MacBook Pro with 64 GB, macOS 15.7, warm model, local request.
+"First audio" is the time to the first PCM chunk of a multi-sentence text.
 
-| Metric | Measured |
-|---|---|
-| Kokoro short synth | 92 ms (RTF 0.039) |
-| Kokoro first audio over HTTP | about 160 ms |
-| Soprano short synth | 133 ms (RTF 0.085) |
-| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms |
-| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median |
-| TTS resident memory, Kokoro and Soprano loaded | about 0.55 GB |
+| Metric | Measured | Source |
+|---|---|---|
+| Kokoro first audio | 106 ms median | Kokoro engine, 2026-10-14 |
+| Kokoro real-time factor | 0.046 | Kokoro engine, 2026-10-14 |
+| Kokoro load including warm-up | 1.9 s | Kokoro engine, 2026-10-14 |
+| tts service peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
+| Streaming STT finalize after a 200 ms silence endpoint | about 3 ms | prototype, 2026-10-13 |
+| Voice round trip: endpoint, STT, local LLM first clause, first audio | 552 ms median | prototype, 2026-10-13 |
 
-Numbers from the packaged services and from a second machine follow with the
-first release.
+"Prototype" numbers come from the benchmark scripts that preceded this
+package; packaged numbers for speech-to-text follow with its engine.
 
 ## Troubleshooting
 
 Start with `voiced doctor`. It checks Apple Silicon, the macOS version,
-espeak-ng, ffmpeg, Metal access from a daemon context, free memory, port
-conflicts and FileVault.
+Python, espeak-ng, ffmpeg, memory, port conflicts, FileVault, the installed
+daemons and Metal access, including from a real daemon context with
+`voiced doctor --metal-probe`.
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `/health` returns 503 with `"status": "starting"` | The model is still loading or downloading. First start can take minutes; watch `voiced logs`. |
-| `/health` says `"degraded"` | The last inference raised. The error is in `last_error`; the watchdog restarts the service if it keeps failing. |
-| HTTP 503 `server_busy` | The inference queue is full. Raise `queue_depth` in the config or send fewer concurrent requests. |
-| HTTP 401 | `api_key` is set; send `Authorization: Bearer <key>`. |
-| Kokoro produces garbage or fails with a phonemizer error | espeak-ng is missing (`brew install espeak-ng`) or the service environment sits at a long path. espeak-ng breaks on long paths; `voiced install` uses `~/.voiced` for this reason. |
-| Transcription fails with a decode error | ffmpeg is missing (`brew install ffmpeg`) or the upload is not audio. |
-| Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. Set `bind = "0.0.0.0"` or add the integration by host and port. |
+| `/health` returns 503 with `"status": "starting"`, `/v1` returns 503 `server_busy` | The model is still loading. The first start downloads it and can take minutes; watch `voiced logs`. |
+| `/health` says `"degraded"` | The last inference failed. The error is in `last_error` and on the status page; the watchdog restarts the service if it stays degraded for two minutes. |
+| HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
+| HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |
+| tts exits at startup with `EspeakNotFound` | espeak-ng is missing: `brew install espeak-ng`. If Homebrew's old `espeak` formula is installed, `brew unlink espeak` first. |
+| HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg: `brew install ffmpeg`. |
+| HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
+| A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
+| ERROR log line `ASGI callable returned without completing response` | A speech client stopped reading and was cut off after `write_timeout_s`. Not a server error; health is untouched. |
+| `voiced stop` prints a `sudo` command | Unloading a LaunchDaemon needs root; run the printed command. |
+| Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
-| Port already in use | Another program owns 8880, 8881, 10200 or 10300. Change the port in the config; `voiced doctor` names the conflicting process. |
-| MLX cannot find the GPU under launchd | Run `voiced doctor` to probe Metal from a daemon context; see [docs/operations.md](docs/operations.md#launchd). |
+| Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
 
 Logs live under `~/Library/Logs/voiced/`. More in
 [docs/operations.md](docs/operations.md).
@@ -243,8 +257,8 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 |---|---|
 | [docs/api.md](docs/api.md) | HTTP, WebSocket and Wyoming reference with curl and Python examples |
 | [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, optional Ollama conversation agent |
-| [docs/architecture.md](docs/architecture.md) | Services, queue, engine registry, audio conventions, adding an engine |
-| [docs/operations.md](docs/operations.md) | launchd, watchdog, logs, FileVault, memory |
+| [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
+| [docs/operations.md](docs/operations.md) | Commands, launchd, watchdog, logs, FileVault, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, conventions |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
