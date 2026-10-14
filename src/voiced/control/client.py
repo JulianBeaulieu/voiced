@@ -98,15 +98,6 @@ class ControlClient:
                 str(err.get("code", "internal")), str(err.get("message", "")), dict(err)
             )
 
-    def next_event(self) -> dict[str, Any]:
-        """The next event (buffered first). Blocks up to the socket timeout."""
-        if self.events:
-            return self.events.pop(0)
-        while True:
-            message = self._read()
-            if "event" in message and "id" not in message:
-                return message
-
     def close(self) -> None:
         try:
             self._file.close()

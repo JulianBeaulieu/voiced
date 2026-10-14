@@ -172,7 +172,7 @@
           <label class="check"><input type="checkbox" name="browser_settings"> Keep this form on</label>
         </div>
         <div class="row"><button type="submit" id="settings-save"><svg class="icon"><use href="#i-save"/></svg>Save</button></div>
-        <div class="hint">Saved to <span id="settings-path"></span>. A change takes effect when the service restarts (<code>voiced restart</code>). This form is off unless <code>browser_settings</code> is on, asks for the API key when one is set, and is refused when the server listens on the network without one.</div>
+        <div class="hint">Saved to <span id="settings-path"></span>. A change takes effect when the service restarts (<code>voiced restart</code> on the server). This form is off unless <code>browser_settings</code> is on, and it always needs the API key: with no key set it is refused, on this Mac too.</div>
         <div class="out" id="settings-out"></div>
       </form>
     </div>
@@ -308,17 +308,19 @@
     var on = !!(f && f.enabled);
     $("settings-section").classList.toggle("hidden", !on);
     if (!on) { settingsLoaded = false; return; }
-    if (f.api_key_required) $("apikey-section").classList.remove("hidden");
+    if (f.api_key_required && !f.refused) $("apikey-section").classList.remove("hidden");
     $("settings-refused").classList.toggle("hidden", !f.refused);
     $("settings-refused").textContent = f.refused || "";
     $("settings-form").classList.toggle("hidden", !!f.refused);
     if (!f.refused && !settingsLoaded && !settingsBusy) loadSettings();
   }
-  function fillSelect(sel, values, selected) {
+  // values: ids; labels: {id: display name}, the id is shown without one.
+  function fillSelect(sel, values, selected, labels) {
     sel.textContent = "";
     if (values.indexOf(selected) < 0) values = [selected].concat(values);
     values.forEach(function (v) {
-      var o = document.createElement("option"); o.value = v; o.textContent = v;
+      var o = document.createElement("option"); o.value = v;
+      o.textContent = (labels && labels[v]) || v;
       if (v === selected) o.selected = true;
       sel.appendChild(o);
     });
@@ -326,9 +328,16 @@
   function engineNamed(kind, name) {
     return (engines[kind] || []).filter(function (e) { return e.name === name; })[0] || null;
   }
+  function fillEngines(kind, selected) {
+    var labels = {};
+    engines[kind].forEach(function (e) { labels[e.name] = e.label; });
+    fillSelect($("settings-form").elements[kind + ".engine"],
+      engines[kind].map(function (e) { return e.name; }), selected, labels);
+  }
   function fillVoices(engineName, selected) {
     var e = engineNamed("tts", engineName);
-    fillSelect($("settings-form").elements["tts.voice"], e ? e.voices.slice() : [], selected);
+    fillSelect($("settings-form").elements["tts.voice"], e ? e.voices.slice() : [], selected,
+      e ? e.voice_labels : null);
   }
   function fillForm(s) {
     var el = $("settings-form").elements;
@@ -338,9 +347,9 @@
     el["api_key_clear"].checked = false;
     el["api_key_clear"].disabled = !s.api_key_set;
     el["zeroconf"].checked = s.zeroconf;
-    fillSelect(el["stt.engine"], engines.stt.map(function (e) { return e.name; }), s.stt.engine);
+    fillEngines("stt", s.stt.engine);
     el["stt.model"].value = s.stt.model;
-    fillSelect(el["tts.engine"], engines.tts.map(function (e) { return e.name; }), s.tts.engine);
+    fillEngines("tts", s.tts.engine);
     el["tts.model"].value = s.tts.model;
     fillVoices(s.tts.engine, s.tts.voice);
     el["tts.speed"].value = s.tts.speed;
@@ -362,9 +371,17 @@
     }).then(function () { settingsBusy = false; });
   }
   $("apikey").addEventListener("change", function () { settingsLoaded = false; });
-  $("settings-form").elements["tts.engine"].addEventListener("change", function (ev) {
-    var e = engineNamed("tts", ev.target.value);
-    fillVoices(ev.target.value, e && e.voices.length ? e.voices[0] : current.tts.voice);
+  // A new engine cannot load the old engine's model: reset the model (and
+  // the voice) to the new engine's own, or back to the saved ones.
+  ["stt", "tts"].forEach(function (kind) {
+    $("settings-form").elements[kind + ".engine"].addEventListener("change", function (ev) {
+      var el = $("settings-form").elements, name = ev.target.value, e = engineNamed(kind, name);
+      var saved = name === current[kind].engine;
+      el[kind + ".model"].value = saved || !e || !e.models.length ? current[kind].model : e.models[0];
+      if (kind !== "tts") return;
+      var keep = saved || (e && e.voices.indexOf(current.tts.voice) >= 0);
+      fillVoices(name, keep || !e || !e.voices.length ? current.tts.voice : e.voices[0]);
+    });
   });
   $("settings-form").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -393,7 +410,7 @@
     }).then(function (j) {
       var lines = ["Saved."];
       if (j.restart_required.length) {
-        lines.push("Restart to apply: voiced restart " + (j.restart_required.length > 1 ? "all" : j.restart_required[0]));
+        lines.push("Restart to apply: voiced restart " + (j.restart_required.length > 1 ? "all" : j.restart_required[0]) + " on the server");
       }
       (j.warnings || []).forEach(function (w) { lines.push("Warning: " + (WARNINGS[w] || w)); });
       out.className = "out"; out.textContent = lines.join("\n");

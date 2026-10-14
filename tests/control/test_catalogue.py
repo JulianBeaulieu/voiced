@@ -1,32 +1,68 @@
-"""Engine catalogues are known without loading weights."""
+"""Engine catalogues: known without loading weights, and never loaded in the watchdog."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
 import pytest
 
-from voiced.engines.catalogue import EngineCatalogue, catalogue_of
+from voiced.engines.base import Voice
+from voiced.engines.catalogue import engines_list, voice_label
 from voiced.engines.kokoro import KokoroEngine
-from voiced.testing import FakeSTTEngine
+
+HEAVY = ("fastapi", "starlette", "numpy", "pysilero_vad", "mlx", "mlx_audio", "voiced.engines")
 
 
 def test_kokoro_catalogue_without_mlx() -> None:
     code = (
-        "import sys\n"
-        "from voiced.control.ops import engines_list\n"
-        "tts = {e['name']: e for e in engines_list()['tts']}\n"
-        "assert 'af_heart' in tts['kokoro']['voices'], tts['kokoro']\n"
-        "assert 'bf_emma' in tts['kokoro']['voices']\n"
-        "assert not any(v.startswith('jf_') for v in tts['kokoro']['voices'])\n"
-        "assert not [m for m in sys.modules if m.split('.')[0] in ('mlx', 'mlx_audio')]\n"
+        "import json, sys\n"
+        "from voiced.engines.catalogue import main\n"
+        "main(['--json'])\n"
+        "mlx = [m for m in sys.modules if m.split('.')[0] in ('mlx', 'mlx_audio')]\n"
+        "print(json.dumps(mlx))\n"
     )
-    subprocess.run([sys.executable, "-c", code], check=True)
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    tts = {e["name"]: e for e in json.loads(out[0])["tts"]}
+    voices = tts["kokoro"]["voices"]
+    assert "af_heart" in voices and "bf_emma" in voices
+    assert not any(v.startswith("jf_") for v in voices)
+    assert json.loads(out[1]) == []
 
 
-def test_engine_without_catalogue_uses_class_attributes() -> None:
-    assert catalogue_of(FakeSTTEngine) == EngineCatalogue(models=["fake/stt"], languages=["en"])
+def test_labels() -> None:
+    result = engines_list()
+    tts = {e["name"]: e for e in result["tts"]}
+    stt = {e["name"]: e for e in result["stt"]}
+    assert tts["kokoro"]["label"] == "Kokoro"
+    assert tts["kokoro"]["voice_labels"]["af_heart"] == "Heart (American English, female)"
+    assert tts["kokoro"]["voice_labels"]["bm_george"] == "George (British English, male)"
+    assert set(tts["kokoro"]["voice_labels"]) == set(tts["kokoro"]["voices"])
+    assert tts["soprano"]["voice_labels"] == {"default": "Default"}
+    assert stt["parakeet"] == {
+        "name": "parakeet",
+        "label": "Parakeet",
+        "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
+        "languages": stt["parakeet"]["languages"],
+    }
+    assert voice_label(Voice("x", "X", "xx-XX", "male")) == "X (xx-XX, male)"
+
+
+def test_the_watchdog_imports_no_engine_plugins() -> None:
+    """``voiced watchdog`` and everything the control socket runs in it import
+    neither FastAPI nor numpy nor any engine (ADR 0012, ADR 0013)."""
+    code = (
+        "import json, sys\n"
+        "import voiced.cli, voiced.control.server, voiced.control.supervisor\n"
+        "print(json.dumps(sorted(sys.modules)))\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+    loaded = json.loads(out.stdout)
+    heavy = [m for m in loaded if any(m == h or m.startswith(f"{h}.") for h in HEAVY)]
+    assert heavy == []
 
 
 @pytest.mark.model
@@ -34,4 +70,4 @@ async def test_kokoro_catalogue_matches_loaded_voices() -> None:
     engine = KokoroEngine(warmup=False)
     await engine.load()
     loaded = {v.id for v in await engine.voices()}
-    assert loaded <= set(KokoroEngine.catalogue().voices)
+    assert loaded <= {v.id for v in KokoroEngine.catalogue_voices()}

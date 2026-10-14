@@ -91,7 +91,11 @@ def cmd_config(settings: Settings) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
+        print(f"config error at {config_path()}: {exc}", file=sys.stderr)
+        return 2
     if args.command in LIFECYCLE:
         return run_lifecycle(args, settings)
     if args.command == "serve":

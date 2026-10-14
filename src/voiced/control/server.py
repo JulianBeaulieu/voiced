@@ -134,8 +134,9 @@ class ControlServer:
 
     ``status`` events go to every client whenever the status changes (polled
     every :data:`STATUS_POLL_S` while anyone is connected) and at least every
-    :data:`STATUS_PUSH_MAX_S`; ``settings`` events follow a successful
-    ``settings.set``.
+    :data:`STATUS_PUSH_MAX_S`. ``settings`` events go out whenever the config
+    file changes: right after a ``settings.set`` that wrote it, and within a
+    poll after anything else wrote it (the status page form, an editor).
     """
 
     def __init__(
@@ -147,6 +148,7 @@ class ControlServer:
         uid_of: Callable[[socket.socket], int | None] = peer_uid,
         status_poll_s: float = STATUS_POLL_S,
         status_push_max_s: float = STATUS_PUSH_MAX_S,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.path = path
         self.ops = ops
@@ -157,15 +159,23 @@ class ControlServer:
         self.clients: set[_Client] = set()
         self._server: asyncio.AbstractServer | None = None
         self._status_task: asyncio.Task[None] | None = None
+        self.clock = clock
         self._wake = asyncio.Event()
         self._force_push = False
+        self._last_status: Any = None
+        self._last_push: float | None = None
+        self._config_stamp: Any = None
+        self._config_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         prepare_socket_path(self.path)
+        self._config_stamp = await asyncio.to_thread(self.ops.config_stamp)
         self._server = await asyncio.start_unix_server(
             self._handle, path=str(self.path), limit=MAX_LINE_BYTES
         )
+        # For a moment 0644 (umask) between bind and chmod; the 0700 parent
+        # directory keeps other users out of that window.
         os.chmod(self.path, 0o600)
         self._status_task = asyncio.create_task(self._status_loop(), name="voiced-control-status")
         log.info("control socket listening on %s", self.path)
@@ -175,6 +185,7 @@ class ControlServer:
             self._status_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._status_task
+        await self.ops.wait_restarts()
         if self._server is not None:
             self._server.close()
         for client in list(self.clients):
@@ -252,8 +263,7 @@ class ControlServer:
             return
         await self._send(client, ok(request.id, result))
         if request.op == "settings.set":
-            data = {k: v for k, v in result.items() if k not in ("restart_required", "warnings")}
-            await self.broadcast(event("settings", data))
+            await self.check_config()
         elif request.op == "service.restart":
             self.refresh_status()
 
@@ -289,27 +299,49 @@ class ControlServer:
         self._force_push = True
         self._wake.set()
 
+    async def poll_once(self) -> None:
+        """One round of the event loop: push ``status`` if it changed (or is
+        due, or was asked for) and ``settings`` if the config file changed."""
+        await self.check_config()
+        try:
+            status: dict[str, Any] | None = await self.ops.dispatch("status", {})
+        except OpError as exc:
+            log.warning("control: status for event failed: %s", exc.message)
+            status = None
+        now = self.clock()
+        force, self._force_push = self._force_push, False
+        if status is None:
+            return
+        fingerprint = _fingerprint(status)
+        due = self._last_push is None or now - self._last_push >= self.status_push_max_s
+        if force or due or fingerprint != self._last_status:
+            await self.broadcast(event("status", status))
+            self._last_status, self._last_push = fingerprint, now
+
+    async def check_config(self) -> None:
+        """Push ``settings`` to every client if the config file changed since
+        the last check."""
+        async with self._config_lock:
+            stamp = await asyncio.to_thread(self.ops.config_stamp)
+            if stamp == self._config_stamp:
+                return
+            self._config_stamp = stamp
+            if not self.clients:
+                return
+            try:
+                data = await self.ops.dispatch("settings.get", {})
+            except OpError as exc:
+                log.warning("control: settings for event failed: %s", exc.message)
+                return
+            await self.broadcast(event("settings", data))
+
     async def _status_loop(self) -> None:
-        last: Any = None
-        last_push = 0.0
         while True:
             if not self.clients:
-                last = None
+                self._last_status = self._last_push = None
                 self._wake.clear()
                 await self._wake.wait()
-            try:
-                status = await self.ops.dispatch("status", {})
-            except OpError as exc:
-                log.warning("control: status for event failed: %s", exc.message)
-                status = None
-            now = time.monotonic()
-            force, self._force_push = self._force_push, False
-            if status is not None:
-                fingerprint = _fingerprint(status)
-                stale = now - last_push >= self.status_push_max_s
-                if force or stale or fingerprint != last:
-                    await self.broadcast(event("status", status))
-                    last, last_push = fingerprint, now
+            await self.poll_once()
             self._wake.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), self.status_poll_s)

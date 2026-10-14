@@ -31,7 +31,6 @@ from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
-from voiced.engines.catalogue import EngineCatalogue
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 from voiced.text.sentences import cut_to_length
 
@@ -159,13 +158,10 @@ class KokoroEngine(SentenceTTSEngine):
     license = "Apache-2.0"
 
     @classmethod
-    def catalogue(cls) -> EngineCatalogue:
-        """The static voice table for ``languages``; no weights are read."""
-        return EngineCatalogue(
-            models=[cls.model_id],
-            languages=list(cls.languages),
-            voices=[v.id for v in kokoro_voices(cls.languages)],
-        )
+    def catalogue_voices(cls) -> list[Voice]:
+        """The static voice table for ``languages``; no weights are read
+        (``voiced.engines.catalogue``)."""
+        return kokoro_voices(cls.languages)
 
     def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
@@ -247,13 +243,13 @@ class KokoroEngine(SentenceTTSEngine):
         For tests and diagnostics only: it runs the phonemizer on the calling
         thread, and espeak-ng holds process-global state that is not safe to
         call concurrently with a synthesis in flight. Synthesis itself
-        phonemizes inside the background thread the slot already serializes.
+        phonemizes inside the worker thread the slot already serializes.
         """
         self._check_loaded()
         return _phonemize(self._tokenizer, text, voice)
 
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a background thread."""
+        """Blocking; runs in a worker thread."""
         return _synth(self._model, self._tokenizer, self._packs[voice], sentence, voice, speed)
 
 

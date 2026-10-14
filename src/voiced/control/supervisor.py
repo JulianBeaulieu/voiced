@@ -2,19 +2,21 @@
 
 Status comes from a fresh, probe-free observation of each service (``/health``
 and ``launchctl print``) combined with what the watchdog remembers (restart
-count, startup grace). Restarts go through :meth:`Watchdog.restart_now`, the
-same path the watchdog's own decisions take.
+count, startup grace, and the engine and model each service was last started
+with). Restarts go through :meth:`Watchdog.restart_now`, the same path the
+watchdog's own decisions take.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Literal
 
-from voiced.config import Settings
-from voiced.control.ops import NotInstalled
+from voiced.config import ServiceName
+from voiced.control.ops import NotInstalled, ServiceUnavailable
 from voiced.launchd.control import Runner, plist_path, run_command
 from voiced.watchdog import (
     Observation,
@@ -76,16 +78,12 @@ class WatchdogSupervisor:
     def __init__(
         self,
         dog: Watchdog,
-        settings: Settings,
         *,
-        specs_for: Callable[[Settings], Sequence[ServiceSpec]],
         runner: Runner = run_command,
         installed: Callable[[str], bool] | None = None,
         observe: Callable[[ServiceSpec], Observation] | None = None,
     ) -> None:
         self.dog = dog
-        self.settings = settings
-        self.specs_for = specs_for
         self.runner = runner
         self.installed = installed or (lambda label: plist_path(label).is_file())
         self._observe = observe or self._observe_now
@@ -97,21 +95,21 @@ class WatchdogSupervisor:
         return Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
 
     def status(self) -> dict[str, Any]:
+        with self.dog.lock:
+            specs = list(self.dog.services)
+            states = {
+                s.name: replace(self.dog.states[s.name]) for s in specs if s.name in self.dog.states
+            }
+            now = self.dog.clock()
         services: dict[str, Any] = {}
-        configured = {
-            "stt": (self.settings.stt.engine, self.settings.stt.model),
-            "tts": (self.settings.tts.engine, self.settings.tts.model),
-        }
-        for spec in self.dog.services:
+        for spec in specs:
             obs = self._observe(spec)
-            state = self.dog.states.get(spec.name)
+            state = states.get(spec.name)
             in_grace = (
-                state is not None
-                and self.dog.clock() - state.grace_started_at < self.dog.policy.startup_grace_s
+                state is not None and now - state.grace_started_at < self.dog.policy.startup_grace_s
             )
-            engine, model = configured.get(spec.name, (None, None))
             services[spec.name] = service_view(
-                obs, state, in_grace=in_grace, engine=engine, model=model
+                obs, state, in_grace=in_grace, engine=spec.engine or None, model=spec.model or None
             )
         services["watchdog"] = {
             "state": "running",
@@ -123,8 +121,20 @@ class WatchdogSupervisor:
             "uptime_s": round(time.monotonic() - self.started, 1),
             "restarts": 0,
         }
-        installed = all(self.installed(spec.label) for spec in self.dog.services)
+        installed = all(self.installed(spec.label) for spec in specs)
         return {"installed": installed, "services": services}
+
+    def check_restart(self, service: ServiceName) -> None:
+        spec = self.dog.spec(service)
+        if spec is None:
+            raise NotInstalled(f"{service} is not supervised by this watchdog")
+        if not self.installed(spec.label):
+            raise NotInstalled(f"{spec.label} has no launchd plist; run `voiced install`")
+        loaded, _pid = launchd_view(spec.label, self.runner)
+        if loaded is False:
+            raise ServiceUnavailable(
+                f"{spec.label} is installed but not loaded in launchd; `voiced start {service}`"
+            )
 
     def restart(self, service: Literal["stt", "tts"]) -> str:
         try:
@@ -132,13 +142,5 @@ class WatchdogSupervisor:
         except KeyError:
             raise NotInstalled(f"{service} is not supervised by this watchdog") from None
         if not result.done:
-            raise NotInstalled(result.detail)
+            raise ServiceUnavailable(result.detail)
         return result.detail
-
-    def settings_changed(self, settings: Settings) -> None:
-        """Keep the probe's API key and URLs in step with the file. The
-        services themselves pick the change up when they restart."""
-        self.settings = settings
-        specs = list(self.specs_for(settings))
-        with self.dog.lock:
-            self.dog.services = specs

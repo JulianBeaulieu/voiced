@@ -12,18 +12,21 @@ import socket
 import tempfile
 import threading
 import tomllib
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from voiced import cli_lifecycle as lc
 from voiced import doctor
-from voiced.cli import build_parser
+from voiced.cli import build_parser, main
 from voiced.config import Settings, load_settings
-from voiced.control import socket_path
+from voiced.control import NOT_SERVED, socket_path
+from voiced.control.client import ControlError
 from voiced.control.ops import Operations
 from voiced.control.server import ControlServer
+from voiced.engines.catalogue import engines_list
 from voiced.launchd.control import CommandResult
 
 from ..control.conftest import FakeSupervisor
@@ -63,6 +66,20 @@ def test_settings_set_without_socket(settings: Settings, cfg: Path) -> None:
     assert data["tts"]["speed"] == 1.2
     assert data["server"]["zeroconf"] is False
     assert "Restart to apply: voiced restart all" in out
+    # Only the changed keys are shown.
+    assert "tts.voice" in out[0] and "zeroconf" in out[0] and "tts.speed" in out[0]
+    assert "tts.engine" not in out[0] and "ports" not in out[0]
+    out.clear()
+    assert lc.cmd_settings(settings_args("set", "tts.voice=bf_emma"), settings, out.append) == 0
+    assert out == ["Nothing changed."]
+
+
+def test_settings_set_engine_takes_its_model(settings: Settings, cfg: Path) -> None:
+    out: list[str] = []
+    assert lc.cmd_settings(settings_args("set", "tts.engine=soprano"), settings, out.append) == 0
+    tts = tomllib.loads(cfg.read_text())["tts"]
+    assert (tts["engine"], tts["default_voice"]) == ("soprano", "default")
+    assert "tts.model" in out[0]
 
 
 def test_settings_set_api_key_from_stdin(settings: Settings, cfg: Path) -> None:
@@ -125,9 +142,74 @@ def test_status_without_socket(settings: Settings) -> None:
     assert out[1].startswith("control socket: not answering")
 
 
+def test_status_watchdog_running_without_socket(settings: Settings) -> None:
+    """The socket failed to start (path too long, someone else's directory):
+    say so instead of "watchdog not running"."""
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        if argv[-1].endswith(".watchdog"):
+            return CommandResult(0, "state = running\n\tpid = 99\n")
+        return CommandResult(113, "", "Could not find service")
+
+    out: list[str] = []
+    lc.cmd_status(settings, runner, out.append)
+    assert out[1] == f"control socket: {NOT_SERVED}"
+
+
+def test_watchdog_that_stops_answering(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    def hung(*args: object) -> dict[str, object]:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(lc, "request", hung)
+    out: list[str] = []
+    assert lc.cmd_restart("tts", settings, lambda argv: CommandResult(0), out.append) == 1
+    assert out == ["restart failed: watchdog did not answer: timed out"]
+    out.clear()
+    assert lc.cmd_settings(settings_args(), settings, out.append) == 1
+    assert out == ["watchdog did not answer: timed out"]
+    with pytest.raises(ControlError, match="did not answer"):
+        lc.control_status(settings)
+
+
+def test_hung_socket_times_out(settings: Settings) -> None:
+    """A server that greets and then never answers: a short timeout, no traceback."""
+    short = Path(tempfile.mkdtemp(prefix="vc", dir="/tmp"))
+    settings.install.venv_dir = short
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path(settings)))
+    listener.listen(1)
+
+    def greet_then_hang() -> None:
+        conn, _ = listener.accept()
+        conn.sendall(b'{"event":"hello","data":{"protocol":1}}\n')
+        conn.recv(1024)
+
+    thread = threading.Thread(target=greet_then_hang, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(ControlError, match="watchdog did not answer"):
+            lc._via_control(settings, "status", timeout_s=0.2)
+    finally:
+        listener.close()
+        shutil.rmtree(short, ignore_errors=True)
+
+
+def test_config_syntax_error_is_one_line(
+    settings: Settings, cfg: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cfg.write_text("[tts\n")
+    assert main(["settings"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith(f"config error at {cfg}:")
+    assert "Traceback" not in err
+
+
 def test_doctor_socket_missing(tmp_path: Path) -> None:
     check = doctor.check_control_socket(tmp_path / "control.sock")
     assert check.result == "warn"
+    running = doctor.check_control_socket(tmp_path / "control.sock", watchdog_pid=99)
+    assert running.result == "fail"
+    assert NOT_SERVED in running.detail
 
 
 def test_doctor_socket_not_a_socket(tmp_path: Path) -> None:
@@ -139,21 +221,31 @@ def test_doctor_socket_not_a_socket(tmp_path: Path) -> None:
 # With a socket -----------------------------------------------------------------
 
 
+@dataclass
+class Served:
+    settings: Settings
+    supervisor: FakeSupervisor
+    wait_restarts: Callable[[], None]
+
+
 @pytest.fixture
-def served(settings: Settings, cfg: Path) -> Iterator[tuple[Settings, FakeSupervisor]]:
+def served(settings: Settings, cfg: Path) -> Iterator[Served]:
     """A control server on a background loop, at the settings' socket path."""
     short = Path(tempfile.mkdtemp(prefix="vc", dir="/tmp"))
     settings.install.venv_dir = short / "state"
     supervisor = FakeSupervisor()
     loop = asyncio.new_event_loop()
-    server = ControlServer(
-        socket_path(settings), Operations(supervisor, cfg, load_settings), version="t"
-    )
+    ops = Operations(supervisor, cfg, engines=engines_list)
+    server = ControlServer(socket_path(settings), ops, version="t")
     loop.run_until_complete(server.start())
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
+
+    def wait_restarts() -> None:
+        asyncio.run_coroutine_threadsafe(ops.wait_restarts(), loop).result(5)
+
     try:
-        yield settings, supervisor
+        yield Served(settings, supervisor, wait_restarts)
     finally:
         asyncio.run_coroutine_threadsafe(server.close(), loop).result(5)
         loop.call_soon_threadsafe(loop.stop)
@@ -162,30 +254,37 @@ def served(settings: Settings, cfg: Path) -> Iterator[tuple[Settings, FakeSuperv
         shutil.rmtree(short, ignore_errors=True)
 
 
-def test_settings_through_socket(served: tuple[Settings, FakeSupervisor], cfg: Path) -> None:
-    settings, supervisor = served
+def test_settings_through_socket(served: Served, cfg: Path) -> None:
     out: list[str] = []
-    assert lc.cmd_settings(settings_args("set", "tts.speed=1.4"), settings, out.append) == 0
+    args = settings_args("set", "tts.speed=1.4")
+    assert lc.cmd_settings(args, served.settings, out.append) == 0
     assert tomllib.loads(cfg.read_text())["tts"]["speed"] == 1.4
-    assert len(supervisor.changed) == 1  # the watchdog was told
+    assert "tts.speed" in out[0] and "1.4" in out[0]
+    assert out[1] == "Restart to apply: voiced restart tts"
+    out.clear()
+    args = settings_args("set", "tts.voice=nobody")
+    assert lc.cmd_settings(args, served.settings, out.append) == 1
+    assert out == ["tts.voice: fake has no voice 'nobody'"]
 
 
-def test_restart_through_socket(served: tuple[Settings, FakeSupervisor]) -> None:
-    settings, supervisor = served
+def test_restart_through_socket(served: Served) -> None:
     out: list[str] = []
 
     def no_launchctl(argv: Sequence[str]) -> CommandResult:
         raise AssertionError("must go through the socket")
 
-    assert lc.cmd_restart("all", settings, no_launchctl, out.append) == 0
-    assert supervisor.restarted == ["stt", "tts"]
-    assert out[:2] == ["stt: restarted stt", "tts: restarted tts"]
-    supervisor.installed = False
-    assert lc.cmd_restart("stt", settings, no_launchctl, out.append) == 1
+    assert lc.cmd_restart("all", served.settings, no_launchctl, out.append) == 0
+    served.wait_restarts()
+    assert sorted(served.supervisor.restarted) == ["stt", "tts"]
+    assert out[:2] == ["stt: restarting", "tts: restarting"]
+    served.supervisor.refuse = {"stt": "not_installed"}
+    out.clear()
+    assert lc.cmd_restart("stt", served.settings, no_launchctl, out.append) == 1
+    assert out == ["restart failed: stt: stt has no launchd plist"]
 
 
-def test_status_through_socket(served: tuple[Settings, FakeSupervisor]) -> None:
-    settings, _ = served
+def test_status_through_socket(served: Served) -> None:
+    settings = served.settings
     out: list[str] = []
     runner = lambda argv: CommandResult(113, "", "Could not find service")  # noqa: E731
     lc.cmd_status(settings, runner, out.append)
@@ -197,9 +296,8 @@ def test_status_through_socket(served: tuple[Settings, FakeSupervisor]) -> None:
     assert rows[1]["control"]["state"] == "running"
 
 
-def test_doctor_socket_ok_and_mode(served: tuple[Settings, FakeSupervisor]) -> None:
-    settings, _ = served
-    path = socket_path(settings)
+def test_doctor_socket_ok_and_mode(served: Served) -> None:
+    path = socket_path(served.settings)
     check = doctor.check_control_socket(path)
     assert check.result == "pass", check.detail
     path.chmod(0o666)

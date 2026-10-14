@@ -21,14 +21,30 @@ from voiced.control.server import ControlServer, SocketInUse, peer_uid, prepare_
 from .conftest import FakeSupervisor
 
 
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 @pytest.fixture
-async def server(short_dir: Path, ops: Operations) -> AsyncIterator[ControlServer]:
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+async def server(short_dir: Path, ops: Operations, clock: Clock) -> AsyncIterator[ControlServer]:
+    """Polls only when woken (a connect, a restart); tests step the rest with
+    :meth:`ControlServer.poll_once` and ``clock``."""
     srv = ControlServer(
         short_dir / "state" / "control.sock",
         ops,
         version="9.9.9",
-        status_poll_s=0.05,
-        status_push_max_s=0.3,
+        status_poll_s=3600,
+        status_push_max_s=10,
+        clock=clock,
     )
     async with srv:
         yield srv
@@ -190,6 +206,7 @@ async def test_concurrent_clients(server: ControlServer) -> None:
 
 
 async def test_settings_event_fans_out(server: ControlServer) -> None:
+    """After a settings.set that wrote the file, every client hears of it."""
     a, b = await Conn.open(server.path), await Conn.open(server.path)
     await a.recv()
     await b.recv()
@@ -204,6 +221,21 @@ async def test_settings_event_fans_out(server: ControlServer) -> None:
     await b.close()
 
 
+async def test_settings_event_when_another_writer_changes_the_file(
+    server: ControlServer, config_file: Path
+) -> None:
+    """The status page form (or an editor) writes the file; the next poll
+    tells socket clients."""
+    conn = await Conn.open(server.path)
+    await conn.recv()
+    text = await asyncio.to_thread(config_file.read_text)
+    edited = text.replace("[server]\n", "[server]\nzeroconf = false\n")
+    await asyncio.to_thread(config_file.write_text, edited)
+    await server.poll_once()
+    assert (await conn.event("settings"))["data"]["zeroconf"] is False
+    await conn.close()
+
+
 async def test_invalid_setting_error_names_the_field(server: ControlServer) -> None:
     conn = await Conn.open(server.path)
     await conn.recv()
@@ -213,17 +245,31 @@ async def test_invalid_setting_error_names_the_field(server: ControlServer) -> N
     await conn.close()
 
 
+async def next_message(conn: Conn, req_id: int) -> dict[str, Any]:
+    """The first message after asking for something: proves no event was
+    queued before the answer."""
+    await conn.send(protocol.encode({"id": req_id, "op": "settings.get"}))
+    return await conn.recv()
+
+
 async def test_status_events_on_change_and_periodically(
-    server: ControlServer, supervisor: FakeSupervisor
+    server: ControlServer, supervisor: FakeSupervisor, clock: Clock
 ) -> None:
     conn = await Conn.open(server.path)
     await conn.recv()
-    first = await conn.event("status")
+    first = await conn.event("status")  # on connect
     assert first["data"]["services"]["tts"]["state"] == "running"
+    await server.poll_once()  # unchanged, not due: nothing
+    assert (await next_message(conn, 1)).get("id") == 1
     supervisor.state = "starting"
-    changed = await conn.event("status")
+    await server.poll_once()
+    changed = await conn.recv()
+    assert changed["event"] == "status"
     assert changed["data"]["services"]["tts"]["state"] == "starting"
-    periodic = await conn.event("status", wait_s=1.0)  # unchanged, pushed after push_max
+    clock.now += server.status_push_max_s
+    await server.poll_once()  # unchanged but due
+    periodic = await conn.recv()
+    assert periodic["event"] == "status"
     assert periodic["data"]["services"]["tts"]["state"] == "starting"
     await conn.close()
 
@@ -235,9 +281,13 @@ async def test_restart_answers_then_pushes_status(
     await conn.recv()
     await conn.send(b'{"id": 1, "op": "service.restart", "args": {"service": "all"}}\n')
     assert (await conn.answer(1))["result"]["accepted"] is True
-    assert supervisor.restarted == ["stt", "tts"]
-    status = await conn.event("status")
-    assert status["data"]["services"]["stt"]["restarts"] == 2
+    await server.ops.wait_restarts()
+    assert sorted(supervisor.restarted) == ["stt", "tts"]
+    await server.poll_once()
+    while True:
+        status = await conn.event("status")
+        if status["data"]["services"]["stt"]["restarts"] == 2:
+            break
     await conn.close()
 
 
@@ -256,7 +306,7 @@ async def test_disconnected_client_does_not_break_fan_out(server: ControlServer)
 
 
 async def test_blocking_client(server: ControlServer) -> None:
-    def use() -> tuple[dict[str, Any], dict[str, Any]]:
+    def use() -> dict[str, Any]:
         with ControlClient.connect(server.path, timeout_s=5) as client:
             assert client.hello["protocol"] == 1
             got = client.request("settings.get")
@@ -266,11 +316,11 @@ async def test_blocking_client(server: ControlServer) -> None:
                 assert exc.code == protocol.UNKNOWN_OP
             else:
                 raise AssertionError("expected ControlError")
-            return got, client.next_event()
+            assert all("event" in e for e in client.events)
+            return got
 
-    result, event = await asyncio.to_thread(use)
+    result = await asyncio.to_thread(use)
     assert result["bind"] == "loopback"
-    assert event["event"] in ("status", "settings")
 
 
 def test_client_without_server(short_dir: Path) -> None:

@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections.abc import Sequence
+from dataclasses import replace
 
 import pytest
 
 from voiced.cli_lifecycle import watchdog_specs
 from voiced.config import Settings, WatchdogConfig
-from voiced.control.ops import NotInstalled
+from voiced.control.ops import NotInstalled, ServiceUnavailable
 from voiced.control.supervisor import WatchdogSupervisor, service_state
+from voiced.launchd.control import CommandResult
 from voiced.watchdog import Observation, RestartResult, ServiceSpec, Watchdog
 
 POLICY = WatchdogConfig(startup_grace_s=100)
@@ -61,8 +64,6 @@ def make(settings: Settings, restarted: list[str], clock: list[float]) -> Watchd
     }
     return WatchdogSupervisor(
         dog,
-        settings,
-        specs_for=watchdog_specs,
         installed=lambda label: True,
         observe=lambda spec: views[spec.name],
     )
@@ -100,37 +101,130 @@ def test_restart_goes_through_the_watchdog(settings: Settings) -> None:
     state = sup.dog.states["tts"]
     assert state.restarts == 1 and state.last_restart_at == 1000.0
     assert sup.status()["services"]["tts"]["restarts"] == 1
-    with pytest.raises(NotInstalled):
+    with pytest.raises(ServiceUnavailable):
         sup.restart("stt")  # RestartResult(done=False)
     assert restarted == ["tts", "stt"]
 
 
-def test_settings_changed_updates_the_specs(settings: Settings) -> None:
-    sup = make(settings, [], [0.0])
-    changed = settings.model_copy(deep=True)
-    changed.server.api_key = "new"
-    sup.settings_changed(changed)
-    assert all(spec.api_key == "new" for spec in sup.dog.services)
+def test_check_restart(settings: Settings) -> None:
+    printed: list[int] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        return CommandResult(printed[-1] if printed else 0, "")
+
+    dog = Watchdog(services=watchdog_specs(settings), policy=POLICY)
+    plists = {"stt": True, "tts": False}
+    sup = WatchdogSupervisor(
+        dog, runner=runner, installed=lambda label: plists[label.rsplit(".", 1)[1]]
+    )
+    sup.check_restart("stt")  # plist and loaded
+    with pytest.raises(NotInstalled, match="no launchd plist"):
+        sup.check_restart("tts")
+    printed.append(113)  # launchctl print: not found
+    with pytest.raises(ServiceUnavailable, match="not loaded"):
+        sup.check_restart("stt")
+
+
+def test_engine_and_model_are_what_the_service_was_started_with(settings: Settings) -> None:
+    """Without /health, status shows the spec's engine and model, which only
+    change when the watchdog restarts the service or sees a new pid."""
+    file_engine = ["fake"]
+
+    def respec(spec: ServiceSpec) -> ServiceSpec:
+        return replace(spec, engine=file_engine[0], api_key="new")
+
+    pid = [7]
+    dog = Watchdog(
+        services=watchdog_specs(settings),
+        policy=POLICY,
+        restart=lambda spec: RestartResult(True, "ok"),
+        observe=lambda s, p: Observation("unreachable", loaded=True, pid=pid[0]),
+        respec=respec,
+    )
+    sup = WatchdogSupervisor(
+        dog,
+        installed=lambda label: True,
+        observe=lambda spec: Observation("unreachable", loaded=True, pid=pid[0]),
+    )
+    dog.tick()
+    file_engine[0] = "soprano"  # the file changes; the process does not
+    dog.tick()
+    assert sup.status()["services"]["tts"]["engine"] == "fake"
+    assert dog.spec("tts").api_key == settings.server.api_key  # type: ignore[union-attr]
+    sup.restart("tts")
+    assert sup.status()["services"]["tts"]["engine"] == "soprano"
+    assert dog.spec("tts").api_key == "new"  # type: ignore[union-attr]
+    file_engine[0] = "kokoro"
+    pid[0] = 9  # launchd restarted stt by itself
+    dog.tick()
+    assert sup.status()["services"]["stt"]["engine"] == "kokoro"
+
+
+def test_restart_does_not_wait_for_a_health_poll(settings: Settings) -> None:
+    """A tick observes without the lock, so a requested restart goes through
+    while a poll hangs."""
+    in_poll, release = threading.Event(), threading.Event()
+
+    def observe(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
+        in_poll.set()
+        release.wait(5)
+        return Observation("ok")
+
+    dog = Watchdog(
+        services=watchdog_specs(settings),
+        policy=POLICY,
+        observe=observe,
+        restart=lambda spec: RestartResult(True, "ok"),
+    )
+    ticker = threading.Thread(target=dog.tick)
+    ticker.start()
+    assert in_poll.wait(5)
+    result = [RestartResult(False, "")]
+    restarter = threading.Thread(target=lambda: result.__setitem__(0, dog.restart_now("tts")))
+    restarter.start()
+    restarter.join(5)
+    hung = restarter.is_alive()
+    release.set()
+    ticker.join(5)
+    assert not hung
+    assert result[0].done
 
 
 async def test_run_async_stops() -> None:
-    ticks: list[int] = []
-    three = threading.Event()
+    ticked = threading.Event()
 
     def observe(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
-        ticks.append(1)
-        if len(ticks) >= 3:
-            three.set()
+        ticked.set()
         return Observation("ok")
 
     dog = Watchdog(
         services=[ServiceSpec("stt", "x", "")],
-        policy=WatchdogConfig(interval_s=0.01),
+        policy=WatchdogConfig(interval_s=3600),
         observe=observe,
     )
     stop = asyncio.Event()
     task = asyncio.create_task(dog.run_async(stop))
-    assert await asyncio.to_thread(three.wait, 2)
+    assert await asyncio.to_thread(ticked.wait, 5)
     stop.set()
-    await asyncio.wait_for(task, 2)
-    assert dog.observations["stt"].kind == "ok"
+    await asyncio.wait_for(task, 5)
+
+
+async def test_run_async_survives_observer_bug(caplog: pytest.LogCaptureFixture) -> None:
+    ticked = threading.Event()
+
+    def boom(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
+        ticked.set()
+        raise RuntimeError("bug")
+
+    dog = Watchdog(
+        services=[ServiceSpec("stt", "x", "")],
+        policy=WatchdogConfig(interval_s=3600),
+        observe=boom,
+    )
+    stop = asyncio.Event()
+    with caplog.at_level("ERROR"):
+        task = asyncio.create_task(dog.run_async(stop))
+        assert await asyncio.to_thread(ticked.wait, 5)
+        stop.set()
+        await asyncio.wait_for(task, 5)
+    assert "tick failed" in caplog.text

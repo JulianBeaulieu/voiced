@@ -1,4 +1,4 @@
-"""``voiced.config.apply_settings``: validation, atomic write, restart rules."""
+"""``voiced.settings_store.apply_settings``: validation, atomic write, restart rules."""
 
 from __future__ import annotations
 
@@ -8,15 +8,13 @@ from pathlib import Path
 
 import pytest
 
-import voiced.config as config
-from voiced.config import (
+import voiced.settings_store as store
+from voiced.config import Settings, load_settings
+from voiced.settings_store import (
     ConfigFileError,
     InvalidSetting,
-    Settings,
     apply_settings,
     bind_mode,
-    dump_toml,
-    load_settings,
 )
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"
@@ -33,7 +31,7 @@ def test_comments_and_other_keys_survive(cfg: Path) -> None:
     before = cfg.read_text()
     change = apply_settings({"tts.voice": "bf_emma", "browser_settings": True}, cfg)
     after = cfg.read_text()
-    assert change.comments_preserved
+    assert change.changed == ("tts.voice", "browser_settings")
     assert 'default_voice = "bf_emma"' in after
     assert "browser_settings = true" in after
     removed = set(before.splitlines()) - set(after.splitlines())
@@ -63,21 +61,48 @@ def test_new_file_and_new_section(tmp_path: Path, settings: Settings) -> None:
     }
 
 
-def test_unusual_layout_falls_back_to_rewrite(tmp_path: Path, settings: Settings) -> None:
+def test_dotted_keys_and_inline_tables_keep_comments(tmp_path: Path, settings: Settings) -> None:
     cfg = tmp_path / "c.toml"
-    cfg.write_text('# gone\nserver.bind = "127.0.0.1"\ntts = { speed = 1.0 }\n')
-    change = apply_settings({"tts.speed": 2.0, "bind": "lan"}, cfg)
-    assert not change.comments_preserved
-    assert tomllib.loads(cfg.read_text()) == {
-        "server": {"bind": "0.0.0.0"},
-        "tts": {"speed": 2.0},
-    }
+    cfg.write_text('# kept\nserver.bind = "127.0.0.1"  # mine\ntts = { speed = 1.0 }\n')
+    apply_settings({"tts.speed": 2.0, "bind": "lan"}, cfg)
+    text = cfg.read_text()
+    assert text.startswith("# kept\n")
+    assert "# mine" in text
+    assert tomllib.loads(text) == {"server": {"bind": "0.0.0.0"}, "tts": {"speed": 2.0}}
+
+
+def test_edit_that_does_not_read_back_is_not_written(
+    cfg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = cfg.read_text()
+    monkeypatch.setattr(store.tomlkit, "dumps", lambda doc: "[tts]\nspeed = 3.0\n")
+    with pytest.raises(ConfigFileError, match="does not read back"):
+        apply_settings({"tts.speed": 1.5}, cfg)
+    assert cfg.read_text() == before
 
 
 def test_mode_is_kept(cfg: Path) -> None:
     cfg.chmod(0o640)
     apply_settings({"zeroconf": False}, cfg)
     assert cfg.stat().st_mode & 0o777 == 0o640
+
+
+def test_a_file_with_the_key_becomes_private(cfg: Path) -> None:
+    cfg.chmod(0o644)
+    apply_settings({"api_key": "s3cret"}, cfg)
+    assert cfg.stat().st_mode & 0o777 == 0o600
+
+
+def test_symlinked_config_stays_a_symlink(tmp_path: Path, settings: Settings) -> None:
+    real = tmp_path / "real" / "c.toml"
+    real.parent.mkdir()
+    real.write_text("[tts]\nspeed = 1.0\n")
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    apply_settings({"tts.speed": 1.5}, link)
+    assert link.is_symlink()
+    assert tomllib.loads(real.read_text()) == {"tts": {"speed": 1.5}}
+    assert sorted(p.name for p in real.parent.iterdir()) == ["c.toml"]
 
 
 def test_invalid_never_reaches_the_file(cfg: Path) -> None:
@@ -119,7 +144,7 @@ def test_failed_rename_leaves_the_old_file(cfg: Path, monkeypatch: pytest.Monkey
     def fail(src: str, dst: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(config.os, "replace", fail)
+    monkeypatch.setattr(store.os, "replace", fail)
     with pytest.raises(ConfigFileError):
         apply_settings({"zeroconf": False}, cfg)
     assert cfg.read_text() == before
@@ -183,23 +208,73 @@ def test_unknown_key(cfg: Path) -> None:
     assert info.value.field == "stt.http_port"
 
 
-def test_check_hook_can_refuse(cfg: Path) -> None:
-    def refuse(sections: object, changing: set[str]) -> None:
-        raise InvalidSetting("tts.engine", f"no ({sorted(changing)})")
+ENGINES = {
+    "stt": [
+        {"name": "fake", "label": "Fake", "models": ["fake/stt"], "languages": ["en"]},
+        {"name": "parakeet", "label": "Parakeet", "models": ["p/m"], "languages": ["en"]},
+        {"name": "bare", "label": "Bare", "models": [], "languages": ["en"]},
+    ],
+    "tts": [
+        {"name": "kokoro", "label": "Kokoro", "models": ["k/m"], "voices": ["af_heart", "bf_emma"]},
+        {"name": "soprano", "label": "Soprano", "models": ["s/m"], "voices": ["default"]},
+        {"name": "open", "label": "Open", "models": ["o/m"], "voices": []},
+    ],
+}
 
+
+def engines() -> dict[str, object]:
+    return ENGINES
+
+
+def test_engine_change_takes_the_engine_model_and_voice(cfg: Path) -> None:
+    change = apply_settings({"tts.engine": "soprano"}, cfg, engines=engines)
+    assert change.changed == ("tts.engine", "tts.model", "tts.voice")
+    tts = tomllib.loads(cfg.read_text())["tts"]
+    assert (tts["engine"], tts["model"], tts["default_voice"]) == ("soprano", "s/m", "default")
+    # Back to kokoro: its model again, and its first voice (not "default").
+    apply_settings({"tts.engine": "kokoro"}, cfg, engines=engines)
+    tts = tomllib.loads(cfg.read_text())["tts"]
+    assert (tts["model"], tts["default_voice"]) == ("k/m", "af_heart")
+    apply_settings({"stt.engine": "fake"}, cfg, engines=engines)
+    assert tomllib.loads(cfg.read_text())["stt"]["model"] == "fake/stt"
+
+
+def test_engine_change_keeps_what_was_given(cfg: Path) -> None:
+    changes = {"tts.engine": "kokoro", "tts.model": "mine/m", "tts.voice": "bf_emma"}
+    apply_settings({"tts.engine": "soprano"}, cfg, engines=engines)
+    apply_settings(changes, cfg, engines=engines)
+    tts = tomllib.loads(cfg.read_text())["tts"]
+    assert (tts["model"], tts["default_voice"]) == ("mine/m", "bf_emma")
+    # An engine that lists no voices keeps the voice.
+    apply_settings({"tts.engine": "open"}, cfg, engines=engines)
+    assert tomllib.loads(cfg.read_text())["tts"]["default_voice"] == "bf_emma"
+
+
+@pytest.mark.parametrize(
+    ("changes", "field", "message"),
+    [
+        ({"tts.engine": "nope"}, "tts.engine", "'nope' is not installed (kokoro, open, soprano)"),
+        ({"stt.engine": "bare"}, "stt.model", "set stt.model in the same change"),
+        ({"tts.voice": "default"}, "tts.voice", "kokoro has no voice 'default'"),
+        ({"tts.engine": "soprano", "tts.voice": "af_heart"}, "tts.voice", "soprano has no"),
+    ],
+)
+def test_engine_checks_refuse(
+    cfg: Path, changes: dict[str, object], field: str, message: str
+) -> None:
     before = cfg.read_text()
-    with pytest.raises(InvalidSetting, match=r"tts\.engine"):
-        apply_settings({"tts.engine": "x"}, cfg, check=refuse)
+    with pytest.raises(InvalidSetting) as info:
+        apply_settings(changes, cfg, engines=engines)
+    assert info.value.field == field
+    assert info.value.message.startswith(message)
     assert cfg.read_text() == before
 
 
-def test_dump_toml_round_trips() -> None:
-    data = {
-        "server": {"bind": 'a"b\\c', "zeroconf": True, "session_idle_s": 1.5},
-        "stt": {"languages": ["en", "de"], "queue_depth": 3},
-        "x": {"y": {"z": "w"}},
-    }
-    assert tomllib.loads(dump_toml(data)) == data
+def test_catalogue_is_only_read_for_engine_changes(cfg: Path) -> None:
+    def boom() -> dict[str, object]:
+        raise AssertionError("catalogue read")
+
+    apply_settings({"tts.speed": 1.5, "tts.model": "x/y"}, cfg, engines=boom)
 
 
 def test_example_config_documents_browser_settings() -> None:

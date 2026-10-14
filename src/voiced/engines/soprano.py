@@ -36,14 +36,13 @@ from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16, resample
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, Voice
-from voiced.engines.catalogue import EngineCatalogue
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 
 log = logging.getLogger(__name__)
 
 __all__ = ["SOPRANO_VOICE", "SopranoEngine"]
 
-SOPRANO_VOICE = Voice(id="default", name="Soprano", language="en-US", gender=None)
+SOPRANO_VOICE = Voice(id="default", name="Default", language="en-US", gender=None)
 
 REPETITION_PENALTY = 1.2
 REPETITION_CONTEXT = 64
@@ -93,10 +92,8 @@ class SopranoEngine(SentenceTTSEngine):
     license = "Apache-2.0"
 
     @classmethod
-    def catalogue(cls) -> EngineCatalogue:
-        return EngineCatalogue(
-            models=[cls.model_id], languages=list(cls.languages), voices=[SOPRANO_VOICE.id]
-        )
+    def catalogue_voices(cls) -> list[Voice]:
+        return [SOPRANO_VOICE]
 
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way
@@ -120,7 +117,7 @@ class SopranoEngine(SentenceTTSEngine):
         return voice == SOPRANO_VOICE.id
 
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a background thread. ``speed`` is ignored: the model
+        """Blocking; runs in a worker thread. ``speed`` is ignored: the model
         has no rate control."""
         return _synth(self._model, sentence)
 

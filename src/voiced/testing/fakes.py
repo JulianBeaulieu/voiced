@@ -29,7 +29,6 @@ from voiced.engines.base import (
     UnsupportedLanguage,
     Voice,
 )
-from voiced.engines.catalogue import EngineCatalogue
 
 FAKE_VOICES = [
     Voice(id="af_heart", name="Heart", language="en-US", gender="female"),
@@ -139,10 +138,8 @@ class FakeTTSEngine(TTSEngine):
     license = "MIT"
 
     @classmethod
-    def catalogue(cls) -> EngineCatalogue:
-        return EngineCatalogue(
-            models=[cls.model_id], languages=list(cls.languages), voices=[v.id for v in FAKE_VOICES]
-        )
+    def catalogue_voices(cls) -> list[Voice]:
+        return list(FAKE_VOICES)
 
     def __init__(self, model_id: str | None = None, *, latency_s: float = 0.0) -> None:
         super().__init__(model_id)

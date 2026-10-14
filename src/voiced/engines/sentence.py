@@ -6,7 +6,7 @@ first yield, and the split-synthesize-yield loop with each model call in
 ``run_blocking`` (so a cancelled request cannot release the inference slot
 while the GPU is still busy). A subclass supplies:
 
-* ``_load_sync()``, blocking, run in a background thread: builds the model in
+* ``_load_sync()``, blocking, run in a worker thread: builds the model in
   locals, warms up, and assigns ``self._model`` last, so a failure leaves the
   engine unloaded;
 * ``_has_voice(voice)``, run on the event loop, so a cheap lookup: whether
@@ -63,7 +63,7 @@ class SentenceTTSEngine(TTSEngine):
 
     @abstractmethod
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a background thread."""
+        """Blocking; runs in a worker thread."""
 
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings
-from voiced.control import socket_path
+from voiced.control import NOT_SERVED, socket_path
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
     ENV_ESPEAK_LIBRARY,
@@ -370,12 +370,20 @@ def _ask_status(path: Path) -> dict[str, Any]:
     return request(path, "status", timeout_s=10.0)
 
 
-def check_control_socket(path: Path, ask: Callable[[Path], dict[str, Any]] = _ask_status) -> Check:
-    """The watchdog's control socket exists, is private, and answers."""
+def check_control_socket(
+    path: Path,
+    ask: Callable[[Path], dict[str, Any]] = _ask_status,
+    *,
+    watchdog_pid: int | None = None,
+) -> Check:
+    """The watchdog's control socket exists, is private, and answers.
+    ``watchdog_pid`` is the watchdog daemon's pid from launchd, if running."""
     name = "Control socket"
     try:
         info = path.lstat()
     except FileNotFoundError:
+        if watchdog_pid is not None:
+            return Check(name, "fail", f"{NOT_SERVED} (pid {watchdog_pid}, no {path})")
         return Check(name, "warn", f"{path} does not exist; the watchdog daemon serves it")
     except OSError as exc:
         return Check(name, "fail", f"{path}: {exc}")
@@ -389,7 +397,8 @@ def check_control_socket(path: Path, ask: Callable[[Path], dict[str, Any]] = _as
     try:
         status = ask(path)
     except (ControlError, OSError, ValueError) as exc:
-        return Check(name, "fail", f"{path} does not answer status: {exc}")
+        hint = f"; {NOT_SERVED}" if watchdog_pid is not None else ""
+        return Check(name, "fail", f"{path} does not answer status: {exc}{hint}")
     states = ", ".join(
         f"{svc} {info.get('state', '?')}" for svc, info in (status.get("services") or {}).items()
     )
@@ -438,7 +447,10 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         *check_ports(settings, runner),
         check_filevault(runner),
         *check_daemons(settings, runner),
-        check_control_socket(socket_path(settings)),
+        check_control_socket(
+            socket_path(settings),
+            watchdog_pid=print_service(settings.launchd.label("watchdog"), runner).pid,
+        ),
         check_metal_shell(runner, venv_python if venv_python.exists() else None),
         check_metal_daemon(
             settings.server.log_dir / METAL_PROBE_FILE,

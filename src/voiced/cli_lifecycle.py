@@ -22,20 +22,19 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from voiced import __version__, doctor
+from voiced import __version__
 from voiced.config import (
     HTTP_SERVICES,
     SERVICES,
-    SETTABLE,
     DaemonName,
     Settings,
     config_path,
     load_settings,
 )
-from voiced.control import socket_path
-from voiced.control.client import ControlClient, ControlError, ControlUnavailable
+from voiced.control import NOT_SERVED, socket_path
+from voiced.control.client import DEFAULT_TIMEOUT_S, ControlError, ControlUnavailable, request
 from voiced.control.logs import tail_lines
-from voiced.control.ops import Operations, change_result, change_settings, settings_view
+from voiced.control.ops import NoSupervisor, Operations
 from voiced.control.protocol import OpError
 from voiced.launchd.control import (
     Runner,
@@ -47,16 +46,8 @@ from voiced.launchd.control import (
     run_command,
     run_streaming,
 )
-from voiced.launchd.install import (
-    InstallError,
-    is_root,
-    plan_install,
-    plan_summary,
-    remove_targets,
-    run_install,
-    uninstall_targets,
-)
 from voiced.launchd.plist import log_paths
+from voiced.settings_store import SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
@@ -67,6 +58,10 @@ from voiced.watchdog import (
     poll_health,
     restart_service,
 )
+
+# voiced.launchd.install (and voiced.doctor) import the engine modules, and
+# with them numpy; they are imported inside the commands that need them so
+# that `voiced watchdog` never loads them (ADR 0012, ADR 0013).
 
 Echo = Callable[[str], None]
 SERVICE_CHOICES = (*SERVICES, "all")
@@ -178,6 +173,8 @@ def _services(name: str) -> tuple[DaemonName, ...]:
 def cmd_install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
 ) -> int:
+    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
+
     plan = plan_install(
         settings,
         venv_dir=args.venv,
@@ -219,6 +216,10 @@ def cmd_install(
 
 
 # start / stop -------------------------------------------------------------
+
+
+def is_root() -> bool:
+    return os.geteuid() == 0
 
 
 def as_root_or_print(
@@ -284,24 +285,54 @@ def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> in
 # restart ------------------------------------------------------------------
 
 
+def _via_control(
+    settings: Settings,
+    op: str,
+    args: dict[str, Any] | None = None,
+    *,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> dict[str, Any] | None:
+    """``op`` over the control socket, or None when nothing answers there
+    (the caller falls back). An error answer, or a watchdog that stops
+    answering mid-request, raises :class:`ControlError`."""
+    try:
+        return request(socket_path(settings), op, args, timeout_s)
+    except ControlUnavailable:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ControlError("internal", f"watchdog did not answer: {exc}") from exc
+
+
+def _in_process(op: str, args: dict[str, Any]) -> dict[str, Any]:
+    """``op`` run here, against the config file, by the same code the
+    watchdog runs. Errors are :class:`ControlError` as over the socket."""
+    ops = Operations(NoSupervisor(), config_path())
+    try:
+        return asyncio.run(ops.dispatch(op, args))
+    except OpError as exc:
+        raise ControlError(exc.code, exc.message, dict(exc.extra)) from None
+
+
+def _error_text(exc: ControlError) -> str:
+    field = exc.data.get("field")
+    return f"{field}: {exc.message}" if field else exc.message
+
+
 def cmd_restart(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
     """Through the watchdog when its control socket answers (it then knows
     about the restart and applies its startup grace); otherwise the same
     SIGKILL-and-kickstart directly."""
-    path = socket_path(settings)
     try:
-        with ControlClient.connect(path) as client:
-            result = client.request("service.restart", {"service": service})
-    except ControlUnavailable:
-        echo(f"no control socket at {path}; restarting with launchctl directly")
+        result = _via_control(settings, "service.restart", {"service": service})
     except ControlError as exc:
         echo(f"restart failed: {exc.message}")
         return 1
-    else:
+    if result is not None:
         for name, detail in (result.get("detail") or {}).items():
             echo(f"{name}: {detail}")
         echo("`voiced status` shows when the model is loaded again.")
         return 0
+    echo(f"no control socket at {socket_path(settings)}; restarting with launchctl directly")
     failures = 0
     for name in HTTP_SERVICES:
         if service not in (name, "all"):
@@ -341,12 +372,9 @@ def _health_detail(obs: Observation) -> str:
 
 
 def control_status(settings: Settings) -> dict[str, Any] | None:
-    """The watchdog's ``status`` over the control socket, or None without it."""
-    try:
-        with ControlClient.connect(socket_path(settings), timeout_s=10.0) as client:
-            return client.request("status")
-    except (ControlUnavailable, ControlError, OSError, ValueError):
-        return None
+    """The watchdog's ``status`` over the control socket, or None without it.
+    Raises :class:`ControlError` when the watchdog answers badly."""
+    return _via_control(settings, "status", timeout_s=10.0)
 
 
 def collect_status(
@@ -398,7 +426,11 @@ def cmd_status(
     as_json: bool = False,
     control: Callable[[Settings], dict[str, Any] | None] = control_status,
 ) -> int:
-    via_socket = control(settings)
+    problem = ""
+    try:
+        via_socket = control(settings)
+    except ControlError as exc:
+        via_socket, problem = None, exc.message
     rows = collect_status(settings, runner, control=via_socket)
     if as_json:
         echo(json.dumps(rows, indent=2))
@@ -424,10 +456,13 @@ def cmd_status(
             headers += ("STATE", "UPTIME", "RESTARTS")
         echo(render_table(headers, table))
         path = socket_path(settings)
-        if via_socket is None:
-            echo(f"control socket: not answering at {path} (watchdog not running)")
-        else:
+        watchdog_pid = next((r["pid"] for r in rows if r["service"] == "watchdog"), None)
+        if via_socket is not None:
             echo(f"control socket: {path}")
+        elif watchdog_pid:
+            echo(f"control socket: {NOT_SERVED}" + (f" ({problem})" if problem else ""))
+        else:
+            echo(f"control socket: not answering at {path} (watchdog not running)")
     healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
     return 0 if healthy else 1
 
@@ -481,15 +516,28 @@ _WARNINGS = {
 }
 
 
+# A settable name and the settings.get row that shows its value.
+_SHOWN_AS = {"api_key": "api_key_set"}
+
+
 def _echo_settings(result: dict[str, Any], echo: Echo, *, as_json: bool) -> None:
+    """The settings table; after a change, only the changed rows."""
     if as_json:
         echo(json.dumps(result, indent=2))
         return
+    result = dict(result)
+    changed = result.pop("changed", None)
     restart = result.pop("restart_required", None)
     warnings = result.pop("warnings", None) or []
-    echo(render_table(("SETTING", "VALUE"), _flatten(result)))
+    rows = _flatten(result)
+    if changed is None:
+        echo(render_table(("SETTING", "VALUE"), rows))
+    elif not changed:
+        echo("Nothing changed.")
+    else:
+        shown = {_SHOWN_AS.get(name, name) for name in changed}
+        echo(render_table(("SETTING", "VALUE"), [r for r in rows if r[0] in shown]))
     if restart:
-        echo("")
         target = restart[0] if len(restart) == 1 else "all"
         echo(f"Restart to apply: voiced restart {target}")
     for warning in warnings:
@@ -499,9 +547,8 @@ def _echo_settings(result: dict[str, Any], echo: Echo, *, as_json: bool) -> None
 def cmd_settings(
     args: argparse.Namespace, settings: Settings, echo: Echo, stdin: Callable[[], str] | None = None
 ) -> int:
-    """Through the control socket when it answers (the watchdog then reads
-    the file it was started with and tells other clients); otherwise the
-    config file is read and changed directly, by the same function."""
+    """Through the control socket when it answers (the watchdog then tells
+    its other clients); otherwise here, by the same operations."""
     changes: dict[str, object] = {}
     if args.settings_command == "set":
         try:
@@ -513,22 +560,11 @@ def cmd_settings(
             return 2
     op, op_args = ("settings.set", changes) if changes else ("settings.get", {})
     try:
-        with ControlClient.connect(socket_path(settings)) as client:
-            result = client.request(op, op_args)
-    except ControlUnavailable:
-        try:
-            if changes:
-                file = config_path()
-                result = change_result(change_settings(changes, file), file)
-            else:
-                result = settings_view(settings, config_path())
-        except OpError as exc:
-            field = exc.extra.get("field")
-            echo(f"{field}: {exc.message}" if field else exc.message)
-            return 1
+        result = _via_control(settings, op, op_args)
+        if result is None:
+            result = _in_process(op, op_args)
     except ControlError as exc:
-        field = exc.data.get("field")
-        echo(f"{field}: {exc.message}" if field else exc.message)
+        echo(_error_text(exc))
         return 1
     _echo_settings(result, echo, as_json=args.json)
     return 0
@@ -568,6 +604,8 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
+    from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
+
     plan = plan_install(settings, venv_dir=args.venv)
     script = plan.sudo_uninstall_script()
     try:
@@ -614,6 +652,9 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
 
 
 def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
+    from voiced import doctor
+    from voiced.launchd.install import plan_install
+
     if args.metal_probe:
         plan = plan_install(settings)
         python = plan.python_bin if plan.python_bin.exists() else Path(sys.executable)
@@ -650,6 +691,8 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
             base_url=settings.http_url("stt"),
             api_key=settings.server.api_key,
             probe=default_probe("stt", settings.stt.model),
+            engine=settings.stt.engine,
+            model=settings.stt.model,
         ),
         ServiceSpec(
             name="tts",
@@ -657,14 +700,24 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
             base_url=settings.http_url("tts"),
             api_key=settings.server.api_key,
             probe=default_probe("tts", settings.tts.model, settings.tts.default_voice),
+            engine=settings.tts.engine,
+            model=settings.tts.model,
         ),
     ]
+
+
+def spec_from_file(spec: ServiceSpec) -> ServiceSpec:
+    """``spec`` as the config file says now (the watchdog's ``respec``)."""
+    fresh = {s.name: s for s in watchdog_specs(load_settings(config_path()))}
+    return fresh.get(spec.name, spec)
 
 
 def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
     log_file = None if once else log_paths(settings.server.log_dir, "watchdog").app
     configure_watchdog_logging(settings.server.log_level, log_file)
-    dog = Watchdog(services=watchdog_specs(settings), policy=settings.watchdog)
+    dog = Watchdog(
+        services=watchdog_specs(settings), policy=settings.watchdog, respec=spec_from_file
+    )
     if once:
         for name, decision in dog.tick().items():
             echo(f"{name}: {decision.action}: {decision.reason}")
@@ -685,14 +738,14 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
-    supervisor = WatchdogSupervisor(dog, settings, specs_for=watchdog_specs)
-    ops = Operations(supervisor, config_path(), load_settings)
+    ops = Operations(WatchdogSupervisor(dog), config_path())
     server = ControlServer(socket_path(settings), ops, version=__version__)
     try:
         await server.start()
         serving = True
     except (OSError, RuntimeError) as exc:
         logging.getLogger("voiced.control").error("control socket not started: %s", exc)
+        print(f"voiced watchdog: control socket not started: {exc}", file=sys.stderr)
         serving = False
     try:
         await dog.run_async(stop)

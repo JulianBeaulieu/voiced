@@ -340,19 +340,6 @@ def test_tick_starts_grace_at_first_sight() -> None:
         assert dog.tick()["stt"].action == "none"
 
 
-def test_tick_survives_observer_bug(caplog: pytest.LogCaptureFixture) -> None:
-    spec = ServiceSpec(name="stt", label="x", base_url="http://127.0.0.1:1")
-
-    def boom(s: ServiceSpec, p: WatchdogConfig) -> Observation:
-        raise RuntimeError("bug")
-
-    dog = Watchdog(services=[spec], policy=POLICY, observe=boom)
-    stops = iter([False, True])
-    with caplog.at_level("ERROR"):
-        dog.run_forever(stop=lambda: next(stops))
-    assert "tick failed" in caplog.text
-
-
 # restart_service ---------------------------------------------------------------
 
 
