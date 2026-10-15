@@ -46,7 +46,8 @@ cover:
   opus, which covers its 32 kHz to 24 kHz resample and the encoders);
 - WebSocket streaming: real-time 64 ms and 100 ms chunks, partials that arrive
   before `end`, and the finalize latency from the client's `end` message to the
-  `final` event, under 150 ms with 200 ms and with 0 ms of trailing silence;
+  `final` event: under 150 ms with 200 ms of trailing silence; with 0 ms, under
+  a regression ceiling only (see known misses);
 - Wyoming: the `wyoming` client library round trip for STT (`Transcribe`,
   `AudioStart`/`AudioChunk`/`AudioStop`, `Transcript`, also without
   `AudioStart`) and TTS (plain `Synthesize` and the streaming
@@ -105,11 +106,11 @@ the kitchen lights."; "finalize" is from sending `end` to the `final` event.
 | Kokoro first audio | median 96 / p95 107 / worst 112 ms (n=10) | <= 200 ms |
 | Soprano first audio | median 156 / p95 190 / worst 195 ms (n=10) | none (off by default) |
 | Streaming finalize, 64 ms chunks, 200 ms trailing silence | median 1 / p95 2 / worst 3 ms (n=32) | <= 150 ms worst, 50 ms median |
-| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 114 / p95 130 / worst 141 ms (n=32) | <= 150 ms worst, 50 ms median |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 114 / p95 130 / worst 141 ms (n=32) | <= 150 ms worst, 50 ms median (miss, see known misses) |
 | Streaming finalize, 100 ms chunks, 200 ms trailing silence | median 1 / p95 4 / worst 16 ms (n=32) | <= 150 ms worst, 50 ms median |
-| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 114 / p95 127 / worst 130 ms (n=32) | <= 150 ms worst, 50 ms median |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 114 / p95 127 / worst 130 ms (n=32) | <= 150 ms worst, 50 ms median (miss, see known misses) |
 | Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 1 / p95 49 / worst 54 ms (n=16) | <= 150 ms worst |
-| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 140 / p95 181 / worst 192 ms (n=16) | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 140 / p95 181 / worst 192 ms (n=16) | <= 150 ms worst (miss, see known misses) |
 | Batch transcription, 10.1 s clip | median 253 / p95 258 / worst 258 ms (n=10) | <= 300 ms |
 | STT memory | footprint 1.47 GB; RSS 0.37 GB; MLX active 1296 MB, cache 0 MB, peak 3983 MB | |
 | TTS (Kokoro) memory | footprint 1.00 GB; RSS 0.53 GB; MLX active 342 MB, cache 542 MB, peak 2159 MB | |
@@ -123,8 +124,10 @@ Notes on the rows:
   of trailing silence before `end` (ADR 0008's definition): the engine's
   speculative final encode has then already run, and finalize is 1 to 16 ms.
   A push-to-talk client that sends `end` at the last word makes finalize encode
-  the tail after `end`: about 114 ms median, under 150 ms worst on its own, but
-  not with the 50 ms median goal (see known misses).
+  the tail after `end`: about 114 ms median and usually under 150 ms worst on
+  its own (141 ms in this run, 165 ms in an earlier one), which misses the
+  50 ms median goal and does not reliably meet the 150 ms worst case (see known
+  misses).
 - The batch row is 90 ms above ADR 0008's 163 ms for a 9.4 s clip because it
   is the whole request: a multipart upload through the `openai` client, the
   ffmpeg decode of the WAV, and a 10.1 s clip (the 3.37 s fixture tiled three
@@ -180,7 +183,9 @@ Notes on the rows:
    `tests/tts/test_sentence_engines.py::test_load_bounds_the_mlx_cache_even_when_it_fails`
    (CI) and `::test_synthesis_keeps_the_mlx_cache_bounded` (model tier: the
    limit is set and `mx.get_cache_memory()` stays within 1.25 times it after a
-   long synthesis; 10.2 GB without the fix).
+   long synthesis; 10.2 GB without the fix). The fix and its tests landed on
+   `main` separately, in PR #16, ahead of this record; the measurements here
+   were taken with it.
 
 4. **A port clash exited 0, or only after a full model load.** Symptom: with
    the HTTP port taken, uvicorn logged "address already in use", shut the
@@ -218,7 +223,9 @@ Notes on the rows:
   is about 114 ms against the 50 ms median goal, and the worst of 32 has
   reached 165 ms in an earlier run on the same machine. Cause: the tail must be
   encoded after `end`; the target as defined in ADR 0008 assumes the
-  endpointer's silence window. Clients that can should stream 200 ms of
+  endpointer's silence window. This is the same encode as ADR 0008's "At
+  finalize" column (120 to 133 ms worst at 3.4 s, measured on the engine
+  alone), which that record rejected as the default for the same reason. Clients that can should stream 200 ms of
   silence (or keep the microphone open that long) before `end`.
 - **Push-to-talk finalize while TTS synthesizes.** With Kokoro synthesizing
   continuously in the other process, 0 ms finalize is 140 ms median and up to
@@ -226,10 +233,15 @@ Notes on the rows:
   waits behind Kokoro's work on the one GPU. With 200 ms of trailing silence
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
   the two services.
-- **Transient memory during a long reply.** The idle footprint after use is
-  2.47 GB, within the 3 GB budget, but Kokoro's MLX allocation reaches 2.16 GB
-  while it synthesizes a long sentence, so STT plus TTS can briefly exceed 3
-  GB. The STT load peak (about 4 GB) is a one-off at start (ADR 0008).
+- **Transient memory while serving.** The idle footprint after use is
+  2.47 GB, within the 3 GB budget, but both engines peak above their idle
+  allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
+  the four-sentence reply (0.88 GB idle), and Parakeet's serving peak is
+  2.46 GB (1.28 GB after load, ADR 0008; reached on long input). Either one
+  alone takes STT plus TTS over 3 GB for a moment. If they coincide, the MLX peaks
+  alone add to 4.6 GB, so the two footprints together would be about 4.9 GB;
+  that is an estimate from the separate peaks, not a measurement. The STT load
+  peak (about 4 GB) is a one-off at start (ADR 0008).
 
 ## Versions
 

@@ -267,7 +267,7 @@ alone in its process. These are pre-release measurements from one machine.
 | Soprano first audio | 156 to 223 ms median | Soprano engine, 2026-10-14 |
 | Soprano resident memory | 392 MB | Soprano engine, 2026-10-14 |
 | Parakeet batch, 9.4 s clip | 163 ms | Parakeet engine, 2026-10-14 |
-| Parakeet streaming finalize after the end of speech | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
+| Parakeet streaming finalize after the 200 ms silence window | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
 | Parakeet first partial after the first word | about 0.7 s | Parakeet engine, 2026-10-14 |
 | Parakeet load including warm-up, warm disk cache | 1.2 s | Parakeet engine, 2026-10-14 |
 | Parakeet memory: after load, serving peak, load peak | 1.28 GB, 2.46 GB, 3.6 to 4.1 GB | Parakeet engine, 2026-10-14 |
@@ -291,16 +291,18 @@ process. Method, the complete table and the known misses are in
   `openai` client, for the sentence "Turn on the kitchen lights."
 - Finalize: from the client's `end` message to the `final` event, after 200
   ms of trailing digital silence (the endpointer's window). A push-to-talk
-  client that sends `end` at the last word sees about 114 ms median instead.
+  client that sends `end` at the last word sees about 114 ms median instead,
+  worst up to 165 ms and 192 ms while TTS synthesizes; that misses the 50 ms
+  median goal.
 - Memory: the physical footprint (what Activity Monitor counts, GPU buffers
   included), idle after a long reply, with the MLX peak reached while serving.
 
 | Metric | Apple M1 Max, 64 GB (macOS 15.7.4) | Mac Studio |
 |---|---|---|
 | Kokoro first audio | 96 ms median, 112 ms worst | not yet measured |
-| Streaming finalize, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | not yet measured |
+| Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | not yet measured |
 | Batch transcription, 10.1 s clip | 253 ms median | not yet measured |
-| STT + TTS footprint, idle after use | 2.47 GB (Kokoro MLX peak 2.16 GB during a long reply) | not yet measured |
+| STT + TTS footprint, idle after use | 2.47 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | not yet measured |
 
 ## Troubleshooting
 
