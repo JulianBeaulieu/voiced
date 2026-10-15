@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import os
-import pwd
 import shlex
 import shutil
 import signal
@@ -79,7 +78,6 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     )
     install.add_argument("--python", help='interpreter or version for the venv, e.g. "3.12"')
     install.add_argument("--source", help="pip requirement or path to install (default: auto)")
-    install.add_argument("--user", help="UserName for the daemons (default: current user)")
     install.add_argument("--staging-dir", type=Path, help="where plists and scripts are written")
     install.add_argument("--skip-models", action="store_true", help="do not download models")
     install.add_argument("--no-uv", action="store_true", help="use python -m venv and pip")
@@ -188,10 +186,6 @@ def cmd_install(
             "It prints the one step that needs root."
         )
         return 2
-    refusal = user_refusal(args.user)
-    if refusal:
-        echo(refusal)
-        return 2
     if args.source is None and needs_source():
         echo(
             "voiced is not published on PyPI yet, so there is nothing to install by name. "
@@ -203,7 +197,6 @@ def cmd_install(
         venv_dir=args.venv,
         python=args.python,
         source=args.source,
-        user=args.user,
         staging_dir=args.staging_dir,
         uv=None if args.no_uv else "auto",
     )
@@ -243,32 +236,6 @@ def cmd_install(
 
 def is_root() -> bool:
     return os.geteuid() == 0
-
-
-def user_refusal(user: str | None) -> str | None:
-    """Why ``--user`` cannot be the daemons' ``UserName``, or None.
-
-    Resolved through the user database, not compared as a string: several
-    names map to uid 0 ("System Administrator", for one). The daemons run
-    the venv this user is installing, so they must run as this user: as
-    anyone else, that account would run code this user can change.
-    """
-    if user is None:
-        return None
-    try:
-        uid = pwd.getpwnam(user).pw_uid
-    except KeyError:
-        return f"--user {user}: no such user."
-    if uid == 0:
-        return (
-            f"--user {user} is root: the services would run code from a user-writable venv as root."
-        )
-    if uid != os.getuid():
-        return (
-            f"--user {user}: the services must run as the user who installs them (uid "
-            f"{os.getuid()}), since they run this user's venv. Run `voiced install` as {user}."
-        )
-    return None
 
 
 def as_root_or_print(

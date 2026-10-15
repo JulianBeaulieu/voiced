@@ -14,7 +14,7 @@ has ended. The task delivers the transcript on success; on any failure it
 reports the outcome and closes the connection, like the TTS worker.
 
 Limits: an utterance may carry at most ``stt.max_upload_mb`` of 16-bit audio
-at 16 kHz (:class:`voiced.audio.UtteranceBudget`, about 26 minutes at the default 50 MB),
+at 16 kHz (:class:`voiced.inference.UtteranceBudget`, about 26 minutes at the default 50 MB),
 and the whole session is bounded by that duration plus ``server.session_idle_s``,
 so a client trickling tiny chunks cannot hold the slot forever. One chunk may
 carry at most :data:`MAX_EVENT_BYTES`, so the queue holds at most
@@ -32,8 +32,8 @@ from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event
 from wyoming.info import Describe
 
-from voiced.audio import PCMConverter, UnsupportedAudioFormat, UtteranceBudget
-from voiced.inference import ClientTimeout, bounded, inference
+from voiced.audio import PCMConverter, UnsupportedAudioFormat
+from voiced.inference import ClientTimeout, UtteranceBudget, bounded, inference
 from voiced.metrics import Operation
 from voiced.queue import QueueFull
 from voiced.wyoming.handlers import VoicedEventHandler, cancel_task, parse

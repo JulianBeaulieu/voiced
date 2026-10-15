@@ -124,8 +124,9 @@ uses [Semantic Versioning](https://semver.org/).
   utterance.
 - With `api_key` set, `/health` and `/metrics.json` show only the exception
   name of the last error.
-- `voiced install` refuses to run as root, and `--user` must resolve to the
-  installing user (any name for uid 0 is refused). Outside a checkout it
+- `voiced install` refuses to run as root, and its `--user` option is gone:
+  the daemons run the installing user's venv, so they must run as that
+  user, never as root or anyone else. Outside a checkout it
   requires `--source` until voiced is published. The config file is created
   0600, and re-running `voiced install` tightens an existing one: after
   upgrading, run it once (or `chmod 600 ~/.config/voiced/config.toml`).

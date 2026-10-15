@@ -391,8 +391,6 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
             "--dry-run",
             "--venv",
             str(tmp_path / "venv"),
-            "--user",
-            getpass.getuser(),
             "--staging-dir",
             str(staging),
             "--source",
@@ -521,11 +519,6 @@ def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
     ("argv", "root", "message"),
     [
         (["install", "--source", "."], True, "not with sudo"),
-        (["install", "--source", ".", "--user", "root"], False, "is root"),
-        # Another name for uid 0: resolved, not compared as a string.
-        (["install", "--source", ".", "--user", "System Administrator"], False, "is root"),
-        (["install", "--source", ".", "--user", "no-such-user-xyz"], False, "no such user"),
-        (["install", "--source", ".", "--user", "nobody"], False, "must run as the user"),
         (["install"], False, "--source ~/voiced"),
     ],
 )

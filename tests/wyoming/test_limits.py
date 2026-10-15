@@ -20,9 +20,7 @@ from wyoming.error import Error
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.tts import (
     Synthesize,
-    SynthesizeChunk,
     SynthesizeStart,
-    SynthesizeStop,
     SynthesizeVoice,
 )
 
@@ -55,6 +53,14 @@ async def read_error(reader: asyncio.StreamReader) -> Error:
     event = await asyncio.wait_for(async_read_event(reader), 5)
     assert event is not None and Error.is_type(event.type), event
     return Error.from_event(event)
+
+
+async def events_until_eof(reader: asyncio.StreamReader) -> list[Event]:
+    """Every event the server sends before it closes the connection."""
+    events: list[Event] = []
+    while (event := await asyncio.wait_for(async_read_event(reader), 5)) is not None:
+        events.append(event)
+    return events
 
 
 async def closed(reader: asyncio.StreamReader) -> bool:
@@ -145,8 +151,9 @@ async def test_bad_audio_format_is_a_client_error_and_health_stays_ok(
     ctx = stt_listener.ctx
     engine: FakeSTTEngine = ctx.engine  # type: ignore[assignment]
     async with raw(stt_listener) as (reader, writer):
+        # AudioStart alone: the session refuses its format at once. Writing
+        # more after that would race the server's close.
         await async_write_event(Event("audio-start", fmt), writer)
-        await async_write_event(Event("audio-chunk", fmt, bytes(3200)), writer)
         error = await read_error(reader)
     assert error.code == "invalid_request_error", error.text
     assert ctx.health.status == "ok"
@@ -253,18 +260,12 @@ async def test_tts_voice_outside_the_configured_languages_is_refused(
 async def test_tts_stream_that_cannot_start_fails_once_and_closes(
     tts_listener: WyomingListener, start: Event
 ) -> None:
-    """A rejected SynthesizeStart ends the stream: one Error, then the
-    connection closes, rather than one error per chunk and for the stop."""
+    """A rejected SynthesizeStart ends the stream: exactly one Error, then the
+    server closes the connection, so the chunks and the stop a client would
+    send next can get no errors of their own. (Before, the connection stayed
+    open and each of them was answered with an Error.)"""
     async with raw(tts_listener) as (reader, writer):
         await async_write_event(start, writer)
-        error = await read_error(reader)
-        assert error.code == "invalid_request_error"
-        # What a client streaming text would send next gets nothing back.
-        for event in (
-            SynthesizeChunk(text="Hello there. ").event(),
-            SynthesizeChunk(text="More text. ").event(),
-            SynthesizeStop().event(),
-        ):
-            with contextlib.suppress(ConnectionError, RuntimeError):
-                await async_write_event(event, writer)
-        assert await closed(reader)
+        events = await events_until_eof(reader)
+    assert [e.type for e in events] == ["error"]
+    assert Error.from_event(events[0]).code == "invalid_request_error"

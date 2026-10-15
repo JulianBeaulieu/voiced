@@ -17,7 +17,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.websockets import WebSocket
 
 from tests.api.conftest import pcm16, sync_client
-from voiced import audio
+from voiced import inference
 from voiced.api.context import close_ws
 from voiced.audio import pcm16_to_float32
 from voiced.config import Settings
@@ -303,7 +303,7 @@ def test_stream_session_has_a_wall_clock_bound(
 ) -> None:
     """A client that sends a little audio just inside ``session_idle_s`` each
     time could otherwise hold the slot forever."""
-    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 0.3)
+    monkeypatch.setattr(inference, "utterance_limit_s", lambda settings: 0.3)
     stt_app.state.ctx.settings.server.session_idle_s = 1.0  # open for at most 1.3 s
     with sync_client(stt_app) as client:
         with client.websocket_connect(PATH) as ws:

@@ -9,11 +9,12 @@ from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocketDisconnect
 from uvicorn.protocols.utils import ClientDisconnected
 
+from voiced import inference as inference_module
 from voiced.config import Settings
 from voiced.context import ServiceContext
-from voiced.engines.base import EngineNotLoaded, UnknownVoice, UnsupportedLanguage
+from voiced.engines.base import EngineError, EngineNotLoaded, UnknownVoice, UnsupportedLanguage
 from voiced.health import HealthState
-from voiced.inference import ClientTimeout, bounded, classify, inference
+from voiced.inference import ClientTimeout, UtteranceBudget, bounded, classify, inference
 from voiced.metrics import Operation, Outcome
 from voiced.queue import InferenceQueue, QueueFull
 from voiced.testing import FakeSTTEngine, FakeTTSEngine
@@ -280,3 +281,30 @@ def test_check_language_prefers_exact_region(
 def test_languages_setting_may_not_be_empty() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"tts": {"languages": []}})
+
+
+def _budget_settings(idle_s: float) -> Settings:
+    settings = Settings()
+    settings.server.session_idle_s = idle_s
+    return settings
+
+
+async def test_utterance_budget_counts_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inference_module, "utterance_limit_s", lambda settings: 1.0)
+    async with UtteranceBudget(_budget_settings(30)) as budget:
+        budget.add(16_000)  # exactly the limit
+        with pytest.raises(EngineError, match="more than 1 s of audio"):
+            budget.add(1)
+
+
+async def test_utterance_budget_bounds_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(inference_module, "utterance_limit_s", lambda settings: 0.05)
+    with pytest.raises(EngineError, match=r"session open longer than 0\.1 s"):
+        async with UtteranceBudget(_budget_settings(0.05)):
+            await asyncio.sleep(5)
+
+
+async def test_utterance_budget_leaves_other_timeouts_alone() -> None:
+    with pytest.raises(TimeoutError):
+        async with UtteranceBudget(_budget_settings(30)):
+            raise TimeoutError

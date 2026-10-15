@@ -46,10 +46,10 @@ from starlette.types import Message, Receive
 from voiced.api import ffmpeg, formats
 from voiced.api.context import WS_CLOSE, APIError, Ctx, close_ws
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
-from voiced.audio import PCMConverter, UtteranceBudget
+from voiced.audio import PCMConverter
 from voiced.context import ServiceContext
 from voiced.engines.base import STT_SAMPLE_RATE, AudioInput, EngineError
-from voiced.inference import bounded, classify, inference
+from voiced.inference import UtteranceBudget, bounded, classify, inference
 from voiced.metrics import Operation, Outcome
 from voiced.validate import is_int
 
@@ -271,7 +271,7 @@ def _parse_config(event: dict[str, Any]) -> tuple[int, str | None]:
 async def _stream_session(ws: WebSocket, ctx: ServiceContext) -> None:
     """Runs inside ``inference()``: only ``EngineError`` subclasses for client mistakes.
 
-    Bounded like a Wyoming utterance (:class:`voiced.audio.UtteranceBudget`).
+    Bounded like a Wyoming utterance (:class:`voiced.inference.UtteranceBudget`).
     """
     async with UtteranceBudget(ctx.settings) as budget:
         await _stream_frames(ws, ctx, budget)

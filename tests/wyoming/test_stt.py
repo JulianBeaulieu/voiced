@@ -14,7 +14,7 @@ from wyoming.error import Error
 from wyoming.event import Event
 from wyoming.info import Describe, Info
 
-from voiced import __version__, audio
+from voiced import __version__, inference
 from voiced.context import ServiceContext
 from voiced.engines.base import STTStreamSession
 from voiced.testing import FakeSTTEngine
@@ -398,7 +398,7 @@ async def test_session_wall_clock_is_bounded(
 ) -> None:
     """Tiny chunks that each arrive inside session_idle_s still cannot hold
     the slot past the utterance limit + session_idle_s."""
-    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 0.2)
+    monkeypatch.setattr(inference, "utterance_limit_s", lambda settings: 0.2)
     ctx = stt_listener.ctx
     ctx.settings.server.session_idle_s = 0.3
     async with client(stt_listener) as c:

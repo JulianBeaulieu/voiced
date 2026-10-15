@@ -7,15 +7,12 @@ callers pass plain ``bytes`` and format parameters.
 
 from __future__ import annotations
 
-import asyncio
 import struct
 from fractions import Fraction
-from types import TracebackType
 
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.config import Settings
 from voiced.engines.base import STT_SAMPLE_RATE, TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError
 from voiced.validate import is_int
 
@@ -192,53 +189,3 @@ class PCMConverter:
         self._pos = next_pos - last
         self._prev = float(buf[-1])
         return out
-
-
-def utterance_limit_s(settings: Settings) -> float:
-    """Longest audio one streamed utterance may carry, in seconds:
-    ``stt.max_upload_mb`` read as 16-bit 16 kHz samples. The one place tests
-    shorten the bound."""
-    return settings.stt.max_audio_s
-
-
-class UtteranceBudget:
-    """The bound on one streamed utterance, the same on every transport (a
-    Wyoming utterance, a WebSocket session): at most :func:`utterance_limit_s`
-    of audio, and open at most that long plus ``server.session_idle_s``, so a
-    client trickling audio cannot hold the slot forever. Both are client
-    errors::
-
-        async with UtteranceBudget(settings) as budget:
-            ...
-            budget.add(len(samples))
-    """
-
-    def __init__(self, settings: Settings) -> None:
-        self.limit_s = utterance_limit_s(settings)
-        self._max_samples = int(self.limit_s * STT_SAMPLE_RATE)
-        self._samples = 0
-        self.open_s = self.limit_s + settings.server.session_idle_s
-        self._deadline = asyncio.timeout(self.open_s)
-
-    def add(self, samples: int) -> None:
-        """Count ``samples`` (at 16 kHz); over the limit is an :class:`EngineError`."""
-        self._samples += samples
-        if self._samples > self._max_samples:
-            raise EngineError(f"more than {self.limit_s:g} s of audio")
-
-    async def __aenter__(self) -> UtteranceBudget:
-        await self._deadline.__aenter__()
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        try:
-            await self._deadline.__aexit__(exc_type, exc, tb)
-        except TimeoutError:
-            if not self._deadline.expired():
-                raise
-            raise EngineError(f"session open longer than {self.open_s:g} s") from None

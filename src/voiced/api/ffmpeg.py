@@ -23,9 +23,9 @@ import asyncio
 import logging
 import shutil
 import tempfile
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import aclosing, suppress
-from typing import IO, Literal, cast
+from typing import IO, Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -151,20 +151,15 @@ async def decode(
     reads = (read_out, read_err)
     try:
         await asyncio.wait_for(asyncio.gather(*reads), timeout=_DECODE_TIMEOUT_S)
-    except BaseException as exc:  # a timeout, too much audio, or cancellation: stop ffmpeg
-        for task in reads:
-            task.cancel()
-        await asyncio.gather(*reads, return_exceptions=True)
-        with suppress(ProcessLookupError):
-            proc.kill()
-        # Read both pipes to their end so wait() can return (see encode_stream).
-        await asyncio.gather(stdout.read(), stderr.read(), return_exceptions=True)
-        await proc.wait()
-        if isinstance(exc, TimeoutError):
-            raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
-        if isinstance(exc, _OverLimit):
-            assert max_seconds is not None
-            raise AudioTooLong(max_seconds) from None
+    except TimeoutError:
+        await _stop(proc, reads)
+        raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
+    except _OverLimit:
+        await _stop(proc, reads)
+        assert max_seconds is not None
+        raise AudioTooLong(max_seconds) from None
+    except asyncio.CancelledError:
+        await _stop(proc, reads)
         raise
     out, err = read_out.result(), read_err.result()
     await proc.wait()
@@ -179,6 +174,20 @@ async def decode(
 
 class _OverLimit(Exception):
     pass
+
+
+async def _stop(proc: asyncio.subprocess.Process, reads: Iterable[asyncio.Task[Any]]) -> None:
+    """Stop a decode early: cancel the readers, kill ffmpeg and reap it."""
+    readers = list(reads)
+    for task in readers:
+        task.cancel()
+    await asyncio.gather(*readers, return_exceptions=True)
+    with suppress(ProcessLookupError):
+        proc.kill()
+    assert proc.stdout is not None and proc.stderr is not None
+    # Read both pipes to their end so wait() can return (see encode_stream).
+    await asyncio.gather(proc.stdout.read(), proc.stderr.read(), return_exceptions=True)
+    await proc.wait()
 
 
 async def _read_at_most(stream: asyncio.StreamReader, limit: int | None) -> bytearray:
