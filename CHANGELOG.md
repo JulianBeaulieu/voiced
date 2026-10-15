@@ -82,6 +82,17 @@ uses [Semantic Versioning](https://semver.org/).
   the model; it now names the port and exits 3 before loading anything.
 - The `finalize` contract said the server's endpointer ends a streaming turn;
   the client's `end` message or Wyoming `AudioStop` does.
+- `voiced doctor` reports the service environment's Python, including a
+  broken link into a removed uv Python, warns when the config file is
+  readable by other accounts, and checks that ffmpeg can read from a file
+  descriptor. `voiced status` says how to install the daemons when none
+  are installed.
+- The engine catalogue child process no longer imports modules from the
+  watchdog's working directory.
+- Wyoming failures are now logged, with a traceback, like HTTP ones.
+- README: the quickstart pins `--python 3.12` for `uv tool install`, gives
+  measured download sizes, and lists the GPL-3, LGPL and MPL packages the
+  extras pull in.
 
 ### Changed
 
@@ -89,6 +100,11 @@ uses [Semantic Versioning](https://semver.org/).
   ffmpeg, and cancels superseded runs of the same branch.
 - `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to
   `>=0.5.8,<0.5.10`, the releases the engines were checked against.
+- An uploaded file may now decode to at most `stt.max_upload_mb` read as
+  16-bit 16 kHz audio, about 26 minutes at the default 50: a 30 MB mp3 of a
+  40-minute meeting now gets 413. Raise `max_upload_mb` to transcribe
+  longer recordings (it bounds Wyoming utterances and WebSocket streams the
+  same way).
 
 ### Security
 
@@ -108,18 +124,10 @@ uses [Semantic Versioning](https://semver.org/).
   utterance.
 - With `api_key` set, `/health` and `/metrics.json` show only the exception
   name of the last error.
-- `voiced install` refuses to run as root or with `--user root`, and outside
-  a checkout requires `--source` until voiced is published. The config file
-  is created 0600.
+- `voiced install` refuses to run as root, and `--user` must resolve to the
+  installing user (any name for uid 0 is refused). Outside a checkout it
+  requires `--source` until voiced is published. The config file is created
+  0600, and re-running `voiced install` tightens an existing one: after
+  upgrading, run it once (or `chmod 600 ~/.config/voiced/config.toml`).
 - Services raise their open file limit from launchd's 256 to 4096.
 
-### Fixed
-
-- `voiced doctor` reports the service environment's Python, not only the
-  interpreter running the command. `voiced status` says how to install the
-  daemons when none are installed.
-- The engine catalogue child process no longer imports modules from the
-  watchdog's working directory.
-- README: the quickstart pins `--python 3.12` for `uv tool install`, gives
-  real download sizes, and lists the GPL-3, LGPL and MPL packages the
-  extras pull in.

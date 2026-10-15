@@ -267,17 +267,6 @@ They are the usual steps for a Mac that runs as a server:
 
 ## Updating
 
-The service environment's `python` is a link into uv's own Python
-installations (`~/.local/share/uv/python`). Removing those, for example with
-`uv python uninstall 3.12`, breaks the services until `voiced install` runs
-again.
-
-The services look up their models on Hugging Face at every start and use the
-local copy when the network is down. If the models are missing and there is
-no network, a service exits at startup with `LocalEntryNotFoundError` in its
-log, and launchd starts it again every 10 seconds until the download can
-happen.
-
 Re-running `voiced install` upgrades in place: it reuses the service
 environment, upgrades the package, re-stages the plists and prints the
 install script, which unloads and reloads the daemons. Models and the
@@ -292,5 +281,8 @@ uv tool install --reinstall --python 3.12 ~/voiced
 voiced install --source ~/voiced
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
+
+Use `--reinstall`: `--force` does not rebuild a version uv already has, so
+the command would keep the old code while the service environment updates.
 
 Read [CHANGELOG.md](../CHANGELOG.md) for anything that needs a manual step.

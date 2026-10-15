@@ -65,7 +65,7 @@ is an `EngineError`, and so is a session that outlives that duration plus
 `session_idle_s` (a wall-clock `asyncio.timeout` inside `inference()`), so a
 client trickling tiny chunks cannot hold the slot forever. The queue between
 handler and task holds 64 chunks (a few seconds of Home Assistant audio), and
-one chunk may carry at most `MAX_CHUNK_BYTES` (1 MB; Home Assistant sends about
+one chunk may carry at most `MAX_EVENT_BYTES` (1 MB; Home Assistant sends about
 2 KB), so queued audio stays under 64 MB per connection whatever chunk size a
 client picks; a bigger chunk is one `Error` and a close, decided from the
 event's header before its payload is read (see the amendment below). The handler awaits
@@ -193,7 +193,7 @@ Read from `homeassistant/components/wyoming` (core `dev`, 2026-10):
 
 The `wyoming` package's reader reads whatever `data_length` and
 `payload_length` a header announces before anything can look at the event,
-and waits for the next event forever, so the `MAX_CHUNK_BYTES` check above
+and waits for the next event forever, so the `MAX_EVENT_BYTES` check above
 ran after a client had already made the process buffer its payload, of any
 size. `VoicedEventHandler.run` now reads events itself: sizes are checked
 from the header (1 MB payload; 1 MiB of `data`, more if `max_input_chars`

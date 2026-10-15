@@ -34,8 +34,10 @@ uv tool update-shell
 ```
 
 `--python 3.12` matters: without it uv uses its default interpreter, which
-can be one voiced does not support (it needs 3.11 to 3.13), and the install
-fails with "requirements are unsatisfiable". `uv tool install` puts the
+can be one voiced does not support (it needs 3.11 to 3.13). With 3.10 the
+install fails with "requirements are unsatisfiable"; with 3.14 it can
+succeed on a Python voiced is not tested on, which `voiced doctor` then
+reports as a failure. `uv tool install` puts the
 `voiced` command in `~/.local/bin`, which is often not on your `PATH` yet;
 `uv tool update-shell` adds it to your shell's startup file (`~/.zshenv` for
 the default zsh). Open a new terminal, then:
@@ -247,7 +249,9 @@ also pulls in, as dependencies of `kokoro-onnx`, the `phonemizer` package
 loads the Homebrew library rather than the wheel's copy; with
 `VOICED_ESPEAK_LIBRARY` set and `VOICED_ESPEAK_DATA` unset, the wheel's
 espeak-ng data files are used. Anyone redistributing a tts environment
-redistributes these GPL-3 packages with it.
+redistributes these GPL-3 packages with it: shipping a built tts environment
+(a venv, an app bundle, an image) means meeting the GPL-3 terms for it. The
+voiced source itself stays MIT.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
 package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
@@ -357,6 +361,8 @@ daemons and Metal access, including from a real daemon context with
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
+| Both services down after `uv python uninstall` or deleting `~/.local/share/uv` | The service environment's `python` links into uv's Python installations. `voiced doctor` reports the broken link; run `voiced install --source ~/voiced` again. |
+| A service restarts every 10 s after a reboot, log shows `LocalEntryNotFoundError` | The models are not in the Hugging Face cache and there is no network. It recovers by itself once the download can happen. With the models cached, a service starts without network. |
 
 Logs live under `~/Library/Logs/voiced/`. More in
 [docs/operations.md](docs/operations.md).

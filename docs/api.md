@@ -501,7 +501,7 @@ Bounds on every connection, on both listeners:
 
 | Bound | Value |
 |---|---|
-| One event's `data` | 1 MiB, or six bytes per `tts.max_input_chars` character if that is more |
+| One event's `data` | 1 MB, which also limits a `Synthesize` text to roughly 170 000 characters |
 | One event's payload | 1 MB |
 | One event's header line | 64 KiB |
 | Time to receive the rest of an event after its header | `server.session_idle_s` |
@@ -510,7 +510,8 @@ Bounds on every connection, on both listeners:
 
 An event over a size bound is refused from its header, before its body is
 read: the client gets one `Error` (`invalid_request_error`, text starting
-`BadEvent`) and the connection closes.
+`BadEvent`) and the connection closes. A client that keeps sending the body
+may see the connection reset before it reads that `Error`.
 
 **Text-to-speech.** `Info` lists one `TtsProgram` named `voiced` with a
 `TtsVoice` per served voice (name is the voice id, description is the voice

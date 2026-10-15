@@ -40,7 +40,10 @@ browser_settings = false
 # While a streaming client holds the inference slot (Wyoming STT, the
 # WebSocket stream), drop it after this many seconds without input, and drop
 # any client that does not accept a write within write_timeout_s. Otherwise a
-# half-open connection keeps the GPU busy for everyone else.
+# half-open connection keeps the GPU busy for everyone else. A streamed
+# utterance may stay open for its audio limit (see max_upload_mb) plus
+# session_idle_s, and a Wyoming client that starts an event must finish
+# sending it within session_idle_s.
 session_idle_s = 30
 write_timeout_s = 10
 
@@ -57,7 +60,8 @@ languages = ["en"]
 # Silence window for server-side end-of-speech detection. Reserved: no
 # transport ends an utterance on it yet, so changing it has no effect.
 vad_silence_ms = 200
-# Requests waiting for the GPU beyond this number get HTTP 503.
+# Requests waiting for the GPU beyond this number get HTTP 503. It also caps
+# how many uploads are decoded at once (more get 503 too).
 queue_depth = 8
 # Largest upload accepted by /v1/audio/transcriptions. Also caps the audio an
 # upload decodes to, one WebSocket stream and one Wyoming utterance at the same
