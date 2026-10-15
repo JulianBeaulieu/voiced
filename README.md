@@ -186,6 +186,10 @@ exposes the services to your whole network:
 - The Wyoming protocol has no authentication at all. Only expose it on a
   network you trust.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
+- Settings and restarts go through a Unix socket that only your user can
+  open (`voiced settings`, `voiced restart`). The status page's settings
+  form is off unless `browser_settings = true`, and even then works only
+  with an API key set.
 
 ## Models and licenses
 
@@ -310,7 +314,7 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 | [docs/api.md](docs/api.md) | HTTP, WebSocket and Wyoming reference with curl and Python examples |
 | [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, optional Ollama conversation agent |
 | [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
-| [docs/operations.md](docs/operations.md) | Commands, launchd, watchdog, logs, FileVault, memory, updating |
+| [docs/operations.md](docs/operations.md) | Commands, launchd, watchdog, control channel, logs, FileVault, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, conventions |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |

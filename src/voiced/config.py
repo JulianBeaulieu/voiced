@@ -63,6 +63,9 @@ class ServerConfig(_Section):
     # Advertise the Wyoming listeners over mDNS so Home Assistant discovers
     # them. Only takes effect when ``bind`` is not a loopback address.
     zeroconf: bool = True
+    # Show a settings form on each service's status page. Off by default; see
+    # ADR 0013 for the rules that apply when it is on.
+    browser_settings: bool = False
     # Bounds on socket awaits for transports holding the inference slot, so a
     # half-open peer cannot pin the GPU (voiced.inference.bounded).
     session_idle_s: float = Field(default=30.0, gt=0)
@@ -168,10 +171,15 @@ class Settings(BaseSettings):
     def http_url(self, service: ServiceName) -> str:
         """Base URL for talking to a service from this machine.
 
-        ``0.0.0.0`` means "all interfaces" to the listener but is not an
-        address a client can connect to, so loopback is used instead.
+        ``0.0.0.0`` and ``::`` mean "all interfaces" to the listener but are
+        not addresses a client can connect to, so loopback is used instead.
+        IPv6 literals are bracketed.
         """
-        host = "127.0.0.1" if self.server.bind in ("0.0.0.0", "") else self.server.bind
+        host = self.server.bind
+        if host in ("0.0.0.0", "", "::"):
+            host = "127.0.0.1"
+        elif ":" in host:
+            host = f"[{host}]"  # an IPv6 literal
         return f"http://{host}:{self.http_port(service)}"
 
     @classmethod

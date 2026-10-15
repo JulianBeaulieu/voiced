@@ -157,6 +157,12 @@ class KokoroEngine(SentenceTTSEngine):
     languages = ["en-US", "en-GB"]
     license = "Apache-2.0"
 
+    @classmethod
+    def catalogue_voices(cls) -> list[Voice]:
+        """The static voice table for ``languages``; no weights are read
+        (``voiced.engines.catalogue``)."""
+        return kokoro_voices(cls.languages)
+
     def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
         self._warmup = warmup

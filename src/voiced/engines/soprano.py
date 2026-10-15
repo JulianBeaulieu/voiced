@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SOPRANO_VOICE", "SopranoEngine"]
 
-SOPRANO_VOICE = Voice(id="default", name="Soprano", language="en-US", gender=None)
+SOPRANO_VOICE = Voice(id="default", name="Default", language="en-US", gender=None)
 
 REPETITION_PENALTY = 1.2
 REPETITION_CONTEXT = 64
@@ -90,6 +90,10 @@ class SopranoEngine(SentenceTTSEngine):
     model_id = "mlx-community/Soprano-80M-bf16"
     languages = ["en-US"]
     license = "Apache-2.0"
+
+    @classmethod
+    def catalogue_voices(cls) -> list[Voice]:
+        return [SOPRANO_VOICE]
 
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way

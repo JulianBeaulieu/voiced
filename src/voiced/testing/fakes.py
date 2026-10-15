@@ -137,6 +137,10 @@ class FakeTTSEngine(TTSEngine):
     languages = ["en"]
     license = "MIT"
 
+    @classmethod
+    def catalogue_voices(cls) -> list[Voice]:
+        return list(FAKE_VOICES)
+
     def __init__(self, model_id: str | None = None, *, latency_s: float = 0.0) -> None:
         super().__init__(model_id)
         self.latency_s = latency_s

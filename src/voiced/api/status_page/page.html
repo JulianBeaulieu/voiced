@@ -53,7 +53,7 @@
   td.mono { font-family: var(--mono); white-space: nowrap; }
   td.msg { overflow-wrap: anywhere; }
   .empty { color: var(--muted); font-size: 13px; }
-  textarea, input[type=text], input[type=password], select {
+  textarea, input[type=text], input[type=password], input[type=number], select {
     width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
     border-radius: 8px; padding: 8px 10px;
   }
@@ -71,6 +71,10 @@
   audio { width: 100%; margin-top: 12px; }
   footer { margin-top: 36px; color: var(--muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
   footer a { color: inherit; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .fields label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  .fields label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+  .panel .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
   .hidden { display: none !important; }
 </style>
 </head>
@@ -145,6 +149,35 @@
     </div>
   </section>
 
+  <section id="settings-section" class="hidden">
+    <h2><svg class="icon"><use href="#i-sliders"/></svg>Settings</h2>
+    <div class="panel">
+      <div class="out err hidden" id="settings-refused"></div>
+      <form id="settings-form" class="hidden">
+        <div class="fields">
+          <label>Listen on
+            <select name="bind"><option value="loopback">this Mac only (loopback)</option><option value="lan">the network (lan)</option></select>
+          </label>
+          <label>New API key
+            <input type="password" name="api_key" placeholder="unchanged" autocomplete="new-password">
+          </label>
+          <label class="check"><input type="checkbox" name="api_key_clear"> Remove the API key</label>
+          <label class="check"><input type="checkbox" name="zeroconf"> Announce Wyoming on the network (zeroconf)</label>
+          <label>Speech-to-text engine <select name="stt.engine"></select></label>
+          <label>Speech-to-text model <input type="text" name="stt.model"></label>
+          <label>Text-to-speech engine <select name="tts.engine"></select></label>
+          <label>Text-to-speech model <input type="text" name="tts.model"></label>
+          <label>Default voice <select name="tts.voice"></select></label>
+          <label>Default speed <input type="number" name="tts.speed" min="0.25" max="4" step="0.05"></label>
+          <label class="check"><input type="checkbox" name="browser_settings"> Keep this form on</label>
+        </div>
+        <div class="row"><button type="submit" id="settings-save"><svg class="icon"><use href="#i-save"/></svg>Save</button></div>
+        <div class="hint">Saved to <span id="settings-path"></span>. A change takes effect when the service restarts (<code>voiced restart</code> on the server). This form is off unless <code>browser_settings</code> is on, and it always needs the API key: with no key set it is refused, on this Mac too.</div>
+        <div class="out" id="settings-out"></div>
+      </form>
+    </div>
+  </section>
+
   <footer>
     <a href="/docs">OpenAPI docs</a>
     <a href="/health">/health</a>
@@ -166,6 +199,8 @@
   <symbol id="i-volume" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
   <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
 </svg>
 
@@ -261,7 +296,130 @@
       tbody.appendChild(tr);
     });
     if (service === "tts" && !voicesLoaded) loadVoices(d.default_voice);
+    renderSettingsState(d.settings_form);
   }
+
+  // Settings form: shown only when the server says browser_settings is on.
+  var settingsLoaded = false, settingsBusy = false, engines = null, current = null;
+  var WARNINGS = {
+    lan_without_api_key: "Listening on the network without an API key: anyone on the network can use the API. Set a key."
+  };
+  function renderSettingsState(f) {
+    var on = !!(f && f.enabled);
+    $("settings-section").classList.toggle("hidden", !on);
+    if (!on) { settingsLoaded = false; return; }
+    if (!f.refused) $("apikey-section").classList.remove("hidden");
+    $("settings-refused").classList.toggle("hidden", !f.refused);
+    $("settings-refused").textContent = f.refused || "";
+    $("settings-form").classList.toggle("hidden", !!f.refused);
+    if (!f.refused && !settingsLoaded && !settingsBusy) loadSettings();
+  }
+  // values: ids; labels: {id: display name}, the id is shown without one.
+  function fillSelect(sel, values, selected, labels) {
+    sel.textContent = "";
+    if (values.indexOf(selected) < 0) values = [selected].concat(values);
+    values.forEach(function (v) {
+      var o = document.createElement("option"); o.value = v;
+      o.textContent = (labels && labels[v]) || v;
+      if (v === selected) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  function engineNamed(kind, name) {
+    return (engines[kind] || []).filter(function (e) { return e.name === name; })[0] || null;
+  }
+  function fillEngines(kind, selected) {
+    var labels = {};
+    engines[kind].forEach(function (e) { labels[e.name] = e.label; });
+    fillSelect($("settings-form").elements[kind + ".engine"],
+      engines[kind].map(function (e) { return e.name; }), selected, labels);
+  }
+  function fillVoices(engineName, selected) {
+    var e = engineNamed("tts", engineName);
+    fillSelect($("settings-form").elements["tts.voice"], e ? e.voices.slice() : [], selected,
+      e ? e.voice_labels : null);
+  }
+  function fillForm(s) {
+    var el = $("settings-form").elements;
+    el["bind"].value = s.bind;
+    el["api_key"].value = "";
+    el["api_key"].placeholder = s.api_key_set ? "unchanged (a key is set)" : "none set";
+    el["api_key_clear"].checked = false;
+    el["api_key_clear"].disabled = !s.api_key_set;
+    el["zeroconf"].checked = s.zeroconf;
+    fillEngines("stt", s.stt.engine);
+    el["stt.model"].value = s.stt.model;
+    fillEngines("tts", s.tts.engine);
+    el["tts.model"].value = s.tts.model;
+    fillVoices(s.tts.engine, s.tts.voice);
+    el["tts.speed"].value = s.tts.speed;
+    el["browser_settings"].checked = s.browser_settings;
+    $("settings-path").textContent = s.paths.config;
+  }
+  function loadSettings() {
+    settingsBusy = true;
+    fetch("/settings.json", { headers: authHeaders(), cache: "no-store" }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(describeError(r, t)); });
+      return r.json();
+    }).then(function (j) {
+      engines = j.engines; current = j.settings;
+      fillForm(current);
+      settingsLoaded = true;
+      $("settings-out").className = "out"; $("settings-out").textContent = "";
+    }).catch(function (e) {
+      $("settings-out").className = "out err"; $("settings-out").textContent = String(e.message || e);
+    }).then(function () { settingsBusy = false; });
+  }
+  $("apikey").addEventListener("change", function () { settingsLoaded = false; });
+  // A new engine cannot load the old engine's model: reset the model (and
+  // the voice) to the new engine's own, or back to the saved ones.
+  ["stt", "tts"].forEach(function (kind) {
+    $("settings-form").elements[kind + ".engine"].addEventListener("change", function (ev) {
+      var el = $("settings-form").elements, name = ev.target.value, e = engineNamed(kind, name);
+      var saved = name === current[kind].engine;
+      el[kind + ".model"].value = saved || !e || !e.models.length ? current[kind].model : e.models[0];
+      if (kind !== "tts") return;
+      var keep = saved || (e && e.voices.indexOf(current.tts.voice) >= 0);
+      fillVoices(name, keep || !e || !e.voices.length ? current.tts.voice : e.voices[0]);
+    });
+  });
+  $("settings-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (!current) return;
+    var el = ev.target.elements, changes = {};
+    function diff(name, value, old) { if (value !== old) changes[name] = value; }
+    diff("bind", el["bind"].value, current.bind);
+    diff("zeroconf", el["zeroconf"].checked, current.zeroconf);
+    diff("stt.engine", el["stt.engine"].value, current.stt.engine);
+    diff("stt.model", el["stt.model"].value.trim(), current.stt.model);
+    diff("tts.engine", el["tts.engine"].value, current.tts.engine);
+    diff("tts.model", el["tts.model"].value.trim(), current.tts.model);
+    diff("tts.voice", el["tts.voice"].value, current.tts.voice);
+    diff("tts.speed", parseFloat(el["tts.speed"].value), current.tts.speed);
+    diff("browser_settings", el["browser_settings"].checked, current.browser_settings);
+    if (el["api_key"].value) changes.api_key = el["api_key"].value;
+    else if (el["api_key_clear"].checked) changes.api_key = "";
+    var out = $("settings-out");
+    if (!Object.keys(changes).length) { out.className = "out"; out.textContent = "Nothing changed."; return; }
+    var btn = $("settings-save"), headers = authHeaders();
+    headers["Content-Type"] = "application/json";
+    btn.disabled = true; out.className = "out"; out.textContent = "saving...";
+    fetch("/settings", { method: "POST", headers: headers, body: JSON.stringify(changes) }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(describeError(r, t)); });
+      return r.json();
+    }).then(function (j) {
+      var lines = ["Saved."];
+      if (j.restart_required.length) {
+        lines.push("Restart to apply: voiced restart " + (j.restart_required.length > 1 ? "all" : j.restart_required[0]) + " on the server");
+      }
+      (j.warnings || []).forEach(function (w) { lines.push("Warning: " + (WARNINGS[w] || w)); });
+      out.className = "out"; out.textContent = lines.join("\n");
+      if (changes.api_key !== undefined) $("apikey").value = changes.api_key;
+      current = j; fillForm(j);
+    }).catch(function (e) {
+      out.className = "out err"; out.textContent = String(e.message || e);
+    }).then(function () { btn.disabled = false; });
+  });
 
   function poll() {
     fetch("/metrics.json", { cache: "no-store" }).then(function (r) {

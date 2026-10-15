@@ -1,7 +1,8 @@
 """``voiced`` command line.
 
 ``serve`` and ``config`` live here; the lifecycle commands (install, start,
-stop, status, logs, uninstall, doctor, watchdog) are in ``voiced.cli_lifecycle``.
+stop, restart, status, settings, logs, uninstall, doctor, watchdog) are in
+``voiced.cli_lifecycle``.
 
     VOICED_TTS__ENGINE=fake voiced serve tts
 """
@@ -24,7 +25,18 @@ Below launchd's ExitTimeOut (about 20 s), so a stuck client cannot turn a
 clean stop into a SIGKILL.
 """
 
-LIFECYCLE = ("install", "start", "stop", "status", "logs", "uninstall", "doctor", "watchdog")
+LIFECYCLE = (
+    "install",
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "settings",
+    "logs",
+    "uninstall",
+    "doctor",
+    "watchdog",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,7 +91,11 @@ def cmd_config(settings: Settings) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    settings = load_settings()
+    try:
+        settings = load_settings()
+    except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
+        print(f"config error at {config_path()}: {exc}", file=sys.stderr)
+        return 2
     if args.command in LIFECYCLE:
         return run_lifecycle(args, settings)
     if args.command == "serve":

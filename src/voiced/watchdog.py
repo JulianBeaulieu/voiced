@@ -13,15 +13,18 @@ settings, typed here under ``TYPE_CHECKING`` only.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import logging.handlers
 import os
 import signal
+import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -65,11 +68,17 @@ def default_probe(service: str, model: str, voice: str = "af_heart") -> ProbeReq
 
 @dataclass(frozen=True)
 class ServiceSpec:
+    """One supervised service, as configured when it was last (re)started.
+    ``engine`` and ``model`` are informational (the control channel's status
+    when ``/health`` does not answer)."""
+
     name: str
     label: str
     base_url: str
     api_key: str = ""
     probe: ProbeRequest | None = None
+    engine: str = ""
+    model: str = ""
 
     @property
     def health_url(self) -> str:
@@ -408,15 +417,25 @@ def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> RestartR
 # The loop -----------------------------------------------------------------
 
 
+Respec = Callable[[ServiceSpec], ServiceSpec]
+"""The spec for a service as the config file says now; called when the
+service has just been (re)started, since the new process reads that file."""
+
+
 @dataclass
 class Watchdog:
-    services: Sequence[ServiceSpec]
+    services: list[ServiceSpec]
     policy: WatchdogConfig
     runner: Runner = run_command
     observe: Callable[[ServiceSpec, WatchdogConfig], Observation] | None = None
     restart: Restarter | None = None
     clock: Callable[[], float] = time.monotonic
+    respec: Respec | None = None
     states: dict[str, ServiceState] = field(default_factory=dict)
+    # A tick and a restart asked for over the control socket run in background
+    # threads; they must not interleave on ``services`` or a ServiceState.
+    # Held for decisions and restarts, not while observing.
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def _observe(self, spec: ServiceSpec) -> Observation:
         if self.observe is not None:
@@ -433,25 +452,82 @@ class Watchdog:
             self.states[spec.name] = ServiceState(grace_started_at=self.clock())
         return self.states[spec.name]
 
+    def spec(self, name: str) -> ServiceSpec | None:
+        with self.lock:
+            return next((s for s in self.services if s.name == name), None)
+
+    def _refresh_spec(self, spec: ServiceSpec) -> ServiceSpec:
+        """Replace ``spec`` with :attr:`respec`'s view of it (lock held)."""
+        if self.respec is None:
+            return spec
+        try:
+            fresh = self.respec(spec)
+        except (OSError, ValueError):  # TOMLDecodeError, ValidationError
+            log.exception("%s: cannot re-read the config; keeping the old spec", spec.name)
+            return spec
+        self.services = [fresh if s.name == spec.name else s for s in self.services]
+        return fresh
+
+    def _restart_logged(
+        self, spec: ServiceSpec, state: ServiceState, now: float, reason: str
+    ) -> RestartResult:
+        """The one restart path: watchdog decisions and control requests.
+        Called with the lock held."""
+        log.warning("%s: restarting: %s", spec.name, reason)
+        result = self._restart(spec)
+        if result.done:
+            mark_restarted(state, now)
+            self._refresh_spec(spec)
+            log.warning("%s: %s (restart #%d)", spec.name, result.detail, state.restarts)
+        else:
+            state.failures = 0
+            log.warning("%s: %s", spec.name, result.detail)
+        return result
+
+    def restart_now(self, name: str, reason: str = "requested") -> RestartResult:
+        """Restart a service on request, outside the poll cycle.
+
+        Goes through the same path as a watchdog decision and records it the
+        same way, so the startup grace period and the cooldown apply to the
+        watchdog's own decisions afterwards. The cooldown does not hold back
+        a requested restart. Waits only for a decision or restart in
+        progress, not for a health poll.
+        """
+        with self.lock:
+            spec = self.spec(name)
+            if spec is None:
+                raise KeyError(name)
+            return self._restart_logged(spec, self.state(spec), self.clock(), reason)
+
     def tick(self) -> dict[str, Decision]:
-        """Observe every service once and act on the decisions."""
+        """Observe every service once and act on the decisions.
+
+        Observing (HTTP and ``launchctl``, up to ``timeout_s`` plus
+        ``probe_timeout_s``) happens without the lock; deciding and
+        restarting hold it.
+        """
         decisions: dict[str, Decision] = {}
-        for spec in self.services:
-            state = self.state(spec)
+        with self.lock:
+            names = [s.name for s in self.services]
+        for name in names:
+            with self.lock:
+                spec = self.spec(name)
+                if spec is None:
+                    continue
+                state = self.state(spec)
             now = self.clock()
             obs = self._observe(spec)
-            decision = decide(state, obs, now, self.policy)
+            with self.lock:
+                if obs.pid is not None and state.last_pid not in (None, obs.pid):
+                    # launchd restarted it (KeepAlive): the new process read the file.
+                    spec = self._refresh_spec(spec)
+                decision = decide(state, obs, now, self.policy)
+                if decision.action == "restart":
+                    self._restart_logged(spec, state, now, decision.reason)
             decisions[spec.name] = decision
             if decision.action == "restart":
-                log.warning("%s: restarting: %s", spec.name, decision.reason)
-                result = self._restart(spec)
-                if result.done:
-                    mark_restarted(state, now)
-                    log.warning("%s: %s (restart #%d)", spec.name, result.detail, state.restarts)
-                else:
-                    state.failures = 0
-                    log.warning("%s: %s", spec.name, result.detail)
-            elif decision.action == "cooldown":
+                continue  # logged by _restart_logged
+            if decision.action == "cooldown":
                 log.warning("%s: not restarting: %s", spec.name, decision.reason)
             elif decision.quiet:
                 log.debug("%s: %s", spec.name, decision.reason)
@@ -461,7 +537,7 @@ class Watchdog:
                 log.debug("%s: %s", spec.name, decision.reason)
         return decisions
 
-    def run_forever(self, stop: Callable[[], bool] = lambda: False) -> None:
+    def _announce(self) -> None:
         for spec in self.services:
             self.state(spec)  # start every grace period now
         log.info(
@@ -471,14 +547,23 @@ class Watchdog:
             self.policy.failures_before_restart,
             self.policy.probe,
         )
-        while not stop():
+
+    async def run_async(self, stop: asyncio.Event) -> None:
+        """Tick every ``interval_s`` until ``stop`` is set.
+
+        The loop runs on asyncio so the control socket is served on the same
+        event loop; each tick runs in a background thread (it blocks on HTTP
+        and ``launchctl``)."""
+        self._announce()
+        while not stop.is_set():
             started = self.clock()
             try:
-                self.tick()
+                await asyncio.to_thread(self.tick)
             except Exception:
                 log.exception("tick failed")
             elapsed = self.clock() - started
-            time.sleep(max(0.0, self.policy.interval_s - elapsed))
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), max(0.0, self.policy.interval_s - elapsed))
 
 
 def configure_watchdog_logging(level: str = "info", log_file: Path | None = None) -> None:

@@ -389,6 +389,17 @@ box (type text and hear it on tts, upload audio and read the transcript on
 stt). It is one self-contained HTML file and fetches nothing from the
 internet. If an API key is set, type it into the page to use the test box.
 
+With `[server] browser_settings = true` the page also shows a settings form
+(engine, model, voice, speed, `bind`, API key, zeroconf). It is off by
+default. When on, it always needs the API key as a bearer token: with no
+key set it is refused (403), on loopback too, because a web page you open
+can reach a loopback port (DNS rebinding). It reads from
+`GET /settings.json` and saves with `POST /settings` (`application/json`),
+which take and return the same settings as `settings.get` and
+`settings.set` on the local control channel
+([operations](operations.md#control-channel)). Changes are written to the
+config file and apply when the service restarts.
+
 `/metrics.json` is the data behind it:
 
 | Key | Contents |
@@ -399,6 +410,7 @@ internet. If an API key is set, type it into the page to use the test box.
 | `metrics` | `operations`: per operation (`transcribe`, `stream`, `speech`), counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`) and p50 and p95 latency over the last 1000 successful inferences. `recent_errors`: the last 50 errors. `memory.rss_bytes`: resident memory. |
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
+| `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |
 
 Metrics live in memory and reset when the service restarts.
 

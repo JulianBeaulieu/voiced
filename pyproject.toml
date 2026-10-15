@@ -35,6 +35,9 @@ dependencies = [
     "zeroconf>=0.132",
     # Silero VAD as a ggml build: no torch, no onnxruntime, about 4.8 MB installed.
     "pysilero-vad>=3.4,<4",
+    # Comment-preserving TOML writes for `voiced settings set` and the
+    # control channel (ADR 0013). Pure Python, no dependencies.
+    "tomlkit>=0.12",
 ]
 
 [project.optional-dependencies]

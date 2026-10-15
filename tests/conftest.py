@@ -45,6 +45,8 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
     s = Settings()
     s.server.log_dir = tmp_path / "logs"
+    # The state dir holds the control socket; never the real ~/.voiced.
+    s.install.venv_dir = tmp_path / "state"
     s.stt.engine = "fake"
     s.tts.engine = "fake"
     s.stt.queue_depth = 2

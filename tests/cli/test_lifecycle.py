@@ -227,6 +227,10 @@ def test_settings_http_helpers_and_label_validation() -> None:
     assert s.http_url("stt") == "http://127.0.0.1:8881"
     s.server.bind = "10.0.0.5"
     assert s.http_url("stt") == "http://10.0.0.5:8881"
+    s.server.bind = "::"
+    assert s.http_url("tts") == "http://127.0.0.1:8880"
+    s.server.bind = "::1"
+    assert s.http_url("tts") == "http://[::1]:8880"
     import pydantic
 
     for bad in ("a;b", "x y", "ok\n", "", ".lead"):

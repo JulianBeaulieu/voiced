@@ -10,7 +10,9 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 | `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--user`, `--staging-dir`, `--skip-models`, `--no-uv`. |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
-| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`. |
+| `voiced restart [stt\|tts\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. |
+| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`; with the watchdog running, also each service's state, uptime and restart count from the control socket. |
+| `voiced settings [get] [--json]`, `voiced settings set KEY=VALUE ...` | Shows or changes the common settings (see [Control channel](#control-channel)). `api_key=-` reads the key from stdin. |
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
 | `voiced doctor [--json]` | Checks the machine (see below). |
 | `voiced doctor --metal-probe` | Stages a one-shot LaunchDaemon that tests Metal from a real daemon context and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
@@ -119,6 +121,71 @@ wedge is found at the first real request plus `stall_after_s`.
 
 `voiced watchdog --once` shows what the watchdog thinks of the machine right
 now. The design is in [ADR 0012](decisions/0012-watchdog.md).
+
+## Control channel
+
+The watchdog also serves a Unix socket, `~/.voiced/control.sock` (in the
+`[install] venv_dir` directory, so it moves with the venv), for local
+clients such as a menu bar app, and for the CLI. It speaks newline-delimited
+JSON, accepts only processes of the same user (mode 0600 in a 0700
+directory, and the kernel's peer uid is checked), and listens on no network
+interface whatever `bind` says. The design is in
+[ADR 0013](decisions/0013-local-control-channel.md).
+
+Once voiced is installed, the watchdog daemon already serves the socket:
+`voiced settings`, `voiced restart` and `voiced status` use it. Do not also
+run `voiced watchdog` in a terminal then; a second watchdog cannot take the
+socket and would restart the services alongside the first. With nothing
+answering on the socket (voiced not installed, or the watchdog stopped),
+`voiced settings` changes the config file directly by the same code,
+`voiced restart` restarts through `launchctl` itself, and `voiced status`
+shows launchd and `/health` only. If the watchdog runs but its socket did not
+start (for example a `venv_dir` path too long for a Unix socket), `voiced
+status` and `voiced doctor` say so; the reason is in `voiced logs watchdog`.
+
+```sh
+voiced settings get
+voiced settings set tts.voice=bf_emma tts.speed=1.1
+voiced restart tts
+printf '{"id":1,"op":"status"}\n{"id":2,"op":"engines.list"}\n' | nc -U ~/.voiced/control.sock
+```
+
+To try the socket without installing, run `voiced watchdog` in one terminal
+and the commands above in another.
+
+The first line from the server is `{"event": "hello", "data": {"protocol":
+1, ...}}`; `status` events follow whenever something changes and at least
+every 10 s, and a `settings` event follows any change to the config file.
+
+| Operation | Arguments | Result |
+|---|---|---|
+| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
+| `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
+| `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
+| `engines.list` | | installed engines with their `label`, models, languages, voices and `voice_labels`, without loading any |
+| `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
+| `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
+| `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
+
+`settings.set` writes the config file atomically and changes only the
+values it sets, so comments and layout stay. It never restarts anything:
+`restart_required` says which services need `voiced restart` for the change
+to apply (`tts.*` the tts service, `stt.*` the stt service, `bind`,
+`api_key` and `zeroconf` both; `browser_settings` neither). Changing
+`bind` to `lan` also starts the zeroconf announcement of the Wyoming
+listeners after that restart, if `zeroconf` is on
+([ADR 0011](decisions/0011-wyoming.md)). Switching `stt.engine` or
+`tts.engine` without giving a model selects the new engine's own model (and
+voice, if the old one does not exist there). Any registered engine can be
+selected; `voiced install` installs the extras they need. A file holding an
+API key is made readable by your user only. Invalid values are refused with
+`invalid_setting` and the field name, and the file is left as it was.
+Errors are `not_installed`, `invalid_setting`, `unknown_op`, `bad_request`,
+`service_unavailable` and `internal`.
+
+`[server] browser_settings = true` adds the same settings as a form on each
+status page. It always needs the API key, so it is refused until a key is
+set, on loopback too: any web page you open could otherwise reach it.
 
 ## Logs
 

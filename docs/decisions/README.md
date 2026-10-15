@@ -19,6 +19,7 @@ merge, and this index is updated when a record lands on `main`.
 | [0010](0010-tts-soprano.md) | Soprano, selectable and not default | Apache-2.0 license check, the repetition penalty and per-sentence bound against runaway generation, 32 to 24 kHz resampling, first-audio and runaway measurements. |
 | [0011](0011-wyoming.md) | Wyoming listeners | In-process listeners, STT utterance bounds, per-sentence TTS slots, error codes, zeroconf only when reachable, what Home Assistant expects. |
 | [0012](0012-watchdog.md) | Watchdog design | Stdlib-only third daemon, the decision rules, stall detection, restart by SIGKILL plus `kickstart` as a non-root user. |
+| [0013](0013-local-control-channel.md) | Local control channel | The watchdog serves a 0600 Unix socket with a peer uid check; settable keys, comment-preserving atomic config writes, restart-required rules, the opt-in browser form, protocol versioning. |
 
 ## Writing one
 
