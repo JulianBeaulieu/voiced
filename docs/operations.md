@@ -164,7 +164,7 @@ every 10 s, and a `settings` event follows any change to the config file.
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
 | `engines.list` | | installed engines with their `label`, models, languages, voices and `voice_labels`, without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
-| `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines` |
+| `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
 | `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
 
 `settings.set` writes the config file atomically and changes only the

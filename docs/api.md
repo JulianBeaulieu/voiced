@@ -410,7 +410,7 @@ config file and apply when the service restarts.
 | `metrics` | `operations`: per operation (`transcribe`, `stream`, `speech`), counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`) and p50 and p95 latency over the last 1000 successful inferences. `recent_errors`: the last 50 errors. `memory.rss_bytes`: resident memory. |
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
-| `settings_form` | `enabled`, `refused` (the reason, or `null`) and `api_key_required` for the settings form |
+| `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |
 
 Metrics live in memory and reset when the service restarts.
 

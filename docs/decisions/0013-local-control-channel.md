@@ -62,10 +62,14 @@ loaded, and the health probe uses the key the running process expects.
 **No engine code in the watchdog.** ADR 0012 wants the watchdog boring and
 impossible to wedge. Engine plugins are third-party code that import numpy,
 FastAPI (the test engines) and more. So `engines.list`, and the engine and
-voice checks of `settings.set`, run `python -m voiced.engines.catalogue
---json` in a child process with a 30 s timeout and cache the result for a
-minute; a plugin that hangs or crashes there costs an error answer, not the
-supervisor. The `voiced` entry point imports the installer and `doctor`
+voice checks of `settings.set`, run `python -m voiced.engines.catalogue`
+in a child process with an 8 s timeout (it takes a fraction of a second;
+the CLI client waits 10 s, so it sees this error rather than its own
+timeout) and cache the result for a minute; a plugin that hangs or crashes
+there costs an error answer, not the supervisor. Two limits are deferred:
+a failed read is not cached, so every call while a plugin hangs waits the
+full timeout again; and one broken third-party plugin fails all of
+`engines.list`, because the registry loads every entry point together. The `voiced` entry point imports the installer and `doctor`
 (which import the engine modules) only inside the commands that use them.
 What `voiced watchdog` does import: the standard library, `voiced.config`
 and `voiced.settings_store` (pydantic, tomlkit) and `voiced.control`. A test
@@ -134,10 +138,13 @@ and the loader.
   engine's first catalogue model, since the old engine's model would not
   load and launchd would restart the service forever; a new `tts.engine`
   without `tts.voice` keeps the voice if the new engine has it, else gets
-  its first voice. The derived keys appear in the result's `changed`. An
+  the built-in default voice (`af_heart`) if the engine has that, else its
+  first voice. The derived keys appear in the result's `changed`. An
   engine with no catalogue model must be given `model` in the same change.
-- The file is edited with `tomlkit`: only the changed values are
-  rewritten; comments, key order, dotted keys, inline tables and every
+- The file is edited with `tomlkit`: only the requested values that differ
+  from the file's text are rewritten (a requested key absent from the file
+  is written even when it equals its default, as long as something in the
+  change takes effect); comments, key order, dotted keys, inline tables and every
   other key stay as they were. The edited text must parse back (with
   `tomllib`) to exactly the intended data or nothing is written. This is
   the one write path: there is no fallback that rewrites the file and drops
@@ -163,7 +170,10 @@ built there, in one place: an engine's `label` is its name capitalised;
 `voice_labels` maps each voice id to `Name (Language, gender)` when the
 engine gives a gender (Kokoro's names, languages and genders come from its
 voice id convention, `kokoro_voices()`), else to the voice's name (Soprano:
-"Default").
+"Default"). `LANGUAGE_NAMES` there also names the languages Kokoro can
+speak beyond English; voiced v1 is English-only, so `engines.list` only
+lists English voices today, and the table is ready for when an engine
+enables more.
 
 ### Restart rules
 
@@ -188,8 +198,9 @@ Wyoming listeners when `zeroconf` is on (ADR 0011), after the restart.
 ### Settings events
 
 The watchdog watches the config file (modification time, size and inode,
-checked on every status poll while a client is connected, and right after
-a `settings.set`). Whenever it changes, by `settings.set`, the status page
+`settings_store.file_stamp`, the same check the status page uses; checked
+on every status poll while a client is connected, and right after a
+`settings.set`). Whenever it changes, by `settings.set`, the status page
 form or an editor, every connected client gets a `settings` event with the
 `settings.get` payload. A `settings.set` that changes nothing writes nothing
 and sends no event.
@@ -231,17 +242,42 @@ The `hello` event carries `protocol: 1`.
   message telling the user to update the app, instead of guessing.
 
 Behaviour outside the request/response shapes: a request whose `id`
-cannot be read is answered with `"id": null`; a line over 64 KiB, or an
-incomplete line at end of stream, gets a `bad_request` answer with `"id":
-null` and the connection is closed. A client that does not take a message
-within 5 s is dropped.
+cannot be read is answered with `"id": null`; a request line over 64 KiB,
+or an incomplete line at end of stream, gets a `bad_request` answer with
+`"id": null` and the connection is closed. The 64 KiB limit is for requests
+only: replies can be longer (a 1000-line `logs.tail` is a few hundred KiB,
+at most about 4 MiB), so clients read replies without that cap.
+
+### Fairness and bounds
+
+The watchdog serves every client from one event loop, so no client may
+hold it up:
+
+- Each client has its own send queue (64 messages) and writer task.
+  Answers and events are only queued; a client that does not take a
+  message within 5 s, or falls 64 messages behind, is dropped. Another
+  client's answers and events never wait for it.
+- `status` reads the services in parallel, so a hung service costs one
+  health check timeout (2 s), not one per service. `status` events keep
+  the 10 s promise however long the reads take: the poll waits less as the
+  deadline nears, and a read that ends within one read's length of the
+  deadline pushes.
+- `logs.tail` reads at most the last 4 MiB of the file (1000 lines of
+  4 KiB), counting newlines once per block, and cuts any line over 4 KiB
+  with ` [line truncated]`; a line whose start lies before those bytes
+  begins with `[...] `. A log that is one 200 MB line costs the same as a
+  short one.
 
 Additions in this version beyond the original contract, all compatible:
 `detail` in the `service.restart` result, `changed` in the `settings.set`
 result, `path` in `logs.tail`, `languages` on TTS engines in
 `engines.list`, `label` on every engine and `voice_labels` on TTS engines,
 an optional `service` for `open status_page`, `field` in `invalid_setting`
-errors and the `env_override:<key>` warning.
+errors and the `env_override:<key>` warning. Outside the protocol, the
+Soprano voice's display name changed from "Soprano" to "Default" (it is the
+label the UI shows; its id stays `default`, and `GET /v1/voices` on a
+Soprano service shows the new name too), and the language display names
+(`LANGUAGE_NAMES`) used in the labels are new.
 
 ## Alternatives considered
 
@@ -267,8 +303,8 @@ errors and the `env_override:<key>` warning.
   reason to keep `venv_dir` short; moving the venv moves the socket.
 - The state directory becomes 0700. It is the user's own service
   environment, so nothing else needs to read it.
-- `engines.list` and engine changes cost a child process (about a second,
-  then cached for a minute).
+- `engines.list` and engine changes cost a child process (a fraction of a
+  second, then cached for a minute).
 - `voiced status` gains state, uptime and restart counts when the watchdog
   answers; `voiced doctor` checks that the socket exists, is 0600, belongs
   to the user and answers `status`.
