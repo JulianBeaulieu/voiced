@@ -63,6 +63,12 @@ uses [Semantic Versioning](https://semver.org/).
   operations guides; ADR index; contributing guide; issue and pull request
   templates; Dependabot; manual `model-tests` CI job.
 
+### Fixed
+
+- The TTS engines never bounded MLX's buffer cache, so the Kokoro service
+  grew to several GB after a few replies; the cache is now capped at 256 MB
+  and emptied after the warm-up.
+
 ### Changed
 
 - CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.0`, installs
