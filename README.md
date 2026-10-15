@@ -254,7 +254,7 @@ word, most often on one- and two-word replies. The details are in
 
 ## Benchmarks
 
-M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
+Apple M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
 alone in its process. These are pre-release measurements from one machine.
 "First audio" is the time to the first PCM chunk.
 
@@ -263,7 +263,7 @@ alone in its process. These are pre-release measurements from one machine.
 | Kokoro first audio, multi-sentence text | 106 ms median | Kokoro engine, 2026-10-14 |
 | Kokoro real-time factor | 0.046 | Kokoro engine, 2026-10-14 |
 | Kokoro load including warm-up | 1.9 s | Kokoro engine, 2026-10-14 |
-| Kokoro peak resident memory | 469 MB | Kokoro engine, 2026-10-14 |
+| Kokoro memory: maximum RSS, MLX active | 469 MB, 326 MB | Kokoro engine, 2026-10-14 |
 | Soprano first audio | 156 to 223 ms median | Soprano engine, 2026-10-14 |
 | Soprano resident memory | 392 MB | Soprano engine, 2026-10-14 |
 | Parakeet batch, 9.4 s clip | 163 ms | Parakeet engine, 2026-10-14 |
@@ -279,6 +279,28 @@ transcripts trail the speaker by about 0.7 s, and a pause of about one second
 inside an utterance can repeat a short word ("set the the thermostat").
 Batch transcription is not affected. The measurements are in
 [ADR 0008](docs/decisions/0008-stt-engine-parakeet.md).
+
+### Measured end-to-end
+
+The assembled server measured as one system with `scripts/bench.py`, the
+`openai` client and the WebSocket over real sockets, each service in its own
+process. Method, the complete table and the known misses are in
+[ADR 0015](docs/decisions/0015-integration-results.md).
+
+- First audio: from the request to the first PCM byte, streamed through the
+  `openai` client, for the sentence "Turn on the kitchen lights."
+- Finalize: from the client's `end` message to the `final` event, after 200
+  ms of trailing digital silence (the endpointer's window). A push-to-talk
+  client that sends `end` at the last word sees about 114 ms median instead.
+- Memory: the physical footprint (what Activity Monitor counts, GPU buffers
+  included), idle after a long reply, with the MLX peak reached while serving.
+
+| Metric | Apple M1 Max, 64 GB (macOS 15.7.4) | Mac Studio |
+|---|---|---|
+| Kokoro first audio | 96 ms median, 112 ms worst | not yet measured |
+| Streaming finalize, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | not yet measured |
+| Batch transcription, 10.1 s clip | 253 ms median | not yet measured |
+| STT + TTS footprint, idle after use | 2.47 GB (Kokoro MLX peak 2.16 GB during a long reply) | not yet measured |
 
 ## Troubleshooting
 
