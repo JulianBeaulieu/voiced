@@ -122,14 +122,16 @@ final class AppModelTests: XCTestCase {
     }
 
     func testStatusEventsKeepTheConnectionAlive() async throws {
-        let server = try startServer { $0.statusInterval = 0.1 }
+        // Events every 0.2 s against a 2 s limit, watched for longer than the limit: a
+        // scheduler stall on a busy runner stays far below the limit.
+        let server = try startServer { $0.statusInterval = 0.2 }
         defer { server.stop() }
-        let model = try makeModel(socket: server.socketPath, livenessTimeout: .milliseconds(400))
+        let model = try makeModel(socket: server.socketPath, livenessTimeout: .seconds(2))
         model.start()
         defer { model.stop() }
         let ready = await eventually { self.isReady(model) }
         XCTAssertTrue(ready)
-        try await Task.sleep(for: .seconds(1))
+        try await Task.sleep(for: .seconds(3))
         XCTAssertTrue(isReady(model))
         XCTAssertEqual(server.acceptedConnections, 1)
     }
@@ -348,6 +350,17 @@ final class AppModelTests: XCTestCase {
             model.errorMessage, "Not restarted: stt: io.example.voiced.stt is installed but not loaded in launchd")
     }
 
+    func testAFullRefusalIsWordedLikeAPartialOne() async throws {
+        let server = try startServer {
+            $0.refusedRestarts = [.tts: "tts: io.example.voiced.tts has no launchd plist"]
+        }
+        defer { server.stop() }
+        let model = try await connectedModel(server)
+        defer { model.stop() }
+        await model.restart(.service(.tts))
+        XCTAssertEqual(model.errorMessage, "Not restarted: tts: io.example.voiced.tts has no launchd plist")
+    }
+
     func testOpenChecksTheServersTargetBeforeOpening() async throws {
         let server = try startServer()
         defer { server.stop() }
@@ -363,6 +376,31 @@ final class AppModelTests: XCTestCase {
         server.update { $0.settings.paths?.logs = missing }
         await model.open(.logsDirectory)
         XCTAssertEqual(opened.actions.count, 1)
-        XCTAssertEqual(model.errorMessage, "Not opening \(missing): it is not the kind of thing asked for.")
+        XCTAssertEqual(model.errorMessage, "Not opening \(missing): it does not exist.")
+
+        // An app bundle where a folder is expected exists but is refused.
+        server.update { $0.settings.paths?.logs = "/System/Applications/Calculator.app" }
+        await model.open(.logsDirectory)
+        XCTAssertEqual(opened.actions.count, 1)
+        XCTAssertEqual(
+            model.errorMessage,
+            "Not opening /System/Applications/Calculator.app: it is not the kind of thing asked for.")
+
+        // A successful open clears the banner.
+        await model.open(.statusPage)
+        XCTAssertEqual(opened.actions.count, 2)
+        XCTAssertNil(model.errorMessage)
+    }
+}
+
+final class SettingsTextTests: XCTestCase {
+    func testLanguageAndSpeedAreReadable() {
+        XCTAssertEqual(SettingsView.languageName("zz-unknown-code"), "zz-unknown-code")
+        XCTAssertFalse(SettingsView.languageName("en").isEmpty)
+        XCTAssertNotEqual(SettingsView.languageName("en"), "en")
+        XCTAssertEqual(SettingsView.speedText(1), "1×")
+        // The decimal separator follows the user's locale.
+        let fractional = SettingsView.speedText(1.25)
+        XCTAssertTrue(fractional.hasPrefix("1") && fractional.hasSuffix("25×"), fractional)
     }
 }

@@ -69,12 +69,15 @@ public struct SettingsView: View {
             .frame(width: 190)
             Divider()
             VStack(spacing: 0) {
+                // Inset to line up with the form's sections, on the same background.
                 NoticeStrip(model: model)
-                    .padding(.top, 12)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 16)
                 Form {
                     content
                 }
                 .formStyle(.grouped)
+                .scrollContentBackground(.hidden)
                 .disabled(model.isSaving)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -155,13 +158,19 @@ public struct SettingsView: View {
             Toggle(
                 "Allow changing settings from the status page",
                 isOn: binding(settings.browserSettings) { .browserSettings($0) })
+                // Turning it on without a key would only make a form that refuses every
+                // change; turning it off stays possible.
+                .disabled(!settings.apiKeySet && !settings.browserSettings)
+            if !settings.apiKeySet {
+                Button("Set API Key…") { storedPane = .network }
+            }
         } header: {
             Text("Status page")
         } footer: {
             Text(
                 settings.apiKeySet
                     ? "The page asks for the API key before it changes anything."
-                    : "The page asks for the API key before it changes anything, so it refuses every change until a key is set under Network."
+                    : "The page asks for the API key before it changes anything, so this needs a key first."
             )
             .footnote()
         }
@@ -246,7 +255,7 @@ public struct SettingsView: View {
                 }
             }
             LabeledContent("Model", value: settings.stt.model)
-            LabeledContent("Language", value: settings.stt.language)
+            LabeledContent("Language", value: Self.languageName(settings.stt.language))
         } header: {
             Text("Speech to text")
         } footer: {
@@ -270,7 +279,7 @@ public struct SettingsView: View {
                 }
             }
             LabeledContent("Model", value: settings.tts.model)
-            LabeledContent("Speed", value: settings.tts.speed.formatted(.number.precision(.fractionLength(0...2))))
+            LabeledContent("Speed", value: Self.speedText(settings.tts.speed))
         } header: {
             Text("Text to speech")
         } footer: {
@@ -305,6 +314,14 @@ public struct SettingsView: View {
                     .truncationMode(.middle)
             }
         }
+        Section {
+            if let url = URL(string: "https://github.com/JulianBeaulieu/voiced") {
+                LabeledContent("Project") {
+                    Link("github.com/JulianBeaulieu/voiced", destination: url)
+                }
+            }
+            LabeledContent("License", value: "MIT")
+        }
         if model.settings != nil {
             Section {
                 Button("Open Config File") { Task { await model.open(.configFile) } }
@@ -312,6 +329,16 @@ public struct SettingsView: View {
                 Button("Open Status Page") { Task { await model.open(.statusPage) } }
             }
         }
+    }
+
+    /// "English" for "en", in the user's language; the code itself when unknown.
+    static func languageName(_ code: String) -> String {
+        Locale.current.localizedString(forIdentifier: code) ?? code
+    }
+
+    /// "1×", "1.25×".
+    static func speedText(_ speed: Double) -> String {
+        speed.formatted(.number.precision(.fractionLength(0...2))) + "×"
     }
 
     private var voicedVersion: String {

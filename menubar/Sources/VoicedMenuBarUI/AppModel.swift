@@ -234,6 +234,9 @@ public final class AppModel {
             // The request went out; a hung service can take longer to kill than the timeout.
             // Status events show how it turns out.
             restartRequired.subtract(kinds)
+        } catch ControlError.remote(let remote) {
+            // Every service refused: the same wording as a partial refusal.
+            errorMessage = "Not restarted: \(remote.displayMessage)"
         } catch {
             errorMessage = Self.describe(error)
         }
@@ -275,13 +278,23 @@ public final class AppModel {
         do {
             let location = try await client.openTarget(target)
             guard let action = OpenPolicy.action(for: target, location: location) else {
-                errorMessage = "Not opening \(location): it is not the kind of thing asked for."
+                errorMessage = Self.isMissingPath(target, location)
+                    ? "Not opening \(location): it does not exist."
+                    : "Not opening \(location): it is not the kind of thing asked for."
                 return
             }
-            if !opener(action) { errorMessage = "Cannot open \(location)." }
+            errorMessage = opener(action) ? nil : "Cannot open \(location)."
         } catch {
             errorMessage = Self.describe(error)
         }
+    }
+
+    /// A folder or file target whose path is not there, such as the logs folder before
+    /// anything was logged.
+    static func isMissingPath(_ target: OpenTarget, _ location: String) -> Bool {
+        guard target != .statusPage else { return false }
+        let path = location.hasPrefix("file://") ? URL(string: location)?.path ?? location : location
+        return path.hasPrefix("/") && !FileManager.default.fileExists(atPath: path)
     }
 
     /// "Not restarted: ..." with the server's reason, without its error code prefix.

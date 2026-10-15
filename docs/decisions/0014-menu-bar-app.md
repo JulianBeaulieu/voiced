@@ -54,6 +54,12 @@ third-party packages.
   in one form, which grew past a 13-inch screen. Notices that ask for action
   (restart needed, LAN without a key, warnings, errors) appear in both
   windows, so a change made in Settings is never silently pending.
+  A menu bar app is not active when Settings opens, so the window would
+  come up behind the frontmost app; the app activates itself and then
+  brings forward the window whose identifier contains "Settings". That
+  identifier is SwiftUI's own, not an API: if a SwiftUI release renames it,
+  the window still opens, only behind other windows, and the lookup in
+  `SettingsWindow` is the place to change.
 - **In this repository.** The app and the server side of the protocol change
   together; one pull request can change both and one CI run checks both.
   The version comes from `pyproject.toml`, so app and services ship as one
