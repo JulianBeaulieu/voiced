@@ -110,9 +110,7 @@ class WatchdogSupervisor:
         services: dict[str, Any] = {}
         for spec, obs in zip(specs, observed, strict=True):
             state = states.get(spec.name)
-            in_grace = (
-                state is not None and now - state.grace_started_at < self.dog.policy.startup_grace_s
-            )
+            in_grace = state is not None and state.in_grace(now, self.dog.policy.startup_grace_s)
             services[spec.name] = service_view(
                 obs, state, in_grace=in_grace, engine=spec.engine or None, model=spec.model or None
             )

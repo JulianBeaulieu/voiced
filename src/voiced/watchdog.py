@@ -105,6 +105,10 @@ class ServiceState:
     gave the service a new pid (crash restart under ``KeepAlive``). While the
     service loads its model the socket is not bound yet, so polls are
     refused; those must not count as failures during the grace period.
+    ``answered`` ends it early: once the current process has answered
+    ``ok`` it has finished loading, and a later refusal or timeout is a hang,
+    not a load. ``startup_grace_s`` stays the upper bound for a load that
+    never answers.
 
     ``busy_since`` is when the queue was first seen non-empty without a
     completed inference since; the stall timer measures from there, not from
@@ -113,6 +117,7 @@ class ServiceState:
     """
 
     grace_started_at: float = 0.0
+    answered: bool = False
     failures: int = 0
     degraded_since: float | None = None
     last_restart_at: float | None = None
@@ -122,6 +127,10 @@ class ServiceState:
     busy_since: float | None = None
     last_completion: float | None = None
     not_loaded_reported: bool = False
+
+    def in_grace(self, now: float, startup_grace_s: float) -> bool:
+        """Is an ``unreachable`` poll at ``now`` still the startup window?"""
+        return not self.answered and now - self.grace_started_at < startup_grace_s
 
 
 @dataclass(frozen=True)
@@ -180,9 +189,11 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
 
     * A new pid from launchd (crash restart under KeepAlive) restarts the
       grace period: the new process is loading its model.
-    * ``ok`` resets the failure counter and the degraded timer.
-    * ``unreachable`` within ``startup_grace_s`` of the grace start is the
-      model loading before the socket is bound: not a failure.
+    * ``ok`` resets the failure counter and the degraded timer, and ends the
+      grace period: the process has loaded.
+    * ``unreachable`` within ``startup_grace_s`` of the grace start, before
+      the process has answered ``ok``, is the model loading before the
+      socket is bound: not a failure.
     * ``starting`` (503, model loading) is tolerated while the service's own
       uptime is below ``startup_grace_s``; beyond that the load is hung.
     * ``degraded`` (answers, last inference failed) starts a timer; longer
@@ -197,6 +208,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
     if obs.pid is not None and obs.pid != state.last_pid:
         if state.last_pid is not None:
             state.grace_started_at = now
+            state.answered = False
             state.failures = 0
             state.busy_since = None
         state.last_pid = obs.pid
@@ -206,6 +218,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         recovered = (
             state.failures > 0 or state.degraded_since is not None or state.awaiting_recovery
         )
+        state.answered = True
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
@@ -219,8 +232,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.not_loaded_reported = True
         return Decision("none", f"{obs.kind} and not loaded in launchd (stopped?); not restarting")
 
-    in_grace = now - state.grace_started_at < policy.startup_grace_s
-    if obs.kind == "unreachable" and in_grace:
+    if obs.kind == "unreachable" and state.in_grace(now, policy.startup_grace_s):
         state.failures = 0
         return Decision("none", f"unreachable during startup grace: {obs.detail}")
 
@@ -258,6 +270,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
 def mark_restarted(state: ServiceState, now: float) -> None:
     state.last_restart_at = now
     state.grace_started_at = now
+    state.answered = False
     state.restarts += 1
     state.failures = 0
     state.degraded_since = None

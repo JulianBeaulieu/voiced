@@ -28,8 +28,8 @@ pure function `decide(state, observation, now, policy)`:
 
 | Observation | Rule |
 |---|---|
-| `ok` | reset the failure counter and the degraded timer |
-| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start, of its last restart of this service, or of launchd handing the service a new pid | not a failure: the service is loading its model and has not bound its socket yet |
+| `ok` | reset the failure counter and the degraded timer; end the startup grace period |
+| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start, of its last restart of this service, or of launchd handing the service a new pid, until that process first answers `ok` | not a failure: the service is loading its model and has not bound its socket yet |
 | `starting` (503, model loading) | tolerated while the service's own `uptime_s` is below `startup_grace_s`; beyond that the load is considered hung and the service is restarted |
 | `degraded` (answers, last inference failed) | start a timer; restart once it exceeds `degraded_window_s` (120 s) |
 | `stalled`: `/health` is `ok` but the queue has been non-empty for `stall_after_s` (60 s) with no inference completing in that time, or the optional probe timed out | one failure |
@@ -47,6 +47,15 @@ service's, because there is nothing to ask yet. Every poll also reads the
 pid from `launchctl print`; a new pid means launchd restarted the service
 itself (crash, out of memory) and the new process is loading, so the grace
 period starts again from that moment.
+
+The grace period ends at the first `ok` from the current process, not only
+when `startup_grace_s` runs out. Once a process has answered it has loaded
+its model and bound its socket, so a later refused or timed-out poll is a
+hang (a `SIGSTOP`, a wedged GPU call holding the event loop), not a load,
+and counts as a failure at once. Without this, a service that hangs shortly
+after a restart, or shortly after the watchdog itself starts, would sit out
+the rest of the 300 s window before the first failure was counted.
+`startup_grace_s` remains the upper bound for a load that never answers.
 
 Restarts are rate limited: a second restart of the same service within
 `restart_cooldown_s` (120 s) is deferred and logged as `cooldown`; counters
