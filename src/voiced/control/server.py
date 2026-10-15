@@ -44,9 +44,12 @@ STATUS_PUSH_MAX_S = 10.0
 """A ``status`` event goes out at least this often, changed or not."""
 WRITE_TIMEOUT_S = 5.0
 """A client that does not take a message within this long is dropped."""
-SEND_QUEUE_MAX = 64
-"""Messages waiting for one client; a client that falls this far behind is
-dropped rather than slowing the others."""
+SEND_QUEUE_BYTES = 8 * 1024 * 1024
+"""Bytes waiting for one client; a client that falls this far behind is
+dropped rather than slowing the others or growing the watchdog."""
+READ_PAUSE_BYTES = 1024 * 1024
+"""While more than this waits for a client, its next request is not read,
+so a client that asks without reading cannot queue unbounded replies."""
 
 # <sys/un.h> on macOS: SOL_LOCAL and LOCAL_PEERCRED; struct xucred is
 # {u_int cr_version; uid_t cr_uid; short cr_ngroups; gid_t cr_groups[16]}.
@@ -120,9 +123,10 @@ class _Client:
     writer task, so a client that stops reading only ever holds up itself."""
 
     writer: asyncio.StreamWriter
-    queue: asyncio.Queue[bytes | None] = field(
-        default_factory=lambda: asyncio.Queue(SEND_QUEUE_MAX)
-    )
+    queue: asyncio.Queue[bytes | None] = field(default_factory=asyncio.Queue)
+    queued_bytes: int = 0
+    room: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set while at most :data:`READ_PAUSE_BYTES` wait: its requests are read."""
     sender: asyncio.Task[None] | None = None
     closed: bool = False
 
@@ -233,6 +237,7 @@ class ControlServer:
                 self._tasks.discard(task)
             return
         client = _Client(writer)
+        client.room.set()
         client.sender = asyncio.create_task(self._sender(client), name="voiced-control-send")
         self.clients.add(client)
         self.refresh_status()
@@ -248,6 +253,7 @@ class ControlServer:
 
     async def _serve(self, client: _Client, reader: asyncio.StreamReader) -> None:
         while not client.closed:
+            await client.room.wait()
             try:
                 line = await reader.readuntil(b"\n")
             except asyncio.LimitOverrunError:
@@ -279,15 +285,20 @@ class ControlServer:
             self.refresh_status()
 
     def _send(self, client: _Client, message: dict[str, Any]) -> None:
-        """Queue ``message`` for ``client``; never waits. A client whose
-        queue is full is dropped."""
+        """Queue ``message`` for ``client``; never waits. A client with more
+        than :data:`SEND_QUEUE_BYTES` waiting is dropped (one message alone
+        is always queued)."""
         if client.closed:
             return
-        try:
-            client.queue.put_nowait(encode(message))
-        except asyncio.QueueFull:
+        data = encode(message)
+        if client.queued_bytes and client.queued_bytes + len(data) > SEND_QUEUE_BYTES:
             log.warning("control: dropping a client that stopped reading")
             self._abort(client)
+            return
+        client.queue.put_nowait(data)
+        client.queued_bytes += len(data)
+        if client.queued_bytes > READ_PAUSE_BYTES:
+            client.room.clear()
 
     async def _sender(self, client: _Client) -> None:
         """Write ``client``'s queue in order until the ``None`` that ends it."""
@@ -295,6 +306,9 @@ class ControlServer:
             while (data := await client.queue.get()) is not None:
                 client.writer.write(data)
                 await asyncio.wait_for(client.writer.drain(), WRITE_TIMEOUT_S)
+                client.queued_bytes -= len(data)
+                if client.queued_bytes <= READ_PAUSE_BYTES:
+                    client.room.set()
         except (OSError, TimeoutError):
             self._abort(client)
 
@@ -305,6 +319,10 @@ class ControlServer:
         client.closed = True
         self.clients.discard(client)
         client.writer.transport.abort()
+        client.room.set()  # its reader stops waiting and sees it closed
+        while not client.queue.empty():  # free what it never took
+            client.queue.get_nowait()
+        client.queued_bytes = 0
         if client.sender is not None and client.sender is not asyncio.current_task():
             client.sender.cancel()
 
@@ -314,11 +332,7 @@ class ControlServer:
         if client.closed:
             return
         self.clients.discard(client)
-        try:
-            client.queue.put_nowait(None)
-        except asyncio.QueueFull:
-            self._abort(client)
-            return
+        client.queue.put_nowait(None)
         if client.sender is not None:
             await asyncio.wait({client.sender}, timeout=WRITE_TIMEOUT_S)
         client.closed = True  # the sender may have aborted it already; closing twice is fine

@@ -302,7 +302,7 @@ async def test_disconnected_client_does_not_break_fan_out(server: ControlServer)
     await stays.close()
 
 
-async def stuck_client(server: ControlServer, config_file: Path) -> Conn:
+async def stuck_client(server: ControlServer, config_file: Path, requests: int = 8) -> Conn:
     """A client that asks for large log tails and never reads the answers,
     so the server's writes to it stop going through."""
     from voiced.config import load_settings
@@ -311,7 +311,7 @@ async def stuck_client(server: ControlServer, config_file: Path) -> Conn:
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / "tts.log").write_text("".join(f"{i:04d} {'x' * 400}\n" for i in range(1000)))
     conn = await Conn.open(server.path)
-    for i in range(8):
+    for i in range(requests):
         await conn.send(
             protocol.encode({"id": i, "op": "logs.tail", "args": {"service": "tts", "lines": 1000}})
         )
@@ -336,6 +336,38 @@ async def test_a_stuck_client_does_not_hold_up_the_others(
     await server.poll_once()  # a status event to both: does not wait for the stuck one
     await good.close()
     stuck.writer.transport.abort()
+
+
+async def test_a_client_that_never_reads_holds_little_memory(
+    server: ControlServer, config_file: Path
+) -> None:
+    """60 large log tails from a client that never reads: the server stops
+    reading its requests once about 1 MiB waits for it, so what is queued
+    stays small, and other clients are still answered."""
+    from voiced.control import server as server_mod
+
+    stuck = await stuck_client(server, config_file, requests=60)
+    await asyncio.sleep(0.5)
+    (client,) = server.clients
+    assert client.queued_bytes <= server_mod.READ_PAUSE_BYTES + 512 * 1024
+    good = await Conn.open(server.path)
+    await good.recv()
+    await good.send(b'{"id": 1, "op": "settings.get"}\n')
+    assert (await good.answer(1))["ok"] is True
+    await good.close()
+    stuck.writer.transport.abort()
+
+
+async def test_a_client_over_the_byte_cap_is_dropped(server: ControlServer) -> None:
+    from voiced.control import server as server_mod
+
+    conn = await Conn.open(server.path)
+    await conn.recv()  # hello; nothing is read after it
+    big = protocol.event("status", {"pad": "x" * (1 << 20)})
+    for _ in range(server_mod.SEND_QUEUE_BYTES // (1 << 20) + 4):
+        server.broadcast(big)
+    assert not server.clients
+    conn.writer.transport.abort()
 
 
 async def test_a_client_whose_queue_fills_is_dropped(server: ControlServer) -> None:

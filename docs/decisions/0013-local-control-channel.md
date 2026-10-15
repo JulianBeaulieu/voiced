@@ -253,10 +253,12 @@ at most about 4 MiB), so clients read replies without that cap.
 The watchdog serves every client from one event loop, so no client may
 hold it up:
 
-- Each client has its own send queue (64 messages) and writer task.
-  Answers and events are only queued; a client that does not take a
-  message within 5 s, or falls 64 messages behind, is dropped. Another
-  client's answers and events never wait for it.
+- Each client has its own send queue and writer task. Answers and events
+  are only queued. While more than 1 MiB waits for a client, its next
+  request is not read, so a client that asks without reading cannot pile
+  up replies; a client with more than 8 MiB waiting (events keep coming),
+  or that does not take a message within 5 s, is dropped and its queue
+  freed. Another client's answers and events never wait for it.
 - `status` reads the services in parallel, so a hung service costs one
   health check timeout (2 s), not one per service. `status` events keep
   the 10 s promise however long the reads take: the poll waits less as the
