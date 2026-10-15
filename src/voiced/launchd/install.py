@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -538,6 +539,13 @@ def run_install(
 
     if plan.config_file.exists():
         say(f"config {plan.config_file}: exists, kept")
+        # Installs before 0600 became the default left it readable by every
+        # local account; it is where api_key goes.
+        mode = stat.S_IMODE(plan.config_file.stat().st_mode)
+        if mode & 0o077:
+            say(f"{would}tighten {plan.config_file} from {mode:o} to 600")
+            if not dry_run:
+                os.chmod(plan.config_file, mode & 0o700 | 0o600)
     elif dry_run:
         say(f"config {plan.config_file}: would be created from config.example.toml")
     else:

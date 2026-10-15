@@ -144,7 +144,8 @@ def test_external_programs() -> None:
 
 def test_service_python_is_the_venv_interpreter(tmp_path: Path) -> None:
     venv_python = tmp_path / "bin" / "python"
-    assert doctor.check_service_python(venv_python).result == "warn"
+    missing = doctor.check_service_python(venv_python, python_spec="3.13")
+    assert missing.result == "warn" and "Python 3.13" in missing.detail
     venv_python.parent.mkdir()
     venv_python.write_text("")
     ok = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.12.15\n"))
@@ -339,3 +340,24 @@ def test_render_and_worst() -> None:
     assert doctor.worst(checks) == "warn"
     assert doctor.worst([*checks, doctor.Check("B", "fail")]) == "fail"
     assert doctor.worst([checks[0]]) == "pass"
+
+
+def test_service_python_reports_a_broken_link(tmp_path: Path) -> None:
+    """`uv python uninstall` leaves the venv's python pointing nowhere and the
+    services down: a failure, not "not installed yet"."""
+    venv_python = tmp_path / "bin" / "python"
+    venv_python.parent.mkdir()
+    venv_python.symlink_to(tmp_path / "gone" / "python3.12")
+    check = doctor.check_service_python(venv_python)
+    assert check.result == "fail" and "broken link" in check.detail
+
+
+def test_config_file_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    assert doctor.check_config_file(path).result == "pass"
+    path.write_text("")
+    path.chmod(0o644)
+    readable = doctor.check_config_file(path)
+    assert readable.result == "warn" and "chmod 600" in readable.detail
+    path.chmod(0o600)
+    assert doctor.check_config_file(path).result == "pass"

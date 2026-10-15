@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import pwd
 import shlex
 import shutil
 import signal
@@ -187,8 +188,9 @@ def cmd_install(
             "It prints the one step that needs root."
         )
         return 2
-    if args.user in ("root", "0"):
-        echo("--user root: the services would run code from a user-writable venv as root.")
+    refusal = user_refusal(args.user)
+    if refusal:
+        echo(refusal)
         return 2
     if args.source is None and needs_source():
         echo(
@@ -241,6 +243,32 @@ def cmd_install(
 
 def is_root() -> bool:
     return os.geteuid() == 0
+
+
+def user_refusal(user: str | None) -> str | None:
+    """Why ``--user`` cannot be the daemons' ``UserName``, or None.
+
+    Resolved through the user database, not compared as a string: several
+    names map to uid 0 ("System Administrator", for one). The daemons run
+    the venv this user is installing, so they must run as this user: as
+    anyone else, that account would run code this user can change.
+    """
+    if user is None:
+        return None
+    try:
+        uid = pwd.getpwnam(user).pw_uid
+    except KeyError:
+        return f"--user {user}: no such user."
+    if uid == 0:
+        return (
+            f"--user {user} is root: the services would run code from a user-writable venv as root."
+        )
+    if uid != os.getuid():
+        return (
+            f"--user {user}: the services must run as the user who installs them (uid "
+            f"{os.getuid()}), since they run this user's venv. Run `voiced install` as {user}."
+        )
+    return None
 
 
 def as_root_or_print(

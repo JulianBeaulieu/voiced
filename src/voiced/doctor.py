@@ -12,6 +12,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings
+from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings, config_path
 from voiced.control import NOT_SERVED, socket_path
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
@@ -31,7 +32,7 @@ from voiced.engines.kokoro import (
     espeak_candidates,
 )
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import METAL_PROBE_FILE
+from voiced.launchd.install import DEFAULT_PYTHON_VERSION, METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
@@ -109,17 +110,35 @@ def check_python(version: tuple[int, int, int] | None = None) -> Check:
     return Check("Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
 
 
-def check_service_python(venv_python: Path, runner: Runner = run_command) -> Check:
+def check_service_python(
+    venv_python: Path, runner: Runner = run_command, python_spec: str = ""
+) -> Check:
     """The interpreter the daemons run, which is not necessarily the one
-    running ``doctor`` (``uv tool install`` gives the CLI its own)."""
+    running ``doctor`` (``uv tool install`` gives the CLI its own).
+    ``python_spec`` is ``[install] python``."""
+    wanted = python_spec or DEFAULT_PYTHON_VERSION
+    if venv_python.is_symlink() and not venv_python.exists():
+        # uv links the venv's python into its own Python installations;
+        # `uv python uninstall` leaves the link dangling and the services down.
+        return Check(
+            "Service Python",
+            "fail",
+            f"{venv_python} is a broken link to {os.readlink(venv_python)}; "
+            "re-run `voiced install --source <your checkout>`",
+        )
     if not venv_python.exists():
         return Check(
             "Service Python",
             "warn",
-            f"{venv_python} does not exist yet; `voiced install` creates it with Python 3.12",
+            f"{venv_python} does not exist yet; `voiced install` creates it with Python {wanted}",
         )
     result = runner(
-        [str(venv_python), "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"]
+        [
+            str(venv_python),
+            "-P",
+            "-c",
+            "import sys; print('.'.join(map(str, sys.version_info[:3])))",
+        ]
     )
     text = result.stdout.strip()
     try:
@@ -129,6 +148,25 @@ def check_service_python(venv_python: Path, runner: Runner = run_command) -> Che
     if (3, 11) <= version[:2] <= (3, 13):
         return Check("Service Python", "pass", f"{text} ({venv_python})")
     return Check("Service Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
+
+
+def check_config_file(path: Path) -> Check:
+    """The config file holds ``api_key``; other local accounts can read
+    group- or world-readable files in a macOS home directory."""
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        return Check("Config file", "pass", f"{path} does not exist; defaults apply")
+    except OSError as exc:
+        return Check("Config file", "warn", f"{path}: {exc}")
+    if mode & 0o077:
+        return Check(
+            "Config file",
+            "warn",
+            f"{path} is {mode:o}, readable by other accounts; it holds the API key: "
+            f"chmod 600 {shlex.quote(str(path))}",
+        )
+    return Check("Config file", "pass", f"{path} ({mode:o})")
 
 
 # External programs ---------------------------------------------------------
@@ -314,7 +352,7 @@ def check_metal_shell(runner: Runner, python: Path | None) -> Check:
     name = "Metal (shell)"
     if python is None:
         return Check(name, "warn", "install venv not found; run voiced install")
-    result = runner([str(python), "-c", _METAL_SNIPPET])
+    result = runner([str(python), "-P", "-c", _METAL_SNIPPET])
     if result.ok and "gpu" in result.stdout.lower():
         return Check(name, "pass", result.stdout.strip())
     if "No module named" in result.output:
@@ -476,7 +514,8 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
-        check_service_python(venv_python, runner),
+        check_service_python(venv_python, runner, settings.install.python),
+        check_config_file(config_path()),
         check_espeak(required=settings.tts.engine == KokoroEngine.name),
         check_ffmpeg(runner=runner),
         check_memory(runner),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import inspect
 import plistlib
 import shlex
@@ -391,7 +392,7 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
             "--venv",
             str(tmp_path / "venv"),
             "--user",
-            "someone",
+            getpass.getuser(),
             "--staging-dir",
             str(staging),
             "--source",
@@ -406,7 +407,7 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
     assert not (tmp_path / "logs").exists()
     assert "dry run" in out
     assert f"<string>{labels.label('watchdog')}</string>" in out
-    assert "<string>someone</string>" in out
+    assert f"<string>{getpass.getuser()}</string>" in out
     assert f"{staging / 'install-daemons.sh'} (would be written)" in out
     assert "-m venv" in out and "voiced[stt,tts]==0.0.1" in out
 
@@ -520,7 +521,11 @@ def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
     ("argv", "root", "message"),
     [
         (["install", "--source", "."], True, "not with sudo"),
-        (["install", "--source", ".", "--user", "root"], False, "--user root"),
+        (["install", "--source", ".", "--user", "root"], False, "is root"),
+        # Another name for uid 0: resolved, not compared as a string.
+        (["install", "--source", ".", "--user", "System Administrator"], False, "is root"),
+        (["install", "--source", ".", "--user", "no-such-user-xyz"], False, "no such user"),
+        (["install", "--source", ".", "--user", "nobody"], False, "must run as the user"),
         (["install"], False, "--source ~/voiced"),
     ],
 )
@@ -544,3 +549,21 @@ def test_cli_install_refuses_unsafe_requests(
     assert main([*argv, "--dry-run"]) == 2
     assert message in capsys.readouterr().out
     assert not (tmp_path / "config.toml").exists()
+
+
+def test_run_install_tightens_an_existing_readable_config(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Older installs created the config 0644; re-installing makes it 0600."""
+    p = _tmp_plan(settings, tmp_path)
+    p.config_file.parent.mkdir(parents=True, exist_ok=True)
+    p.config_file.write_text('[server]\napi_key = "k"\n')
+    p.config_file.chmod(0o644)
+    said: list[str] = []
+    run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=said.append)
+    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o644, "dry run changes nothing"
+    assert any("would tighten" in line for line in said)
+    p.voiced_bin.parent.mkdir(parents=True)
+    p.voiced_bin.write_text("")
+    run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
+    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
