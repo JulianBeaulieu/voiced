@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import time
 from typing import NoReturn
 
@@ -262,6 +263,34 @@ async def test_shutdown_during_load_exits_without_waiting(
         async with app.router.lifespan_context(app):
             pass
     assert codes == [0]
+    app.state.load_task.cancel()
+
+
+async def test_startup_failure_during_load_exits_non_zero_without_waiting(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Wyoming port taken after ``serve``'s pre-flight check fails the
+    listener's lifespan startup while the engine is loading. The process must
+    exit non-zero at once rather than finish loading a model it cannot serve."""
+    codes: list[int] = []
+
+    def fake_exit(code: int) -> NoReturn:
+        codes.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(app_module, "exit_process", fake_exit)
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        settings.server.bind = "127.0.0.1"
+        settings.stt.wyoming_port = held.getsockname()[1]
+        app = build_stt_app(settings, FakeSTTEngine(latency_s=10))
+        started = time.monotonic()
+        with pytest.raises(SystemExit):
+            async with app.router.lifespan_context(app):
+                pass
+    assert codes == [app_module.STARTUP_FAILED_EXIT]
+    assert time.monotonic() - started < 2
     app.state.load_task.cancel()
 
 

@@ -23,6 +23,7 @@ from voiced.launchd.install import (
     plan_summary,
     removal_refusal,
     remove_targets,
+    requirement_with_extras,
     run_install,
     uninstall_targets,
     write_default_config,
@@ -234,7 +235,30 @@ def test_venv_commands_with_uv(plan: InstallPlan) -> None:
         "/Users/someone/.voiced",
     ]
     assert cmds[1][:3] == ["/opt/homebrew/bin/uv", "pip", "install"]
-    assert cmds[1][-1] == "voiced==0.0.1[stt,tts]"
+    # Extras go before the version, not after: `voiced==0.0.1[stt,tts]` is
+    # invalid PEP 508 and pip rejects it.
+    assert cmds[1][-1] == "voiced[stt,tts]==0.0.1"
+
+
+def test_requirement_places_extras_before_a_version_specifier(settings: Settings) -> None:
+    """A pinned release source (`voiced==X`, the default after the first PyPI
+    release) must keep the extras before the version: `voiced==X[stt,tts]` is
+    invalid PEP 508 and a bare `voiced install` would fail on it."""
+    pinned = plan_install(settings, source="voiced==0.0.1")
+    assert pinned.requirement == "voiced[stt,tts]==0.0.1"
+    # A dev checkout source is a path; its extras go at the end.
+    path = plan_install(settings, source="/Users/someone/voiced")
+    assert path.requirement == "/Users/someone/voiced[stt,tts]"
+
+
+def test_requirement_with_extras_variants() -> None:
+    e = ("stt", "tts")
+    assert requirement_with_extras("voiced==0.0.1", e) == "voiced[stt,tts]==0.0.1"
+    assert requirement_with_extras("voiced>=1,<2", e) == "voiced[stt,tts]>=1,<2"
+    assert requirement_with_extras("/home/me/voiced", e) == "/home/me/voiced[stt,tts]"
+    assert requirement_with_extras(".", e) == ".[stt,tts]"
+    assert requirement_with_extras("voiced", e) == "voiced[stt,tts]"
+    assert requirement_with_extras("voiced==0.0.1", ()) == "voiced==0.0.1"
 
 
 def test_venv_commands_with_pip(settings: Settings, tmp_path: Path) -> None:
@@ -381,7 +405,7 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
     assert f"<string>{labels.label('watchdog')}</string>" in out
     assert "<string>someone</string>" in out
     assert f"{staging / 'install-daemons.sh'} (would be written)" in out
-    assert "-m venv" in out and "voiced==0.0.1[stt,tts]" in out
+    assert "-m venv" in out and "voiced[stt,tts]==0.0.1" in out
 
 
 # Uninstall safety --------------------------------------------------------------

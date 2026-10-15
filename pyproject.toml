@@ -103,7 +103,7 @@ ignore = ["RUF012"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["voiced"]
+files = ["src/voiced", "scripts"]
 mypy_path = "src"
 warn_unreachable = true
 

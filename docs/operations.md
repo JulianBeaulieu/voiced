@@ -234,8 +234,11 @@ so the serving peak holds for any input length. The load peak is a transient:
 parakeet-mlx reads the fp32 weights and then casts them to bf16
 ([ADR 0008](decisions/0008-stt-engine-parakeet.md)).
 
-Plan for the two services together to stay under 3 GB while serving, and
-for about 4.5 GB while the stt service starts. On a Mac that also
+Plan for the two services together to take about 2.2 GB idle, more than
+3 GB at moments while serving (Kokoro's long replies and Parakeet's long input each
+add 1.2 to 1.5 GB; about 5 GB if both peak at once), and about 4.5 GB while the
+stt service starts
+([ADR 0015](decisions/0015-integration-results.md#known-misses)). On a Mac that also
 runs an LLM server, add up what each resident model needs on top of the few
 gigabytes macOS itself uses, and leave headroom. Apple Silicon shares memory
 between CPU and GPU, so there is no separate VRAM to run out of, but the GPU
