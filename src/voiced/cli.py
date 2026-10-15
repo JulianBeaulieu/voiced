@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.config import Settings, config_path, load_settings
+
+if TYPE_CHECKING:
+    import uvicorn
+    from fastapi import FastAPI
 
 GRACEFUL_SHUTDOWN_S = 10
 """How long uvicorn waits for open connections on SIGTERM before closing them.
@@ -24,6 +30,9 @@ GRACEFUL_SHUTDOWN_S = 10
 Below launchd's ExitTimeOut (about 20 s), so a stuck client cannot turn a
 clean stop into a SIGKILL.
 """
+
+PORT_IN_USE_EXIT = 3
+"""``serve`` exit code when a configured port is already bound."""
 
 LIFECYCLE = (
     "install",
@@ -37,6 +46,72 @@ LIFECYCLE = (
     "doctor",
     "watchdog",
 )
+
+
+def uvicorn_config(app: FastAPI, settings: Settings, port: int = 0) -> uvicorn.Config:
+    """The uvicorn configuration ``serve`` runs a service app under.
+
+    Shared so the end-to-end tests drive the services with the same settings
+    (graceful-shutdown timeout, no log hijacking) instead of copying them.
+    ``serve`` passes its pre-bound socket to ``Server.run``, which then ignores
+    ``host`` and ``port``; the tests use ``port=0`` for an ephemeral port.
+    """
+    import uvicorn
+
+    return uvicorn.Config(
+        app,
+        host=settings.server.bind,
+        port=port,
+        log_config=None,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+    )
+
+
+class PortInUse(OSError):
+    """A port ``serve`` needs is already bound by another socket."""
+
+    def __init__(self, label: str, bind: str, port: int) -> None:
+        super().__init__(
+            f"{label} port {port} on {bind} is already in use; is voiced already "
+            "running, or is the port taken? Change it in the config."
+        )
+
+
+def _bind(bind: str, port: int) -> socket.socket:
+    """Bind ``bind:port`` the way uvicorn's own ``bind_socket`` would (same
+    family and ``SO_REUSEADDR``), so the answer matches what it would see."""
+    family = socket.AF_INET6 if ":" in bind else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((bind, port))
+    except OSError:
+        sock.close()
+        raise
+    sock.set_inheritable(True)
+    return sock
+
+
+def bind_service_ports(settings: Settings, service: str) -> socket.socket:
+    """Claim the service's ports before anything is loaded.
+
+    Returns the bound HTTP socket, which ``serve`` hands to uvicorn: uvicorn
+    binds its own socket only after the app's lifespan has started the engine
+    load, and on a clash it shuts the lifespan down mid-load and exits 0. The
+    Wyoming listener binds inside the lifespan, so its port is checked here and
+    released; if it is taken in the moment between, the lifespan exits non-zero
+    without waiting for the load (``voiced.api.app``). Raises :class:`PortInUse`.
+    """
+    section = settings.stt if service == "stt" else settings.tts
+    bind = settings.server.bind
+    try:
+        _bind(bind, section.wyoming_port).close()
+    except OSError as exc:
+        raise PortInUse("Wyoming", bind, section.wyoming_port) from exc
+    try:
+        return _bind(bind, section.http_port)
+    except OSError as exc:
+        raise PortInUse("HTTP", bind, section.http_port) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,27 +134,29 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(settings: Settings, service: str) -> int:
     import uvicorn
 
+    try:
+        http_socket = bind_service_ports(settings, service)
+    except PortInUse as exc:
+        print(f"voiced serve {service}: {exc}", file=sys.stderr)
+        return PORT_IN_USE_EXIT
+    with http_socket:
+        app = build_service_app(settings, service)
+        uvicorn.Server(uvicorn_config(app, settings)).run(sockets=[http_socket])
+    return 0
+
+
+def build_service_app(settings: Settings, service: str) -> FastAPI:
+    """Configure logging and build the service's app, exactly as ``serve`` does."""
     from voiced.logging import configure_logging
 
     configure_logging(service, settings.server.log_level, settings.server.log_dir)
     if service == "stt":
         from voiced.stt import build_stt_app
 
-        app = build_stt_app(settings)
-        port = settings.stt.http_port
-    else:
-        from voiced.tts import build_tts_app
+        return build_stt_app(settings)
+    from voiced.tts import build_tts_app
 
-        app = build_tts_app(settings)
-        port = settings.tts.http_port
-    uvicorn.run(
-        app,
-        host=settings.server.bind,
-        port=port,
-        log_config=None,
-        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-    )
-    return 0
+    return build_tts_app(settings)
 
 
 def cmd_config(settings: Settings) -> int:
