@@ -331,13 +331,16 @@ public struct SettingsView: View {
         }
     }
 
+    // Pure formatting, so callable off the main actor: a View's members are main-actor
+    // isolated under Swift 6.1 (the CI toolchain), unlike the inference in 6.2.
+
     /// "English" for "en", in the user's language; the code itself when unknown.
-    static func languageName(_ code: String) -> String {
+    nonisolated static func languageName(_ code: String) -> String {
         Locale.current.localizedString(forIdentifier: code) ?? code
     }
 
     /// "1×", "1.25×".
-    static func speedText(_ speed: Double) -> String {
+    nonisolated static func speedText(_ speed: Double) -> String {
         speed.formatted(.number.precision(.fractionLength(0...2))) + "×"
     }
 
