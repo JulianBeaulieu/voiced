@@ -105,8 +105,30 @@ def check_python(version: tuple[int, int, int] | None = None) -> Check:
     v = version or sys.version_info[:3]
     text = ".".join(str(part) for part in v)
     if (3, 11) <= v[:2] <= (3, 13):
-        return Check("Python", "pass", f"{text} ({sys.executable})")
+        return Check("Python", "pass", f"{text} ({sys.executable}, this command)")
     return Check("Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
+
+
+def check_service_python(venv_python: Path, runner: Runner = run_command) -> Check:
+    """The interpreter the daemons run, which is not necessarily the one
+    running ``doctor`` (``uv tool install`` gives the CLI its own)."""
+    if not venv_python.exists():
+        return Check(
+            "Service Python",
+            "warn",
+            f"{venv_python} does not exist yet; `voiced install` creates it with Python 3.12",
+        )
+    result = runner(
+        [str(venv_python), "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"]
+    )
+    text = result.stdout.strip()
+    try:
+        version = tuple(int(part) for part in text.split("."))
+    except ValueError:
+        return Check("Service Python", "fail", f"{venv_python} does not run: {result.stderr}")
+    if (3, 11) <= version[:2] <= (3, 13):
+        return Check("Service Python", "pass", f"{text} ({venv_python})")
+    return Check("Service Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
 
 
 # External programs ---------------------------------------------------------
@@ -144,9 +166,22 @@ def check_espeak(required: bool = True) -> Check:
     )
 
 
-def check_ffmpeg(which: Which = _which) -> Check:
+def check_ffmpeg(which: Which = _which, runner: Runner = run_command) -> Check:
+    """ffmpeg is on ``PATH`` and reads input through its ``fd`` protocol, the
+    only one the upload decoder allows it (``voiced.api.ffmpeg.decode``)."""
     found = which("ffmpeg")
     if found:
+        result = runner([found, "-hide_banner", "-protocols"])
+        if not result.ok:
+            return Check("ffmpeg", "warn", f"{found}: could not list protocols")
+        inputs = result.stdout.partition("Input:")[2].partition("Output:")[0].split()
+        if "fd" not in inputs:
+            return Check(
+                "ffmpeg",
+                "fail",
+                f"{found} cannot read input from a file descriptor, which upload "
+                "decoding needs; install a current ffmpeg: brew upgrade ffmpeg",
+            )
         return Check("ffmpeg", "pass", found)
     return Check(
         "ffmpeg",
@@ -441,8 +476,9 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
+        check_service_python(venv_python, runner),
         check_espeak(required=settings.tts.engine == KokoroEngine.name),
-        check_ffmpeg(),
+        check_ffmpeg(runner=runner),
         check_memory(runner),
         *check_ports(settings, runner),
         check_filevault(runner),

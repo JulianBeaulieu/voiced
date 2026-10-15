@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -126,10 +126,31 @@ def test_espeak_required_follows_tts_engine(
     assert seen == [True, False]
 
 
+PROTOCOLS = "Supported file protocols:\nInput:\n  {inputs}\nOutput:\n  fd\n  file\n  pipe\n"
+
+
 def test_external_programs() -> None:
     no_ffmpeg = doctor.check_ffmpeg(lambda n: None)
     assert no_ffmpeg.result == "fail" and "brew install ffmpeg" in no_ffmpeg.detail
-    assert doctor.check_ffmpeg(lambda n: "/usr/local/bin/ffmpeg").result == "pass"
+
+    def protocols(inputs: str) -> Callable[[Sequence[str]], CommandResult]:
+        return lambda argv: CommandResult(0, PROTOCOLS.format(inputs=inputs))
+
+    found = lambda n: "/usr/local/bin/ffmpeg"  # noqa: E731
+    assert doctor.check_ffmpeg(found, protocols("fd\n  file\n  pipe")).result == "pass"
+    old = doctor.check_ffmpeg(found, protocols("file\n  pipe"))  # fd only as output
+    assert old.result == "fail" and "brew upgrade ffmpeg" in old.detail
+
+
+def test_service_python_is_the_venv_interpreter(tmp_path: Path) -> None:
+    venv_python = tmp_path / "bin" / "python"
+    assert doctor.check_service_python(venv_python).result == "warn"
+    venv_python.parent.mkdir()
+    venv_python.write_text("")
+    ok = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.12.15\n"))
+    assert ok.result == "pass" and "3.12.15" in ok.detail and str(venv_python) in ok.detail
+    old = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.10.18\n"))
+    assert old.result == "fail"
 
 
 VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
