@@ -83,14 +83,14 @@ each service with a `timeout_s` limit and applies these rules:
 
 | Observation | Action |
 |---|---|
-| `ok` | Reset the failure count. |
-| Connection refused within `startup_grace_s` of the watchdog starting, of its last restart of the service, or of launchd giving the service a new pid | Nothing. The service is starting. |
+| `ok` | Reset the failure count; end the startup grace period. |
+| Connection refused or timed out within `startup_grace_s` of the watchdog starting, of its last restart of the service, or of launchd giving the service a new pid, and before that process has answered with its model loaded | Nothing. The service is starting. |
 | `starting` while the service's own uptime is below `startup_grace_s` | Nothing. The model is loading. |
 | `starting` beyond `startup_grace_s` | Restart: the load is hung. |
 | `degraded` | Start a timer; restart once it exceeds `degraded_window_s`. |
 | Queue not empty for `stall_after_s` with no inference completing | One failure: stalled. |
 | Optional probe request times out after `probe_timeout_s` | One failure: stalled. |
-| Connection refused after the grace period, timeout, or a non-health answer | One failure. |
+| Connection refused or timed out after the grace period (or after the process has answered with its model loaded), or a non-health answer | One failure. |
 | `failures_before_restart` consecutive failures | Restart. |
 | The daemon is not loaded (after `voiced stop`) | Never restart; logged once. |
 

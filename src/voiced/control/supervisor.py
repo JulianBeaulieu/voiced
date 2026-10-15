@@ -91,8 +91,8 @@ class WatchdogSupervisor:
         self.started = time.monotonic()
 
     def _observe_now(self, spec: ServiceSpec) -> Observation:
+        loaded, pid = launchd_view(spec.label, self.runner)  # first, as in watchdog.observe
         obs = poll_health(spec.health_url, timeout_s=STATUS_TIMEOUT_S, api_key=spec.api_key)
-        loaded, pid = launchd_view(spec.label, self.runner)
         return Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
 
     def status(self) -> dict[str, Any]:
@@ -110,9 +110,7 @@ class WatchdogSupervisor:
         services: dict[str, Any] = {}
         for spec, obs in zip(specs, observed, strict=True):
             state = states.get(spec.name)
-            in_grace = (
-                state is not None and now - state.grace_started_at < self.dog.policy.startup_grace_s
-            )
+            in_grace = state is not None and state.in_grace(now, self.dog.policy.startup_grace_s)
             services[spec.name] = service_view(
                 obs, state, in_grace=in_grace, engine=spec.engine or None, model=spec.model or None
             )

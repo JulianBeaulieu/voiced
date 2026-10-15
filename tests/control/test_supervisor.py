@@ -52,7 +52,19 @@ def test_service_state(obs: Observation, grace: bool, state: str) -> None:
     assert service_state(obs, grace) == state
 
 
-def make(settings: Settings, restarted: list[str], clock: list[float]) -> WatchdogSupervisor:
+def make(
+    settings: Settings,
+    restarted: list[str],
+    clock: list[float],
+    views: dict[str, Observation] | None = None,
+) -> WatchdogSupervisor:
+    """The watchdog and the status check see the same ``views``."""
+    if views is None:
+        views = {
+            "stt": Observation("unreachable", loaded=True, pid=7),
+            "tts": Observation("ok", payload=HEALTH, loaded=True, pid=8),
+        }
+
     def restart(spec: ServiceSpec) -> RestartResult:
         restarted.append(spec.name)
         return RestartResult(spec.name != "stt", f"did {spec.name}")
@@ -61,13 +73,9 @@ def make(settings: Settings, restarted: list[str], clock: list[float]) -> Watchd
         services=watchdog_specs(settings),
         policy=POLICY,
         restart=restart,
-        observe=lambda s, p: Observation("ok", payload=HEALTH),
+        observe=lambda s, p: views[s.name],
         clock=lambda: clock[0],
     )
-    views = {
-        "stt": Observation("unreachable", loaded=True, pid=7),
-        "tts": Observation("ok", payload=HEALTH, loaded=True, pid=8),
-    }
     return WatchdogSupervisor(
         dog,
         installed=lambda label: True,
@@ -97,6 +105,45 @@ def test_status_shape(settings: Settings) -> None:
     assert wd["state"] == "running" and wd["pid"] == os.getpid()
     clock[0] += 200  # grace over
     assert sup.status()["services"]["stt"]["state"] == "degraded"
+
+
+def test_hang_after_healthy_shows_degraded_within_grace(settings: Settings) -> None:
+    """A service that answered ``ok`` and then stopped answering is not "starting"."""
+    clock = [1000.0]
+    views = {
+        "stt": Observation("ok", payload=HEALTH, loaded=True, pid=7),
+        "tts": Observation("ok", payload=HEALTH, loaded=True, pid=8),
+    }
+    sup = make(settings, [], clock, views)
+    sup.dog.tick()  # grace starts; both answer ok, which ends it
+    views["stt"] = Observation("unreachable", "timed out after 5s", loaded=True, pid=7)
+    clock[0] += 15  # well inside the 100 s grace period
+    assert sup.status()["services"]["stt"]["state"] == "degraded"
+    sup.dog.restart_now("tts")  # a watchdog restart re-opens the grace period
+    assert sup.dog.states["tts"].in_grace(clock[0], POLICY.startup_grace_s)
+    assert not sup.dog.states["stt"].in_grace(clock[0], POLICY.startup_grace_s)
+
+
+def test_status_reads_pid_before_health(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voiced.control import supervisor
+
+    calls: list[str] = []
+
+    def view(label: str, runner: object) -> tuple[bool, int]:
+        calls.append("launchd")
+        return True, 7
+
+    def poll(url: str, **kw: object) -> Observation:
+        calls.append("health")
+        return Observation("ok", payload=HEALTH)
+
+    monkeypatch.setattr(supervisor, "launchd_view", view)
+    monkeypatch.setattr(supervisor, "poll_health", poll)
+    dog = Watchdog(services=watchdog_specs(settings)[:1], policy=POLICY)
+    assert WatchdogSupervisor(dog, installed=lambda label: True).status()["services"]
+    assert calls == ["launchd", "health"]
 
 
 def hung(settings: Settings, check_s: float) -> WatchdogSupervisor:
