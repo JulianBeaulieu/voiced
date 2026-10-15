@@ -91,8 +91,8 @@ class WatchdogSupervisor:
         self.started = time.monotonic()
 
     def _observe_now(self, spec: ServiceSpec) -> Observation:
+        loaded, pid = launchd_view(spec.label, self.runner)  # first, as in watchdog.observe
         obs = poll_health(spec.health_url, timeout_s=STATUS_TIMEOUT_S, api_key=spec.api_key)
-        loaded, pid = launchd_view(spec.label, self.runner)
         return Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
 
     def status(self) -> dict[str, Any]:

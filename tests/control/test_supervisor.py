@@ -124,6 +124,28 @@ def test_hang_after_healthy_shows_degraded_within_grace(settings: Settings) -> N
     assert not sup.dog.states["stt"].in_grace(clock[0], POLICY.startup_grace_s)
 
 
+def test_status_reads_pid_before_health(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voiced.control import supervisor
+
+    calls: list[str] = []
+
+    def view(label: str, runner: object) -> tuple[bool, int]:
+        calls.append("launchd")
+        return True, 7
+
+    def poll(url: str, **kw: object) -> Observation:
+        calls.append("health")
+        return Observation("ok", payload=HEALTH)
+
+    monkeypatch.setattr(supervisor, "launchd_view", view)
+    monkeypatch.setattr(supervisor, "poll_health", poll)
+    dog = Watchdog(services=watchdog_specs(settings)[:1], policy=POLICY)
+    assert WatchdogSupervisor(dog, installed=lambda label: True).status()["services"]
+    assert calls == ["launchd", "health"]
+
+
 def hung(settings: Settings, check_s: float) -> WatchdogSupervisor:
     """Every service's check takes ``check_s`` (a health check that times
     out on a service that accepts but never answers)."""

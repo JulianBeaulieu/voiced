@@ -160,6 +160,39 @@ def test_restart_reopens_grace_after_an_ok() -> None:
     assert not state.in_grace(T0 + 271, POLICY.startup_grace_s)
 
 
+def test_first_pid_seen_starts_grace() -> None:
+    """Stopped when the watchdog started; `voiced start` long after: still loading."""
+    state = ServiceState(grace_started_at=T0)
+    stopped = Observation("unreachable", "refused", loaded=False, pid=None)
+    decide(state, stopped, T0, POLICY)
+    for t in (400, 415, 430, 445, 460):
+        d = decide(state, down(pid=700), T0 + t, POLICY)
+        assert d.action == "none" and "startup grace" in d.reason, t
+    assert state.failures == 0
+
+
+def test_answer_with_model_loaded_ends_grace() -> None:
+    """A degraded answer, or ok turned stalled, also proves the load finished."""
+    for kind, status in (("degraded", "degraded"), ("stalled", "ok")):  # stalled: probe timeout
+        payload = {"status": status, "model_loaded": True, "queue_depth": 0}
+        first = Observation(kind, "boom", 10, payload, loaded=True, pid=501)  # type: ignore[arg-type]
+        state = fresh()
+        decide(state, down(pid=501), T0, POLICY)  # new pid: grace from T0
+        assert decide(state, first, T0 + 1, POLICY).reason.startswith(kind)
+        assert not state.in_grace(T0 + 2, POLICY.startup_grace_s)
+        assert "startup grace" not in decide(state, down(pid=501), T0 + 45, POLICY).reason
+
+
+def test_starting_does_not_end_grace() -> None:
+    state = fresh()
+    loading = Observation(
+        "starting", "model loading", 5, {"status": "starting", "model_loaded": False}, True, 501
+    )
+    decide(state, loading, T0, POLICY)
+    assert state.in_grace(T0 + 15, POLICY.startup_grace_s)
+    assert "startup grace" in decide(state, down(pid=501), T0 + 15, POLICY).reason
+
+
 def test_unloaded_service_is_never_restarted_and_reported_once() -> None:
     state = fresh()
     stopped = Observation("unreachable", "refused", loaded=False, pid=None)
@@ -548,6 +581,26 @@ def test_observe_adds_launchd_pid_and_skips_probe_when_busy(server: str) -> None
         assert wd.observe(spec, probing, launchctl).kind == "ok"
     finally:
         wd.run_probe = original
+
+
+def test_observe_reads_pid_before_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ok from a process launchd has since replaced must not be credited to
+    the new pid, so the pid is read first."""
+    calls: list[str] = []
+
+    def view(label: str, runner: object) -> tuple[bool, int]:
+        calls.append("launchd")
+        return True, 9
+
+    def poll(url: str, **kw: object) -> Observation:
+        calls.append("health")
+        return ok(pid=None)
+
+    monkeypatch.setattr(wd, "launchd_view", view)
+    monkeypatch.setattr(wd, "poll_health", poll)
+    spec = ServiceSpec(name="tts", label="x", base_url="http://unused")
+    assert wd.observe(spec, POLICY).pid == 9
+    assert calls == ["launchd", "health"]
 
 
 def test_default_probe_bodies() -> None:

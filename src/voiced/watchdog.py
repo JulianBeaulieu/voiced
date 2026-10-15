@@ -105,10 +105,11 @@ class ServiceState:
     gave the service a new pid (crash restart under ``KeepAlive``). While the
     service loads its model the socket is not bound yet, so polls are
     refused; those must not count as failures during the grace period.
-    ``answered`` ends it early: once the current process has answered
-    ``ok`` it has finished loading, and a later refusal or timeout is a hang,
-    not a load. ``startup_grace_s`` stays the upper bound for a load that
-    never answers.
+    ``answered`` ends it early: once the current process has answered with
+    its model loaded (``ok``, or ``model_loaded`` in a ``degraded`` or
+    stalled answer) it has finished loading, and a later refusal or timeout
+    is a hang, not a load. ``startup_grace_s`` stays the upper bound for a
+    load that never answers.
 
     ``busy_since`` is when the queue was first seen non-empty without a
     completed inference since; the stall timer measures from there, not from
@@ -187,10 +188,12 @@ def classify_stall(
 def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogConfig) -> Decision:
     """Update ``state`` with ``obs`` and say what to do.
 
-    * A new pid from launchd (crash restart under KeepAlive) restarts the
-      grace period: the new process is loading its model.
-    * ``ok`` resets the failure counter and the degraded timer, and ends the
-      grace period: the process has loaded.
+    * A new pid from launchd restarts the grace period: the new process is
+      loading its model. That includes the first pid seen, so a service
+      started long after the watchdog (``voiced start``) gets its grace too.
+    * Any answer with the model loaded (``ok``, or ``model_loaded`` true in
+      the payload; never ``starting``) ends the grace period.
+    * ``ok`` resets the failure counter and the degraded timer.
     * ``unreachable`` within ``startup_grace_s`` of the grace start, before
       the process has answered ``ok``, is the model loading before the
       socket is bound: not a failure.
@@ -206,19 +209,20 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
       (``cooldown``); counters are kept so it fires right after the cooldown.
     """
     if obs.pid is not None and obs.pid != state.last_pid:
-        if state.last_pid is not None:
-            state.grace_started_at = now
-            state.answered = False
-            state.failures = 0
-            state.busy_since = None
+        state.grace_started_at = now
+        state.answered = False
+        state.failures = 0
+        state.busy_since = None
         state.last_pid = obs.pid
+    loaded = obs.payload is not None and obs.payload.get("model_loaded") is True
+    if obs.kind == "ok" or (loaded and obs.kind != "starting"):
+        state.answered = True
     obs = classify_stall(state, obs, policy, now)
 
     if obs.kind == "ok":
         recovered = (
             state.failures > 0 or state.degraded_since is not None or state.awaiting_recovery
         )
-        state.answered = True
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
@@ -369,13 +373,18 @@ def launchd_view(label: str, runner: Runner) -> tuple[bool | None, int | None]:
 
 
 def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_command) -> Observation:
-    """Health poll, launchd pid, then the optional probe.
+    """Launchd pid, health poll, then the optional probe.
 
-    The probe is only sent while the queue is empty: with requests in flight a
-    probe timeout would just be queueing, and restarting would kill real work.
+    The pid is read first so the health answer comes from that pid or a
+    later one: an ``ok`` from a process that launchd has since replaced must
+    not be credited to the new, still loading, process.
+
+    The probe is only sent while the queue is empty: with requests in flight
+    a probe timeout would just be queueing, and restarting would kill real
+    work.
     """
-    obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
     loaded, pid = launchd_view(spec.label, runner)
+    obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
     obs = Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
     if policy.probe and obs.kind == "ok" and obs.payload and obs.payload.get("queue_depth") == 0:
         stalled = run_probe(spec, timeout_s=policy.probe_timeout_s)

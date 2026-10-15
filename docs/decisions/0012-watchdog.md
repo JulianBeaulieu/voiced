@@ -29,7 +29,7 @@ pure function `decide(state, observation, now, policy)`:
 | Observation | Rule |
 |---|---|
 | `ok` | reset the failure counter and the degraded timer; end the startup grace period |
-| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start, of its last restart of this service, or of launchd handing the service a new pid, until that process first answers `ok` | not a failure: the service is loading its model and has not bound its socket yet |
+| `unreachable` within `startup_grace_s` (300 s) of the watchdog's start, of its last restart of this service, or of launchd handing the service a new pid, until that process first answers with its model loaded | not a failure: the service is loading its model and has not bound its socket yet |
 | `starting` (503, model loading) | tolerated while the service's own `uptime_s` is below `startup_grace_s`; beyond that the load is considered hung and the service is restarted |
 | `degraded` (answers, last inference failed) | start a timer; restart once it exceeds `degraded_window_s` (120 s) |
 | `stalled`: `/health` is `ok` but the queue has been non-empty for `stall_after_s` (60 s) with no inference completing in that time, or the optional probe timed out | one failure |
@@ -44,12 +44,17 @@ cold start (first model download can take minutes) `/health` is not
 would SIGKILL a service that is 40 s into loading a model, then again after
 every cooldown. The rule keys off the watchdog's own clock, not the
 service's, because there is nothing to ask yet. Every poll also reads the
-pid from `launchctl print`; a new pid means launchd restarted the service
-itself (crash, out of memory) and the new process is loading, so the grace
-period starts again from that moment.
+pid from `launchctl print`; a new pid means launchd started the service
+(crash restart, out of memory, or `voiced start` after the watchdog came up)
+and the new process is loading, so the grace period starts again from that
+moment. The first pid the watchdog sees counts as new too. The pid is read
+before `/health`, so a health answer is never credited to a process that
+launchd started after it.
 
-The grace period ends at the first `ok` from the current process, not only
-when `startup_grace_s` runs out. Once a process has answered it has loaded
+The grace period ends at the first answer from the current process with its
+model loaded (`ok`, or `model_loaded` true in a `degraded` or stalled
+answer; never `starting`), not only when `startup_grace_s` runs out. Once a
+process has answered that way it has loaded
 its model and bound its socket, so a later refused or timed-out poll is a
 hang (a `SIGSTOP`, a wedged GPU call holding the event loop), not a load,
 and counts as a failure at once. Without this, a service that hangs shortly
