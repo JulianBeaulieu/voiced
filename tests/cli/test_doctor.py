@@ -180,6 +180,12 @@ def test_memory() -> None:
     assert doctor.check_memory(make_runner({})).result == "warn"
 
 
+FRAMEWORK_PYTHON = (
+    "/opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/Python.framework/Versions/3.12"
+    "/Resources/Python.app/Contents/MacOS/Python"
+)
+
+
 def test_ports() -> None:
     free = make_runner({"lsof": CommandResult(1, "")})
     assert doctor.check_port("tts http", 8880, free).result == "pass"
@@ -189,7 +195,7 @@ def test_ports() -> None:
             "ps -o comm= -p 123": CommandResult(0, "/usr/local/bin/node\n"),
         }
     )
-    check = doctor.check_port("tts http", 8880, busy, Path("/Users/u/.voiced"))
+    check = doctor.check_port("tts http", 8880, busy, [Path("/Users/u/.voiced")])
     assert check.result == "warn" and "node" in check.detail and "pid 123" in check.detail
     ours = make_runner(
         {
@@ -197,7 +203,21 @@ def test_ports() -> None:
             "ps -o comm= -p 99": CommandResult(0, "/Users/u/.voiced/bin/python3.12\n"),
         }
     )
-    assert doctor.check_port("tts http", 8880, ours, Path("/Users/u/.voiced")).result == "pass"
+    assert doctor.check_port("tts http", 8880, ours, [Path("/Users/u/.voiced")]).result == "pass"
+    # Homebrew's Python is a framework build: the executable is in Python.app,
+    # only the command line names the environment.
+    brewed = make_runner(
+        {
+            "lsof -nP -t -iTCP:8880": CommandResult(0, "77\n"),
+            "ps -o comm= -p 77": CommandResult(0, f"{FRAMEWORK_PYTHON}\n"),
+            "ps -o args= -p 77": CommandResult(
+                0, f"{FRAMEWORK_PYTHON} /opt/homebrew/opt/voiced/libexec/bin/voiced serve tts\n"
+            ),
+        }
+    )
+    dirs = [Path("/Users/u/.voiced"), Path("/opt/homebrew/opt/voiced/libexec")]
+    assert doctor.check_port("tts http", 8880, brewed, dirs).result == "pass"
+    assert doctor.check_port("tts http", 8880, brewed, dirs[:1]).result == "warn"
     assert doctor.check_port("x", 1, make_runner({})).result == "warn"  # no lsof
 
 

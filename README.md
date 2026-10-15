@@ -17,15 +17,58 @@ one machine. Expect breaking changes.
 
 ## Quickstart
 
-Requirements: an Apple Silicon Mac, macOS 14 or newer,
-[Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
+Requirements: an Apple Silicon Mac, macOS 14 or newer and
+[Homebrew](https://brew.sh).
+
+### With Homebrew
+
+<!-- TODO(release): drop the "not yet" note and the local-tap steps once Formula/voiced.rb is in JulianBeaulieu/homebrew-voiced -->
+This is the recommended path once the formula is in the
+[tap](https://github.com/JulianBeaulieu/homebrew-voiced), which it is not
+yet. It will be:
+
+```sh
+brew install --HEAD julianbeaulieu/voiced/voiced   # --HEAD until the first release
+voiced install
+sudo bash ~/.config/voiced/launchd/install-daemons.sh
+voiced status
+```
+
+`brew install` builds the `voiced` command and its Python environment
+(about 830 MB, under a minute) and pulls in espeak-ng, ffmpeg and Python
+3.12. `voiced install` downloads the models (about 2.7 GB) into the Hugging
+Face cache and stages the launchd plists; the `sudo` line is the one step
+that needs root (see below). Upgrading is `brew upgrade voiced` followed by
+`voiced restart all`, with no root step.
+
+What works today, from a checkout, is the same formula through a local tap
+(Homebrew installs formulae only from a tap):
+
+```sh
+git clone https://github.com/JulianBeaulieu/voiced ~/voiced
+brew tap-new --no-git "$USER/voiced-local"
+cp ~/voiced/packaging/homebrew/voiced.rb "$(brew --repository "$USER/voiced-local")/Formula/"
+brew install --HEAD "$USER/voiced-local/voiced"
+```
+
+then `voiced install` and the `sudo` line as above. If `~/.voiced` already
+holds a source install from the steps below, `voiced install` stops and
+explains how to switch.
+
+A menu bar app that installs the daemons itself, distributed as a Homebrew
+cask, is planned once it can be signed; the formula stays for headless Macs
+and terminal use ([ADR 0017](docs/decisions/0017-homebrew-packaging.md)).
+
+### From a checkout, with uv
+
+You also need [uv](https://docs.astral.sh/uv/):
 
 ```sh
 brew install espeak-ng ffmpeg
 brew install uv    # skip if `uv --version` already works
 ```
 
-Until the first release, install from a checkout:
+Then install from a checkout:
 
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced ~/voiced

@@ -267,6 +267,39 @@ They are the usual steps for a Mac that runs as a server:
 
 ## Updating
 
+### Homebrew
+
+With the formula ([ADR 0017](decisions/0017-homebrew-packaging.md)),
+`~/.voiced/bin` holds two launchers that run voiced from
+`$(brew --prefix)/opt/voiced/libexec`, which Homebrew repoints at the new
+version on every upgrade. The plists do not change, so there is no root
+step:
+
+```sh
+brew upgrade voiced              # brew upgrade --fetch-HEAD voiced for a --HEAD install
+voiced restart all
+voiced status
+```
+
+Until they restart, the running daemons keep the old version's files open;
+Homebrew deletes the old version afterwards, and a daemon that exits for
+any reason comes back on the new one. `voiced restart all` makes that
+immediate. If the changelog says a release changes the plists, run
+`voiced install` and the printed sudo step as well.
+
+To remove voiced, run `voiced uninstall`, its sudo step and
+`voiced uninstall --yes` first, then `brew uninstall voiced`. Uninstalling
+the formula first leaves launchd restarting a launcher with nothing behind
+it every 10 s.
+
+To switch an existing source install to Homebrew: stop the daemons
+(`voiced stop all` and the `sudo` line it prints), `rm -rf ~/.voiced` (the
+models, config and logs live elsewhere), then `voiced install` from the
+Homebrew `voiced`; the plists are the same, so the sudo step that follows is
+the usual one.
+
+### From a checkout
+
 Re-running `voiced install` upgrades in place: it reuses the service
 environment, upgrades the package, re-stages the plists and prints the
 install script, which unloads and reloads the daemons. Models and the

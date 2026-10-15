@@ -32,7 +32,7 @@ from voiced.engines.kokoro import (
     espeak_candidates,
 )
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import DEFAULT_PYTHON_VERSION, METAL_PROBE_FILE
+from voiced.launchd.install import DEFAULT_PYTHON_VERSION, METAL_PROBE_FILE, homebrew_environment
 from voiced.launchd.metal_probe import macos_version as _macos_version
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
@@ -271,8 +271,14 @@ def listener_pids(port: int, runner: Runner) -> list[int] | None:
     return [int(line) for line in result.stdout.split() if line.isdigit()]
 
 
-def check_port(name: str, port: int, runner: Runner, venv_dir: Path | None = None) -> Check:
-    """Who listens on ``port``? Uses ``lsof``; absence of lsof is reported, not fatal."""
+def check_port(name: str, port: int, runner: Runner, voiced_dirs: Sequence[Path] = ()) -> Check:
+    """Who listens on ``port``? Uses ``lsof``; absence of lsof is reported, not fatal.
+
+    A listener is voiced's when its command line runs something in one of
+    ``voiced_dirs``. The command line, not the executable: Homebrew's Python
+    is a framework build whose executable is inside ``Python.app``, wherever
+    the venv is.
+    """
     label = f"Port {port} ({name})"
     pids = listener_pids(port, runner)
     if pids is None:
@@ -284,7 +290,8 @@ def check_port(name: str, port: int, runner: Runner, venv_dir: Path | None = Non
     for pid in pids:
         exe = runner(["ps", "-o", "comm=", "-p", str(pid)]).stdout.strip() or "unknown"
         commands.append(exe)
-        if venv_dir is not None and Path(exe).is_relative_to(venv_dir):
+        args = runner(["ps", "-o", "args=", "-p", str(pid)]).stdout
+        if any(f"{d}/" in f"{exe} {args}" for d in voiced_dirs):
             ours = True
     pid_text = ", ".join(str(p) for p in pids)
     if ours:
@@ -299,7 +306,10 @@ def check_ports(settings: Settings, runner: Runner) -> list[Check]:
         ("tts http", settings.tts.http_port),
         ("tts wyoming", settings.tts.wyoming_port),
     ]
-    return [check_port(name, port, runner, settings.install.venv_dir) for name, port in ports]
+    dirs = [settings.install.venv_dir]
+    if (homebrew := homebrew_environment()) is not None:
+        dirs.append(homebrew)
+    return [check_port(name, port, runner, dirs) for name, port in ports]
 
 
 # Disk and launchd ---------------------------------------------------------
