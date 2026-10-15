@@ -97,7 +97,49 @@ PyPI would install whatever someone else registers under it."""
 
 def needs_source() -> bool:
     """True when ``install`` has nothing safe to install without ``--source``."""
-    return not PUBLISHED and repo_root() is None
+    return not PUBLISHED and repo_root() is None and homebrew_environment() is None
+
+
+# Written into the venv directory of a Homebrew install, which then holds two
+# launchers instead of a virtual environment (ADR 0017). Uninstall checks it
+# the way it checks pyvenv.cfg before deleting the directory.
+HOMEBREW_MARKER = ".homebrew"
+
+
+def homebrew_environment(prefix: str | Path | None = None) -> Path | None:
+    """The stable path of the Homebrew-built environment this command runs
+    from, or None when it does not run from one.
+
+    The formula (``packaging/homebrew/voiced.rb``) builds the environment in
+    the keg's ``libexec``: ``<prefix>/Cellar/voiced/<version>/libexec``, which
+    is ``sys.prefix`` here. The keg changes with every upgrade;
+    ``<prefix>/opt/voiced/libexec`` always points at the current one, so that
+    is the path the daemons are given.
+    """
+    parts = Path(sys.prefix if prefix is None else prefix).parts
+    if (
+        len(parts) >= 5
+        and parts[-1] == "libexec"
+        and parts[-3] == "voiced"
+        and parts[-4] == "Cellar"
+    ):
+        return Path(*parts[:-4], "opt", "voiced", "libexec")
+    return None
+
+
+def launcher_script(target: Path) -> str:
+    """A ``/bin/sh`` script that hands over to ``target``, keeping the pid.
+
+    A launcher, not a symlink: Python finds its venv from the path it was
+    started as, so ``~/.voiced/bin/python`` linked to the Homebrew venv's
+    python would start the bare interpreter without the venv's packages.
+    """
+    return (
+        "#!/bin/sh\n"
+        "# Written by `voiced install`: voiced runs from Homebrew's build (ADR 0017).\n"
+        "# The opt path follows `brew upgrade`.\n"
+        f'exec {q(target)} "$@"\n'
+    )
 
 
 def default_source() -> str:
@@ -170,6 +212,9 @@ class InstallPlan:
     espeak_env: dict[str, str] = field(default_factory=dict)
     extras: tuple[str, ...] = EXTRAS
     pip_python: str = field(default_factory=lambda: sys.executable)
+    # Homebrew's environment (``homebrew_environment``). When set, venv_dir
+    # gets launchers into it instead of a virtual environment of its own.
+    homebrew: Path | None = None
 
     # Paths -------------------------------------------------------------
 
@@ -232,8 +277,36 @@ class InstallPlan:
 
     # Shell commands ----------------------------------------------------
 
+    def launchers(self) -> dict[Path, str]:
+        """For a Homebrew install: the scripts in venv_dir/bin, by path."""
+        if self.homebrew is None:
+            return {}
+        return {
+            self.voiced_bin: launcher_script(self.homebrew / "bin" / "voiced"),
+            self.python_bin: launcher_script(self.homebrew / "bin" / "python"),
+        }
+
+    def environment_conflict(self) -> str | None:
+        """Why venv_dir cannot be (re)used for this kind of install, or None."""
+        if self.homebrew is not None and (self.venv_dir / "pyvenv.cfg").is_file():
+            return (
+                f"{self.venv_dir} holds an environment built from source, and this voiced "
+                "is Homebrew's. To switch to the Homebrew build, remove it (`rm -rf "
+                f"{q(self.venv_dir)}`; models, config and logs live elsewhere) and run "
+                "`voiced install` again. To keep the source build, pass --source."
+            )
+        if self.homebrew is None and (self.venv_dir / HOMEBREW_MARKER).is_file():
+            return (
+                f"{self.venv_dir} runs voiced from Homebrew. To build an environment from "
+                f"source instead, remove it (`rm -rf {q(self.venv_dir)}`) first."
+            )
+        return None
+
     def venv_commands(self) -> list[list[str]]:
-        """Commands that create the venv and install the package into it."""
+        """Commands that create the venv and install the package into it.
+        None for a Homebrew install: Homebrew built the environment."""
+        if self.homebrew is not None:
+            return []
         if self.uv:
             python = self.python or DEFAULT_PYTHON_VERSION
             return [
@@ -437,8 +510,15 @@ def plan_install(
     config_file: Path | None = None,
     uv: str | Literal["auto"] | None = "auto",
     extras: Sequence[str] = EXTRAS,
+    homebrew: Path | Literal["auto"] | None = "auto",
 ) -> InstallPlan:
-    """Resolve CLI flags, config and defaults into an :class:`InstallPlan`."""
+    """Resolve CLI flags, config and defaults into an :class:`InstallPlan`.
+
+    ``homebrew="auto"`` uses Homebrew's environment when this command runs
+    from it and no ``source`` is given; a ``source`` builds a venv as usual.
+    """
+    if homebrew == "auto":
+        homebrew = homebrew_environment() if source is None else None
     config_file = config_file or config_path()
     env_hf_home = os.environ.get("HF_HOME")
     hf_home = settings.install.hf_home or (Path(env_hf_home) if env_hf_home else None)
@@ -463,17 +543,23 @@ def plan_install(
         hf_home=hf_home,
         espeak_env=espeak_env,
         extras=tuple(extras),
+        homebrew=homebrew,
     )
 
 
 def plan_summary(plan: InstallPlan) -> str:
     """Human-readable plan, printed before both the dry and the real run."""
-    installer = f"uv ({plan.uv})" if plan.uv else f"pip ({plan.pip_python})"
+    if plan.homebrew is not None:
+        installer = "Homebrew (built by `brew install voiced`)"
+        package = f"voiced {voiced.__version__} in {plan.homebrew}"
+    else:
+        installer = f"uv ({plan.uv})" if plan.uv else f"pip ({plan.pip_python})"
+        package = plan.requirement
     lines = [
         f"user           {plan.user}",
         f"venv           {plan.venv_dir}",
         f"installer      {installer}",
-        f"package        {plan.requirement}",
+        f"package        {package}",
         f"config         {plan.config_file}",
         f"log dir        {plan.log_dir}",
         f"staging        {plan.staging_dir}",
@@ -497,6 +583,18 @@ def write_staging(plan: InstallPlan) -> list[Path]:
     plan.uninstall_script_path.write_text(plan.sudo_uninstall_script())
     written += [plan.install_script_path, plan.uninstall_script_path]
     return written
+
+
+def write_launchers(plan: InstallPlan) -> None:
+    """Write the Homebrew launchers and the marker, replacing older ones."""
+    for path, text in plan.launchers().items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_text(text)
+        tmp.chmod(0o755)
+        tmp.replace(path)
+    if plan.homebrew is not None:
+        (plan.venv_dir / HOMEBREW_MARKER).write_text(f"{plan.homebrew}\n")
 
 
 def write_default_config(config_file: Path) -> bool:
@@ -533,6 +631,9 @@ def run_install(
     default streams output and has no timeout. Raises :class:`InstallError`.
     """
     would = "would " if dry_run else ""
+    conflict = plan.environment_conflict()
+    if conflict is not None:
+        raise InstallError(conflict)
 
     def step(argv: Sequence[str], what: str, shown: str | None = None) -> None:
         say(f"$ {shown or shlex.join(argv)}")
@@ -565,6 +666,10 @@ def run_install(
 
     for argv in plan.venv_commands():
         step(argv, argv[0])
+    for path in plan.launchers():
+        say(f"{would}write {path} (runs {plan.homebrew}/bin/{path.name})")
+    if not dry_run and plan.homebrew is not None:
+        write_launchers(plan)
     if not dry_run and not plan.voiced_bin.exists():
         raise InstallError(f"{plan.voiced_bin} missing after install")
 
@@ -671,7 +776,9 @@ def remove_targets(targets: UninstallTargets, plan: InstallPlan, say: Say) -> in
         if reason is not None:
             say(f"refusing to remove {tree}: {reason}")
             continue
-        if tree == plan.venv_dir and not (tree / "pyvenv.cfg").is_file():
+        if tree == plan.venv_dir and not any(
+            (tree / name).is_file() for name in ("pyvenv.cfg", HOMEBREW_MARKER)
+        ):
             say(f"refusing to remove {tree}: not a virtual environment (no pyvenv.cfg)")
             continue
         shutil.rmtree(tree)

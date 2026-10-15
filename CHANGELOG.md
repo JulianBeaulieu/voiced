@@ -8,6 +8,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Homebrew formula (`packaging/homebrew/voiced.rb`, for the
+  `JulianBeaulieu/homebrew-voiced` tap): `brew install --HEAD` builds the
+  `voiced` command and its environment from the wheels pinned in `uv.lock`.
+  Run from Homebrew, `voiced install` needs no `--source` and builds no
+  second environment: `~/.voiced/bin` gets launchers into Homebrew's, so
+  `brew upgrade voiced` plus `voiced restart all` upgrades the daemons with
+  no root step. `voiced doctor` recognises a Homebrew-run service on its
+  port. ADR 0017.
+
 - Project skeleton: `src/voiced` package with a `uv` development setup,
   frozen engine interfaces (`STTEngine`, `STTStreamSession`, `TTSEngine`),
   entry-point engine registry, one config file plus `VOICED_*` environment
