@@ -11,8 +11,7 @@ who run a voice assistant at home want to glance at an icon and click. The
 watchdog supervises both services as the installing user and serves the
 local control socket ([ADR 0013](0013-local-control-channel.md):
 `<state dir>/control.sock`, newline JSON, protocol 1) with status, settings,
-engine lists, restarts and events, so a client needs nothing else. This record depends on that one; the app is
-merged after the control channel.
+engine lists, restarts and events, so a client needs nothing else.
 
 ## Decision
 
@@ -44,11 +43,15 @@ third-party packages.
   window names the path it tried.
 - **Status in the menu bar window, settings in a Settings window.** The
   menu bar window shows only status and one-click actions and stays one
-  size; "Settings…" (⌘,) opens the standard Settings window, as tall as
-  its form up to 640 pt and scrolling past that, so it fits a 13-inch
-  screen whatever notices are showing. An earlier version had both on tabs inside the
-  menu bar window: it jumped from 340 to 609 pt high on the Settings tab and
-  still scrolled the last sections out of sight. Notices that ask for action
+  size; "Settings…" (⌘,) opens the standard Settings window, a fixed
+  700 by 500 pt with a sidebar of panes (General, Network, Speech to Text,
+  Text to Speech, About), so it fits a 13-inch screen and each pane is short
+  enough to read without scrolling. The sidebar is a plain list next to the
+  pane, not a split view, so it cannot be collapsed and draws the same in
+  snapshots. An earlier version had both on tabs inside the menu bar
+  window: it jumped from 340 to 609 pt high on the Settings tab and still
+  scrolled the last sections out of sight; a later one put every setting
+  in one form, which grew past a 13-inch screen. Notices that ask for action
   (restart needed, LAN without a key, warnings, errors) appear in both
   windows, so a change made in Settings is never silently pending.
 - **In this repository.** The app and the server side of the protocol change
@@ -68,8 +71,11 @@ third-party packages.
 
 Protocol handling: the client refuses any `hello` whose protocol is not 1,
 with a message saying which side to update; unknown fields and events are
-ignored; requests time out after 10 s, `service.restart` after 30 s (a
-timeout there counts as "requested", status events show the outcome); a
+ignored; requests time out after 10 s. `service.restart` is answered at
+once with the outcome per service in `detail`, and status events show the
+restart itself; a service the server refused keeps its restart notice and
+the refusal is shown. The app still allows 30 s for that answer and treats
+a timeout as "requested", in case a server is slow to answer; a
 connection with no event for 25 s is closed, since the server pushes
 `status` at least every 10 s; a lost connection is retried with a backoff
 from 0.5 s to 15 s, reset only once a connection has delivered `status`.

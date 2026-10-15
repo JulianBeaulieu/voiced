@@ -5,9 +5,11 @@ whether both services are up; the window behind it shows each service's
 state, engine and model, uptime and restarts (and the last error when one is
 degraded), restarts either service in one click, and opens the status page,
 the logs folder and the config file. "Settings…" (⌘,) opens a standard
-Settings window for the common settings: listen on this Mac or the local
-network, the API key, Home Assistant discovery, the engines and voice,
-settings from the status page, and open at login. When voiced is not
+Settings window with a sidebar of panes: General (open at login, settings
+from the status page), Network (listen on this Mac or the local network,
+Home Assistant discovery, the API key), Speech to Text (engine), Text to
+Speech (engine and voice) and About (versions, the control socket, the
+config file and logs). When voiced is not
 installed the window points to the installation guide; when it cannot reach
 voiced it says why.
 

@@ -42,7 +42,11 @@ public struct PopoverView: View {
                 MessageView(dashboard: dashboard, isConnecting: model.connection == .connecting)
                     .padding(14)
             }
-            NoticeStrip(model: model, openSettings: showSettings)
+            NoticeStrip(model: model) {
+                // The LAN warning's action: the key is set on the Network pane.
+                SettingsPane.network.select()
+                showSettings()
+            }
             Divider()
             VStack(spacing: 0) {
                 if dashboard.isControllable {
@@ -243,7 +247,8 @@ struct ServiceRowView: View {
 /// Things the user should act on, shown in the status window and the settings window alike.
 struct NoticeStrip: View {
     let model: AppModel
-    /// Offered on the LAN warning in the menu bar window; the Settings window has none.
+    /// Offered on the LAN warning in the menu bar window (it opens the Network pane); the
+    /// Settings window has none.
     var openSettings: (() -> Void)?
 
     var body: some View {

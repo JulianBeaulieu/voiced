@@ -23,8 +23,8 @@ struct Shot {
     var window = Window.status
     var edits: [SettingsEdit] = []
     var options = FakeControlServer.Options()
-    /// Render the Settings window at the app's own height cap instead of uncapped.
-    var capped = false
+    /// The Settings pane to render.
+    var pane = SettingsPane.general
 }
 
 var overriding = FakeControlServer.Options()
@@ -39,15 +39,18 @@ let shots = [
     Shot(name: "not-installed", scenario: nil, installed: false),
     Shot(name: "not-running", scenario: nil, installed: true),
     Shot(name: "newer-protocol", scenario: .newerProtocol),
-    Shot(name: "settings", scenario: .running, window: .settings),
-    Shot(name: "settings-not-connected", scenario: nil, window: .settings),
+    Shot(name: "settings-general", scenario: .running, window: .settings, pane: .general),
+    Shot(name: "settings-network", scenario: .running, window: .settings, pane: .network),
+    Shot(name: "settings-stt", scenario: .running, window: .settings, pane: .speechToText),
+    Shot(name: "settings-tts", scenario: .running, window: .settings, pane: .textToSpeech),
+    Shot(name: "settings-about", scenario: .running, window: .settings, pane: .about),
+    Shot(name: "settings-not-connected", scenario: nil, window: .settings, pane: .textToSpeech),
     Shot(name: "lan-without-key", scenario: .running, edits: [.clearAPIKey, .bind(.lan)]),
-    Shot(name: "lan-without-key-settings", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)]),
+    Shot(name: "lan-without-key-settings", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)], pane: .network),
     // The key flow: none set on the LAN, then set (Remove and Replace appear, the warning goes).
-    Shot(name: "key-1-not-set", scenario: .lanWithoutKey, window: .settings),
-    Shot(name: "key-2-set", scenario: .lanWithoutKey, window: .settings, edits: [.apiKey("example-key")]),
-    Shot(name: "settings-capped", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)], options: overriding, capped: true),
-    Shot(name: "env-override-settings", scenario: .running, window: .settings, edits: [.ttsVoice("bf_emma")], options: overriding),
+    Shot(name: "key-1-not-set", scenario: .lanWithoutKey, window: .settings, pane: .network),
+    Shot(name: "key-2-set", scenario: .lanWithoutKey, window: .settings, edits: [.apiKey("example-key")], pane: .network),
+    Shot(name: "env-override-settings", scenario: .running, window: .settings, edits: [.ttsVoice("bf_emma")], options: overriding, pane: .textToSpeech),
 ]
 
 /// Waits for the model to settle; the fake server answers in milliseconds.
@@ -70,11 +73,22 @@ func render<Content: View>(_ view: Content, dark: Bool, to url: URL) async {
     window.contentView = host
     host.setFrameSize(host.fittingSize)
     window.setContentSize(host.fittingSize)
-    // Let AppKit lay out and draw the hosted controls once before capturing.
-    try? await Task.sleep(for: .milliseconds(300))
-    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
-    host.cacheDisplay(in: host.bounds, to: rep)
-    try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    // Let AppKit lay out and draw the hosted controls before capturing. A split view fills
+    // its columns a few run loop turns later, so wait until two captures in a row agree.
+    var previous: Data?
+    for _ in 0..<20 {
+        try? await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded()
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let png = rep.representation(using: .png, properties: [:])
+        if let png, png == previous {
+            try? png.write(to: url)
+            return
+        }
+        previous = png
+    }
+    try? previous?.write(to: url)
 }
 
 /// A stand-in /Library/LaunchDaemons holding a watchdog plist for this user, or nothing.
@@ -116,8 +130,7 @@ func run() async {
             switch shot.window {
             case .status: await render(PopoverView(model: model), dark: dark, to: file)
             case .settings:
-                // Uncapped, so the whole form is in one picture; the app caps it at 640 pt.
-                await render(SettingsView(model: model, loginItem: LoginItem(), maxHeight: shot.capped ? 640 : 1400), dark: dark, to: file)
+                await render(SettingsView(model: model, loginItem: LoginItem(), pane: shot.pane), dark: dark, to: file)
             }
             print(file.path)
         }
