@@ -73,6 +73,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `voiced restart all` restarted stt and tts but not the watchdog, which
+  kept running the old code after an upgrade until it was killed by hand.
+  It now restarts the watchdog last (SIGTERM, then `launchctl kickstart`)
+  and waits for the new one to answer on the control socket; `voiced
+  restart watchdog` restarts it alone.
 - `voiced install` built an invalid pip requirement (`voiced==X[stt,tts]`)
   for a pinned release; extras now go before the version.
 - The TTS engines never bounded MLX's buffer cache, so the Kokoro service
