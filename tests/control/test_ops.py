@@ -267,6 +267,17 @@ def test_engines_in_subprocess() -> None:
     assert "kokoro" in {e["name"] for e in result["tts"]}
 
 
+def test_engines_in_subprocess_ignores_modules_in_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watchdog's working directory is the user's home; a stray json.py
+    there must not replace the standard library in the catalogue process."""
+    (tmp_path / "json.py").write_text("raise SystemExit('shadowed')\n")
+    monkeypatch.chdir(tmp_path)
+    result = engines_in_subprocess()
+    assert "kokoro" in {e["name"] for e in result["tts"]}
+
+
 def test_engines_in_subprocess_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 

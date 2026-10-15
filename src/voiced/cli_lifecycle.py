@@ -173,8 +173,29 @@ def _services(name: str) -> tuple[DaemonName, ...]:
 def cmd_install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
 ) -> int:
-    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
+    from voiced.launchd.install import (
+        InstallError,
+        needs_source,
+        plan_install,
+        plan_summary,
+        run_install,
+    )
 
+    if is_root():
+        echo(
+            "Run `voiced install` as the user the services should run as, not with sudo. "
+            "It prints the one step that needs root."
+        )
+        return 2
+    if args.user in ("root", "0"):
+        echo("--user root: the services would run code from a user-writable venv as root.")
+        return 2
+    if args.source is None and needs_source():
+        echo(
+            "voiced is not published on PyPI yet, so there is nothing to install by name. "
+            "Pass your checkout: voiced install --source ~/voiced"
+        )
+        return 2
     plan = plan_install(
         settings,
         venv_dir=args.venv,

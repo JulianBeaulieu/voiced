@@ -88,6 +88,17 @@ def repo_root() -> Path | None:
     return None
 
 
+PUBLISHED = False
+"""Whether ``voiced==<version>`` is on PyPI. Until it is, ``voiced install``
+outside a checkout needs ``--source``: installing an unpublished name from
+PyPI would install whatever someone else registers under it."""
+
+
+def needs_source() -> bool:
+    """True when ``install`` has nothing safe to install without ``--source``."""
+    return not PUBLISHED and repo_root() is None
+
+
 def default_source() -> str:
     """What to ``pip install``: the dev checkout if there is one, else the release."""
     root = repo_root()
@@ -481,11 +492,18 @@ def write_staging(plan: InstallPlan) -> list[Path]:
 
 
 def write_default_config(config_file: Path) -> bool:
-    """Create the config file from the example if it does not exist."""
+    """Create the config file from the example if it does not exist.
+
+    It is created 0600: it is where ``api_key`` goes, home directories on
+    macOS are readable by the ``staff`` group every local user is in, and the
+    daemons run as this user, so nobody else needs to read it.
+    """
     if config_file.exists():
         return False
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(example_config_text())
+    fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(example_config_text())
     return True
 
 

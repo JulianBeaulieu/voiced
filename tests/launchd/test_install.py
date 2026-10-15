@@ -302,6 +302,9 @@ def test_write_default_config(tmp_path: Path) -> None:
     assert write_default_config(target) is True
     text = target.read_text()
     assert "[server]" in text and "[watchdog]" in text and "[install]" in text
+    # api_key goes in this file, and other local users can read 0644 files in
+    # a macOS home directory through the staff group.
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
     target.write_text("# mine")
     assert write_default_config(target) is False
     assert target.read_text() == "# mine"
@@ -511,3 +514,33 @@ def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
     targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
     assert tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16" in targets.trees
     assert tmp_path / "hf" / "hub" / "models--mlx-community--parakeet-tdt-0.6b-v3" in targets.trees
+
+
+@pytest.mark.parametrize(
+    ("argv", "root", "message"),
+    [
+        (["install", "--source", "."], True, "not with sudo"),
+        (["install", "--source", ".", "--user", "root"], False, "--user root"),
+        (["install"], False, "--source ~/voiced"),
+    ],
+)
+def test_cli_install_refuses_unsafe_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    root: bool,
+    message: str,
+) -> None:
+    """Root daemons running a user-writable venv would hand root to anything
+    that can write to it; and an unpublished name from PyPI is whatever
+    someone else registers under it. Both stop before anything is written."""
+    from voiced import cli_lifecycle
+    from voiced.launchd import install
+
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(cli_lifecycle, "is_root", lambda: root)
+    monkeypatch.setattr(install, "repo_root", lambda: None)  # as after `uv tool install`
+    assert main([*argv, "--dry-run"]) == 2
+    assert message in capsys.readouterr().out
+    assert not (tmp_path / "config.toml").exists()

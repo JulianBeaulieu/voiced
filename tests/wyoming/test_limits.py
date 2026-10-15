@@ -206,17 +206,26 @@ async def test_tts_voice_outside_the_configured_languages_is_refused(
     tts_listener: WyomingListener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Wyoming serves the voices Describe lists, as HTTP does, not every
-    voice the engine knows."""
+    voice the engine knows: a voice in a language that is not configured
+    never reaches the engine. (Kokoro loads only its English voices, so this
+    matters for engines that offer more languages.)"""
     ctx = tts_listener.ctx
     engine = ctx.tts_engine
     voices = [*await engine.voices(), Voice(id="jf_alpha", name="Alpha", language="ja-JP")]
+    asked: list[str] = []
 
     async def with_japanese() -> list[Voice]:
         return voices
 
+    def synthesize(text: str, voice: str, speed: float = 1.0) -> object:
+        asked.append(voice)
+        raise AssertionError("the engine was asked")
+
     monkeypatch.setattr(engine, "voices", with_japanese)
+    monkeypatch.setattr(engine, "synthesize", synthesize)
     async with raw(tts_listener) as (reader, writer):
         request = Synthesize(text="Hi.", voice=SynthesizeVoice(name="jf_alpha"))
         await async_write_event(request.event(), writer)
         error = await read_error(reader)
     assert error.text.startswith("UnknownVoice")
+    assert asked == []

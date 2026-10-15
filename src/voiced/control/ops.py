@@ -111,7 +111,9 @@ def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, A
     them in a child process keeps them out of the watchdog, which must not be
     wedged by them (ADR 0012, ADR 0013).
     """
-    argv = [sys.executable, "-m", "voiced.engines.catalogue"]
+    # -P: `-m` would otherwise put the working directory (the user's home,
+    # for the daemon) first on sys.path, ahead of the standard library.
+    argv = [sys.executable, "-P", "-m", "voiced.engines.catalogue"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
