@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -35,10 +34,12 @@ from voiced.control.protocol import (
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
+    FileStamp,
     InvalidSetting,
     SettingsChange,
     apply_settings,
     change_view,
+    file_stamp,
     settings_view,
 )
 
@@ -48,8 +49,10 @@ MAX_LOG_LINES = 1000
 DEFAULT_LOG_LINES = 100
 LOG_SERVICES = ("stt", "tts", "watchdog")
 RESTART_TARGETS = ("stt", "tts", "all")
-CATALOGUE_TIMEOUT_S = 30.0
-"""The catalogue child process imports the engine plugins, not their weights."""
+CATALOGUE_TIMEOUT_S = 8.0
+"""The catalogue child process imports the engine plugins, not their weights
+(a fraction of a second); below the CLI client's wait, so the client sees
+this error rather than its own timeout."""
 CATALOGUE_TTL_S = 60.0
 
 
@@ -102,13 +105,13 @@ class NoSupervisor:
 
 
 def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, Any]:
-    """``engines.list`` from ``python -m voiced.engines.catalogue --json``.
+    """``engines.list`` from ``python -m voiced.engines.catalogue``.
 
     Engine plugins are third-party code that imports numpy and more; running
     them in a child process keeps them out of the watchdog, which must not be
     wedged by them (ADR 0012, ADR 0013).
     """
-    argv = [sys.executable, "-m", "voiced.engines.catalogue", "--json"]
+    argv = [sys.executable, "-m", "voiced.engines.catalogue"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
@@ -305,11 +308,5 @@ class Operations:
             return {"target": str(settings.server.log_dir)}
         return {"target": str(self.config_file)}
 
-    def config_stamp(self) -> tuple[int, int, int] | None:
-        """Identifies the config file's current contents (an atomic replace
-        changes the inode); None when it does not exist."""
-        try:
-            info = os.stat(self.config_file)
-        except OSError:
-            return None
-        return (info.st_mtime_ns, info.st_size, info.st_ino)
+    def config_stamp(self) -> FileStamp | None:
+        return file_stamp(self.config_file)

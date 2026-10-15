@@ -462,7 +462,7 @@ class Watchdog:
             return spec
         try:
             fresh = self.respec(spec)
-        except Exception:
+        except (OSError, ValueError):  # TOMLDecodeError, ValidationError
             log.exception("%s: cannot re-read the config; keeping the old spec", spec.name)
             return spec
         self.services = [fresh if s.name == spec.name else s for s in self.services]

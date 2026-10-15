@@ -33,7 +33,7 @@ def bearer(key: str) -> dict[str, str]:
 
 async def test_off_by_default(tts_client: AsyncClient) -> None:
     doc = (await tts_client.get("/metrics.json")).json()
-    assert doc["settings_form"] == {"enabled": False, "refused": None, "api_key_required": True}
+    assert doc["settings_form"] == {"enabled": False, "refused": None}
     r = await tts_client.get("/settings.json")
     assert r.status_code == 404
     assert "browser_settings" in r.json()["error"]["message"]
@@ -50,7 +50,6 @@ async def test_without_a_key_it_is_refused_on_loopback_too(tts_client: AsyncClie
     assert doc["settings_form"] == {
         "enabled": True,
         "refused": FORM_NEEDS_KEY,
-        "api_key_required": True,
     }
     r = await tts_client.get("/settings.json")
     assert r.status_code == 403
@@ -106,7 +105,7 @@ async def test_engine_change_resets_the_model(tts_client: AsyncClient) -> None:
 async def test_api_key_required_when_set(tts_client: AsyncClient) -> None:
     write_config(browser_settings=True, api_key="k1")
     doc = (await tts_client.get("/metrics.json")).json()
-    assert doc["settings_form"]["api_key_required"] is True
+    assert doc["settings_form"] == {"enabled": True, "refused": None}
     assert (await tts_client.get("/settings.json")).status_code == 401
     assert (await tts_client.get("/settings.json", headers=bearer("nope"))).status_code == 401
     got = await tts_client.get("/settings.json", headers=bearer("k1"))

@@ -61,6 +61,28 @@ def test_new_file_and_new_section(tmp_path: Path, settings: Settings) -> None:
     }
 
 
+def test_default_valued_key_on_a_minimal_file(tmp_path: Path, settings: Settings) -> None:
+    """A requested key absent from the file and equal to its default is
+    written along with the real change, so the file reads back as written."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[tts]\nengine = "fake"\n')
+    change = apply_settings({"tts.speed": 1.0, "zeroconf": False}, cfg)
+    assert change.changed == ("zeroconf",)
+    assert change.restart_required == ("stt", "tts")
+    assert tomllib.loads(cfg.read_text()) == {
+        "tts": {"engine": "fake", "speed": 1.0},
+        "server": {"zeroconf": False},
+    }
+
+
+def test_only_default_valued_keys_leave_the_file_alone(tmp_path: Path, settings: Settings) -> None:
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[tts]\nengine = "fake"\n')
+    change = apply_settings({"tts.speed": 1.0, "zeroconf": True}, cfg)
+    assert change.changed == ()
+    assert cfg.read_text() == '[tts]\nengine = "fake"\n'
+
+
 def test_dotted_keys_and_inline_tables_keep_comments(tmp_path: Path, settings: Settings) -> None:
     cfg = tmp_path / "c.toml"
     cfg.write_text('# kept\nserver.bind = "127.0.0.1"  # mine\ntts = { speed = 1.0 }\n')
@@ -215,7 +237,12 @@ ENGINES = {
         {"name": "bare", "label": "Bare", "models": [], "languages": ["en"]},
     ],
     "tts": [
-        {"name": "kokoro", "label": "Kokoro", "models": ["k/m"], "voices": ["af_heart", "bf_emma"]},
+        {
+            "name": "kokoro",
+            "label": "Kokoro",
+            "models": ["k/m"],
+            "voices": ["af_alloy", "af_heart", "bf_emma"],
+        },
         {"name": "soprano", "label": "Soprano", "models": ["s/m"], "voices": ["default"]},
         {"name": "open", "label": "Open", "models": ["o/m"], "voices": []},
     ],
@@ -231,7 +258,8 @@ def test_engine_change_takes_the_engine_model_and_voice(cfg: Path) -> None:
     assert change.changed == ("tts.engine", "tts.model", "tts.voice")
     tts = tomllib.loads(cfg.read_text())["tts"]
     assert (tts["engine"], tts["model"], tts["default_voice"]) == ("soprano", "s/m", "default")
-    # Back to kokoro: its model again, and its first voice (not "default").
+    # Back to kokoro: its model again, and the built-in default voice rather
+    # than its first one.
     apply_settings({"tts.engine": "kokoro"}, cfg, engines=engines)
     tts = tomllib.loads(cfg.read_text())["tts"]
     assert (tts["model"], tts["default_voice"]) == ("k/m", "af_heart")

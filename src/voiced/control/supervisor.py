@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -101,9 +102,13 @@ class WatchdogSupervisor:
                 s.name: replace(self.dog.states[s.name]) for s in specs if s.name in self.dog.states
             }
             now = self.dog.clock()
+        # In parallel: a hung service costs one check timeout, not one each.
+        observed: list[Observation] = []
+        if specs:
+            with ThreadPoolExecutor(len(specs), thread_name_prefix="voiced-status") as pool:
+                observed = list(pool.map(self._observe, specs))
         services: dict[str, Any] = {}
-        for spec in specs:
-            obs = self._observe(spec)
+        for spec, obs in zip(specs, observed, strict=True):
             state = states.get(spec.name)
             in_grace = (
                 state is not None and now - state.grace_started_at < self.dog.policy.startup_grace_s
@@ -129,7 +134,10 @@ class WatchdogSupervisor:
         if spec is None:
             raise NotInstalled(f"{service} is not supervised by this watchdog")
         if not self.installed(spec.label):
-            raise NotInstalled(f"{spec.label} has no launchd plist; run `voiced install`")
+            raise NotInstalled(
+                f"{spec.label} has no launchd plist; "
+                "run `voiced install` and the sudo script it prints"
+            )
         loaded, _pid = launchd_view(spec.label, self.runner)
         if loaded is False:
             raise ServiceUnavailable(

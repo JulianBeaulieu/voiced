@@ -13,7 +13,7 @@ registry name capitalised, and a voice with a gender is labelled
 ``Name (Language, gender)`` (Kokoro's ``af_heart`` is "Heart (American
 English, female)"), any other voice by its name.
 
-``python -m voiced.engines.catalogue --json`` prints :func:`engines_list`.
+``python -m voiced.engines.catalogue`` prints :func:`engines_list` as JSON.
 The watchdog runs it that way, in a child process with a timeout, so engine
 plugin code never runs inside the supervisor (ADR 0013).
 """
@@ -87,8 +87,10 @@ def engines_list() -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m voiced.engines.catalogue")
-    parser.add_argument("--json", action="store_true", help="print the engines.list result")
+    parser = argparse.ArgumentParser(
+        prog="python -m voiced.engines.catalogue",
+        description="Print the engines.list result as JSON.",
+    )
     parser.parse_args(argv)
     json.dump(engines_list(), sys.stdout)
     sys.stdout.write("\n")

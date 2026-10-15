@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
+import json
 import os
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from voiced.cli_lifecycle import watchdog_specs
 from voiced.config import Settings, WatchdogConfig
-from voiced.control.ops import NotInstalled, ServiceUnavailable
+from voiced.control.ops import NotInstalled, Operations, ServiceUnavailable
+from voiced.control.server import ControlServer
 from voiced.control.supervisor import WatchdogSupervisor, service_state
+from voiced.engines.catalogue import engines_list
 from voiced.launchd.control import CommandResult
 from voiced.watchdog import Observation, RestartResult, ServiceSpec, Watchdog
 
@@ -91,6 +97,32 @@ def test_status_shape(settings: Settings) -> None:
     assert wd["state"] == "running" and wd["pid"] == os.getpid()
     clock[0] += 200  # grace over
     assert sup.status()["services"]["stt"]["state"] == "degraded"
+
+
+def hung(settings: Settings, check_s: float) -> WatchdogSupervisor:
+    """Every service's check takes ``check_s`` (a health check that times
+    out on a service that accepts but never answers)."""
+
+    def observe(spec: ServiceSpec) -> Observation:
+        time.sleep(check_s)
+        return Observation("unreachable", loaded=True, pid=7)
+
+    dog = Watchdog(
+        services=watchdog_specs(settings),
+        policy=POLICY,
+        restart=lambda spec: RestartResult(True, "ok"),
+        observe=lambda s, p: Observation("ok"),
+    )
+    return WatchdogSupervisor(dog, installed=lambda label: True, observe=observe)
+
+
+def test_services_are_checked_in_parallel(settings: Settings) -> None:
+    sup = hung(settings, 2.0)
+    started = time.monotonic()
+    status = sup.status()
+    elapsed = time.monotonic() - started
+    assert {"stt", "tts"} <= set(status["services"])
+    assert elapsed < 3.0  # one check's time, not two
 
 
 def test_restart_goes_through_the_watchdog(settings: Settings) -> None:
@@ -228,3 +260,31 @@ async def test_run_async_survives_observer_bug(caplog: pytest.LogCaptureFixture)
         stop.set()
         await asyncio.wait_for(task, 5)
     assert "tick failed" in caplog.text
+
+
+async def test_status_events_keep_their_cadence_with_hung_services(
+    settings: Settings, config_file: Path, short_dir: Path
+) -> None:
+    """Checks that take as long as the poll interval (2 s checks with a 2 s
+    poll and the 10 s promise, scaled down by 4) still leave no gap between
+    ``status`` events longer than the promise."""
+    check_s, poll_s, push_max_s = 0.5, 0.5, 2.5
+    ops = Operations(hung(settings, check_s), config_file, engines=engines_list)
+    server = ControlServer(
+        short_dir / "control.sock",
+        ops,
+        version="x",
+        status_poll_s=poll_s,
+        status_push_max_s=push_max_s,
+    )
+    async with server:
+        reader, writer = await asyncio.open_unix_connection(str(server.path), limit=1 << 20)
+        seen: list[float] = []
+        loop = asyncio.get_running_loop()
+        while len(seen) < 4:
+            message = json.loads(await asyncio.wait_for(reader.readline(), 3 * push_max_s))
+            if message.get("event") == "status":
+                seen.append(loop.time())
+        writer.close()
+    gaps = [b - a for a, b in itertools.pairwise(seen)]
+    assert max(gaps) <= push_max_s + 0.25, gaps

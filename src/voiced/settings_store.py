@@ -3,8 +3,8 @@
 The control channel, the CLI fallback and the status page's settings form all
 change the config file through :func:`apply_settings`. It validates with the
 section models of ``voiced.config``, edits the file with ``tomlkit`` (only
-the changed values are rewritten; comments, key order and every other key
-stay as they were) and replaces it atomically. ``voiced.config`` stays the
+the requested values that differ from the file are rewritten; comments, key
+order and every other key stay as they were) and replaces it atomically. ``voiced.config`` stays the
 schema and the loader. See ADR 0013.
 
 Errors are :class:`InvalidSetting` (with the field at fault) and
@@ -20,7 +20,7 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import tomlkit
 from pydantic import BaseModel, ValidationError
@@ -92,6 +92,19 @@ class SettingsChange:
     changed: tuple[str, ...]
     restart_required: tuple[ServiceName, ...]
     warnings: tuple[str, ...]
+
+
+FileStamp: TypeAlias = tuple[int, int, int]
+
+
+def file_stamp(path: Path) -> FileStamp | None:
+    """Identifies a file's current contents: modification time, size and
+    inode (an atomic replace changes the inode). None when it does not exist."""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size, info.st_ino)
 
 
 def is_loopback(bind: str) -> bool:
@@ -231,7 +244,8 @@ def complete_engine_change(
     A new ``stt.engine`` or ``tts.engine`` without its ``model`` gets the
     engine's first catalogue model (the old engine's model would not load);
     a new ``tts.engine`` without ``tts.voice`` keeps the voice if the new
-    engine has it and otherwise gets its first voice. An engine that is not
+    engine has it, and otherwise gets the built-in default voice
+    (``af_heart``) if it has that, else its first voice. An engine that is not
     installed, or a voice its catalogue lacks, is refused.
     """
     for kind in HTTP_SERVICES:
@@ -257,7 +271,8 @@ def complete_engine_change(
         return
     if "tts.voice" not in changes:
         if tts.default_voice not in voices:
-            changes["tts.voice"] = voices[0]
+            fallback = TTSConfig.model_fields["default_voice"].default
+            changes["tts.voice"] = fallback if fallback in voices else voices[0]
         return
     if changes["tts.voice"] not in voices:
         raise InvalidSetting("tts.voice", f"{engine} has no voice {changes['tts.voice']!r}")
@@ -298,7 +313,7 @@ def apply_settings(
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         data = tomllib.loads(text)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise ConfigFileError(f"cannot read {path}: {exc}") from exc
+        raise ConfigFileError(f"config error at {path}: {exc}") from exc
     old_sections = validate_file_data(data)
 
     wanted: dict[str, object] = {}
@@ -324,9 +339,17 @@ def apply_settings(
         if getattr(sections[section], key) != getattr(old_sections[section], key):
             changed.append((section, key))
     if changed:
+        # Every requested key whose text differs is written, including one
+        # absent from the file that equals its default, so the file reads
+        # back as ``new_data``; keys already holding the value stay as typed.
+        written = [
+            SETTABLE[name]
+            for name in wanted
+            if _file_value(data, *SETTABLE[name]) != _file_value(new_data, *SETTABLE[name])
+        ]
         server = sections["server"]
         assert isinstance(server, ServerConfig)
-        atomic_write(path, edit_toml(text, new_data, changed), private=bool(server.api_key))
+        atomic_write(path, edit_toml(text, new_data, written), private=bool(server.api_key))
 
     settings = load_settings(path)
     restart: set[ServiceName] = set()
@@ -347,6 +370,14 @@ def apply_settings(
         restart_required=tuple(s for s in HTTP_SERVICES if s in restart),
         warnings=tuple(warnings),
     )
+
+
+_MISSING = object()
+
+
+def _file_value(data: Mapping[str, Any], section: str, key: str) -> object:
+    table = data.get(section)
+    return table.get(key, _MISSING) if isinstance(table, Mapping) else _MISSING
 
 
 def edit_toml(text: str, new_data: Mapping[str, Any], keys: list[tuple[str, str]]) -> str:

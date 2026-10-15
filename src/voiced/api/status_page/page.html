@@ -308,7 +308,7 @@
     var on = !!(f && f.enabled);
     $("settings-section").classList.toggle("hidden", !on);
     if (!on) { settingsLoaded = false; return; }
-    if (f.api_key_required && !f.refused) $("apikey-section").classList.remove("hidden");
+    if (!f.refused) $("apikey-section").classList.remove("hidden");
     $("settings-refused").classList.toggle("hidden", !f.refused);
     $("settings-refused").textContent = f.refused || "";
     $("settings-form").classList.toggle("hidden", !!f.refused);

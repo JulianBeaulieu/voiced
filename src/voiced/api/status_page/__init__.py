@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
-import os
 import threading
 from importlib import resources
 from pathlib import Path
@@ -39,9 +38,11 @@ from voiced.engines.catalogue import engines_list
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
+    FileStamp,
     InvalidSetting,
     apply_settings,
     change_view,
+    file_stamp,
     settings_view,
 )
 
@@ -141,21 +142,12 @@ class _LiveSettings:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._stamp: tuple[str, int, int, int] | None = None
+        self._stamp: tuple[Path, FileStamp | None] | None = None
         self._settings: Settings | None = None
 
     def get(self) -> Settings | None:
         path = config_path()
-        try:
-            info = os.stat(path)
-            stamp: tuple[str, int, int, int] | None = (
-                str(path),
-                info.st_mtime_ns,
-                info.st_size,
-                info.st_ino,
-            )
-        except OSError:
-            stamp = None
+        stamp = (path, file_stamp(path))
         with self._lock:
             if self._settings is not None and stamp == self._stamp:
                 return self._settings
@@ -172,13 +164,14 @@ _live = _LiveSettings()
 
 
 def _form_state(running: Settings) -> dict[str, Any]:
-    """What the page needs to decide whether to draw the form."""
+    """What the page needs to decide whether to draw the form. The form
+    always needs the API key, so the key box shows whenever it is drawn."""
     live = _live.get()
     if live is None or not live.server.browser_settings:
-        return {"enabled": False, "refused": None, "api_key_required": True}
+        return {"enabled": False, "refused": None}
     refusal = form_refusal(running, live, "")
     refused = refusal.message if refusal and refusal.type == "settings_refused" else None
-    return {"enabled": True, "refused": refused, "api_key_required": True}
+    return {"enabled": True, "refused": refused}
 
 
 def _guard(request: Request, running: Settings) -> Settings:

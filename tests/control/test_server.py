@@ -302,6 +302,55 @@ async def test_disconnected_client_does_not_break_fan_out(server: ControlServer)
     await stays.close()
 
 
+async def stuck_client(server: ControlServer, config_file: Path) -> Conn:
+    """A client that asks for large log tails and never reads the answers,
+    so the server's writes to it stop going through."""
+    from voiced.config import load_settings
+
+    log_dir = load_settings(config_file).server.log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "tts.log").write_text("".join(f"{i:04d} {'x' * 400}\n" for i in range(1000)))
+    conn = await Conn.open(server.path)
+    for i in range(8):
+        await conn.send(
+            protocol.encode({"id": i, "op": "logs.tail", "args": {"service": "tts", "lines": 1000}})
+        )
+    await asyncio.sleep(0.3)  # its replies fill the socket buffers
+    return conn
+
+
+async def test_a_stuck_client_does_not_hold_up_the_others(
+    server: ControlServer, config_file: Path
+) -> None:
+    stuck = await stuck_client(server, config_file)
+    good = await Conn.open(server.path)
+    await good.recv()
+    loop = asyncio.get_running_loop()
+    for i, (op, args) in enumerate(
+        [("settings.set", {"zeroconf": False}), ("settings.get", {}), ("status", {})]
+    ):
+        started = loop.time()
+        await good.send(protocol.encode({"id": 100 + i, "op": op, "args": args}))
+        assert (await good.answer(100 + i))["ok"] is True
+        assert loop.time() - started < 0.1, op
+    await server.poll_once()  # a status event to both: does not wait for the stuck one
+    await good.close()
+    stuck.writer.transport.abort()
+
+
+async def test_a_client_whose_queue_fills_is_dropped(server: ControlServer) -> None:
+    conn = await Conn.open(server.path)
+    await conn.recv()  # hello; nothing is read after it
+    assert len(server.clients) == 1
+    for _ in range(1000):
+        if not server.clients:
+            break
+        server.broadcast(protocol.event("status", {"pad": "x" * 65536}))
+        await asyncio.sleep(0)
+    assert not server.clients
+    conn.writer.transport.abort()
+
+
 # The blocking client used by the CLI ------------------------------------------
 
 
@@ -321,6 +370,25 @@ async def test_blocking_client(server: ControlServer) -> None:
 
     result = await asyncio.to_thread(use)
     assert result["bind"] == "loopback"
+
+
+async def test_blocking_client_reads_replies_over_64_kib(
+    server: ControlServer, config_file: Path
+) -> None:
+    """The line limit is for requests; a 1000-line log tail is longer."""
+    from voiced.config import load_settings
+
+    log_dir = load_settings(config_file).server.log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "tts.log").write_text("".join(f"{i:04d} {'x' * 400}\n" for i in range(1000)))
+
+    def use() -> dict[str, Any]:
+        with ControlClient.connect(server.path, timeout_s=5) as client:
+            return client.request("logs.tail", {"service": "tts", "lines": 1000})
+
+    result = await asyncio.to_thread(use)
+    assert len(result["lines"]) == 1000
+    assert len(protocol.encode(result)) > protocol.MAX_LINE_BYTES
 
 
 def test_client_without_server(short_dir: Path) -> None:

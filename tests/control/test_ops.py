@@ -162,10 +162,26 @@ async def test_engine_switch_takes_the_engine_model(ops: Operations, config_file
     assert tomllib.loads(read(config_file))["tts"]["model"] == SopranoEngine.model_id
 
 
+async def test_engine_switch_on_a_minimal_config(ops: Operations, config_file: Path) -> None:
+    """Kokoro's model is the config default; it is written all the same."""
+    from voiced.engines.kokoro import KokoroEngine
+
+    await asyncio.to_thread(config_file.write_text, '[tts]\nengine = "fake"\n')
+    result = await ops.dispatch("settings.set", {"tts.engine": "kokoro"})
+    assert result["tts"]["engine"] == "kokoro"
+    assert result["tts"]["model"] == KokoroEngine.model_id
+    tts = tomllib.loads(read(config_file))["tts"]
+    assert (tts["engine"], tts["model"]) == ("kokoro", KokoroEngine.model_id)
+
+
 async def test_config_error_names_the_file(ops: Operations, config_file: Path) -> None:
     await asyncio.to_thread(config_file.write_text, "[tts\n")
     with pytest.raises(OpError) as info:
         await ops.dispatch("settings.get", {})
+    assert info.value.code == protocol.INTERNAL
+    assert info.value.message.startswith(f"config error at {config_file}:")
+    with pytest.raises(OpError) as info:  # the same wording when setting
+        await ops.dispatch("settings.set", {"tts.speed": 1.5})
     assert info.value.code == protocol.INTERNAL
     assert info.value.message.startswith(f"config error at {config_file}:")
 

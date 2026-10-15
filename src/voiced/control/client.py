@@ -19,10 +19,11 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from voiced.control.protocol import MAX_LINE_BYTES, encode
+from voiced.control.protocol import encode
 
-DEFAULT_TIMEOUT_S = 30.0
-"""Long enough for a restart, which runs ``launchctl`` twice."""
+DEFAULT_TIMEOUT_S = 10.0
+"""Every operation answers at once (a restart is accepted and finishes in
+the background); the engine catalogue, the slowest, times out sooner."""
 
 
 class ControlUnavailable(OSError):
@@ -69,7 +70,9 @@ class ControlClient:
         return client
 
     def _read(self) -> dict[str, Any]:
-        line = self._file.readline(MAX_LINE_BYTES + 1)
+        # The 64 KiB line limit applies to requests only; a reply such as a
+        # 1000-line log tail is longer.
+        line = self._file.readline()
         if not line:
             raise ConnectionError("control socket closed")
         message = json.loads(line)

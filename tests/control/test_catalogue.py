@@ -19,7 +19,7 @@ def test_kokoro_catalogue_without_mlx() -> None:
     code = (
         "import json, sys\n"
         "from voiced.engines.catalogue import main\n"
-        "main(['--json'])\n"
+        "main([])\n"
         "mlx = [m for m in sys.modules if m.split('.')[0] in ('mlx', 'mlx_audio')]\n"
         "print(json.dumps(mlx))\n"
     )
@@ -55,8 +55,12 @@ def test_the_watchdog_imports_no_engine_plugins() -> None:
     """``voiced watchdog`` and everything the control socket runs in it import
     neither FastAPI nor numpy nor any engine (ADR 0012, ADR 0013)."""
     code = (
-        "import json, sys\n"
+        "import asyncio, json, pathlib, sys\n"
         "import voiced.cli, voiced.control.server, voiced.control.supervisor\n"
+        "from voiced.control.ops import NoSupervisor, Operations\n"
+        "ops = Operations(NoSupervisor(), pathlib.Path('/nonexistent/config.toml'))\n"
+        "listed = asyncio.run(ops.dispatch('engines.list', {}))\n"
+        "assert any(e['name'] == 'kokoro' for e in listed['tts'])\n"
         "print(json.dumps(sorted(sys.modules)))\n"
     )
     out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)

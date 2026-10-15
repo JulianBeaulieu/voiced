@@ -44,6 +44,9 @@ STATUS_PUSH_MAX_S = 10.0
 """A ``status`` event goes out at least this often, changed or not."""
 WRITE_TIMEOUT_S = 5.0
 """A client that does not take a message within this long is dropped."""
+SEND_QUEUE_MAX = 64
+"""Messages waiting for one client; a client that falls this far behind is
+dropped rather than slowing the others."""
 
 # <sys/un.h> on macOS: SOL_LOCAL and LOCAL_PEERCRED; struct xucred is
 # {u_int cr_version; uid_t cr_uid; short cr_ngroups; gid_t cr_groups[16]}.
@@ -113,8 +116,14 @@ def prepare_socket_path(path: Path) -> None:
 
 @dataclass(eq=False)
 class _Client:
+    """One connection. Everything sent to it goes through ``queue`` to its own
+    writer task, so a client that stops reading only ever holds up itself."""
+
     writer: asyncio.StreamWriter
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    queue: asyncio.Queue[bytes | None] = field(
+        default_factory=lambda: asyncio.Queue(SEND_QUEUE_MAX)
+    )
+    sender: asyncio.Task[None] | None = None
     closed: bool = False
 
 
@@ -164,6 +173,8 @@ class ControlServer:
         self._force_push = False
         self._last_status: Any = None
         self._last_push: float | None = None
+        self._read_s = 0.0
+        """How long the last status read took."""
         self._config_stamp: Any = None
         self._config_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -188,8 +199,7 @@ class ControlServer:
         await self.ops.wait_restarts()
         if self._server is not None:
             self._server.close()
-        for client in list(self.clients):
-            await self._drop(client)
+        await asyncio.gather(*(self._finish(c) for c in list(self.clients)))
         for task in list(self._tasks):
             task.cancel()
         if self._tasks:
@@ -223,15 +233,16 @@ class ControlServer:
                 self._tasks.discard(task)
             return
         client = _Client(writer)
+        client.sender = asyncio.create_task(self._sender(client), name="voiced-control-send")
         self.clients.add(client)
         self.refresh_status()
         try:
-            await self._send(client, hello(self.version))
+            self._send(client, hello(self.version))
             await self._serve(client, reader)
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
-            await self._drop(client)
+            await self._finish(client)
             if task is not None:
                 self._tasks.discard(task)
 
@@ -240,11 +251,11 @@ class ControlServer:
             try:
                 line = await reader.readuntil(b"\n")
             except asyncio.LimitOverrunError:
-                await self._send(client, error(None, BAD_REQUEST, "line too long"))
+                self._send(client, error(None, BAD_REQUEST, "line too long"))
                 return
             except asyncio.IncompleteReadError as exc:
                 if exc.partial.strip():
-                    await self._send(client, error(None, BAD_REQUEST, "incomplete line"))
+                    self._send(client, error(None, BAD_REQUEST, "incomplete line"))
                 return
             if not line.strip():
                 continue
@@ -254,43 +265,73 @@ class ControlServer:
         try:
             request = parse_request(line)
         except OpError as exc:
-            await self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
+            self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
             return
         try:
             result = await self.ops.dispatch(request.op, request.args)
         except OpError as exc:
-            await self._send(client, error(request.id, exc.code, exc.message, **exc.extra))
+            self._send(client, error(request.id, exc.code, exc.message, **exc.extra))
             return
-        await self._send(client, ok(request.id, result))
+        self._send(client, ok(request.id, result))
         if request.op == "settings.set":
             await self.check_config()
         elif request.op == "service.restart":
             self.refresh_status()
 
-    async def _send(self, client: _Client, message: dict[str, Any]) -> None:
+    def _send(self, client: _Client, message: dict[str, Any]) -> None:
+        """Queue ``message`` for ``client``; never waits. A client whose
+        queue is full is dropped."""
         if client.closed:
             return
-        data = encode(message)
         try:
-            async with client.lock:
+            client.queue.put_nowait(encode(message))
+        except asyncio.QueueFull:
+            log.warning("control: dropping a client that stopped reading")
+            self._abort(client)
+
+    async def _sender(self, client: _Client) -> None:
+        """Write ``client``'s queue in order until the ``None`` that ends it."""
+        try:
+            while (data := await client.queue.get()) is not None:
                 client.writer.write(data)
                 await asyncio.wait_for(client.writer.drain(), WRITE_TIMEOUT_S)
         except (OSError, TimeoutError):
-            await self._drop(client)
+            self._abort(client)
 
-    async def _drop(self, client: _Client) -> None:
+    def _abort(self, client: _Client) -> None:
+        """Drop ``client`` now, discarding what it has not taken."""
         if client.closed:
             return
         client.closed = True
         self.clients.discard(client)
+        client.writer.transport.abort()
+        if client.sender is not None and client.sender is not asyncio.current_task():
+            client.sender.cancel()
+
+    async def _finish(self, client: _Client) -> None:
+        """Send what is queued for ``client`` (for at most the write timeout),
+        then close it."""
+        if client.closed:
+            return
+        self.clients.discard(client)
+        try:
+            client.queue.put_nowait(None)
+        except asyncio.QueueFull:
+            self._abort(client)
+            return
+        if client.sender is not None:
+            await asyncio.wait({client.sender}, timeout=WRITE_TIMEOUT_S)
+        client.closed = True  # the sender may have aborted it already; closing twice is fine
+        if client.sender is not None:
+            client.sender.cancel()
         client.writer.close()
         with contextlib.suppress(Exception):
             await asyncio.wait_for(client.writer.wait_closed(), 1.0)
 
-    async def broadcast(self, message: dict[str, Any]) -> None:
-        clients = list(self.clients)
-        if clients:
-            await asyncio.gather(*(self._send(c, message) for c in clients))
+    def broadcast(self, message: dict[str, Any]) -> None:
+        """Queue ``message`` for every client; never waits for any of them."""
+        for client in list(self.clients):
+            self._send(client, message)
 
     # Status events ---------------------------------------------------------
 
@@ -303,19 +344,25 @@ class ControlServer:
         """One round of the event loop: push ``status`` if it changed (or is
         due, or was asked for) and ``settings`` if the config file changed."""
         await self.check_config()
+        started = self.clock()
         try:
             status: dict[str, Any] | None = await self.ops.dispatch("status", {})
         except OpError as exc:
             log.warning("control: status for event failed: %s", exc.message)
             status = None
         now = self.clock()
+        self._read_s = now - started
         force, self._force_push = self._force_push, False
         if status is None:
             return
         fingerprint = _fingerprint(status)
-        due = self._last_push is None or now - self._last_push >= self.status_push_max_s
+        # Due one read early: the next read would end past the promise.
+        due = (
+            self._last_push is None
+            or now - self._last_push >= self.status_push_max_s - self._read_s
+        )
         if force or due or fingerprint != self._last_status:
-            await self.broadcast(event("status", status))
+            self.broadcast(event("status", status))
             self._last_status, self._last_push = fingerprint, now
 
     async def check_config(self) -> None:
@@ -333,7 +380,7 @@ class ControlServer:
             except OpError as exc:
                 log.warning("control: settings for event failed: %s", exc.message)
                 return
-            await self.broadcast(event("settings", data))
+            self.broadcast(event("settings", data))
 
     async def _status_loop(self) -> None:
         while True:
@@ -344,4 +391,15 @@ class ControlServer:
             await self.poll_once()
             self._wake.clear()
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), self.status_poll_s)
+                await asyncio.wait_for(self._wake.wait(), self._next_wait())
+
+    def _next_wait(self) -> float:
+        """The poll interval, shortened so that the read which makes the next
+        periodic ``status`` due ends by the promised time, however long the
+        reads take (a hung service costs a full health check timeout)."""
+        if self._last_push is None:
+            return self.status_poll_s
+        # The next read is due once it ends within one read of the promise
+        # (see poll_once), so it starts two reads before it: one read of slack.
+        start_by = self._last_push + self.status_push_max_s - 2 * self._read_s
+        return max(0.0, min(self.status_poll_s, start_by - self.clock()))
