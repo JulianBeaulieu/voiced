@@ -58,6 +58,11 @@ uses [Semantic Versioning](https://semver.org/).
   page behind the new `[server] browser_settings` key (off by default; it
   always needs the API key). Settings writes keep comments (new dependency:
   `tomlkit`).
+- End-to-end test tier (`tests/e2e/`, model tier) that runs the real
+  services with real engines and drives them with the `openai` client, the
+  WebSocket stream and the Wyoming client, and `scripts/bench.py`, which
+  measures first audio, streaming finalize, batch transcription, memory and
+  the speech-to-LLM-to-speech loop against live servers (ADR 0015).
 - `/metrics.json` reports `memory.footprint_bytes` (the physical footprint,
   which includes MLX's GPU buffers) and `memory.mlx` (active, cached and peak
   allocation); the status page shows the footprint.
@@ -68,9 +73,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `voiced install` built an invalid pip requirement (`voiced==X[stt,tts]`)
+  for a pinned release; extras now go before the version.
 - The TTS engines never bounded MLX's buffer cache, so the Kokoro service
   grew to several GB after a few replies; the cache is now capped at 256 MB
   and emptied after the warm-up.
+- `voiced serve` with a port already in use exited 0, or only after loading
+  the model; it now names the port and exits 3 before loading anything.
+- The `finalize` contract said the server's endpointer ends a streaming turn;
+  the client's `end` message or Wyoming `AudioStop` does.
 
 ### Changed
 

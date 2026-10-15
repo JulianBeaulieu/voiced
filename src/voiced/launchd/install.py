@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -46,6 +47,36 @@ BASE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 DEFAULT_PYTHON_VERSION = "3.12"
 
 Say = Callable[[str], None]
+
+# A pip source that is a distribution name followed by a version specifier
+# (``voiced==0.0.1``, ``voiced>=1``), as opposed to a path (``.``,
+# ``/Users/me/voiced``) or a bare name (``voiced``).
+_VERSIONED_SOURCE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)([<>=!~].*)$")
+
+
+def requirement_with_extras(source: str, extras: Sequence[str]) -> str:
+    """Add ``extras`` to a pip ``source`` as a valid PEP 508 requirement.
+
+    Extras belong after the distribution name but before any version
+    specifier: a pinned release becomes ``voiced[stt,tts]==0.0.1``, never
+    ``voiced==0.0.1[stt,tts]`` (which is not valid PEP 508 and pip rejects, so
+    a bare ``voiced install`` would fail after the first PyPI release). A path
+    or bare name has no specifier and takes the extras at the end
+    (``/path/to/voiced[stt,tts]``, ``.[stt,tts]``, ``voiced[stt,tts]``).
+
+    Handles what ``default_source`` produces and the usual ``--source`` forms: a
+    name with an unspaced specifier, a path, or a bare name. A source that
+    already has extras (``name[x]==1``), a direct reference (``name @ url``) or
+    a specifier with spaces is not supported.
+    """
+    if not extras:
+        return source
+    joined = ",".join(extras)
+    match = _VERSIONED_SOURCE.match(source)
+    if match:
+        name, specifier = match.groups()
+        return f"{name}[{joined}]{specifier}"
+    return f"{source}[{joined}]"
 
 
 def repo_root() -> Path | None:
@@ -143,8 +174,9 @@ class InstallPlan:
 
     @property
     def requirement(self) -> str:
-        extras = ",".join(self.extras)
-        return f"{self.source}[{extras}]" if extras else self.source
+        """The pip requirement to install: the source plus the engine extras,
+        kept valid PEP 508 (see :func:`requirement_with_extras`)."""
+        return requirement_with_extras(self.source, self.extras)
 
     # Plists ------------------------------------------------------------
 

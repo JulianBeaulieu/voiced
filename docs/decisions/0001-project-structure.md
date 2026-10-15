@@ -27,7 +27,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.threads` | `run_blocking()`: thread calls that keep the slot until the GPU is idle, even on cancel; `ModelThread`: the same, pinned to one thread per MLX engine (MLX streams are per thread). |
 | `voiced.metrics` | `Operation`, `Outcome`; per-operation p50/p95 latency, outcome counts, recent errors, resident memory. |
 | `voiced.audio` | PCM conversion (`PCMConverter`, int16 and float32), `resample` (polyphase, for engines whose model rate is not 24 kHz), WAV headers, and `frame_rms` / `dbfs_to_amplitude` on the shared 32 ms frame. No transport imports. |
-| `voiced.vad` | Endpointing: `Endpointer` (speech start and end with the `vad_silence_ms` window) over `SileroDetector`. Top level because the STT engine uses it and the transports will. |
+| `voiced.vad` | Endpointing: `Endpointer` (speech start and end with the `vad_silence_ms` window) over `SileroDetector`. Top level because the Parakeet streaming planner uses it; the transports end a turn on the client's end-of-stream signal (the WebSocket `end` message or Wyoming `AudioStop`), not a server-side endpointer. |
 | `voiced.engines` | Frozen engine interfaces and the entry-point registry. |
 | `voiced.engines.sentence` | `SentenceTTSEngine`: `load()`, the loaded, voice and speed checks, and the split-synthesize-yield loop shared by sentence-at-a-time TTS engines. |
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |

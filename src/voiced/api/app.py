@@ -60,6 +60,10 @@ _HTTP: dict[Outcome, tuple[int, str]] = {
 exit_process: Callable[[int], NoReturn] = os._exit
 """Ends the process without waiting for threads. Replaced in tests."""
 
+STARTUP_FAILED_EXIT = 3
+"""Exit code when startup fails while the engine loads (uvicorn's own code for
+a failed startup)."""
+
 
 async def _load(ctx: ServiceContext) -> None:
     """Load the engine in the background; the process exits 1 if that fails.
@@ -115,7 +119,18 @@ def _build(ctx: ServiceContext) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(_load(ctx), name=f"voiced-{ctx.service}-load")
         app.state.load_task = task
-        yield
+        try:
+            yield
+        except Exception as exc:
+            # Startup failed after the load began: a Wyoming port clash in the
+            # listener's outer lifespan, for one. The load thread cannot be
+            # interrupted, so returning would keep a process that can never
+            # serve alive until the model has loaded and warmed. Leave now.
+            if not task.done():
+                log.error("%s: startup failed during engine load: %s", ctx.service, exc)
+                logging.shutdown()
+                exit_process(STARTUP_FAILED_EXIT)
+            raise
         if not task.done():
             # The load thread cannot be interrupted, and waiting it out could
             # exceed launchd's ExitTimeOut (about 20 s). Leave now.
