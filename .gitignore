@@ -34,7 +34,7 @@ models/
 # macOS
 .DS_Store
 
-# Editor and agent tooling
+# Editor tooling
 .idea/
 .vscode/
 .claude/

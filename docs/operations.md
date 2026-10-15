@@ -7,7 +7,7 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--user`, `--staging-dir`, `--skip-models`, `--no-uv`. |
+| `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--staging-dir`, `--skip-models`, `--no-uv`. |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
 | `voiced restart [stt\|tts\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. |
@@ -207,6 +207,11 @@ speech client that stopped reading and was cut off after
 health is untouched. Do not alert on it. Alert on `/health` reporting
 `degraded` or on the `failure` counts on the status page instead.
 
+If the disk holding the logs fills up, the services keep serving; each log
+record that cannot be written is reported on stderr instead (a `--- Logging
+error ---` block), which under launchd goes to the stderr file on the same
+full disk and is lost. Free space and the log resumes.
+
 ## FileVault
 
 With FileVault on, a reboot stops at the disk-unlock screen and nothing
@@ -272,9 +277,12 @@ From the checkout in `~/voiced`, before the first release:
 ```sh
 cd ~/voiced
 git pull
-uv tool install --reinstall ~/voiced
+uv tool install --reinstall --python 3.12 ~/voiced
 voiced install --source ~/voiced
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
+
+Use `--reinstall`: `--force` does not rebuild a version uv already has, so
+the command would keep the old code while the service environment updates.
 
 Read [CHANGELOG.md](../CHANGELOG.md) for anything that needs a manual step.

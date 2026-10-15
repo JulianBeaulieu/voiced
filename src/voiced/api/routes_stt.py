@@ -49,8 +49,9 @@ from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.audio import PCMConverter
 from voiced.context import ServiceContext
 from voiced.engines.base import STT_SAMPLE_RATE, AudioInput, EngineError
-from voiced.inference import bounded, classify, inference
+from voiced.inference import UtteranceBudget, bounded, classify, inference
 from voiced.metrics import Operation, Outcome
+from voiced.validate import is_int
 
 log = logging.getLogger(__name__)
 
@@ -142,8 +143,11 @@ def _parse_format(value: str | None) -> formats.ResponseFormat:
     responses={
         200: {"description": "Transcript in the requested response_format"},
         400: {"description": "Bad parameters or undecodable audio"},
-        413: {"description": "Upload larger than stt.max_upload_mb"},
-        503: {"description": "Inference queue full; retry later"},
+        413: {
+            "description": "Upload larger than stt.max_upload_mb, or decoding to more than"
+            " that many megabytes of 16-bit 16 kHz audio"
+        },
+        503: {"description": "Model loading, queue_depth uploads decoding, or queue full"},
     },
 )
 async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> Response:
@@ -167,9 +171,20 @@ async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> 
         return Response(status_code=CLIENT_CLOSED_REQUEST)
 
     try:
-        samples = await ffmpeg.decode(data, STT_SAMPLE_RATE)
+        # Decoding runs outside the slot, so it is bounded on its own: each
+        # upload holds its bytes, an ffmpeg process and the decoded audio.
+        with ctx.uploads.admit():
+            samples = await ffmpeg.decode(
+                data, STT_SAMPLE_RATE, max_seconds=ctx.settings.stt.max_audio_s
+            )
     except ffmpeg.AudioDecodeError as exc:
         raise APIError(status.HTTP_400_BAD_REQUEST, str(exc), "invalid_audio") from exc
+    except ffmpeg.AudioTooLong as exc:
+        raise APIError(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            f"{exc} (stt.max_upload_mb read as 16 kHz 16-bit audio)",
+            type="payload_too_large",
+        ) from exc
 
     async with inference(ctx, Operation.TRANSCRIBE):
         transcript = await ctx.stt_engine.transcribe(AudioInput(samples), language)
@@ -213,9 +228,7 @@ async def transcriptions_stream(ws: WebSocket, ctx: Ctx) -> None:
         async with inference(ctx, Operation.STREAM):
             await _stream_session(ws, ctx)
     except Exception as exc:
-        outcome = classify(exc)
-        if outcome is Outcome.FAILURE:
-            log.exception("streaming transcription failed")
+        outcome = classify(exc)  # inference() has logged a failure
         reason = "" if outcome is Outcome.DISCONNECT else f"{type(exc).__name__}: {exc}"
         await close_ws(ws, WS_CLOSE[outcome], reason)
         return
@@ -247,8 +260,8 @@ async def _next_frame(ws: WebSocket, ctx: ServiceContext) -> bytes | dict[str, A
 
 def _parse_config(event: dict[str, Any]) -> tuple[int, str | None]:
     rate = event.get("sample_rate", STT_SAMPLE_RATE)
-    if not isinstance(rate, int) or rate < 8000 or rate > 192_000:
-        raise BadFrame("config.sample_rate must be an integer between 8000 and 192000")
+    if not is_int(rate):
+        raise BadFrame("config.sample_rate must be an integer")  # PCMConverter checks the range
     language = event.get("language")
     if language is not None and not isinstance(language, str):
         raise BadFrame("config.language must be a string")
@@ -256,7 +269,15 @@ def _parse_config(event: dict[str, Any]) -> tuple[int, str | None]:
 
 
 async def _stream_session(ws: WebSocket, ctx: ServiceContext) -> None:
-    """Runs inside ``inference()``: only ``EngineError`` subclasses for client mistakes."""
+    """Runs inside ``inference()``: only ``EngineError`` subclasses for client mistakes.
+
+    Bounded like a Wyoming utterance (:class:`voiced.inference.UtteranceBudget`).
+    """
+    async with UtteranceBudget(ctx.settings) as budget:
+        await _stream_frames(ws, ctx, budget)
+
+
+async def _stream_frames(ws: WebSocket, ctx: ServiceContext, budget: UtteranceBudget) -> None:
     write_timeout = ctx.settings.server.write_timeout_s
     converter = PCMConverter(STT_SAMPLE_RATE, 2, 1)
     language: str | None = None
@@ -281,7 +302,9 @@ async def _stream_session(ws: WebSocket, ctx: ServiceContext) -> None:
 
             if session is None:
                 session = await ctx.stt_engine.stream(language)
-            await session.add_audio(converter.convert(frame))
+            samples = converter.convert(frame)
+            budget.add(len(samples))
+            await session.add_audio(samples)
             partial = session.partial()
             now = time.monotonic()
             if partial != last_partial and now - last_partial_at >= PARTIAL_INTERVAL_S:

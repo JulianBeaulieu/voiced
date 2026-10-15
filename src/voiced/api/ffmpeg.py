@@ -2,8 +2,9 @@
 
 Decoding (uploads to STT) goes through ``ffmpeg`` as an external program:
 any container or codec ffmpeg knows becomes mono float32 at 16 kHz. The
-upload is written to a temporary file first because containers such as
-``.m4a`` put their index at the end and cannot be decoded from a pipe. ffmpeg
+upload is written to an anonymous temporary file first because containers
+such as ``.m4a`` put their index at the end and cannot be decoded from a
+pipe; ffmpeg may open nothing but that file (see :func:`decode`). ffmpeg
 is a hard external dependency (``voiced doctor`` checks for it); without it
 :func:`decode` raises :class:`FFmpegMissing`.
 
@@ -20,12 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import tempfile
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import aclosing
-from typing import Literal, cast
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
+from contextlib import aclosing, suppress
+from typing import IO, Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,10 +45,21 @@ _ENCODER_ARGS: dict[str, list[str]] = {
 }
 
 _DECODE_TIMEOUT_S = 120.0
+_READ_BYTES = 1 << 20
+_STDERR_KEEP = 64 * 1024
+"""ffmpeg's diagnostics kept for the debug log; the rest is read and dropped."""
 
 
 class AudioDecodeError(Exception):
     """ffmpeg ran but could not decode the upload. The route maps it to 400."""
+
+
+class AudioTooLong(Exception):
+    """The upload decodes to more audio than allowed. The route maps it to 413."""
+
+    def __init__(self, max_seconds: float) -> None:
+        super().__init__(f"the upload decodes to more than {max_seconds:.0f} s of audio")
+        self.max_seconds = max_seconds
 
 
 class FFmpegMissing(APIError):
@@ -81,22 +92,41 @@ def ffmpeg_available() -> bool:
     return ffmpeg_path() is not None
 
 
-async def decode(data: bytes, sample_rate: int = STT_SAMPLE_RATE) -> NDArray[np.float32]:
-    """Decode any audio file ``data`` to mono float32 at ``sample_rate`` with ffmpeg."""
+async def decode(
+    data: bytes, sample_rate: int = STT_SAMPLE_RATE, *, max_seconds: float | None = None
+) -> NDArray[np.float32]:
+    """Decode any audio file ``data`` to mono float32 at ``sample_rate`` with ffmpeg.
+
+    The upload goes to an anonymous temporary file (unlinked from the start,
+    so nothing is left behind if the process is killed) that ffmpeg reads
+    through an inherited descriptor, with ``fd`` as the only protocol it may
+    open. Containers such as ``.m4a`` need to seek, which a pipe cannot do;
+    the whitelist stops formats that refer to other inputs (``ffconcat``
+    lists, playlists) from opening files or URLs on the server's behalf.
+
+    ``max_seconds`` bounds the decoded audio, not the upload: a small file can
+    decode to hours of audio. Past it ffmpeg is stopped and
+    :class:`AudioTooLong` raised.
+    """
     if not data:
         raise AudioDecodeError("empty upload")
     ffmpeg = require_ffmpeg("decoding uploads")
-    fd, path = tempfile.mkstemp(prefix="voiced-upload-", suffix=".bin")
+    limit = None if max_seconds is None else int(max_seconds * sample_rate) * 4
+    upload = await asyncio.to_thread(_spool, data)
     try:
-        await asyncio.to_thread(_write_and_close, fd, data)
+        fd = upload.fileno()
         proc = await asyncio.create_subprocess_exec(
             ffmpeg,
             "-nostdin",
             "-hide_banner",
             "-loglevel",
             "error",
+            "-protocol_whitelist",
+            "fd",
+            "-fd",
+            str(fd),
             "-i",
-            path,
+            "fd:",
             "-vn",
             "-f",
             "f32le",
@@ -110,24 +140,31 @@ async def decode(data: bytes, sample_rate: int = STT_SAMPLE_RATE) -> NDArray[np.
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            pass_fds=(fd,),
         )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=_DECODE_TIMEOUT_S)
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
-        except asyncio.CancelledError:
-            proc.kill()
-            await proc.wait()
-            raise
     finally:
-        try:
-            os.unlink(path)
-        except OSError:  # pragma: no cover
-            pass
+        upload.close()  # ffmpeg holds its own copy of the descriptor
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout, stderr = proc.stdout, proc.stderr
+    read_out = asyncio.create_task(_read_at_most(stdout, limit))
+    read_err = asyncio.create_task(_read_head(stderr, _STDERR_KEEP))
+    reads = (read_out, read_err)
+    try:
+        await asyncio.wait_for(asyncio.gather(*reads), timeout=_DECODE_TIMEOUT_S)
+    except TimeoutError:
+        await _stop(proc, reads)
+        raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
+    except _OverLimit:
+        await _stop(proc, reads)
+        assert max_seconds is not None
+        raise AudioTooLong(max_seconds) from None
+    except asyncio.CancelledError:
+        await _stop(proc, reads)
+        raise
+    out, err = read_out.result(), read_err.result()
+    await proc.wait()
     if proc.returncode != 0:
-        # ffmpeg's stderr names temp files and internals; keep it out of the response.
+        # ffmpeg's stderr names internals; keep it out of the response.
         log.debug("ffmpeg could not decode the upload: %s", err.decode(errors="replace").strip())
         raise AudioDecodeError("the upload is not an audio file ffmpeg can decode")
     if not out:
@@ -135,9 +172,49 @@ async def decode(data: bytes, sample_rate: int = STT_SAMPLE_RATE) -> NDArray[np.
     return np.frombuffer(out, dtype=np.float32)
 
 
-def _write_and_close(fd: int, data: bytes) -> None:
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
+class _OverLimit(Exception):
+    pass
+
+
+async def _stop(proc: asyncio.subprocess.Process, reads: Iterable[asyncio.Task[Any]]) -> None:
+    """Stop a decode early: cancel the readers, kill ffmpeg and reap it."""
+    readers = list(reads)
+    for task in readers:
+        task.cancel()
+    await asyncio.gather(*readers, return_exceptions=True)
+    with suppress(ProcessLookupError):
+        proc.kill()
+    assert proc.stdout is not None and proc.stderr is not None
+    # Read both pipes to their end so wait() can return (see encode_stream).
+    await asyncio.gather(proc.stdout.read(), proc.stderr.read(), return_exceptions=True)
+    await proc.wait()
+
+
+async def _read_at_most(stream: asyncio.StreamReader, limit: int | None) -> bytearray:
+    """Read ``stream`` to EOF; more than ``limit`` bytes raises :class:`_OverLimit`.
+    Returns the buffer itself: decoded audio can be 100 MB, not worth a copy."""
+    buf = bytearray()
+    while chunk := await stream.read(_READ_BYTES):
+        if limit is not None and len(buf) + len(chunk) > limit:
+            raise _OverLimit
+        buf += chunk
+    return buf
+
+
+async def _read_head(stream: asyncio.StreamReader, keep: int) -> bytes:
+    """Read ``stream`` to EOF, keeping its first ``keep`` bytes."""
+    buf = bytearray()
+    while chunk := await stream.read(_READ_BYTES):
+        buf += chunk[: max(0, keep - len(buf))]
+    return bytes(buf)
+
+
+def _spool(data: bytes) -> IO[bytes]:
+    upload = tempfile.TemporaryFile(prefix="voiced-upload-")
+    upload.write(data)
+    upload.flush()
+    upload.seek(0)
+    return upload
 
 
 async def encode_stream(

@@ -9,11 +9,12 @@ review and run with ``sudo``. See ADR 0006 for the layout.
 
 from __future__ import annotations
 
-import getpass
 import os
+import pwd
 import re
 import shlex
 import shutil
+import stat
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -88,6 +89,17 @@ def repo_root() -> Path | None:
     return None
 
 
+PUBLISHED = False
+"""Whether ``voiced==<version>`` is on PyPI. Until it is, ``voiced install``
+outside a checkout needs ``--source``: installing an unpublished name from
+PyPI would install whatever someone else registers under it."""
+
+
+def needs_source() -> bool:
+    """True when ``install`` has nothing safe to install without ``--source``."""
+    return not PUBLISHED and repo_root() is None
+
+
 def default_source() -> str:
     """What to ``pip install``: the dev checkout if there is one, else the release."""
     root = repo_root()
@@ -115,6 +127,14 @@ def example_config_text() -> str:
         "# voiced configuration. All keys are optional; see\n"
         "# https://github.com/JulianBeaulieu/voiced/blob/main/config.example.toml\n"
     )
+
+
+def installing_user() -> str:
+    """The account running the installer, from its uid. Not
+    ``getpass.getuser()``, which believes ``LOGNAME`` and ``USER``: with
+    ``LOGNAME="System Administrator"`` it would name uid 0 as the daemons'
+    ``UserName``."""
+    return pwd.getpwuid(os.getuid()).pw_name
 
 
 def find_uv() -> str | None:
@@ -412,7 +432,6 @@ def plan_install(
     venv_dir: Path | None = None,
     python: str | None = None,
     source: str | None = None,
-    user: str | None = None,
     home: Path | None = None,
     staging_dir: Path | None = None,
     config_file: Path | None = None,
@@ -431,7 +450,7 @@ def plan_install(
         if (value := os.environ.get(key))
     }
     return InstallPlan(
-        user=user or getpass.getuser(),
+        user=installing_user(),
         home=home or Path.home(),
         venv_dir=(venv_dir or settings.install.venv_dir).expanduser(),
         config_file=config_file,
@@ -481,11 +500,18 @@ def write_staging(plan: InstallPlan) -> list[Path]:
 
 
 def write_default_config(config_file: Path) -> bool:
-    """Create the config file from the example if it does not exist."""
+    """Create the config file from the example if it does not exist.
+
+    It is created 0600: it is where ``api_key`` goes, home directories on
+    macOS are readable by the ``staff`` group every local user is in, and the
+    daemons run as this user, so nobody else needs to read it.
+    """
     if config_file.exists():
         return False
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    config_file.write_text(example_config_text())
+    fd = os.open(config_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(example_config_text())
     return True
 
 
@@ -520,6 +546,13 @@ def run_install(
 
     if plan.config_file.exists():
         say(f"config {plan.config_file}: exists, kept")
+        # Installs before 0600 became the default left it readable by every
+        # local account; it is where api_key goes.
+        mode = stat.S_IMODE(plan.config_file.stat().st_mode)
+        if mode & 0o077:
+            say(f"{would}tighten {plan.config_file} from {mode:o} to 600")
+            if not dry_run:
+                os.chmod(plan.config_file, mode & 0o700 | 0o600)
     elif dry_run:
         say(f"config {plan.config_file}: would be created from config.example.toml")
     else:

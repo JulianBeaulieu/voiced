@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.engines.base import STT_SAMPLE_RATE, TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError
+from voiced.validate import is_int
 
 _INT_DTYPES: dict[int, tuple[np.dtype[np.signedinteger] | np.dtype[np.unsignedinteger], float]] = {
     1: (np.dtype(np.uint8), 128.0),
@@ -22,6 +23,13 @@ _INT_DTYPES: dict[int, tuple[np.dtype[np.signedinteger] | np.dtype[np.unsignedin
 }
 
 UNKNOWN_LENGTH = 0xFFFFFFFF
+
+MIN_INPUT_RATE = 8_000
+MAX_INPUT_RATE = 192_000
+"""Sample rates :class:`PCMConverter` accepts. Outside them the resampling
+ratio is unreasonable: 1 Hz input would turn each byte into thousands of
+output samples."""
+MAX_CHANNELS = 16
 
 
 class UnsupportedAudioFormat(EngineError):
@@ -136,12 +144,17 @@ class PCMConverter:
     def __init__(
         self, rate: int, width: int, channels: int, target_rate: int = STT_SAMPLE_RATE
     ) -> None:
-        if channels < 1:
-            raise UnsupportedAudioFormat(f"channels must be >= 1, got {channels}")
-        if rate < 1:
-            raise UnsupportedAudioFormat(f"invalid sample rate {rate}")
-        if width not in _INT_DTYPES:
-            raise UnsupportedAudioFormat(f"unsupported sample width {width}")
+        # The format comes from the client (Wyoming AudioStart, JSON), so it is
+        # checked for type as well as range: anything else would raise a
+        # TypeError, which counts as a server failure.
+        if not is_int(channels) or not 1 <= channels <= MAX_CHANNELS:
+            raise UnsupportedAudioFormat(f"channels must be 1 to {MAX_CHANNELS}, got {channels!r}")
+        if not is_int(rate) or not MIN_INPUT_RATE <= rate <= MAX_INPUT_RATE:
+            raise UnsupportedAudioFormat(
+                f"sample rate must be {MIN_INPUT_RATE} to {MAX_INPUT_RATE} Hz, got {rate!r}"
+            )
+        if not is_int(width) or width not in _INT_DTYPES:
+            raise UnsupportedAudioFormat(f"unsupported sample width {width!r}")
         self.rate, self.width, self.channels = rate, width, channels
         self.target_rate = target_rate
         self._carry = b""

@@ -152,7 +152,9 @@ def fake_decode(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Replace ffmpeg decoding with one second of silence so tests run without ffmpeg."""
     seen: list[int] = []
 
-    async def decode(data: bytes, sample_rate: int = 16_000) -> np.ndarray:  # type: ignore[type-arg]
+    async def decode(  # type: ignore[type-arg]
+        data: bytes, sample_rate: int = 16_000, *, max_seconds: float | None = None
+    ) -> np.ndarray:
         seen.append(len(data))
         return np.ones(sample_rate, dtype=np.float32) * 0.1
 

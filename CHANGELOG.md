@@ -82,6 +82,17 @@ uses [Semantic Versioning](https://semver.org/).
   the model; it now names the port and exits 3 before loading anything.
 - The `finalize` contract said the server's endpointer ends a streaming turn;
   the client's `end` message or Wyoming `AudioStop` does.
+- `voiced doctor` reports the service environment's Python, including a
+  broken link into a removed uv Python, warns when the config file is
+  readable by other accounts, and checks that ffmpeg can read from a file
+  descriptor. `voiced status` says how to install the daemons when none
+  are installed.
+- The engine catalogue child process no longer imports modules from the
+  watchdog's working directory.
+- Wyoming failures are now logged, with a traceback, like HTTP ones.
+- README: the quickstart pins `--python 3.12` for `uv tool install`, gives
+  measured download sizes, and lists the GPL-3, LGPL and MPL packages the
+  extras pull in.
 
 ### Changed
 
@@ -89,3 +100,37 @@ uses [Semantic Versioning](https://semver.org/).
   ffmpeg, and cancels superseded runs of the same branch.
 - `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to
   `>=0.5.8,<0.5.10`, the releases the engines were checked against.
+- Uploads that decode to more than about 26 minutes (1562 s) of audio now
+  get 413: the decoded audio is bounded by `stt.max_upload_mb` read as
+  16-bit 16 kHz samples (1562 s at the default 50). Before, a 30-minute mp3
+  was transcribed; now it is refused. Raise `max_upload_mb` to transcribe
+  longer recordings (it bounds Wyoming utterances and WebSocket streams the
+  same way).
+
+### Security
+
+- Uploads can no longer make ffmpeg open other files: ffmpeg reads the
+  upload through an inherited descriptor and may open nothing else, so an
+  `ffconcat` list or playlist is refused. Upload files are anonymous and
+  never left behind. The decoded audio is bounded like a Wyoming utterance
+  (413), and at most `queue_depth` uploads decode at once (503). ffmpeg must
+  support its `fd` protocol; `voiced doctor` checks.
+- Wyoming listeners refuse an oversize event from its header instead of
+  buffering it, close connections that stay silent for five minutes or stop
+  halfway through an event, and take at most 64 connections each. Malformed
+  events and unsupported audio formats are client errors instead of failures
+  that marked the service degraded. Voices are checked against the served
+  list, as on HTTP.
+- The WebSocket stream has the same audio and wall-clock bound as a Wyoming
+  utterance.
+- With `api_key` set, `/health` and `/metrics.json` show only the exception
+  name of the last error.
+- `voiced install` refuses to run as root, and its `--user` option is gone:
+  the daemons run the installing user's venv, so they must run as that
+  user, never as root or anyone else. That user comes from the process's
+  uid, not from `LOGNAME` or `USER`. Outside a checkout it
+  requires `--source` until voiced is published. The config file is created
+  0600, and re-running `voiced install` tightens an existing one: after
+  upgrading, run it once (or `chmod 600 ~/.config/voiced/config.toml`).
+- `voiced serve` raises its open file limit from launchd's 256 to 4096.
+

@@ -12,23 +12,59 @@ GPU.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import abstractmethod
-from typing import Any
+from typing import Any, TypeVar
 
 from wyoming.error import Error
-from wyoming.event import Event
+from wyoming.event import Event, Eventable
 from wyoming.server import AsyncEventHandler
 
 from voiced.context import ServiceContext
+from voiced.engines.base import EngineError
 from voiced.inference import DISCONNECT_ERRORS, bounded, classify
 from voiced.metrics import Outcome
+from voiced.validate import is_int
 
 log = logging.getLogger(__name__)
 
 ERROR_SERVER_BUSY = "server_busy"
 ERROR_INVALID_REQUEST = "invalid_request_error"
 ERROR_ENGINE = "engine_error"
+
+MAX_EVENT_BYTES = 1_000_000
+"""Largest JSON ``data`` block, and largest binary payload, of one event.
+Home Assistant sends audio chunks of about 2 KB and synthesis text of a few
+KB; this also bounds ``tts.max_input_chars`` on Wyoming to roughly 170 000
+characters (escaped JSON can take six bytes per character)."""
+CONNECTION_IDLE_S = 300.0
+"""A connection that starts no event for this long is closed. Home Assistant
+opens a connection per request; the bound is long so a streaming synthesis
+can wait for a slow conversation agent between chunks."""
+
+
+class BadEvent(Exception):
+    """An event the reader refuses before buffering it: oversize or malformed."""
+
+
+class MalformedEvent(EngineError):
+    """An event whose data lacks a field or has the wrong type. A client error."""
+
+
+E = TypeVar("E", bound=Eventable)
+
+
+def parse(cls: type[E], event: Event) -> E:
+    """``cls.from_event(event)``, with a missing or mistyped field reported as
+    the client's mistake instead of a server failure."""
+    try:
+        parsed = cls.from_event(event)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MalformedEvent(f"malformed {event.type}: {exc!r}") from None
+    assert isinstance(parsed, cls)
+    return parsed
+
 
 # Outcome -> (Wyoming error code, keep the connection open), the same shape as
 # the HTTP ``_HTTP`` table. ``disconnect`` is handled before this table: nothing
@@ -58,6 +94,17 @@ async def cancel_task(task: asyncio.Task[Any] | None) -> None:
             raise
 
 
+def _length(header: dict[str, Any], key: str, limit: int) -> int:
+    value = header.get(key)
+    if value is None:
+        return 0
+    if not is_int(value) or value < 0:
+        raise BadEvent(f"{key} must be a non-negative integer")
+    if value > limit:
+        raise BadEvent(f"{key} {value} is over the limit of {limit} bytes")
+    return value
+
+
 class VoicedEventHandler(AsyncEventHandler):
     """One client connection. Subclasses implement ``handle`` and ``cleanup``."""
 
@@ -71,6 +118,71 @@ class VoicedEventHandler(AsyncEventHandler):
         self._idle_timeout_s = ctx.settings.server.session_idle_s
         peer = writer.get_extra_info("peername")
         self.peer = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
+
+    async def run(self) -> None:
+        """The ``AsyncEventHandler`` loop (``wyoming`` 1.10) with a bounded reader.
+
+        The ``wyoming`` package reads ``data_length`` and ``payload_length``
+        bytes, whatever they say, before anything can look at the event, and
+        waits for the next event forever. Here an event must announce sizes
+        within the limits, the rest of an event must arrive within
+        ``session_idle_s`` of its header, and a connection may stay silent
+        between events for :data:`CONNECTION_IDLE_S`.
+        """
+        self._is_running = True
+        try:
+            while self._is_running:
+                try:
+                    event = await self.read_event()
+                except BadEvent as exc:
+                    log.debug("%s %s: refused event: %s", self.ctx.service, self.peer, exc)
+                    await self.send_error(f"BadEvent: {exc}", ERROR_INVALID_REQUEST)
+                    break
+                if event is None or not await self.handle_event(event):
+                    break
+        finally:
+            await self.disconnect()
+            self.writer.close()
+
+    async def read_event(self) -> Event | None:
+        """The next event, or ``None`` when the client closed or went quiet."""
+        try:
+            line = await bounded(self.reader.readline(), CONNECTION_IDLE_S)
+        except ValueError:  # longer than the reader's line limit (64 KiB)
+            raise BadEvent("header line too long") from None
+        except DISCONNECT_ERRORS:
+            return None
+        if not line:
+            return None
+        try:
+            header = json.loads(line)
+        except (ValueError, RecursionError):  # "[" * 60000 recurses before it fails
+            raise BadEvent("header is not JSON") from None
+        if not isinstance(header, dict) or not isinstance(header.get("type"), str):
+            raise BadEvent("header must be an object with a type")
+        data = header.get("data") or {}
+        if not isinstance(data, dict):
+            raise BadEvent("data must be an object")
+        data_length = _length(header, "data_length", MAX_EVENT_BYTES)
+        payload_length = _length(header, "payload_length", MAX_EVENT_BYTES)
+        try:
+            if data_length:
+                block = await bounded(self.reader.readexactly(data_length), self._idle_timeout_s)
+                try:
+                    extra = json.loads(block)
+                except (ValueError, RecursionError):
+                    raise BadEvent("data is not JSON") from None
+                if not isinstance(extra, dict):
+                    raise BadEvent("data must be an object")
+                data = {**data, **extra}
+            payload = None
+            if payload_length:
+                payload = await bounded(
+                    self.reader.readexactly(payload_length), self._idle_timeout_s
+                )
+        except DISCONNECT_ERRORS:
+            return None
+        return Event(type=header["type"], data=data, payload=payload)
 
     async def write_event(self, event: Event) -> None:
         if self.writer.is_closing():

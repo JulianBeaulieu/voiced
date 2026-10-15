@@ -204,7 +204,7 @@ def _build(ctx: ServiceContext) -> FastAPI:
         ``status`` is ``degraded`` if the last inference failed; the watchdog
         decides what to do with that.
         """
-        snapshot = ctx.health.snapshot(ctx.queue.depth)
+        snapshot = ctx.public_health()
         code = status.HTTP_200_OK if snapshot.model_loaded else status.HTTP_503_SERVICE_UNAVAILABLE
         return JSONResponse(status_code=code, content=snapshot.model_dump())
 

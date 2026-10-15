@@ -28,14 +28,16 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
+from types import TracebackType
 from typing import TypeVar
 
 from starlette.requests import ClientDisconnect
 from starlette.websockets import WebSocketDisconnect
 from uvicorn.protocols.utils import ClientDisconnected
 
+from voiced.config import Settings
 from voiced.context import ServiceContext
-from voiced.engines.base import EngineError, EngineNotLoaded
+from voiced.engines.base import STT_SAMPLE_RATE, EngineError, EngineNotLoaded
 from voiced.metrics import Operation, Outcome
 from voiced.queue import QueueFull
 
@@ -102,11 +104,14 @@ async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[
             yield
     except Exception as exc:
         outcome = classify(exc)
+        detail = f"{type(exc).__name__}: {exc}"
         if outcome is Outcome.FAILURE:
             ctx.health.record_error(exc)
+            # The one place every transport's failures reach the log; /health
+            # and the status page may withhold the message (public_health).
+            log.error("%s failed: %s", operation, detail, exc_info=exc)
         elif outcome is Outcome.DISCONNECT:
             log.debug("%s: client went away: %r", operation, exc)
-        detail = f"{type(exc).__name__}: {exc}"
         ctx.metrics.record(operation, outcome, _elapsed_ms(started), detail)
         raise
     duration_ms = _elapsed_ms(started)
@@ -116,3 +121,53 @@ async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[
 
 def _elapsed_ms(started: float) -> float:
     return (time.perf_counter() - started) * 1000
+
+
+def utterance_limit_s(settings: Settings) -> float:
+    """Longest audio one streamed utterance may carry, in seconds:
+    ``stt.max_upload_mb`` read as 16-bit 16 kHz samples. The one place tests
+    shorten the bound."""
+    return settings.stt.max_audio_s
+
+
+class UtteranceBudget:
+    """The bound on one streamed utterance, the same on every transport (a
+    Wyoming utterance, a WebSocket session): at most :func:`utterance_limit_s`
+    of audio, and open at most that long plus ``server.session_idle_s``, so a
+    client trickling audio cannot hold the slot forever. Both are client
+    errors::
+
+        async with UtteranceBudget(settings) as budget:
+            ...
+            budget.add(len(samples))
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self.limit_s = utterance_limit_s(settings)
+        self._max_samples = int(self.limit_s * STT_SAMPLE_RATE)
+        self._samples = 0
+        self.open_s = self.limit_s + settings.server.session_idle_s
+        self._deadline = asyncio.timeout(self.open_s)
+
+    def add(self, samples: int) -> None:
+        """Count ``samples`` (at 16 kHz); over the limit is an :class:`EngineError`."""
+        self._samples += samples
+        if self._samples > self._max_samples:
+            raise EngineError(f"more than {self.limit_s:g} s of audio")
+
+    async def __aenter__(self) -> UtteranceBudget:
+        await self._deadline.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            await self._deadline.__aexit__(exc_type, exc, tb)
+        except TimeoutError:
+            if not self._deadline.expired():
+                raise
+            raise EngineError(f"session open longer than {self.open_s:g} s") from None

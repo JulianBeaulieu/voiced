@@ -78,7 +78,6 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     )
     install.add_argument("--python", help='interpreter or version for the venv, e.g. "3.12"')
     install.add_argument("--source", help="pip requirement or path to install (default: auto)")
-    install.add_argument("--user", help="UserName for the daemons (default: current user)")
     install.add_argument("--staging-dir", type=Path, help="where plists and scripts are written")
     install.add_argument("--skip-models", action="store_true", help="do not download models")
     install.add_argument("--no-uv", action="store_true", help="use python -m venv and pip")
@@ -173,14 +172,31 @@ def _services(name: str) -> tuple[DaemonName, ...]:
 def cmd_install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
 ) -> int:
-    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
+    from voiced.launchd.install import (
+        InstallError,
+        needs_source,
+        plan_install,
+        plan_summary,
+        run_install,
+    )
 
+    if is_root():
+        echo(
+            "Run `voiced install` as the user the services should run as, not with sudo. "
+            "It prints the one step that needs root."
+        )
+        return 2
+    if args.source is None and needs_source():
+        echo(
+            "voiced is not published on PyPI yet, so there is nothing to install by name. "
+            "Pass your checkout: voiced install --source ~/voiced"
+        )
+        return 2
     plan = plan_install(
         settings,
         venv_dir=args.venv,
         python=args.python,
         source=args.source,
-        user=args.user,
         staging_dir=args.staging_dir,
         uv=None if args.no_uv else "auto",
     )
@@ -463,8 +479,21 @@ def cmd_status(
             echo(f"control socket: {NOT_SERVED}" + (f" ({problem})" if problem else ""))
         else:
             echo(f"control socket: not answering at {path} (watchdog not running)")
+        if not any(r.get("installed") for r in rows):
+            echo(_not_installed_hint(settings))
     healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
     return 0 if healthy else 1
+
+
+def _not_installed_hint(settings: Settings) -> str:
+    from voiced.launchd.install import plan_install
+
+    script = plan_install(settings).install_script_path
+    if script.is_file():
+        return (
+            f"The daemons are not installed. Review and run: sudo bash {shlex.quote(str(script))}"
+        )
+    return "The daemons are not installed. Run `voiced install --source <your checkout>` first."
 
 
 # settings -----------------------------------------------------------------

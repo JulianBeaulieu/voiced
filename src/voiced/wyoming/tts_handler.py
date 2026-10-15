@@ -40,11 +40,16 @@ from wyoming.tts import (
     SynthesizeVoice,
 )
 
-from voiced.engines.base import TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError, PCMChunk
+from voiced.engines.base import (
+    TTS_SAMPLE_RATE,
+    TTS_SAMPLE_WIDTH,
+    EngineError,
+    PCMChunk,
+)
 from voiced.inference import inference
 from voiced.metrics import Operation
 from voiced.text import normalize
-from voiced.wyoming.handlers import VoicedEventHandler, cancel_task
+from voiced.wyoming.handlers import MalformedEvent, VoicedEventHandler, cancel_task, parse
 from voiced.wyoming.info import tts_info
 from voiced.wyoming.text import SentenceAccumulator
 
@@ -61,6 +66,14 @@ class _Stream:
     worker: asyncio.Task[None] | None = None
     chars: int = 0
     failed: bool = False
+    refused: bool = False
+    """The SynthesizeStart was rejected and reported: no worker; the rest of
+    the stream is read and dropped until SynthesizeStop closes."""
+
+
+def _require_text(text: object, event: Event) -> None:
+    if not isinstance(text, str):
+        raise MalformedEvent(f"malformed {event.type}: text must be a string")
 
 
 class TTSEventHandler(VoicedEventHandler):
@@ -74,25 +87,40 @@ class TTSEventHandler(VoicedEventHandler):
         if Synthesize.is_type(event.type):
             if self._stream is not None:
                 return True  # compatibility copy of the streamed text
-            synthesize = Synthesize.from_event(event)
+            synthesize = parse(Synthesize, event)
+            _require_text(synthesize.text, event)
             self._enforce_input_limit(len(synthesize.text))
-            await self._synthesize_once(synthesize.text, self._resolve(synthesize.voice))
+            await self._synthesize_once(synthesize.text, await self._resolve(synthesize.voice))
             return True
         if SynthesizeStart.is_type(event.type):
             if self._stream is not None:
                 await self.cleanup()
-            start = SynthesizeStart.from_event(event)
+            try:
+                start = parse(SynthesizeStart, event)
+                voice = await self._resolve(start.voice)
+            except EngineError as exc:
+                # One Error for the stream. The connection stays open until
+                # SynthesizeStop and the stream's events are dropped: a client
+                # like Home Assistant writes the whole stream before it reads,
+                # and closing now would answer its next write with a reset,
+                # which can discard the Error before it is read.
+                await self.report(exc)
+                self._stream = _Stream(voice="", refused=True)
+                return True
             self._audio_started = False
-            self._stream = stream = _Stream(voice=self._resolve(start.voice))
+            self._stream = stream = _Stream(voice=voice)
             stream.worker = asyncio.create_task(self._worker(stream), name="wyoming tts stream")
             return True
         if SynthesizeChunk.is_type(event.type):
             open_stream = self._stream
             if open_stream is None:
                 raise EngineError("synthesize-chunk before synthesize-start")
+            if open_stream.refused:
+                return True  # reported at SynthesizeStart; dropped until the stop
             if open_stream.failed:
                 return False  # the worker already reported and closed
-            text = SynthesizeChunk.from_event(event).text
+            text = parse(SynthesizeChunk, event).text
+            _require_text(text, event)
             open_stream.chars += len(text)
             if open_stream.chars > self.ctx.settings.tts.max_input_chars:
                 # One error for the stream, then close: every later chunk and
@@ -105,17 +133,27 @@ class TTSEventHandler(VoicedEventHandler):
         if SynthesizeStop.is_type(event.type):
             if self._stream is None:
                 raise EngineError("synthesize-stop before synthesize-start")
+            if self._stream.refused:
+                self._stream = None
+                return False  # the stream's one Error is already sent
             return await self._finish_stream()
         log.debug("tts %s: ignoring %s", self.peer, event.type)
         return True
 
-    def _resolve(self, voice: SynthesizeVoice | None) -> str:
+    async def _resolve(self, voice: SynthesizeVoice | None) -> str:
         """Pick the engine voice id. Home Assistant only ever sends ``name``
         (``wyoming/tts.py`` has no language field for synthesis), so an explicit
-        name wins and everything else falls back to the configured default."""
-        if voice is not None and voice.name:
-            return voice.name
-        return self.ctx.settings.tts.default_voice
+        name wins and everything else falls back to the configured default.
+
+        Like the HTTP route, the voice must be one the service serves (the
+        engine's voices in the configured languages, which ``Describe``
+        lists), checked before the engine sees it.
+        """
+        name = voice.name if voice is not None and voice.name else None
+        if name is not None and not isinstance(name, str):
+            raise MalformedEvent("voice name must be a string")
+        self.ctx.check_loaded()
+        return await self.ctx.check_voice(name, listed_by="Describe")
 
     def _enforce_input_limit(self, chars: int) -> None:
         if chars > self.ctx.settings.tts.max_input_chars:

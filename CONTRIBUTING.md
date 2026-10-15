@@ -136,7 +136,9 @@ a user would notice.
 ## Releasing
 
 Maintainers only. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
-the installed package metadata), move the Unreleased section of the changelog under the new version with the
+the installed package metadata), set `PUBLISHED = True` in
+`voiced.launchd.install` with the first release that goes to PyPI (until
+then `voiced install` outside a checkout insists on `--source`), move the Unreleased section of the changelog under the new version with the
 date, tag `v<version>`, and build with `uv build`.
 
 <!-- TODO(release): verify the publish step once the package is on PyPI -->

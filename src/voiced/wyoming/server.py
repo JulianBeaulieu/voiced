@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 STOP_GRACE_S = 2.0
+MAX_CONNECTIONS = 64
+"""Open connections per listener. Home Assistant uses one per request; the cap
+keeps a client that opens connections and leaves them idle from taking every
+file descriptor of the process, which the HTTP API shares."""
 
 
 class WyomingListener:
@@ -55,6 +59,7 @@ class WyomingListener:
         self._server: asyncio.Server | None = None
         self._handlers: dict[asyncio.Task[None], VoicedEventHandler] = {}
         self._advertiser: ZeroconfAdvertiser | None = None
+        self._refusing = False
 
     @property
     def port(self) -> int:
@@ -71,6 +76,17 @@ class WyomingListener:
     async def _on_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        if len(self._handlers) >= MAX_CONNECTIONS:
+            if not self._refusing:  # one line per episode, not per connection
+                log.warning(
+                    "%s wyoming: %d connections open; refusing new ones",
+                    self.ctx.service,
+                    MAX_CONNECTIONS,
+                )
+            self._refusing = True
+            writer.transport.abort()
+            return
+        self._refusing = False
         handler = self._handler_cls(self.ctx, reader, writer)
         task = asyncio.current_task()
         assert task is not None

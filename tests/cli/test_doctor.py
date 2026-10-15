@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -126,10 +126,32 @@ def test_espeak_required_follows_tts_engine(
     assert seen == [True, False]
 
 
+PROTOCOLS = "Supported file protocols:\nInput:\n  {inputs}\nOutput:\n  fd\n  file\n  pipe\n"
+
+
 def test_external_programs() -> None:
     no_ffmpeg = doctor.check_ffmpeg(lambda n: None)
     assert no_ffmpeg.result == "fail" and "brew install ffmpeg" in no_ffmpeg.detail
-    assert doctor.check_ffmpeg(lambda n: "/usr/local/bin/ffmpeg").result == "pass"
+
+    def protocols(inputs: str) -> Callable[[Sequence[str]], CommandResult]:
+        return lambda argv: CommandResult(0, PROTOCOLS.format(inputs=inputs))
+
+    found = lambda n: "/usr/local/bin/ffmpeg"  # noqa: E731
+    assert doctor.check_ffmpeg(found, protocols("fd\n  file\n  pipe")).result == "pass"
+    old = doctor.check_ffmpeg(found, protocols("file\n  pipe"))  # fd only as output
+    assert old.result == "fail" and "brew upgrade ffmpeg" in old.detail
+
+
+def test_service_python_is_the_venv_interpreter(tmp_path: Path) -> None:
+    venv_python = tmp_path / "bin" / "python"
+    missing = doctor.check_service_python(venv_python, python_spec="3.13")
+    assert missing.result == "warn" and "Python 3.13" in missing.detail
+    venv_python.parent.mkdir()
+    venv_python.write_text("")
+    ok = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.12.15\n"))
+    assert ok.result == "pass" and "3.12.15" in ok.detail and str(venv_python) in ok.detail
+    old = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.10.18\n"))
+    assert old.result == "fail"
 
 
 VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
@@ -318,3 +340,24 @@ def test_render_and_worst() -> None:
     assert doctor.worst(checks) == "warn"
     assert doctor.worst([*checks, doctor.Check("B", "fail")]) == "fail"
     assert doctor.worst([checks[0]]) == "pass"
+
+
+def test_service_python_reports_a_broken_link(tmp_path: Path) -> None:
+    """`uv python uninstall` leaves the venv's python pointing nowhere and the
+    services down: a failure, not "not installed yet"."""
+    venv_python = tmp_path / "bin" / "python"
+    venv_python.parent.mkdir()
+    venv_python.symlink_to(tmp_path / "gone" / "python3.12")
+    check = doctor.check_service_python(venv_python)
+    assert check.result == "fail" and "broken link" in check.detail
+
+
+def test_config_file_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    assert doctor.check_config_file(path).result == "pass"
+    path.write_text("")
+    path.chmod(0o644)
+    readable = doctor.check_config_file(path)
+    assert readable.result == "warn" and "chmod 600" in readable.detail
+    path.chmod(0o600)
+    assert doctor.check_config_file(path).result == "pass"

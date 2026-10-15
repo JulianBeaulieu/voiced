@@ -42,6 +42,7 @@ from voiced.settings_store import (
     file_stamp,
     settings_view,
 )
+from voiced.validate import is_int
 
 log = logging.getLogger("voiced.control")
 
@@ -111,7 +112,9 @@ def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, A
     them in a child process keeps them out of the watchdog, which must not be
     wedged by them (ADR 0012, ADR 0013).
     """
-    argv = [sys.executable, "-m", "voiced.engines.catalogue"]
+    # -P: `-m` would otherwise put the working directory (the user's home,
+    # for the daemon) first on sys.path, ahead of the standard library.
+    argv = [sys.executable, "-P", "-m", "voiced.engines.catalogue"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
@@ -136,7 +139,7 @@ def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, A
 
 def _int_arg(args: Mapping[str, Any], name: str, default: int) -> int:
     value = args.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_int(value):
         raise OpError(BAD_REQUEST, f'"{name}" must be an integer')
     return value
 

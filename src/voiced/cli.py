@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import resource
 import socket
 import sys
 from collections.abc import Sequence
@@ -23,6 +25,8 @@ from voiced.config import Settings, config_path, load_settings
 if TYPE_CHECKING:
     import uvicorn
     from fastapi import FastAPI
+
+log = logging.getLogger(__name__)
 
 GRACEFUL_SHUTDOWN_S = 10
 """How long uvicorn waits for open connections on SIGTERM before closing them.
@@ -141,8 +145,38 @@ def cmd_serve(settings: Settings, service: str) -> int:
         return PORT_IN_USE_EXIT
     with http_socket:
         app = build_service_app(settings, service)
+        raise_open_file_limit()  # after logging is configured, before any connection
         uvicorn.Server(uvicorn_config(app, settings)).run(sockets=[http_socket])
     return 0
+
+
+OPEN_FILES = 4096
+"""Soft limit on open files a service raises itself to. launchd starts
+daemons with 256, which every HTTP and Wyoming connection, the model files
+and the logs share; uvicorn closes no connection that never sends a request,
+so a client holding a couple of hundred of them could otherwise stop the
+service accepting anything, ``/health`` included."""
+
+
+def raise_open_file_limit(target: int = OPEN_FILES) -> None:
+    """Raise the soft ``RLIMIT_NOFILE`` towards ``target``: never above the
+    hard limit, never lower than it already is."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft == resource.RLIM_INFINITY or soft >= target:
+        return
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if want <= soft:
+        log.info("open file limit stays at %d: the hard limit is %d", soft, hard)
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except (ValueError, OSError) as exc:
+        log.warning("could not raise the open file limit from %d: %s", soft, exc)
+        return
+    if want < target:
+        log.info("open file limit raised from %d to %d, the hard limit", soft, want)
+    else:
+        log.info("open file limit raised from %d to %d", soft, want)
 
 
 def build_service_app(settings: Settings, service: str) -> FastAPI:

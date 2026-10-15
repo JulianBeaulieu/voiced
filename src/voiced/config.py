@@ -77,6 +77,12 @@ class ServerConfig(_Section):
         return value.expanduser()
 
 
+# voiced.engines.base.STT_SAMPLE_RATE and the 16-bit sample width, restated:
+# the watchdog imports this module and must not import numpy through engines.
+_STT_RATE = 16_000
+_PCM16_BYTES = 2
+
+
 class STTConfig(_Section):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
@@ -86,6 +92,12 @@ class STTConfig(_Section):
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
     max_upload_mb: int = Field(default=50, ge=1)
+
+    @property
+    def max_audio_s(self) -> float:
+        """Longest audio one request may carry, on any transport: ``max_upload_mb``
+        read as 16-bit samples at 16 kHz (about 26 minutes at the default 50)."""
+        return self.max_upload_mb * 1_000_000 / _PCM16_BYTES / _STT_RATE
 
 
 class TTSConfig(_Section):

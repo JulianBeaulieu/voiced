@@ -26,7 +26,14 @@ fails predictably: uploads and `mp3`/`opus` requests get a 500
 handler renders it for every route). There is deliberately no second decoder
 in Python for the "ffmpeg missing" case. Uploads are written to a temporary
 file before decoding because containers such as `.m4a` keep their index at
-the end and cannot be decoded from a pipe.
+the end and cannot be decoded from a pipe. The file is anonymous (unlinked
+from the start) and ffmpeg reads it through an inherited descriptor
+(`-fd N -i fd:`) with `-protocol_whitelist fd`: ffmpeg picks the demuxer
+from the content, and formats that name other inputs (an `ffconcat` list, a
+playlist) would otherwise open files on the server's behalf, which is how a
+named upload in `/tmp` could have another audio file there transcribed (ADR
+0016). This needs an ffmpeg with the `fd` protocol, which `voiced doctor`
+checks.
 
 ### Every speech response streams
 
@@ -91,7 +98,10 @@ instead.
 
 The queue is unbounded: synthesis runs at GPU speed and frees the slot as
 soon as it finishes, however slowly the client reads. `tts.max_input_chars`
-bounds what can pile up (a few minutes of 24 kHz audio, about 13 MB).
+bounds what can pile up, though less tightly than it looks: normalization
+expands digits and symbols into words, so 4096 characters of the one-half
+sign (U+00BD) became 35 minutes of audio (100 MB) in a measurement, against
+6 minutes (17 MB) for 4096 characters of the README's prose (ADR 0016).
 `inference()` therefore times the synthesis, not the client's download.
 
 The response class (`ClosingStreamingResponse`) always calls `aclose()` on
@@ -107,7 +117,13 @@ steps. The ASGI `receive` channel is wrapped so the request body is cut off
 while it is being read, before multipart parsing finishes and before ffmpeg,
 whether or not the client sent `Content-Length`; the cap allows 64 KB of
 multipart framing on top of the limit. The parsed file is then held to the
-exact limit. Both return 413 `payload_too_large`. A malformed multipart body
+exact limit. Both return 413 `payload_too_large`, and so does an upload
+that decodes to more than `max_upload_mb` of 16-bit 16 kHz audio (the bound
+a Wyoming utterance has): a small file can decode to hours of audio, so
+ffmpeg's output is counted while it is read and ffmpeg is stopped past the
+bound. Decoding runs before the request queues for the slot, so the queue
+does not bound it; `ServiceContext.uploads` admits at most `queue_depth`
+decodes at once and answers 503 `server_busy` beyond that. A malformed multipart body
 is Starlette's own 400, rendered in the shared envelope. A client that hangs
 up mid-upload is not an error and is not logged as one. An upload ffmpeg
 cannot decode is a 400 `invalid_audio` with a fixed message; ffmpeg's own
@@ -139,9 +155,11 @@ dropping an odd trailing byte would misalign every later sample.
 The server sends `partial` events when the hypothesis changes, at most every
 250 ms, then one `final` event and a normal close (1000). The whole session
 runs inside one `inference()` block, so `queue_depth` also bounds concurrent
-streams, and the close code follows the outcome table in ADR 0005: busy
-1013, client error 1008 (a bad frame, an unsupported language or sample
-rate), failure 1011, disconnect 1001. Every socket read is bounded by
+streams; like a Wyoming utterance it carries at most `max_upload_mb` of
+16-bit 16 kHz audio and lasts at most that long plus `session_idle_s`. The
+close code follows the outcome table in ADR 0005: busy 1013, client error
+1008 (a bad frame, an unsupported language or sample rate, a stream over the
+bound), failure 1011, disconnect 1001. Every socket read is bounded by
 `server.session_idle_s` (default 30) and every write by
 `server.write_timeout_s`, so a silent or half-open client cannot hold a slot.
 
@@ -169,7 +187,9 @@ engine metadata. Both routes are unauthenticated like
 operational (latencies, outcome counts, error times), not user content. An
 error's detail can echo what a client sent, such as an unknown language tag,
 so with `server.api_key` set the feed omits each error's `detail` and keeps
-its time, operation and outcome. The test boxes on
+its time, operation and outcome, and `/health`'s `last_error` (also in the
+feed) keeps only the exception name. `inference()` logs every failure, so
+the message is still in the service log. The test boxes on
 the page call the `/v1` routes and send the API key the operator types in.
 
 ## Consequences

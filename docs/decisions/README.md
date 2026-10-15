@@ -22,6 +22,7 @@ merge, and this index is updated when a record lands on `main`.
 | [0013](0013-local-control-channel.md) | Local control channel | The watchdog serves a 0600 Unix socket with a peer uid check; settable keys, comment-preserving atomic config writes, restart-required rules, the opt-in browser form, protocol versioning. |
 | [0014](0014-menu-bar-app.md) | Menu bar app | Native SwiftUI `MenuBarExtra` plus a Settings window in `menubar/`, speaks only the control socket, how it finds it, macOS 14 floor, a Swift fake control server for tests. |
 | [0015](0015-integration-results.md) | Integration results | End-to-end tier and benchmark (a script, not a subcommand), memory measured as the physical footprint, the measured table, defects found and fixed, known misses. |
+| [0016](0016-verification-results.md) | Verification results | What an independent check of security, robustness, the quickstart, dependencies and repository hygiene found, what changed and which limits stay documented. |
 
 ## Writing one
 
