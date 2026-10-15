@@ -325,17 +325,26 @@ process. Method, the complete table and the known misses are in
 - Finalize: from the client's `end` message to the `final` event, after 200
   ms of trailing digital silence (the endpointer's window). A push-to-talk
   client that sends `end` at the last word sees about 114 ms median instead,
-  worst up to 165 ms and 192 ms while TTS synthesizes; that misses the 50 ms
-  median goal.
+  worst up to 165 ms and 192 ms while TTS synthesizes (on the Studio 146 to
+  149 ms median, 170 ms worst, and 510 ms worst while TTS synthesizes); that
+  misses the 50 ms median goal.
 - Memory: the physical footprint (what Activity Monitor counts, GPU buffers
   included), idle after a long reply, with the MLX peak reached while serving.
 
-| Metric | Apple M1 Max, 64 GB (macOS 15.7.4) | Mac Studio |
+| Metric | Apple M1 Max, 64 GB (macOS 15.7.4) | Mac Studio, M1 Max, 32 GB (macOS 27.0.1) |
 |---|---|---|
-| Kokoro first audio | 96 ms median, 112 ms worst | not yet measured |
-| Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | not yet measured |
-| Batch transcription, 10.1 s clip | 253 ms median | not yet measured |
-| STT + TTS footprint, idle after use | 2.21 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | not yet measured |
+| Kokoro first audio | 96 ms median, 112 ms worst | 85 ms median, 89 ms worst |
+| Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | 3 ms median, 59 ms worst |
+| Batch transcription, 10.1 s clip | 253 ms median | 258 ms median |
+| STT + TTS footprint, idle after use | 2.21 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | 2.36 GB (Kokoro MLX peak 2.16 GB) |
+| End of speech to first audio, STT -> LLM -> TTS | not measured | 436 ms median (STT 7 + LLM 217 + TTS 221), `ministral-3:8b` on Ollama, from a laptop over Wi-Fi |
+
+The Studio ran the services as LaunchDaemons with Ollama's `ministral-3:8b`
+resident on the same GPU. Its rows are measured on the Studio over loopback,
+except the loop row. Over Wi-Fi from a laptop the batch row is about 70 ms
+slower (326 ms median, the upload) and first audio about 20 ms slower (105 ms
+median). On the Studio, finalize is much slower while Kokoro synthesizes
+(179 ms median, 250 ms worst with 200 ms trailing silence); see the ADR.
 
 ## Troubleshooting
 
