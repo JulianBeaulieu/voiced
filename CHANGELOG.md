@@ -58,10 +58,19 @@ uses [Semantic Versioning](https://semver.org/).
   page behind the new `[server] browser_settings` key (off by default; it
   always needs the API key). Settings writes keep comments (new dependency:
   `tomlkit`).
+- `/metrics.json` reports `memory.footprint_bytes` (the physical footprint,
+  which includes MLX's GPU buffers) and `memory.mlx` (active, cached and peak
+  allocation); the status page shows the footprint.
 - Documentation: README with quickstart, architecture diagram, benchmarks
   and troubleshooting; API reference; Home Assistant guide; architecture and
   operations guides; ADR index; contributing guide; issue and pull request
   templates; Dependabot; manual `model-tests` CI job.
+
+### Fixed
+
+- The TTS engines never bounded MLX's buffer cache, so the Kokoro service
+  grew to several GB after a few replies; the cache is now capped at 256 MB
+  and emptied after the warm-up.
 
 ### Changed
 

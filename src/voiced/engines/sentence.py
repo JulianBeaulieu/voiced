@@ -42,6 +42,39 @@ __all__ = ["SentenceTTSEngine"]
 WARMUP_TEXT = "Warming up."
 
 
+MLX_CACHE_LIMIT_BYTES = 256 * 1024 * 1024
+"""Upper bound on MLX's cache of freed GPU buffers in a TTS process.
+
+MLX keeps freed buffers for reuse. A sentence-at-a-time engine allocates
+differently shaped buffers for every sentence, so without a bound the cache
+only grows: the Kokoro service held 1.8 GB of cache after warm-up and 4.5 GB
+after one 70-word reply, all in its footprint. Clearing the cache after every
+sentence keeps it at zero but makes each sentence allocate afresh, which added
+about 14 ms to Kokoro's first audio. A cap keeps enough buffers to reuse: at
+256 MB first audio is within 0 to 3 ms of an unbounded cache and the Kokoro
+service's footprint is about 0.7 GB. The limit is process-wide, and a TTS
+process runs one engine.
+"""
+
+
+def _limit_mlx_cache() -> None:
+    """Cap MLX's buffer cache. A no-op without MLX (the fake engines on CI)."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return
+    mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES)
+
+
+def _clear_mlx_cache() -> None:
+    """Drop the buffers MLX holds in its cache. A no-op without MLX."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return
+    mx.clear_cache()
+
+
 class SentenceTTSEngine(TTSEngine):
     MIN_SPEED: ClassVar[float] = 0.25
     MAX_SPEED: ClassVar[float] = 4.0
@@ -51,7 +84,16 @@ class SentenceTTSEngine(TTSEngine):
         self._model: Any = None
 
     async def load(self) -> None:
-        await run_blocking(self._load_sync)
+        await run_blocking(self._load_and_bound_cache)
+
+    def _load_and_bound_cache(self) -> None:
+        # The cap is set first so the warm-up's transient is bounded too; the
+        # clear then drops what the load and warm-up left below it.
+        _limit_mlx_cache()
+        try:
+            self._load_sync()
+        finally:
+            _clear_mlx_cache()
 
     @abstractmethod
     def _load_sync(self) -> None:

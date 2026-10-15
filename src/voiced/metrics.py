@@ -13,7 +13,11 @@ records. Only the event loop thread touches it, so there is no locking.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import math
+import os
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -116,9 +120,67 @@ class Metrics:
         return {
             "operations": operations,
             "recent_errors": [e.as_dict() for e in reversed(self._errors)],
-            "memory": {"rss_bytes": self._process.memory_info().rss},
+            "memory": {
+                "rss_bytes": self._process.memory_info().rss,
+                "footprint_bytes": phys_footprint(),
+                "mlx": _mlx_memory(),
+            },
         }
 
 
 def _round(value: float | None) -> float | None:
     return None if value is None else round(value, 1)
+
+
+_RUSAGE_INFO_V0 = 0
+_PHYS_FOOTPRINT_INDEX = 7  # ri_phys_footprint, after ri_uuid and seven uint64 fields
+
+
+class _RusageInfoV0(ctypes.Structure):
+    _fields_ = [("uuid", ctypes.c_uint8 * 16), ("values", ctypes.c_uint64 * 10)]
+
+
+def _load_libproc() -> ctypes.CDLL | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        return ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libSystem.B.dylib")
+    except OSError:
+        return None
+
+
+_LIBPROC = _load_libproc()
+
+
+def phys_footprint(pid: int | None = None) -> int | None:
+    """The process's physical footprint in bytes (``ri_phys_footprint`` from
+    ``proc_pid_rusage``): what Activity Monitor's Memory column, ``footprint``
+    and the memory-pressure system count. Unlike RSS it includes the Metal
+    buffers MLX allocates for model weights and activations. ``None`` off macOS
+    or if the call fails."""
+    if _LIBPROC is None:
+        return None
+    info = _RusageInfoV0()
+    rc = _LIBPROC.proc_pid_rusage(
+        ctypes.c_int(os.getpid() if pid is None else pid),
+        ctypes.c_int(_RUSAGE_INFO_V0),
+        ctypes.byref(info),
+    )
+    if rc != 0:
+        return None
+    return int(info.values[_PHYS_FOOTPRINT_INDEX])
+
+
+def _mlx_memory() -> dict[str, int] | None:
+    """MLX's active, cached and peak GPU allocation in bytes, or ``None`` when
+    MLX is not installed (CI). RSS misses these: MLX's Metal buffers count in
+    the physical footprint, not the resident set."""
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return None
+    return {
+        "active_bytes": mx.get_active_memory(),
+        "cache_bytes": mx.get_cache_memory(),
+        "peak_bytes": mx.get_peak_memory(),
+    }

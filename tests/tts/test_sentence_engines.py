@@ -21,6 +21,14 @@ ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine, SopranoEngine]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
 
+# A multi-sentence reply, used by the model-tier cache test below.
+LONG_REPLY = (
+    "Turn on the kitchen lights and set the thermostat to twenty degrees. "
+    "What is the weather like tomorrow morning in the city? Please play some relaxing "
+    "music in the living room and dim the bedroom lights to about fifty percent. "
+    "Also lock the front door and arm the alarm before everyone goes to sleep tonight."
+)
+
 
 @pytest.fixture(params=ENGINES, ids=lambda cls: cls.name)
 def engine_and_voice(request: pytest.FixtureRequest) -> tuple[SentenceTTSEngine, str]:
@@ -208,3 +216,61 @@ async def test_cancelled_request_never_overlaps_the_next_model_call(
         await first
     await second
     assert overlap.peak == 1
+
+
+async def test_load_bounds_the_mlx_cache_even_when_it_fails(
+    engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cache limit is set before every load (so the warm-up is bounded
+    too) and the cache is dropped after it, successful or not."""
+    import voiced.engines.sentence as sentence_module
+
+    engine, _ = engine_and_voice
+    events: list[str] = []
+    monkeypatch.setattr(sentence_module, "_limit_mlx_cache", lambda: events.append("limit"))
+    monkeypatch.setattr(sentence_module, "_clear_mlx_cache", lambda: events.append("clear"))
+    monkeypatch.setattr(engine, "_load_sync", lambda: events.append("load"))
+    await engine.load()
+    assert events == ["limit", "load", "clear"]
+
+    def boom() -> None:
+        raise RuntimeError("no weights")
+
+    events.clear()
+    monkeypatch.setattr(engine, "_load_sync", boom)
+    with pytest.raises(RuntimeError):
+        await engine.load()
+    assert events == ["limit", "clear"]
+
+
+@pytest.mark.model
+@pytest.mark.parametrize(
+    "fixture, voice", [("kokoro_engine", "af_heart"), ("soprano_engine", "default")]
+)
+def test_synthesis_keeps_the_mlx_cache_bounded(
+    fixture: str, voice: str, request: pytest.FixtureRequest
+) -> None:
+    """Without a bound, MLX's cache of freed buffers grows with every reply
+    (Kokoro held 10.2 GB after the reply below). With the limit load() sets,
+    it stays near the limit after a long synthesis."""
+    import mlx.core as mx
+
+    from voiced.engines.sentence import MLX_CACHE_LIMIT_BYTES
+    from voiced.text import normalize
+
+    # Synchronous test: the session-scoped engine fixtures load with asyncio.run.
+    engine = request.getfixturevalue(fixture)
+    # set_cache_limit returns the previous limit: the one load() set.
+    assert mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES) == MLX_CACHE_LIMIT_BYTES
+
+    async def drain() -> None:
+        async for _ in engine.synthesize(normalize(LONG_REPLY), voice, 1.0):
+            pass
+
+    asyncio.run(drain())
+    cache = mx.get_cache_memory()
+    # The limit is enforced on the next allocation, so the cache can end a
+    # little over it; unbounded, it is many times over.
+    assert cache <= MLX_CACHE_LIMIT_BYTES * 1.25, (
+        f"{fixture}: MLX cache held {cache / 1e9:.2f} GB after a long synthesis"
+    )
