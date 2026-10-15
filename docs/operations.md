@@ -207,6 +207,11 @@ speech client that stopped reading and was cut off after
 health is untouched. Do not alert on it. Alert on `/health` reporting
 `degraded` or on the `failure` counts on the status page instead.
 
+If the disk holding the logs fills up, the services keep serving; each log
+record that cannot be written is reported on stderr instead (a `--- Logging
+error ---` block), which under launchd goes to the stderr file on the same
+full disk and is lost. Free space and the log resumes.
+
 ## FileVault
 
 With FileVault on, a reboot stops at the disk-unlock screen and nothing
@@ -262,6 +267,17 @@ They are the usual steps for a Mac that runs as a server:
 
 ## Updating
 
+The service environment's `python` is a link into uv's own Python
+installations (`~/.local/share/uv/python`). Removing those, for example with
+`uv python uninstall 3.12`, breaks the services until `voiced install` runs
+again.
+
+The services look up their models on Hugging Face at every start and use the
+local copy when the network is down. If the models are missing and there is
+no network, a service exits at startup with `LocalEntryNotFoundError` in its
+log, and launchd starts it again every 10 seconds until the download can
+happen.
+
 Re-running `voiced install` upgrades in place: it reuses the service
 environment, upgrades the package, re-stages the plists and prints the
 install script, which unloads and reloads the daemons. Models and the
@@ -272,7 +288,7 @@ From the checkout in `~/voiced`, before the first release:
 ```sh
 cd ~/voiced
 git pull
-uv tool install --reinstall ~/voiced
+uv tool install --reinstall --python 3.12 ~/voiced
 voiced install --source ~/voiced
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```

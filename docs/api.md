@@ -26,8 +26,15 @@ Off by default. Set `api_key` under `[server]` in the config (or
 `VOICED_SERVER__API_KEY`) and every `/v1` route requires a bearer token,
 including the WebSocket handshake. `/health`, `/` and `/metrics.json` never
 require one, so the watchdog and the status page keep working. With a key
-set, `/metrics.json` leaves out each error's detail text, which could echo
-what a client sent.
+set, `/health` and `/metrics.json` leave out each error's detail text, which
+could echo what a client sent; they keep its time and exception name.
+
+Without a key, the API also answers requests a web page makes from your
+browser: a page can post a form to `http://127.0.0.1:8881` and have it
+transcribed, though it cannot read the answer unless it also uses DNS
+rebinding. Set a key if that matters to you. `/docs` (the interactive API
+reference) is open as well and loads its scripts from a CDN in the browser
+that opens it.
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/models -H 'Authorization: Bearer <key>'
@@ -76,7 +83,7 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 
 | Field | Required | Description |
 |---|---|---|
-| `file` | yes | Any format ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, ...). Decoded to mono 16 kHz float32. Limited to `stt.max_upload_mb` (default 50). |
+| `file` | yes | Any single audio file ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, ...). Decoded to mono 16 kHz float32. Limited to `stt.max_upload_mb` (default 50), and so is the decoded audio, read as 16-bit 16 kHz: about 26 minutes at the default. Formats that refer to other inputs (`ffconcat` lists, playlists) are refused. |
 | `model` | no | See [The `model` field](#the-model-field). |
 | `language` | no | Language hint; see [Languages](#languages). |
 | `response_format` | no | `json` (default), `text`, `verbose_json`, `srt`, `vtt`. |
@@ -109,7 +116,8 @@ not an error.
 |---|---|---|
 | 400 | `invalid_audio` | ffmpeg could not decode the upload. |
 | 400 | `invalid_request_error` | Missing `file`, bad `response_format`, unsupported language, malformed multipart. |
-| 413 | `payload_too_large` | The upload is over `stt.max_upload_mb`. The body is cut off while it is read, before parsing. |
+| 413 | `payload_too_large` | The upload is over `stt.max_upload_mb` (the body is cut off while it is read, before parsing), or it decodes to more audio than that many megabytes of 16-bit 16 kHz audio. |
+| 503 | `server_busy` | `queue_depth` uploads are already being decoded, or the inference queue is full. |
 | 500 | `ffmpeg_missing` | ffmpeg is not installed on the server. |
 
 ```python
@@ -178,12 +186,15 @@ the close reason:
 |---|---|
 | 1000 | Normal end after `final`. |
 | 1001 | The client sent nothing for `server.session_idle_s` (default 30), or did not accept a write within `server.write_timeout_s` (default 10). Treated as a disconnect. |
-| 1008 | Client error: a text frame that is not a JSON object, an unknown `type`, `config` after audio, a bad `sample_rate`, an unsupported language. |
+| 1008 | Client error: a text frame that is not a JSON object, an unknown `type`, `config` after audio, a bad `sample_rate`, an unsupported language, or a stream longer than a Wyoming utterance may be (see the bounds under [Wyoming protocol](#wyoming-protocol)). |
 | 1011 | The engine failed. `/health` turns `degraded`. |
 | 1013 | The inference queue is full; retry later. |
 
 The connection holds one inference slot for its whole life, so `queue_depth`
-also limits concurrent streams.
+also limits concurrent streams. A session carries at most `stt.max_upload_mb`
+worth of 16-bit 16 kHz audio (about 26 minutes at the default) and lasts at
+most that long plus `server.session_idle_s`. One frame may be up to 16 MiB,
+uvicorn's limit.
 
 ```python
 import asyncio
@@ -377,7 +388,7 @@ curl -s http://127.0.0.1:8880/health
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
-| `last_error` | Exception name and message of the last failed inference, cleared by the next success. |
+| `last_error` | Exception name and message of the last failed inference, cleared by the next success. With `server.api_key` set only the exception name is shown, since the message can echo what a client sent; the full text is in the service log. |
 
 The schema is frozen because the watchdog and the status page depend on it.
 
@@ -467,9 +478,9 @@ in [ADR 0011](decisions/0011-wyoming.md).
 `voiced` and one model whose name is the model id and whose languages are
 the [served languages](#languages). Send `Transcribe` (with an optional
 `language`), `AudioStart`, `AudioChunk` events, then `AudioStop`; the answer
-is `Transcript`. Sample widths of 1, 2 or 4 bytes, any channel count and
-any rate are accepted and converted to mono 16 kHz; another width is an
-`invalid_request_error`. `requires_external_vad` is true: the client
+is `Transcript`. Sample widths of 1, 2 or 4 bytes, 1 to 16 channels and
+rates from 8 to 192 kHz are accepted and converted to mono 16 kHz; anything
+else, or a format field of the wrong type, is an `invalid_request_error`. `requires_external_vad` is true: the client
 decides when speech ends.
 
 Bounds on one utterance, so a client cannot hold the GPU indefinitely:
@@ -485,6 +496,21 @@ Bounds on one utterance, so a client cannot hold the GPU indefinitely:
 
 A session that fails for any reason ends with an `Error` and the connection
 closes; send the next utterance on a new connection.
+
+Bounds on every connection, on both listeners:
+
+| Bound | Value |
+|---|---|
+| One event's `data` | 1 MiB, or six bytes per `tts.max_input_chars` character if that is more |
+| One event's payload | 1 MB |
+| One event's header line | 64 KiB |
+| Time to receive the rest of an event after its header | `server.session_idle_s` |
+| Silence between events | 5 minutes; then the connection is closed |
+| Open connections per listener | 64; more are closed at once |
+
+An event over a size bound is refused from its header, before its body is
+read: the client gets one `Error` (`invalid_request_error`, text starting
+`BadEvent`) and the connection closes.
 
 **Text-to-speech.** `Info` lists one `TtsProgram` named `voiced` with a
 `TtsVoice` per served voice (name is the voice id, description is the voice
@@ -502,6 +528,8 @@ needs the loaded engine.
   between sentences does not block other requests.
 - Text is capped at `tts.max_input_chars`: the whole message for
   `Synthesize`, the running total for a stream.
+- The voice must be one `Describe` lists, as on HTTP; no voice means
+  `tts.default_voice`.
 
 **Errors.** An `Error` event whose `text` starts with the exception name and
 whose `code` is one of:
@@ -509,7 +537,7 @@ whose `code` is one of:
 | Code | Cause | Connection |
 |---|---|---|
 | `server_busy` | Queue full, or model still loading | closed |
-| `invalid_request_error` | Unknown voice, unsupported language, text too long, unconvertible or oversized audio | kept open, except after a failed STT session or stream |
+| `invalid_request_error` | Unknown voice, unsupported language, text too long, unconvertible or oversized audio, an event with a missing or mistyped field | kept open, except after a failed STT session or stream or an oversized event |
 | `engine_error` | The engine failed; health turns `degraded` | closed |
 
 A client that disconnects or stalls past the timeouts is dropped without an

@@ -21,44 +21,56 @@ Requirements: an Apple Silicon Mac, macOS 14 or newer,
 [Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-brew install uv espeak-ng ffmpeg
+brew install espeak-ng ffmpeg
+brew install uv    # skip if `uv --version` already works
 ```
 
 Until the first release, install from a checkout:
 
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced ~/voiced
-uv tool install ~/voiced
+uv tool install --python 3.12 ~/voiced
 uv tool update-shell
 ```
 
-`uv tool install` puts the `voiced` command in `~/.local/bin`, which is
-often not on your `PATH` yet; `uv tool update-shell` adds it. Open a new
-terminal, then:
+`--python 3.12` matters: without it uv uses its default interpreter, which
+can be one voiced does not support (it needs 3.11 to 3.13), and the install
+fails with "requirements are unsatisfiable". `uv tool install` puts the
+`voiced` command in `~/.local/bin`, which is often not on your `PATH` yet;
+`uv tool update-shell` adds it to your shell's startup file (`~/.zshenv` for
+the default zsh). Open a new terminal, then:
 
 ```sh
 voiced install --source ~/voiced
 ```
 
-`voiced install` builds the service environment in `~/.voiced` with the
-engines, downloads the models into the Hugging Face cache (about 3 GB, which
-takes several minutes on the first install), writes the
-launchd plists to `~/.config/voiced/launchd/` and prints one root step. Run
-it:
+`--source` is needed until voiced is published: `uv tool install` copies the
+package, so the installer cannot find your checkout by itself. `voiced
+install` builds the service environment in `~/.voiced` with the engines
+(Python 3.12, which uv downloads if needed), downloads the models into the
+Hugging Face cache, writes the launchd plists to
+`~/.config/voiced/launchd/`, and prints the one command you run as root,
+followed by the script it runs. The models are about 2.7 GB; with the Python
+environment and uv's cache, plan for about 4.5 GB of disk and several minutes
+on the first install. A warning about `HF_TOKEN` along the way is harmless:
+the models are public and need no Hugging Face account. Run the printed
+command:
 
 ```sh
 sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 
-The script copies the three plists into `/Library/LaunchDaemons` and loads
-them. It is short; read it first. voiced never runs anything as root
-itself. Then:
+The script unloads any running voiced daemons, copies the three plists into
+`/Library/LaunchDaemons` and loads them. It is short; read it first, and the
+three plists it copies next to it, which set the user the daemons run as
+(`UserName`, your user). voiced never runs anything as root itself. Then:
 
 ```sh
 voiced status
 ```
 
-Both services report `ok` once their model is warm. Try them:
+Both services report `ok` once their model is warm, a few seconds after the
+models are on disk. Try them:
 
 ```sh
 curl -s http://127.0.0.1:8880/v1/audio/speech \
@@ -70,8 +82,8 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
   -F file=@hello.wav -F model=parakeet
 ```
 
-`voiced install --dry-run` shows everything it would do without writing
-anything.
+`voiced install --source ~/voiced --dry-run` shows everything it would do
+without writing anything.
 
 For a menu bar icon that shows whether both services are up, restarts them,
 opens the logs and changes the common settings, build the menu bar app from
@@ -101,7 +113,8 @@ messages, the error shapes and the Wyoming behaviour, is in
 [docs/home-assistant.md](docs/home-assistant.md).
 
 Works unmodified with the official `openai` clients, LiteLLM, Open WebUI and
-anything else that speaks the OpenAI audio API:
+anything else that speaks the OpenAI audio API. With `pip install openai`
+(or `uv run --with openai python`):
 
 ```python
 from openai import OpenAI
@@ -190,9 +203,16 @@ exposes the services to your whole network:
   you bind to the LAN. `/health`, `/` and `/metrics.json` stay open either
   way. They show latencies, error counts and recent error messages; with
   `api_key` set the error messages are left out, since they can echo what a
-  client sent.
+  client sent. Without a key, a web page you open can also send requests to
+  the services on your own Mac.
 - The Wyoming protocol has no authentication at all. Only expose it on a
-  network you trust.
+  network you trust. Anyone who can reach the ports can use the models and
+  keep them busy; the listeners bound what one client can make them buffer
+  or hold open, but they cannot tell Home Assistant from anyone else. The
+  same is true of the HTTP API without a key.
+- The config file is created readable only by you (0600), because the API
+  key goes there. Other accounts on the Mac can read files in your home
+  directory that are not, so keep it that way if you edit it by hand.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
 - Settings and restarts go through a Unix socket that only your user can
   open (`voiced settings`, `voiced restart`). The status page's settings
@@ -220,14 +240,23 @@ vendor or redistribute it, and the voiced code stays MIT. The engine loads
 espeak-ng at run time as a shared library from Homebrew
 (`brew install espeak-ng`), or from the path in `VOICED_ESPEAK_LIBRARY`, and
 fails at startup with the install command if neither works. The `tts` extra
-also pulls in the `espeakng-loader` wheel as a dependency of `kokoro-onnx`;
-that wheel carries its own GPL-3 copy of espeak-ng, which voiced does not
-use.
+also pulls in, as dependencies of `kokoro-onnx`, the `phonemizer` package
+(GPL-3.0-or-later), which the Kokoro engine imports, through
+`kokoro_onnx.tokenizer`, to drive espeak-ng in the tts process, and the
+`espeakng-loader` wheel, which carries its own GPL-3 copy of espeak-ng. voiced
+loads the Homebrew library rather than the wheel's copy; with
+`VOICED_ESPEAK_LIBRARY` set and `VOICED_ESPEAK_DATA` unset, the wheel's
+espeak-ng data files are used. Anyone redistributing a tts environment
+redistributes these GPL-3 packages with it.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
-package, not vendored; `parakeet-mlx` is Apache-2.0; `mlx-audio`, `wyoming`,
-`pysilero-vad` and `kokoro-onnx` are MIT. ffmpeg runs as a separate program
-installed with Homebrew.
+package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
+(both pulled in by `librosa`, a `parakeet-mlx` dependency) are
+LGPL-2.1-or-later; `certifi` and parts of `tqdm` are MPL-2.0; `parakeet-mlx`
+is Apache-2.0; `mlx-audio`, `wyoming`, `pysilero-vad` and `kokoro-onnx` are
+MIT. ffmpeg runs as a separate program installed with Homebrew; voiced needs
+one that can read input from a file descriptor (`voiced doctor` checks), as
+any current Homebrew build can.
 
 ### Using Soprano
 

@@ -484,8 +484,21 @@ def cmd_status(
             echo(f"control socket: {NOT_SERVED}" + (f" ({problem})" if problem else ""))
         else:
             echo(f"control socket: not answering at {path} (watchdog not running)")
+        if not any(r.get("installed") for r in rows):
+            echo(_not_installed_hint(settings))
     healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
     return 0 if healthy else 1
+
+
+def _not_installed_hint(settings: Settings) -> str:
+    from voiced.launchd.install import plan_install
+
+    script = plan_install(settings).install_script_path
+    if script.is_file():
+        return (
+            f"The daemons are not installed. Review and run: sudo bash {shlex.quote(str(script))}"
+        )
+    return "The daemons are not installed. Run `voiced install --source <your checkout>` first."
 
 
 # settings -----------------------------------------------------------------

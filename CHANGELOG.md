@@ -89,3 +89,37 @@ uses [Semantic Versioning](https://semver.org/).
   ffmpeg, and cancels superseded runs of the same branch.
 - `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to
   `>=0.5.8,<0.5.10`, the releases the engines were checked against.
+
+### Security
+
+- Uploads can no longer make ffmpeg open other files: ffmpeg reads the
+  upload through an inherited descriptor and may open nothing else, so an
+  `ffconcat` list or playlist is refused. Upload files are anonymous and
+  never left behind. The decoded audio is bounded like a Wyoming utterance
+  (413), and at most `queue_depth` uploads decode at once (503). ffmpeg must
+  support its `fd` protocol; `voiced doctor` checks.
+- Wyoming listeners refuse an oversize event from its header instead of
+  buffering it, close connections that stay silent for five minutes or stop
+  halfway through an event, and take at most 64 connections each. Malformed
+  events and unsupported audio formats are client errors instead of failures
+  that marked the service degraded. Voices are checked against the served
+  list, as on HTTP.
+- The WebSocket stream has the same audio and wall-clock bound as a Wyoming
+  utterance.
+- With `api_key` set, `/health` and `/metrics.json` show only the exception
+  name of the last error.
+- `voiced install` refuses to run as root or with `--user root`, and outside
+  a checkout requires `--source` until voiced is published. The config file
+  is created 0600.
+- Services raise their open file limit from launchd's 256 to 4096.
+
+### Fixed
+
+- `voiced doctor` reports the service environment's Python, not only the
+  interpreter running the command. `voiced status` says how to install the
+  daemons when none are installed.
+- The engine catalogue child process no longer imports modules from the
+  watchdog's working directory.
+- README: the quickstart pins `--python 3.12` for `uv tool install`, gives
+  real download sizes, and lists the GPL-3, LGPL and MPL packages the
+  extras pull in.

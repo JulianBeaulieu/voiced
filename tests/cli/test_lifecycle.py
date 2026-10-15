@@ -130,6 +130,21 @@ def test_status_table(settings: Settings) -> None:
     assert lines[1].startswith("stt       running (pid 42)")
 
 
+def test_status_says_what_to_do_before_the_daemons_are_installed(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    out: list[str] = []
+    assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 1
+    assert out[-1].endswith("Run `voiced install --source <your checkout>` first.")
+    script = tmp_path / "launchd" / "install-daemons.sh"
+    script.parent.mkdir()
+    script.write_text("")
+    out.clear()
+    lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None)
+    assert out[-1] == f"The daemons are not installed. Review and run: sudo bash {script}"
+
+
 def test_logs_tail_and_missing(settings: Settings) -> None:
     settings.server.log_dir.mkdir()
     (settings.server.log_dir / "stt.log").write_text("\n".join(f"line{i}" for i in range(100)))

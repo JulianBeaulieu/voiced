@@ -59,8 +59,9 @@ languages = ["en"]
 vad_silence_ms = 200
 # Requests waiting for the GPU beyond this number get HTTP 503.
 queue_depth = 8
-# Largest upload accepted by /v1/audio/transcriptions. Also caps one Wyoming
-# utterance at the same amount of 16-bit 16 kHz audio (about 26 minutes at 50).
+# Largest upload accepted by /v1/audio/transcriptions. Also caps the audio an
+# upload decodes to, one WebSocket stream and one Wyoming utterance at the same
+# amount of 16-bit 16 kHz audio (about 26 minutes at 50).
 max_upload_mb = 50
 
 [tts]
