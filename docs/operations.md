@@ -10,7 +10,7 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 | `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--staging-dir`, `--skip-models`, `--no-uv`. |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
-| `voiced restart [stt\|tts\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. |
+| `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
 | `voiced status [--json]` | Each daemon's launchd state and each service's `/health`; with the watchdog running, also each service's state, uptime and restart count from the control socket. |
 | `voiced settings [get] [--json]`, `voiced settings set KEY=VALUE ...` | Shows or changes the common settings (see [Control channel](#control-channel)). `api_key=-` reads the key from stdin. |
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
@@ -284,5 +284,21 @@ sudo bash ~/.config/voiced/launchd/install-daemons.sh
 
 Use `--reinstall`: `--force` does not rebuild a version uv already has, so
 the command would keep the old code while the service environment updates.
+
+The sudo script is only needed when the plists change (a new label, log
+directory, service environment or user); `diff` the staged ones in
+`~/.config/voiced/launchd/` against `/Library/LaunchDaemons/` to check. A
+code-only upgrade needs no root:
+
+```sh
+uv tool install --reinstall --python 3.12 ~/voiced
+voiced install --source ~/voiced
+voiced restart all
+```
+
+`voiced restart all` restarts stt and tts, then the watchdog, and reports
+once the new watchdog answers on the control socket. `voiced restart stt`
+or `tts` leaves the watchdog running its old code; `voiced restart
+watchdog` restarts it alone.
 
 Read [CHANGELOG.md](../CHANGELOG.md) for anything that needs a manual step.

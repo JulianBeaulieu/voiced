@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import socket
 import tempfile
 import threading
@@ -131,7 +132,127 @@ def test_restart_without_socket_not_loaded(settings: Settings) -> None:
     out: list[str] = []
     runner = lambda argv: CommandResult(113, "", "Could not find service")  # noqa: E731
     assert lc.cmd_restart("all", settings, runner, out.append) == 1
-    assert len(out) == 3 and "not loaded" in out[1] and "not loaded" in out[2]
+    assert len(out) == 4 and all("not loaded" in line for line in out[1:])
+    assert out[3].startswith("watchdog:")
+
+
+class FakeWatchdogJob:
+    """launchctl and os.kill for a watchdog job that KeepAlive restarts with
+    a new pid once it is sent SIGTERM; every call goes into ``events``."""
+
+    def __init__(self, settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.label = settings.launchd.label("watchdog")
+        self.pid = 100
+        self.exits = True
+        self.kickstart = CommandResult(0)
+        self.events: list[tuple[object, ...]] = []
+        monkeypatch.setattr(os, "kill", self.kill)
+        monkeypatch.setattr(lc, "WATCHDOG_POLL_S", 0.0)
+
+    def kill(self, pid: int, sig: int) -> None:
+        self.events.append(("kill", pid, sig))
+        if pid == self.pid and self.exits:
+            self.pid += 100
+
+    def runner(self, argv: Sequence[str]) -> CommandResult:
+        if argv[-1] != f"system/{self.label}":
+            raise AssertionError(f"unexpected launchctl call {argv}")
+        if argv[1] == "print":
+            return CommandResult(0, f"state = running\n\tpid = {self.pid}\n")
+        self.events.append(("kickstart",))
+        return self.kickstart
+
+
+@pytest.fixture
+def job(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> FakeWatchdogJob:
+    return FakeWatchdogJob(settings, monkeypatch)
+
+
+@pytest.fixture
+def accepting(job: FakeWatchdogJob, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A control socket that accepts restarts and greets."""
+
+    def request(path: Path, op: str, args: dict[str, str], timeout_s: float) -> dict[str, object]:
+        job.events.append(("request", op, args["service"]))
+        names = ["stt", "tts"] if args["service"] == "all" else [args["service"]]
+        return {"accepted": True, "detail": {n: "restarting" for n in names}}
+
+    def hello(settings: Settings) -> dict[str, object]:
+        job.events.append(("hello",))
+        return {"version": "9.9"}
+
+    monkeypatch.setattr(lc, "request", request)
+    monkeypatch.setattr(lc, "control_hello", hello)
+
+
+@pytest.mark.usefixtures("accepting")
+def test_restart_all_restarts_the_watchdog_last(settings: Settings, job: FakeWatchdogJob) -> None:
+    out: list[str] = []
+    assert lc.cmd_restart("all", settings, job.runner, out.append) == 0
+    assert job.events == [
+        ("request", "service.restart", "all"),
+        ("kill", 100, signal.SIGTERM),
+        ("kickstart",),
+        ("hello",),
+    ]
+    assert out[:2] == ["stt: restarting", "tts: restarting"]
+    assert out[-1] == "watchdog: restarted (pid 100 -> pid 200), voiced 9.9 answering on the socket"
+
+
+@pytest.mark.usefixtures("accepting")
+def test_restart_one_service_leaves_the_watchdog(settings: Settings, job: FakeWatchdogJob) -> None:
+    out: list[str] = []
+    assert lc.cmd_restart("stt", settings, job.runner, out.append) == 0
+    assert job.events == [("request", "service.restart", "stt")]
+    assert out == ["stt: restarting", "`voiced status` shows when the model is loaded again."]
+
+
+@pytest.mark.usefixtures("accepting")
+def test_restart_watchdog_alone(settings: Settings, job: FakeWatchdogJob) -> None:
+    out: list[str] = []
+    assert lc.cmd_restart("watchdog", settings, job.runner, out.append) == 0
+    assert [e[0] for e in job.events] == ["kill", "kickstart", "hello"]
+    assert out == ["watchdog: restarted (pid 100 -> pid 200), voiced 9.9 answering on the socket"]
+
+
+@pytest.mark.usefixtures("accepting")
+def test_restart_watchdog_failures(
+    settings: Settings, job: FakeWatchdogJob, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc, "WATCHDOG_RESTART_TIMEOUT_S", 0.05)
+    out: list[str] = []
+    job.exits = False
+    assert lc.cmd_restart("all", settings, job.runner, out.append) == 1
+    assert out[-1] == "watchdog: pid 100 did not exit within 0s"
+    assert ("kickstart",) not in job.events
+
+    job.exits, job.kickstart = True, CommandResult(1, "", "Operation not permitted")
+    out.clear()
+    assert lc.cmd_restart("watchdog", settings, job.runner, out.append) == 1
+    assert out == ["watchdog: launchctl kickstart failed: Operation not permitted"]
+
+    job.kickstart = CommandResult(0)
+    monkeypatch.setattr(lc, "control_hello", lambda settings: None)
+    out.clear()
+    assert lc.cmd_restart("all", settings, job.runner, out.append) == 1
+    assert out[-1].startswith("watchdog: restarted, but its control socket did not answer")
+
+
+def test_restart_all_restarts_the_watchdog_after_a_failed_request(
+    settings: Settings, job: FakeWatchdogJob, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """New code must reach the watchdog even when it refuses (or an old
+    watchdog misunderstands) the service restart."""
+
+    def refused(*args: object) -> dict[str, object]:
+        raise ControlError("service_unavailable", "stt: not loaded; tts: not loaded")
+
+    monkeypatch.setattr(lc, "request", refused)
+    monkeypatch.setattr(lc, "control_hello", lambda settings: {"version": "9.9"})
+    out: list[str] = []
+    assert lc.cmd_restart("all", settings, job.runner, out.append) == 1
+    assert out[0] == "restart failed: stt: not loaded; tts: not loaded"
+    assert out[1].startswith("watchdog: restarted (pid 100 -> pid 200)")
 
 
 def test_status_without_socket(settings: Settings) -> None:
@@ -267,19 +388,17 @@ def test_settings_through_socket(served: Served, cfg: Path) -> None:
     assert out == ["tts.voice: fake has no voice 'nobody'"]
 
 
-def test_restart_through_socket(served: Served) -> None:
+def test_restart_through_socket(served: Served, monkeypatch: pytest.MonkeyPatch) -> None:
     out: list[str] = []
-
-    def no_launchctl(argv: Sequence[str]) -> CommandResult:
-        raise AssertionError("must go through the socket")
-
-    assert lc.cmd_restart("all", served.settings, no_launchctl, out.append) == 0
+    job = FakeWatchdogJob(served.settings, monkeypatch)
+    assert lc.cmd_restart("all", served.settings, job.runner, out.append) == 0
     served.wait_restarts()
     assert sorted(served.supervisor.restarted) == ["stt", "tts"]
     assert out[:2] == ["stt: restarting", "tts: restarting"]
+    assert out[-1] == "watchdog: restarted (pid 100 -> pid 200), voiced t answering on the socket"
     served.supervisor.refuse = {"stt": "not_installed"}
     out.clear()
-    assert lc.cmd_restart("stt", served.settings, no_launchctl, out.append) == 1
+    assert lc.cmd_restart("stt", served.settings, job.runner, out.append) == 1
     assert out == ["restart failed: stt: stt has no launchd plist"]
 
 

@@ -32,7 +32,13 @@ from voiced.config import (
     load_settings,
 )
 from voiced.control import NOT_SERVED, socket_path
-from voiced.control.client import DEFAULT_TIMEOUT_S, ControlError, ControlUnavailable, request
+from voiced.control.client import (
+    DEFAULT_TIMEOUT_S,
+    ControlClient,
+    ControlError,
+    ControlUnavailable,
+    request,
+)
 from voiced.control.logs import tail_lines
 from voiced.control.ops import NoSupervisor, Operations
 from voiced.control.protocol import OpError
@@ -88,8 +94,13 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     stop = sub.add_parser("stop", help="stop the daemons (prints the sudo command)")
     stop.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
 
-    restart = sub.add_parser("restart", help="restart a service now (no root needed)")
-    restart.add_argument("service", nargs="?", choices=(*HTTP_SERVICES, "all"), default="all")
+    restart = sub.add_parser(
+        "restart",
+        help="restart a service now (no root needed); all also restarts the watchdog, last",
+    )
+    restart.add_argument(
+        "service", nargs="?", choices=(*HTTP_SERVICES, "watchdog", "all"), default="all"
+    )
 
     status = sub.add_parser("status", help="launchd state and /health of each service")
     status.add_argument("--json", action="store_true", help="machine-readable output")
@@ -335,6 +346,22 @@ def _error_text(exc: ControlError) -> str:
 
 
 def cmd_restart(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
+    """Restart stt and tts, then, for ``all`` and ``watchdog``, the watchdog.
+
+    The watchdog goes last: it serves the control socket the service
+    restarts were asked through, and on SIGTERM it finishes the restarts it
+    accepted before it exits. It is restarted even when a service restart
+    failed, so that new code (after an upgrade) always reaches it.
+    """
+    ok = True
+    if service != "watchdog":
+        ok = _restart_services(service, settings, runner, echo)
+    if service in ("all", "watchdog"):
+        ok = restart_watchdog(settings, runner, echo) and ok
+    return 0 if ok else 1
+
+
+def _restart_services(service: str, settings: Settings, runner: Runner, echo: Echo) -> bool:
     """Through the watchdog when its control socket answers (it then knows
     about the restart and applies its startup grace); otherwise the same
     SIGKILL-and-kickstart directly."""
@@ -342,12 +369,12 @@ def cmd_restart(service: str, settings: Settings, runner: Runner, echo: Echo) ->
         result = _via_control(settings, "service.restart", {"service": service})
     except ControlError as exc:
         echo(f"restart failed: {exc.message}")
-        return 1
+        return False
     if result is not None:
         for name, detail in (result.get("detail") or {}).items():
             echo(f"{name}: {detail}")
         echo("`voiced status` shows when the model is loaded again.")
-        return 0
+        return True
     echo(f"no control socket at {socket_path(settings)}; restarting with launchctl directly")
     failures = 0
     for name in HTTP_SERVICES:
@@ -357,7 +384,71 @@ def cmd_restart(service: str, settings: Settings, runner: Runner, echo: Echo) ->
         outcome = restart_service(spec, runner)
         echo(f"{name}: {outcome.detail}")
         failures += 0 if outcome.done else 1
-    return 1 if failures else 0
+    return not failures
+
+
+WATCHDOG_RESTART_TIMEOUT_S = 30.0
+"""How long ``voiced restart`` waits for the old watchdog to exit and, again
+counted from the SIGTERM, for the new one to answer on the control socket."""
+WATCHDOG_POLL_S = 0.2
+
+
+def control_hello(settings: Settings) -> dict[str, Any] | None:
+    """The control socket's greeting, or None while nothing answers there."""
+    try:
+        with ControlClient.connect(socket_path(settings), timeout_s=2.0) as client:
+            return client.hello
+    except ControlUnavailable:
+        return None
+
+
+def restart_watchdog(settings: Settings, runner: Runner, echo: Echo) -> bool:
+    """SIGTERM the watchdog, wait for it to exit, ``launchctl kickstart`` it
+    and wait until the new process answers on the control socket.
+
+    ``kickstart -k`` needs root while the job runs (ADR 0004), but the
+    watchdog runs as this user, so the CLI may signal it. SIGTERM, not
+    SIGKILL: the watchdog then closes the socket after finishing the restarts
+    it accepted. KeepAlive would start it again after ``ThrottleInterval``;
+    the plain kickstart does it at once.
+    """
+    label = settings.launchd.label("watchdog")
+    status = print_service(label, runner)
+    if not status.loaded:
+        echo(f"watchdog: {label} is not loaded in launchd; nothing to restart")
+        return False
+    deadline = time.monotonic() + WATCHDOG_RESTART_TIMEOUT_S
+    old = status.pid
+    if old is not None:
+        try:
+            os.kill(old, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            echo(f"watchdog: kill {old} failed: {exc}")
+            return False
+        while print_service(label, runner).pid == old:
+            if time.monotonic() >= deadline:
+                echo(f"watchdog: pid {old} did not exit within {WATCHDOG_RESTART_TIMEOUT_S:.0f}s")
+                return False
+            time.sleep(WATCHDOG_POLL_S)
+    result = runner(kickstart_argv(label))
+    if not result.ok:
+        echo(f"watchdog: launchctl kickstart failed: {result.output}")
+        return False
+    while (hello := control_hello(settings)) is None:
+        if time.monotonic() >= deadline:
+            echo(
+                "watchdog: restarted, but its control socket did not answer within "
+                f"{WATCHDOG_RESTART_TIMEOUT_S:.0f}s; see `voiced logs watchdog`"
+            )
+            return False
+        time.sleep(WATCHDOG_POLL_S)
+    new = print_service(label, runner).pid
+    before = f"pid {old} -> " if old is not None else ""
+    version = hello.get("version", "?")
+    echo(f"watchdog: restarted ({before}pid {new}), voiced {version} answering on the socket")
+    return True
 
 
 # status -------------------------------------------------------------------
