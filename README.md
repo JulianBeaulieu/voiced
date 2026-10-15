@@ -302,7 +302,7 @@ process. Method, the complete table and the known misses are in
 | Kokoro first audio | 96 ms median, 112 ms worst | not yet measured |
 | Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | not yet measured |
 | Batch transcription, 10.1 s clip | 253 ms median | not yet measured |
-| STT + TTS footprint, idle after use | 2.47 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | not yet measured |
+| STT + TTS footprint, idle after use | 2.21 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | not yet measured |
 
 ## Troubleshooting
 

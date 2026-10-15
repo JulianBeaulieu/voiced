@@ -113,9 +113,9 @@ the kitchen lights."; "finalize" is from sending `end` to the `final` event.
 | Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 140 / p95 181 / worst 192 ms (n=16) | <= 150 ms worst (miss, see known misses) |
 | Batch transcription, 10.1 s clip | median 253 / p95 258 / worst 258 ms (n=10) | <= 300 ms |
 | STT memory | footprint 1.47 GB; RSS 0.37 GB; MLX active 1296 MB, cache 0 MB, peak 3983 MB | |
-| TTS (Kokoro) memory | footprint 1.00 GB; RSS 0.53 GB; MLX active 342 MB, cache 542 MB, peak 2159 MB | |
+| TTS (Kokoro) memory | footprint 0.74 GB; RSS 0.53 GB; MLX active 342 MB, cache 279 MB, peak 2159 MB | |
 | TTS (Soprano) memory | footprint 0.40 GB; RSS 0.44 GB; MLX active 217 MB, cache 10 MB, peak 283 MB | |
-| STT + TTS (Kokoro) footprint, idle after use | 2.47 GB | <= 3 GB |
+| STT + TTS (Kokoro) footprint, idle after use | 2.21 GB | <= 3 GB |
 | STT -> LLM -> TTS loop | not measured (no LLM endpoint configured for this run) | none |
 
 Notes on the rows:
@@ -132,6 +132,11 @@ Notes on the rows:
   is the whole request: a multipart upload through the `openai` client, the
   ffmpeg decode of the WAV, and a 10.1 s clip (the 3.37 s fixture tiled three
   times). The margin to the 300 ms target is about 42 ms.
+- The Kokoro memory row and the combined footprint were re-measured with the
+  same command on the final code, with `main`'s 256 MB MLX cache cap (defect
+  3). On that run the other rows matched within noise, except Soprano's tail
+  (median 149 / p95 272 / worst 356 ms; Soprano is off by default and has no
+  target).
 - Memory is each service's own `/metrics.json`, read 1 s after a long reply
   (TTS) or a batch of 10 s clips (STT); `footprint -p` agreed within 5%. The
   STT MLX peak is its load (fp32 weights cast to bf16, ADR 0008), not serving.
@@ -174,12 +179,14 @@ Notes on the rows:
    keeps freed buffers in a cache for reuse; a sentence-at-a-time engine
    allocates differently shaped buffers for every sentence, so the cache only
    grows, and nothing in the TTS engines bounded it (Parakeet clears its own).
-   Fix: `SentenceTTSEngine.load()` sets `mx.set_cache_limit(512 MB)` and empties
+   Fix: `SentenceTTSEngine.load()` sets `mx.set_cache_limit(256 MB)` and empties
    the cache the warm-up left; Soprano shares the base class. Clearing the
    cache after every sentence was measured too: it keeps the cache at zero
    (Kokoro footprint about 0.7 GB) but every sentence then allocates afresh,
    which put Kokoro's first audio at 118 ms against 94 ms unbounded; with the
-   512 MB limit it is 102 ms at about 1.0 GB. Regression tests:
+   512 MB limit first measured here it was 102 ms at about 1.0 GB. The limit
+   shipped is 256 MB: first audio within 0 to 3 ms of an unbounded cache and
+   Kokoro's footprint 0.74 GB (the table above). Regression tests:
    `tests/tts/test_sentence_engines.py::test_load_bounds_the_mlx_cache_even_when_it_fails`
    (CI) and `::test_synthesis_keeps_the_mlx_cache_bounded` (model tier: the
    limit is set and `mx.get_cache_memory()` stays within 1.25 times it after a
@@ -234,9 +241,9 @@ Notes on the rows:
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
   the two services.
 - **Transient memory while serving.** The idle footprint after use is
-  2.47 GB, within the 3 GB budget, but both engines peak above their idle
+  2.21 GB, within the 3 GB budget, but both engines peak above their idle
   allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
-  the four-sentence reply (0.88 GB idle), and Parakeet's serving peak is
+  the four-sentence reply (0.62 GB idle), and Parakeet's serving peak is
   2.46 GB (1.28 GB after load, ADR 0008; reached on long input). Either one
   alone takes STT plus TTS over 3 GB for a moment. If they coincide, the MLX peaks
   alone add to 4.6 GB, so the two footprints together would be about 4.9 GB;
