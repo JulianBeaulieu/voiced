@@ -252,6 +252,61 @@ Notes on the rows:
   that is an estimate from the separate peaks, not a measurement. The STT load
   peak (about 4 GB) is a one-off at start (ADR 0008).
 
+## Mac Studio
+
+Measured on the target machine: Mac Studio, M1 Max with the 24-core GPU,
+32 GB, macOS 27.0.1, voiced `main` at 48e1f20. The services ran as installed
+LaunchDaemons with the 256 MB Kokoro cache cap, and Ollama kept
+`ministral-3:8b` resident on the same GPU. `scripts/bench.py` ran with its
+defaults (10 trials, 32 alignments) and the servers' API key, on the Studio
+over loopback; Soprano was not running.
+
+| Metric | Measured | Target |
+|---|---|---|
+| Kokoro first audio | median 85 / p95 88 / worst 89 ms (n=10) | <= 200 ms |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence | median 3 / p95 42 / worst 48 ms (n=32) | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 149 / p95 160 / worst 164 ms (n=32) | <= 150 ms worst (miss) |
+| Streaming finalize, 100 ms chunks, 200 ms trailing silence | median 3 / p95 5 / worst 59 ms (n=32) | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 146 / p95 158 / worst 170 ms (n=32) | <= 150 ms worst (miss) |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 179 / p95 236 / worst 250 ms (n=16) | <= 150 ms worst (miss) |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 366 / p95 461 / worst 510 ms (n=16) | <= 150 ms worst (miss) |
+| Batch transcription, 10.1 s clip | median 258 / p95 273 / worst 275 ms (n=10) | <= 300 ms |
+| STT memory | footprint 1.61 GB; RSS 0.46 GB; MLX active 1296 MB, cache 0 MB, peak 3727 MB | |
+| TTS (Kokoro) memory | footprint 0.75 GB; RSS 0.51 GB; MLX active 342 MB, cache 279 MB, peak 2159 MB | |
+| STT + TTS (Kokoro) footprint, idle after use | 2.36 GB | <= 3 GB |
+| STT -> LLM -> TTS loop, end of speech to first audio (median), from a laptop over Wi-Fi | STT 7 + LLM 217 + TTS 221 = 436 ms | none |
+
+The loop row comes from a second run of the same script on an M1 Max laptop
+over Wi-Fi to the Studio, with `LLM_BASE_URL` pointing at the Studio's Ollama
+and `LLM_MODEL=ministral-3:8b`. Over Wi-Fi, batch transcription was 326 ms
+median (412 ms worst), about 70 ms of upload over loopback's 258 ms, and
+Kokoro first audio 105 ms median, about 20 ms more.
+
+Misses on the Studio:
+
+- **Push-to-talk finalize.** With 0 ms of trailing silence the worst of 32
+  is 164 ms (64 ms chunks) and 170 ms (100 ms chunks), medians 146 to 149 ms:
+  the same miss as on the development machine (see known misses), somewhat
+  slower.
+- **GPU contention is much worse than on the development machine.** With
+  Kokoro synthesizing in the other process, finalize after 200 ms of trailing
+  silence is median 179 / worst 250 ms (development machine: median 1, worst
+  54), and with 0 ms median 366 / worst 510 ms (140 / 192). The cause is not
+  yet established; the candidates are macOS 27's GPU scheduling and the resident
+  Ollama model. It matters when one satellite is speaking while another's
+  reply is synthesized; a single Home Assistant pipeline does not overlap STT
+  and TTS.
+- The idle footprint after use is 2.36 GB, within the 3 GB budget.
+
+Self-healing, with the installed LaunchDaemons on 48e1f20:
+
+- `kill -9` of the stt or tts process: launchd's KeepAlive restarts it, and it
+  is healthy again after 2.1 to 2.5 s.
+- `SIGSTOP` (a hung process): the watchdog restarts it after three failed
+  polls (15 s interval, 5 s timeout); stt was healthy again after 45 s, tts
+  after 40 s. Before the watchdog's startup grace ended at the first healthy
+  poll (48e1f20), a hang within 300 s of a restart took 157 to 180 s.
+
 ## Versions
 
 voiced 0.0.1 at this commit, mlx 0.32.3, parakeet-mlx 0.5.3, mlx-audio 0.5.9,
@@ -269,5 +324,5 @@ openai 3.31.0, wyoming 1.10.2, uvicorn 0.54.0, Python 3.12, macOS 15.7.4.
 - `/metrics.json` and the status page report the footprint, so a cache that
   grows again is visible without a profiler.
 - The 3 GB budget exists because the target Mac also keeps an LLM resident
-  (operations.md, memory). A second machine is not yet measured; the README
-  column for it says so.
+  (operations.md, memory). On the Mac Studio, with an 8B model resident, the
+  idle footprint is 2.36 GB.
