@@ -91,7 +91,9 @@ uv run python scripts/bench.py \
 
 `uv run python scripts/bench.py --help` documents each argument and the
 `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL` variables; the script's
-docstring defines each row.
+docstring defines each row. Against servers that set `server.api_key` (any server
+bound beyond loopback), pass the key with `--api-key` or `VOICED_API_KEY`; the
+table's footer says `auth: key` or `auth: none`, never the key.
 
 ## Results
 

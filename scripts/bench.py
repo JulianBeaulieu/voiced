@@ -8,7 +8,8 @@ command, and keeping it out of the CLI keeps its measurement code and the
 
 Start the servers first (``uv run voiced serve stt`` and ``uv run voiced serve
 tts``, plus optionally a second TTS server running Soprano on another port),
-then point this at them::
+then point this at them (add ``--api-key`` or ``VOICED_API_KEY`` when the
+servers set ``server.api_key``)::
 
     uv run python scripts/bench.py \\
         --stt-url http://127.0.0.1:8881 --tts-url http://127.0.0.1:8880 \\
@@ -144,10 +145,16 @@ def memory(url: str) -> dict[str, Any]:
 # -- measurements ------------------------------------------------------------
 
 
-def _openai(url: str) -> Any:
+def auth_headers(api_key: str) -> dict[str, str]:
+    """The ``Authorization`` header ``server.api_key`` requires; none without a key."""
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def _openai(url: str, api_key: str) -> Any:
     from openai import OpenAI
 
-    return OpenAI(base_url=f"{url}/v1", api_key="bench", max_retries=0, timeout=60)
+    # The client insists on a key; a server without ``server.api_key`` ignores it.
+    return OpenAI(base_url=f"{url}/v1", api_key=api_key or "bench", max_retries=0, timeout=60)
 
 
 def first_audio_ms(client: Any, voice: str, text: str) -> float:
@@ -162,20 +169,20 @@ def first_audio_ms(client: Any, voice: str, text: str) -> float:
     return (time.perf_counter() - started) * 1000
 
 
-def tts_first_audio_ms(url: str, voice: str, trials: int) -> list[float]:
-    client = _openai(url)
+def tts_first_audio_ms(url: str, api_key: str, voice: str, trials: int) -> list[float]:
+    client = _openai(url, api_key)
     first_audio_ms(client, voice, FIRST_AUDIO_TEXT)  # warm
     return [first_audio_ms(client, voice, FIRST_AUDIO_TEXT) for _ in range(trials)]
 
 
-def synthesize_long_reply(url: str, voice: str) -> None:
-    _openai(url).audio.speech.create(
+def synthesize_long_reply(url: str, api_key: str, voice: str) -> None:
+    _openai(url, api_key).audio.speech.create(
         model="voiced", voice=voice, input=LONG_REPLY, response_format="pcm"
     ).read()
 
 
-def batch_transcription_ms(url: str, wav: bytes, trials: int) -> list[float]:
-    client = _openai(url)
+def batch_transcription_ms(url: str, api_key: str, wav: bytes, trials: int) -> list[float]:
+    client = _openai(url, api_key)
 
     def once() -> float:
         started = time.perf_counter()
@@ -189,12 +196,12 @@ def batch_transcription_ms(url: str, wav: bytes, trials: int) -> list[float]:
 
 
 def stream_and_finalize(
-    ws_url: str, stream: bytes, rate: int, chunk_samples: int
+    ws_url: str, api_key: str, stream: bytes, rate: int, chunk_samples: int
 ) -> tuple[str, float]:
     """Send ``stream`` over the WebSocket in real time, then ``end``. Returns
     the final text and the ms from sending ``end`` to the ``final`` event."""
     chunk_bytes = chunk_samples * 2
-    with ws_sync.connect(ws_url, max_size=None) as ws:
+    with ws_sync.connect(ws_url, additional_headers=auth_headers(api_key), max_size=None) as ws:
         ws.send(json.dumps({"type": "config", "sample_rate": rate, "language": "en"}))
         t0 = time.perf_counter()
         for offset in range(0, len(stream), chunk_bytes):
@@ -211,6 +218,7 @@ def stream_and_finalize(
 
 def ws_finalize_ms(
     ws_url: str,
+    api_key: str,
     samples: NDArray[np.int16],
     rate: int,
     chunk_samples: int,
@@ -228,17 +236,17 @@ def ws_finalize_ms(
     for i in range(alignments):
         lead = np.zeros(round(i * 0.02 * rate), dtype="<i2")
         stream = np.concatenate([lead, samples, silence]).tobytes()
-        latencies.append(stream_and_finalize(ws_url, stream, rate, chunk_samples)[1])
+        latencies.append(stream_and_finalize(ws_url, api_key, stream, rate, chunk_samples)[1])
     return latencies
 
 
 @contextmanager
-def tts_busy(url: str, voice: str) -> Iterator[None]:
+def tts_busy(url: str, api_key: str, voice: str) -> Iterator[None]:
     """Keep the TTS server synthesizing back to back for the duration."""
     stop = threading.Event()
 
     def loop() -> None:
-        client = _openai(url)
+        client = _openai(url, api_key)
         while not stop.is_set():
             with client.audio.speech.with_streaming_response.create(
                 model="voiced", voice=voice, input=LONG_REPLY, response_format="pcm"
@@ -270,6 +278,7 @@ class Loop:
 def roundtrip(
     stt_url: str,
     tts_url: str,
+    api_key: str,
     voice: str,
     samples: NDArray[np.int16],
     rate: int,
@@ -283,13 +292,13 @@ def roundtrip(
     from openai import OpenAI
 
     llm = OpenAI(base_url=base, api_key=key, max_retries=0, timeout=30)
-    tts = _openai(tts_url)
+    tts = _openai(tts_url, api_key)
     ws_url = f"{_ws(stt_url)}/v1/audio/transcriptions/stream"
     silence = np.zeros(round(SILENCE_WINDOW_S * rate), dtype="<i2")
     stream_bytes = np.concatenate([samples, silence]).tobytes()
 
     def once() -> tuple[dict[str, float], bool]:
-        heard, finalize_ms = stream_and_finalize(ws_url, stream_bytes, rate, 1600)
+        heard, finalize_ms = stream_and_finalize(ws_url, api_key, stream_bytes, rate, 1600)
         stt_done = time.perf_counter()
         end = stt_done - finalize_ms / 1000  # when ``end`` was sent: the loop starts there
         clause, buffer = "", ""
@@ -353,11 +362,13 @@ class Row:
     target: str = ""
 
 
-def print_table(rows: list[Row]) -> None:
-    """A Markdown table the README and ADR can paste."""
+def print_table(rows: list[Row], authenticated: bool) -> None:
+    """A Markdown table the README and ADR can paste. Says whether requests
+    carried an API key, never the key."""
     print("\n| Metric | Measured | Target |\n|---|---|---|")
     for r in rows:
         print(f"| {r.metric} | {r.value} | {r.target} |")
+    print(f"\nauth: {'key' if authenticated else 'none'}")
 
 
 def fmt_ms(values: list[float]) -> str:
@@ -417,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("LLM_MODEL", "default"),
         help="chat model for the loop row (default: $LLM_MODEL, else 'default')",
     )
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("VOICED_API_KEY", ""),
+        help="bearer key for servers that set server.api_key; empty sends none "
+        "(default: $VOICED_API_KEY). Not $VOICED_SERVER__API_KEY: that variable "
+        "configures a server started from the same shell, and the bench should not "
+        "pick up a key meant for a local server when pointed at a remote one",
+    )
     args = parser.parse_args(argv)
 
     samples, rate = load_wav_int16(args.wav)
@@ -425,13 +444,14 @@ def main(argv: list[str] | None = None) -> int:
     ten_second = np.tile(samples, max(1, round(10 * rate / len(samples))))
     rows: list[Row] = []
     kokoro_voice = "af_heart"
+    key: str = args.api_key
 
     print(f"stt engine: {engine_name(args.stt_url)}, tts engine: {engine_name(args.tts_url)}")
 
-    first = tts_first_audio_ms(args.tts_url, kokoro_voice, args.trials)
+    first = tts_first_audio_ms(args.tts_url, key, kokoro_voice, args.trials)
     rows.append(Row("Kokoro first audio", fmt_ms(first), "<= 200 ms"))
     if args.soprano_url:
-        sop = tts_first_audio_ms(args.soprano_url, "default", args.trials)
+        sop = tts_first_audio_ms(args.soprano_url, key, "default", args.trials)
         rows.append(Row("Soprano first audio", fmt_ms(sop), ""))
     else:
         rows.append(Row("Soprano first audio", "skipped (no --soprano-url)", ""))
@@ -440,13 +460,13 @@ def main(argv: list[str] | None = None) -> int:
     tails = ((SILENCE_WINDOW_S, "200 ms trailing silence"), (0.0, "0 ms trailing silence"))
     for chunk, label in ((1024, "64 ms"), (1600, "100 ms")):
         for trailing, tail in tails:
-            fin = ws_finalize_ms(ws_url, samples, rate, chunk, args.alignments, trailing)
+            fin = ws_finalize_ms(ws_url, key, samples, rate, chunk, args.alignments, trailing)
             rows.append(
                 Row(f"Streaming finalize, {label} chunks, {tail}", fmt_ms(fin), "<= 150 ms worst")
             )
-    with tts_busy(args.tts_url, kokoro_voice):
+    with tts_busy(args.tts_url, key, kokoro_voice):
         for trailing, tail in tails:
-            fin = ws_finalize_ms(ws_url, samples, rate, 1024, args.alignments // 2, trailing)
+            fin = ws_finalize_ms(ws_url, key, samples, rate, 1024, args.alignments // 2, trailing)
             rows.append(
                 Row(
                     f"Streaming finalize, 64 ms chunks, {tail}, Kokoro synthesizing",
@@ -455,27 +475,27 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-    ten = batch_transcription_ms(args.stt_url, wav_container(ten_second, rate), args.trials)
+    ten = batch_transcription_ms(args.stt_url, key, wav_container(ten_second, rate), args.trials)
     rows.append(
         Row(f"Batch transcription, {len(ten_second) / rate:.1f} s clip", fmt_ms(ten), "<= 300 ms")
     )
 
     # Memory after use, not just after warm-up: a long reply on each TTS server
     # (the batch row above has already exercised STT).
-    synthesize_long_reply(args.tts_url, kokoro_voice)
+    synthesize_long_reply(args.tts_url, key, kokoro_voice)
     time.sleep(SETTLE_S)
     stt_mem, tts_mem = memory(args.stt_url), memory(args.tts_url)
     rows.append(Row("STT memory", fmt_mem(stt_mem)))
     rows.append(Row("TTS (Kokoro) memory", fmt_mem(tts_mem)))
     if args.soprano_url:
-        synthesize_long_reply(args.soprano_url, "default")
+        synthesize_long_reply(args.soprano_url, key, "default")
         time.sleep(SETTLE_S)
         rows.append(Row("TTS (Soprano) memory", fmt_mem(memory(args.soprano_url))))
-    key = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"
-    combined = stt_mem[key] + tts_mem[key]
+    field = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"
+    combined = stt_mem[field] + tts_mem[field]
     rows.append(
         Row(
-            f"STT + TTS (Kokoro) {key.removesuffix('_bytes')}, idle after use",
+            f"STT + TTS (Kokoro) {field.removesuffix('_bytes')}, idle after use",
             f"{combined / 1e9:.2f} GB",
             f"<= {MEMORY_TARGET_BYTES / 1e9:.0f} GB",
         )
@@ -484,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     loop = roundtrip(
         args.stt_url,
         args.tts_url,
+        key,
         kokoro_voice,
         samples,
         rate,
@@ -507,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    print_table(rows)
+    print_table(rows, authenticated=bool(key))
     return 0
 
 
