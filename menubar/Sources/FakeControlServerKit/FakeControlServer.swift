@@ -30,6 +30,10 @@ public final class FakeControlServer: @unchecked Sendable {
         /// Settings a `VOICED_*` environment variable overrides, reported as
         /// `env_override:<key>` warnings when they are set, as the real server does.
         public var environmentOverrides: Set<SettingKey> = []
+        /// Services `service.restart` refuses as `not_installed`, with the message. `all`
+        /// is still accepted while one service can restart, with the refusal in `detail`,
+        /// as the real server does.
+        public var refusedRestarts: [ServiceKind: String] = [:]
 
         public init() {}
     }
@@ -444,7 +448,7 @@ public final class FakeControlServer: @unchecked Sendable {
         let kinds: [ServiceKind]
         switch args["service"]?.stringValue {
         case "all": kinds = ServiceKind.allCases
-        case let name?: 
+        case let name?:
             guard let kind = ServiceKind(rawValue: name) else {
                 return .failure(RemoteError(code: "bad_request", message: "Unknown service \(name)."))
             }
@@ -455,8 +459,18 @@ public final class FakeControlServer: @unchecked Sendable {
         guard state.installed else {
             return .failure(RemoteError(code: "not_installed", message: "voiced is not installed."))
         }
-        let now = Date()
+        var detail: [String: JSONValue] = [:]
         for kind in kinds {
+            detail[kind.rawValue] = options.refusedRestarts[kind].map { .string("not_installed: \($0)") } ?? "restarting"
+        }
+        let refused = kinds.filter { options.refusedRestarts[$0] != nil }
+        if refused.count == kinds.count {
+            let message = refused.compactMap { options.refusedRestarts[$0] }.joined(separator: "; ")
+            return .failure(RemoteError(code: "not_installed", message: message))
+        }
+        let accepted = kinds.filter { options.refusedRestarts[$0] == nil }
+        let now = Date()
+        for kind in accepted {
             nextPID += 1
             state[kind].state = .starting
             state[kind].warm = false
@@ -469,13 +483,13 @@ public final class FakeControlServer: @unchecked Sendable {
         queue.async { [weak self] in self?.broadcastStatus() }
         queue.asyncAfter(deadline: .now() + options.restartDuration) { [weak self] in
             guard let self else { return }
-            for kind in kinds where self.state[kind].state == .starting {
+            for kind in accepted where self.state[kind].state == .starting {
                 self.state[kind].state = .running
                 self.state[kind].warm = true
             }
             self.broadcastStatus()
         }
-        return .success(["accepted": true])
+        return .success(["accepted": true, "detail": .object(detail)])
     }
 
     private func tail(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {

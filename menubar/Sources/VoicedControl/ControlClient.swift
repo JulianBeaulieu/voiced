@@ -272,8 +272,15 @@ extension ControlClient {
         try await request("engines.list").decode(EnginesPayload.self)
     }
 
-    public func restart(_ target: RestartTarget, timeout: Duration = ControlClient.restartTimeout) async throws {
-        _ = try await request("service.restart", ["service": .string(target.argument)], timeout: timeout)
+    /// Asks for a restart; the server accepts at once and `status` events show the progress.
+    /// Returns the services the server refused (`all` is accepted when either service can
+    /// restart), with the reason from its per-service `detail`.
+    @discardableResult
+    public func restart(
+        _ target: RestartTarget, timeout: Duration = ControlClient.restartTimeout
+    ) async throws -> [ServiceKind: String] {
+        let result = try await request("service.restart", ["service": .string(target.argument)], timeout: timeout)
+        return RestartDetail.refused(in: result)
     }
 
     /// Asks the server where something lives; the caller checks and opens it.

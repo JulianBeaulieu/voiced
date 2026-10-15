@@ -135,6 +135,16 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(voice.restartRequired, [.tts])
     }
 
+    /// `service.restart` answers as the control channel on main sends them.
+    func testRestartDetailNamesOnlyRefusedServices() throws {
+        let partial = try decodeJSON(
+            JSONValue.self,
+            #"{"accepted": true, "detail": {"stt": "service_unavailable: stt: not loaded", "tts": "restarting"}}"#)
+        XCTAssertEqual(RestartDetail.refused(in: partial), [.stt: "service_unavailable: stt: not loaded"])
+        let plain = try decodeJSON(JSONValue.self, #"{"accepted": true}"#)
+        XCTAssertEqual(RestartDetail.refused(in: plain), [:])
+    }
+
     func testStatusAndSettingsEventsArriveOnTheStream() async throws {
         let server = try startServer()
         defer { server.stop() }

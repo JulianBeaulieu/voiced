@@ -227,9 +227,9 @@ public final class AppModel {
         restarting.formUnion(kinds)
         defer { restarting.subtract(kinds) }
         do {
-            try await client.restart(target, timeout: restartTimeout)
-            restartRequired.subtract(kinds)
-            errorMessage = nil
+            let refused = try await client.restart(target, timeout: restartTimeout)
+            restartRequired.subtract(kinds.filter { refused[$0] == nil })
+            errorMessage = refused.isEmpty ? nil : Self.describe(refused: refused)
         } catch ControlError.timedOut {
             // The request went out; a hung service can take longer to kill than the timeout.
             // Status events show how it turns out.
@@ -282,6 +282,18 @@ public final class AppModel {
         } catch {
             errorMessage = Self.describe(error)
         }
+    }
+
+    /// "Not restarted: ..." with the server's reason, without its error code prefix.
+    static func describe(refused: [ServiceKind: String]) -> String {
+        let reasons = ServiceKind.allCases.compactMap { kind in
+            refused[kind].map { text in
+                let parts = text.split(separator: ":", maxSplits: 1)
+                let isCode = parts.count == 2 && parts[0].allSatisfy { $0.isLowercase || $0 == "_" }
+                return isCode ? parts[1].trimmingCharacters(in: .whitespaces) : text
+            }
+        }
+        return "Not restarted: " + reasons.joined(separator: "; ")
     }
 
     static func describe(_ error: Error) -> String {

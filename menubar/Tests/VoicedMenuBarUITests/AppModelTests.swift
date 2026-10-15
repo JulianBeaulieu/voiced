@@ -331,6 +331,23 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(isReady(model), "the connection stays up")
     }
 
+    func testARefusedServiceKeepsItsRestartNoticeAndSaysWhy() async throws {
+        let server = try startServer {
+            $0.refusedRestarts = [.stt: "stt: io.example.voiced.stt is installed but not loaded in launchd"]
+        }
+        defer { server.stop() }
+        let model = try await connectedModel(server)
+        defer { model.stop() }
+
+        await model.apply(.bind(.lan))
+        XCTAssertEqual(model.restartRequired, [.stt, .tts])
+        await model.restartPending()
+        XCTAssertEqual(server.requests.last?.args, ["service": "all"])
+        XCTAssertEqual(model.restartRequired, [.stt], "only tts restarted")
+        XCTAssertEqual(
+            model.errorMessage, "Not restarted: stt: io.example.voiced.stt is installed but not loaded in launchd")
+    }
+
     func testOpenChecksTheServersTargetBeforeOpening() async throws {
         let server = try startServer()
         defer { server.stop() }

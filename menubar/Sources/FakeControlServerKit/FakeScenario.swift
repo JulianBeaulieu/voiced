@@ -115,16 +115,16 @@ extension FakeState {
             engines: EnginesPayload(
                 stt: [
                     STTEngineInfo(
-                        name: "parakeet", label: "Parakeet TDT 0.6B v3",
+                        name: "parakeet", label: "Parakeet",
                         models: ["mlx-community/parakeet-tdt-0.6b-v3"], languages: ["en"]),
-                    STTEngineInfo(name: "fake", label: "Fake (testing)", models: ["fake"], languages: ["en"]),
+                    STTEngineInfo(name: "fake", label: "Fake", models: ["fake"], languages: ["en"]),
                 ],
                 tts: [
                     TTSEngineInfo(
-                        name: "kokoro", label: "Kokoro-82M", models: ["mlx-community/Kokoro-82M-bf16"],
+                        name: "kokoro", label: "Kokoro", models: ["mlx-community/Kokoro-82M-bf16"],
                         voices: kokoroVoices, voiceLabels: kokoroLabels(kokoroVoices), languages: ["en"]),
                     TTSEngineInfo(
-                        name: "soprano", label: "Soprano-80M", models: ["mlx-community/Soprano-80M-bf16"],
+                        name: "soprano", label: "Soprano", models: ["mlx-community/Soprano-80M-bf16"],
                         voices: ["default"], voiceLabels: ["default": "Default"], languages: ["en"]),
                     // No labels, as from an engine (or a server) that does not send them.
                     TTSEngineInfo(name: "fake", models: ["fake"], voices: ["fake"]),

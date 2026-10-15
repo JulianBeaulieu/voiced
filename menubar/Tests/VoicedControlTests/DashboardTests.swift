@@ -218,22 +218,44 @@ final class EngineLabelTests: XCTestCase {
         let engines = try decodeJSON(
             EnginesPayload.self,
             """
-            {"stt": [{"name": "parakeet", "label": "Parakeet TDT 0.6B v3", "models": [], "languages": ["en"]},
+            {"stt": [{"name": "parakeet", "label": "Parakeet", "models": [], "languages": ["en"]},
                      {"name": "plain", "models": [], "languages": []}],
-             "tts": [{"name": "kokoro", "label": "Kokoro-82M", "models": [], "voices": ["af_heart", "zz_new"],
+             "tts": [{"name": "kokoro", "label": "Kokoro", "models": [], "voices": ["af_heart", "zz_new"],
                       "voice_labels": {"af_heart": "Heart (American English, female)"}, "languages": ["en"]},
                      {"name": "bare", "models": [], "voices": ["v"]}]}
             """)
-        XCTAssertEqual(engines.stt[0].displayName, "Parakeet TDT 0.6B v3")
+        XCTAssertEqual(engines.stt[0].displayName, "Parakeet")
         XCTAssertEqual(engines.stt[1].displayName, "plain")
         let kokoro = try XCTUnwrap(engines.ttsEngine(named: "kokoro"))
-        XCTAssertEqual(kokoro.displayName, "Kokoro-82M")
+        XCTAssertEqual(kokoro.displayName, "Kokoro")
         XCTAssertEqual(kokoro.voiceName("af_heart"), "Heart (American English, female)")
         XCTAssertEqual(kokoro.voiceName("zz_new"), "zz_new")
         XCTAssertEqual(kokoro.languages, ["en"])
         let bare = try XCTUnwrap(engines.ttsEngine(named: "bare"))
         XCTAssertEqual(bare.displayName, "bare")
         XCTAssertEqual(bare.voiceName("v"), "v")
+    }
+
+    /// An `engines.list` answer as the control channel on main sends it.
+    func testDecodesTheServersEngineList() throws {
+        let engines = try decodeJSON(
+            EnginesPayload.self,
+            """
+            {"stt": [{"name": "fake", "label": "Fake", "models": ["fake/stt"], "languages": ["en"]},
+                     {"name": "parakeet", "label": "Parakeet", "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
+                      "languages": ["en", "de"]}],
+             "tts": [{"name": "kokoro", "label": "Kokoro", "models": ["mlx-community/Kokoro-82M-bf16"],
+                      "languages": ["en-US", "en-GB"], "voices": ["af_heart", "bm_fable"],
+                      "voice_labels": {"af_heart": "Heart (American English, female)",
+                                       "bm_fable": "Fable (British English, male)"}},
+                     {"name": "soprano", "label": "Soprano", "models": ["mlx-community/Soprano-80M-bf16"],
+                      "languages": ["en"], "voices": ["default"], "voice_labels": {"default": "Default"}}]}
+            """)
+        XCTAssertEqual(engines.stt.map(\.displayName), ["Fake", "Parakeet"])
+        let kokoro = try XCTUnwrap(engines.ttsEngine(named: "kokoro"))
+        XCTAssertEqual(kokoro.displayName, "Kokoro")
+        XCTAssertEqual(kokoro.voiceName("bm_fable"), "Fable (British English, male)")
+        XCTAssertEqual(engines.ttsEngine(named: "soprano")?.voiceName("default"), "Default")
     }
 
     func testMalformedLabelsAreIgnoredNotFatal() throws {

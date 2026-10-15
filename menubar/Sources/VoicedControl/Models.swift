@@ -334,6 +334,22 @@ public enum RestartTarget: Sendable, Equatable {
     }
 }
 
+/// The per-service outcome in a `service.restart` answer: `"restarting"`, or the error code
+/// and message of a service that was refused (`"not_installed: ..."`).
+public enum RestartDetail {
+    public static func refused(in result: JSONValue) -> [ServiceKind: String] {
+        guard case .object(let detail)? = result["detail"] else { return [:] }
+        var refused: [ServiceKind: String] = [:]
+        for (name, outcome) in detail {
+            guard let kind = ServiceKind(rawValue: name), let text = outcome.stringValue,
+                text != "restarting"
+            else { continue }
+            refused[kind] = text
+        }
+        return refused
+    }
+}
+
 /// The keys `settings.set` accepts (the contract's list). The app and the fake server both
 /// use this enum, so neither can drift from the other.
 public enum SettingKey: String, Sendable, CaseIterable {
