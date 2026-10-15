@@ -422,12 +422,15 @@ async def test_concurrent_decodes_are_bounded(
     not bound them; each holds its bytes, an ffmpeg process and its audio.
     At most ``queue_depth`` decode at once; the next is a 503."""
     gate = asyncio.Event()
+    both_decoding = asyncio.Event()
     decoding: list[int] = []
 
     async def slow_decode(
         data: bytes, sample_rate: int = 16_000, *, max_seconds: float | None = None
     ) -> Any:
         decoding.append(len(data))
+        if len(decoding) == 2:
+            both_decoding.set()
         await gate.wait()
         return np.zeros(sample_rate, dtype=np.float32)
 
@@ -440,11 +443,12 @@ async def test_concurrent_decodes_are_bounded(
             return (await c.post("/v1/audio/transcriptions", files=files)).status_code
 
         first, second = asyncio.create_task(one()), asyncio.create_task(one())
-        for _ in range(500):
-            if len(decoding) == 2:
-                break
-            await asyncio.sleep(0.01)
-        assert await one() == 503
+        await asyncio.wait_for(both_decoding.wait(), 5)
+        r = await c.post(
+            "/v1/audio/transcriptions", files={"file": ("t.wav", sine_wav(), "audio/wav")}
+        )
+        assert r.status_code == 503
+        assert r.json()["error"]["message"] == "TooManyUploads: too many uploads decoding (2)"
         gate.set()
         assert await asyncio.gather(first, second) == [200, 200]
     assert app.state.ctx.uploads.active == 0

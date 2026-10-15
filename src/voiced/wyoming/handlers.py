@@ -25,6 +25,7 @@ from voiced.context import ServiceContext
 from voiced.engines.base import EngineError
 from voiced.inference import DISCONNECT_ERRORS, bounded, classify
 from voiced.metrics import Outcome
+from voiced.validate import is_int
 
 log = logging.getLogger(__name__)
 
@@ -32,12 +33,11 @@ ERROR_SERVER_BUSY = "server_busy"
 ERROR_INVALID_REQUEST = "invalid_request_error"
 ERROR_ENGINE = "engine_error"
 
-MAX_PAYLOAD_BYTES = 1_000_000
-"""Largest binary payload of one event. Home Assistant sends audio chunks of
-about 2 KB; clients send no other payloads."""
-MAX_DATA_BYTES = 1024 * 1024
-"""Largest JSON ``data`` block of one event, unless ``tts.max_input_chars``
-needs more (see :meth:`VoicedEventHandler.max_data_bytes`)."""
+MAX_EVENT_BYTES = 1_000_000
+"""Largest JSON ``data`` block, and largest binary payload, of one event.
+Home Assistant sends audio chunks of about 2 KB and synthesis text of a few
+KB; this also bounds ``tts.max_input_chars`` on Wyoming to roughly 170 000
+characters (escaped JSON can take six bytes per character)."""
 CONNECTION_IDLE_S = 300.0
 """A connection that starts no event for this long is closed. Home Assistant
 opens a connection per request; the bound is long so a streaming synthesis
@@ -98,7 +98,7 @@ def _length(header: dict[str, Any], key: str, limit: int) -> int:
     value = header.get(key)
     if value is None:
         return 0
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if not is_int(value) or value < 0:
         raise BadEvent(f"{key} must be a non-negative integer")
     if value > limit:
         raise BadEvent(f"{key} {value} is over the limit of {limit} bytes")
@@ -119,13 +119,8 @@ class VoicedEventHandler(AsyncEventHandler):
         peer = writer.get_extra_info("peername")
         self.peer = f"{peer[0]}:{peer[1]}" if isinstance(peer, tuple) else str(peer)
 
-    @property
-    def max_data_bytes(self) -> int:
-        # Synthesize text is JSON-escaped: up to six bytes per character.
-        return max(MAX_DATA_BYTES, 6 * self.ctx.settings.tts.max_input_chars + 1024)
-
     async def run(self) -> None:
-        """The ``AsyncEventHandler`` loop with a bounded reader.
+        """The ``AsyncEventHandler`` loop (``wyoming`` 1.10) with a bounded reader.
 
         The ``wyoming`` package reads ``data_length`` and ``payload_length``
         bytes, whatever they say, before anything can look at the event, and
@@ -161,21 +156,21 @@ class VoicedEventHandler(AsyncEventHandler):
             return None
         try:
             header = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # "[" * 60000 recurses before it fails
             raise BadEvent("header is not JSON") from None
         if not isinstance(header, dict) or not isinstance(header.get("type"), str):
             raise BadEvent("header must be an object with a type")
         data = header.get("data") or {}
         if not isinstance(data, dict):
             raise BadEvent("data must be an object")
-        data_length = _length(header, "data_length", self.max_data_bytes)
-        payload_length = _length(header, "payload_length", MAX_PAYLOAD_BYTES)
+        data_length = _length(header, "data_length", MAX_EVENT_BYTES)
+        payload_length = _length(header, "payload_length", MAX_EVENT_BYTES)
         try:
             if data_length:
                 block = await bounded(self.reader.readexactly(data_length), self._idle_timeout_s)
                 try:
                     extra = json.loads(block)
-                except ValueError:
+                except (ValueError, RecursionError):
                     raise BadEvent("data is not JSON") from None
                 if not isinstance(extra, dict):
                     raise BadEvent("data must be an object")

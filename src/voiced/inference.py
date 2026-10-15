@@ -107,7 +107,7 @@ async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[
             ctx.health.record_error(exc)
             # The one place every transport's failures reach the log; /health
             # and the status page may withhold the message (public_health).
-            log.error("%s failed: %s", operation, detail)
+            log.error("%s failed: %s", operation, detail, exc_info=exc)
         elif outcome is Outcome.DISCONNECT:
             log.debug("%s: client went away: %r", operation, exc)
         ctx.metrics.record(operation, outcome, _elapsed_ms(started), detail)

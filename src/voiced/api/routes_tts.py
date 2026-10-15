@@ -43,7 +43,7 @@ from voiced.api.context import APIError, Ctx
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.api.responses import ClosingStreamingResponse
 from voiced.context import ServiceContext
-from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk, UnknownVoice
+from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk
 from voiced.inference import inference
 from voiced.metrics import Operation
 from voiced.text import normalize
@@ -121,12 +121,7 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
     if fmt in ("mp3", "opus"):
         ffmpeg.require_ffmpeg(f"{fmt} output")
 
-    voice = body.voice or settings.default_voice
-    served = {v.id for v in await ctx.voices()}
-    if voice not in served:
-        # The engine may know the voice, but its language is not configured.
-        source = "" if body.voice else " (tts.default_voice)"
-        raise UnknownVoice(f"voice {voice!r}{source} is not served; see /v1/audio/voices")
+    voice = await ctx.check_voice(body.voice, listed_by="/v1/audio/voices")
     speed = body.speed if body.speed is not None else settings.speed
     text = normalize(body.input)
 

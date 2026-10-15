@@ -17,7 +17,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.websockets import WebSocket
 
 from tests.api.conftest import pcm16, sync_client
-from voiced.api import routes_stt
+from voiced import audio
 from voiced.api.context import close_ws
 from voiced.audio import pcm16_to_float32
 from voiced.config import Settings
@@ -293,7 +293,7 @@ def test_stream_audio_is_bounded(stt_app: FastAPI) -> None:
                 while True:
                     ws.receive_json()
             assert exc.value.code == 1008
-            assert "stream longer than" in exc.value.reason
+            assert "s of audio" in exc.value.reason
         _wait_for_depth(stt_app, 0)
         assert client.get("/health").json()["status"] == "ok"
 
@@ -303,16 +303,16 @@ def test_stream_session_has_a_wall_clock_bound(
 ) -> None:
     """A client that sends a little audio just inside ``session_idle_s`` each
     time could otherwise hold the slot forever."""
-    monkeypatch.setattr(routes_stt, "max_stream_s", lambda settings: 0.3)
-    stt_app.state.ctx.settings.server.session_idle_s = 0.2
+    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 0.3)
+    stt_app.state.ctx.settings.server.session_idle_s = 1.0  # open for at most 1.3 s
     with sync_client(stt_app) as client:
         with client.websocket_connect(PATH) as ws:
-            for _ in range(20):  # 1 s of one sample every 50 ms, never idle for 0.2 s
+            for _ in range(40):  # 2 s of one sample every 50 ms, never idle for 1 s
                 ws.send_bytes(b"\0\0")
                 time.sleep(0.05)
             with pytest.raises(WebSocketDisconnect) as exc:
                 while True:
                     ws.receive_json()
             assert exc.value.code == 1008
-            assert "stream longer than" in exc.value.reason
+            assert "session open longer than" in exc.value.reason
         _wait_for_depth(stt_app, 0)

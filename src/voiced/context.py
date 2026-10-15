@@ -10,6 +10,7 @@ from voiced.engines.base import (
     EngineNotLoaded,
     STTEngine,
     TTSEngine,
+    UnknownVoice,
     UnsupportedLanguage,
     Voice,
 )
@@ -93,6 +94,21 @@ class ServiceContext:
                 return tag
         return engine_tags[0]
 
+    async def check_voice(self, voice: str | None, *, listed_by: str) -> str:
+        """Resolve a client's voice to one this service serves.
+
+        ``None`` means ``tts.default_voice``. The voice must be one of
+        :meth:`voices`, the engine's voices in the configured languages: an
+        engine may know more, but those are not served. Raises
+        :class:`UnknownVoice` (an ``EngineError``) naming ``listed_by``, where
+        the client can find the served voices.
+        """
+        chosen = voice or self.settings.tts.default_voice
+        if chosen not in {v.id for v in await self.voices()}:
+            source = "" if voice else " (tts.default_voice)"
+            raise UnknownVoice(f"voice {chosen!r}{source} is not served; see {listed_by}")
+        return chosen
+
     def check_loaded(self) -> None:
         """Raise :class:`EngineNotLoaded` until ``load()`` has finished.
 
@@ -112,8 +128,7 @@ class ServiceContext:
         """
         snapshot = self.health.snapshot(self.queue.depth)
         if self.settings.server.api_key and snapshot.last_error:
-            kind = snapshot.last_error.partition(":")[0]
-            snapshot.last_error = f"{kind} (details in the service log)"
+            snapshot.last_error = f"{self.health.last_error_type} (details in the service log)"
         return snapshot
 
     @property

@@ -45,7 +45,6 @@ from voiced.engines.base import (
     TTS_SAMPLE_WIDTH,
     EngineError,
     PCMChunk,
-    UnknownVoice,
 )
 from voiced.inference import inference
 from voiced.metrics import Operation
@@ -93,8 +92,15 @@ class TTSEventHandler(VoicedEventHandler):
         if SynthesizeStart.is_type(event.type):
             if self._stream is not None:
                 await self.cleanup()
-            start = parse(SynthesizeStart, event)
-            voice = await self._resolve(start.voice)
+            try:
+                start = parse(SynthesizeStart, event)
+                voice = await self._resolve(start.voice)
+            except EngineError as exc:
+                # A stream that cannot start fails once and closes, like one
+                # that fails later; otherwise each chunk and the stop would
+                # get an error of their own.
+                await self.report(exc)
+                return False
             self._audio_started = False
             self._stream = stream = _Stream(voice=voice)
             stream.worker = asyncio.create_task(self._worker(stream), name="wyoming tts stream")
@@ -135,12 +141,8 @@ class TTSEventHandler(VoicedEventHandler):
         name = voice.name if voice is not None and voice.name else None
         if name is not None and not isinstance(name, str):
             raise MalformedEvent("voice name must be a string")
-        chosen = name or self.ctx.settings.tts.default_voice
         self.ctx.check_loaded()
-        if chosen not in {v.id for v in await self.ctx.voices()}:
-            source = "" if name else " (tts.default_voice)"
-            raise UnknownVoice(f"voice {chosen!r}{source} is not served; see Describe")
-        return chosen
+        return await self.ctx.check_voice(name, listed_by="Describe")
 
     def _enforce_input_limit(self, chars: int) -> None:
         if chars > self.ctx.settings.tts.max_input_chars:

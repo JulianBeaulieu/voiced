@@ -18,7 +18,13 @@ import pytest
 from wyoming.audio import AudioStart
 from wyoming.error import Error
 from wyoming.event import Event, async_read_event, async_write_event
-from wyoming.tts import Synthesize, SynthesizeStart, SynthesizeVoice
+from wyoming.tts import (
+    Synthesize,
+    SynthesizeChunk,
+    SynthesizeStart,
+    SynthesizeStop,
+    SynthesizeVoice,
+)
 
 from tests.wyoming.conftest import wait_for
 from voiced.engines.base import Voice
@@ -83,12 +89,18 @@ async def test_event_is_refused_from_its_header(
     assert stt_listener.ctx.health.status == "ok"
 
 
-async def test_header_that_is_not_json_is_refused(stt_listener: WyomingListener) -> None:
+@pytest.mark.parametrize("line", [b"not json\n", b"[" * 60_000 + b"\n"])
+async def test_header_that_is_not_json_is_refused(
+    stt_listener: WyomingListener, line: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Deeply nested JSON raises RecursionError, not ValueError; it must be a
+    refused event, not an unhandled exception logged per connection."""
     async with raw(stt_listener) as (reader, writer):
-        writer.write(b"not json\n")
+        writer.write(line)
         error = await read_error(reader)
         assert "header is not JSON" in error.text
         assert await closed(reader)
+    assert "Unhandled exception" not in caplog.text
 
 
 async def test_data_block_that_is_not_an_object_is_refused(stt_listener: WyomingListener) -> None:
@@ -102,7 +114,7 @@ async def test_data_block_that_is_not_an_object_is_refused(stt_listener: Wyoming
 async def test_largest_allowed_payload_still_works(stt_listener: WyomingListener) -> None:
     ctx = stt_listener.ctx
     engine: FakeSTTEngine = ctx.engine  # type: ignore[assignment]
-    audio = bytes(handlers.MAX_PAYLOAD_BYTES)
+    audio = bytes(handlers.MAX_EVENT_BYTES)
     async with raw(stt_listener) as (reader, writer):
         await async_write_event(AudioStart(rate=16_000, width=2, channels=1).event(), writer)
         await async_write_event(
@@ -229,3 +241,30 @@ async def test_tts_voice_outside_the_configured_languages_is_refused(
         error = await read_error(reader)
     assert error.text.startswith("UnknownVoice")
     assert asked == []
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        SynthesizeStart(voice=SynthesizeVoice(name="no_such_voice")).event(),
+        Event("synthesize-start", {"voice": {"name": 7}}),
+    ],
+)
+async def test_tts_stream_that_cannot_start_fails_once_and_closes(
+    tts_listener: WyomingListener, start: Event
+) -> None:
+    """A rejected SynthesizeStart ends the stream: one Error, then the
+    connection closes, rather than one error per chunk and for the stop."""
+    async with raw(tts_listener) as (reader, writer):
+        await async_write_event(start, writer)
+        error = await read_error(reader)
+        assert error.code == "invalid_request_error"
+        # What a client streaming text would send next gets nothing back.
+        for event in (
+            SynthesizeChunk(text="Hello there. ").event(),
+            SynthesizeChunk(text="More text. ").event(),
+            SynthesizeStop().event(),
+        ):
+            with contextlib.suppress(ConnectionError, RuntimeError):
+                await async_write_event(event, writer)
+        assert await closed(reader)

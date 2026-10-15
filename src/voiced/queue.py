@@ -71,9 +71,17 @@ class InferenceQueue:
             self._pending -= 1
 
 
+class TooManyUploads(QueueFull):
+    """Raised by :class:`Admission`: a :class:`QueueFull`, so it is ``busy`` (503)."""
+
+    def __init__(self, capacity: int) -> None:
+        Exception.__init__(self, f"too many uploads decoding ({capacity})")
+        self.capacity = capacity
+
+
 class Admission:
     """A non-blocking counter for work done outside the slot, such as decoding
-    uploads: at most ``capacity`` at once, the next raises :class:`QueueFull`."""
+    uploads: at most ``capacity`` at once, the next raises :class:`TooManyUploads`."""
 
     def __init__(self, capacity: int) -> None:
         if capacity < 1:
@@ -84,7 +92,7 @@ class Admission:
     @contextmanager
     def admit(self) -> Iterator[None]:
         if self.active >= self.capacity:
-            raise QueueFull(self.capacity)
+            raise TooManyUploads(self.capacity)
         self.active += 1
         try:
             yield

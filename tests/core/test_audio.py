@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import wave
 
 import numpy as np
 import pytest
 
+from voiced import audio
 from voiced.audio import (
     PCMConverter,
     UnsupportedAudioFormat,
+    UtteranceBudget,
     float32_to_pcm16,
     pcm16_to_float32,
     resample,
     wav_header,
 )
+from voiced.config import Settings
 from voiced.engines.base import EngineError
 
 RNG = np.random.default_rng(0)
@@ -149,3 +153,30 @@ def _encode(x: np.ndarray, width: int) -> bytes:
     if width == 2:
         return float32_to_pcm16(x)
     return np.rint(x * 2147483647).astype("<i4").tobytes()
+
+
+def _budget_settings(idle_s: float) -> Settings:
+    settings = Settings()
+    settings.server.session_idle_s = idle_s
+    return settings
+
+
+async def test_utterance_budget_counts_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 1.0)
+    async with UtteranceBudget(_budget_settings(30)) as budget:
+        budget.add(16_000)  # exactly the limit
+        with pytest.raises(EngineError, match="more than 1 s of audio"):
+            budget.add(1)
+
+
+async def test_utterance_budget_bounds_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 0.05)
+    with pytest.raises(EngineError, match=r"session open longer than 0\.1 s"):
+        async with UtteranceBudget(_budget_settings(0.05)):
+            await asyncio.sleep(5)
+
+
+async def test_utterance_budget_leaves_other_timeouts_alone() -> None:
+    with pytest.raises(TimeoutError):
+        async with UtteranceBudget(_budget_settings(30)):
+            raise TimeoutError

@@ -14,11 +14,11 @@ from wyoming.error import Error
 from wyoming.event import Event
 from wyoming.info import Describe, Info
 
-from voiced import __version__
+from voiced import __version__, audio
 from voiced.context import ServiceContext
 from voiced.engines.base import STTStreamSession
 from voiced.testing import FakeSTTEngine
-from voiced.wyoming import WYOMING_STT_SERVICE, stt_handler
+from voiced.wyoming import WYOMING_STT_SERVICE, handlers, stt_handler
 from voiced.wyoming.server import WyomingListener
 from voiced.wyoming.stt_handler import STTEventHandler
 
@@ -221,7 +221,7 @@ async def test_utterance_over_cap_closes_and_never_restarts(
     ctx.settings.stt.max_upload_mb = 1  # 500k int16 samples, about 31 s at 16 kHz
     async with client(stt_listener) as c:
         await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
-        for _ in range(4):  # 40 s, over the cap; each chunk under MAX_CHUNK_BYTES
+        for _ in range(4):  # 40 s, over the cap; each chunk under MAX_EVENT_BYTES
             await c.write_event(chunk16k(pcm16(10.0)).event())
         event = await c.read_event()
         assert event is not None and Error.is_type(event.type)
@@ -306,7 +306,7 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
     stt_app: FastAPI, stt_listener: WyomingListener
 ) -> None:
     """The queue bound is in chunks, so each chunk is capped in bytes: queued
-    audio stays under _QUEUE_CHUNKS * MAX_CHUNK_BYTES per connection. The
+    audio stays under _QUEUE_CHUNKS * MAX_EVENT_BYTES per connection. The
     reader refuses the chunk from its header, before buffering the payload."""
     engine: FakeSTTEngine = stt_app.state.ctx.engine
     ctx = stt_listener.ctx
@@ -317,7 +317,7 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
             await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
             # Only the header: the server refuses on it and closes, so a client
             # still writing the payload would race the close.
-            oversized = {"type": "audio-chunk", "payload_length": stt_handler.MAX_CHUNK_BYTES + 2}
+            oversized = {"type": "audio-chunk", "payload_length": handlers.MAX_EVENT_BYTES + 2}
             assert c._writer is not None
             c._writer.write(json.dumps(oversized).encode() + b"\n")
             event = await c.read_event()
@@ -326,7 +326,7 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
             assert error.code == "invalid_request_error"
             assert error.text.startswith("BadEvent: payload_length")
             # More oversized audio gets nothing back: the connection is closed.
-            assert await _after_error(c, bytes(stt_handler.MAX_CHUNK_BYTES + 2)) == []
+            assert await _after_error(c, bytes(handlers.MAX_EVENT_BYTES + 2)) == []
         assert engine.calls == 0
         await wait_for(lambda: ctx.queue.depth == 1)
     finally:
@@ -397,8 +397,8 @@ async def test_session_wall_clock_is_bounded(
     stt_listener: WyomingListener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Tiny chunks that each arrive inside session_idle_s still cannot hold
-    the slot past max_utterance_s + session_idle_s."""
-    monkeypatch.setattr(stt_handler, "max_utterance_s", lambda settings: 0.2)
+    the slot past the utterance limit + session_idle_s."""
+    monkeypatch.setattr(audio, "utterance_limit_s", lambda settings: 0.2)
     ctx = stt_listener.ctx
     ctx.settings.server.session_idle_s = 0.3
     async with client(stt_listener) as c:
@@ -418,7 +418,7 @@ async def test_session_wall_clock_is_bounded(
             with contextlib.suppress(asyncio.CancelledError):
                 await trickler
     assert [e.type for e in events] == ["error"]
-    assert "utterance longer than" in Error.from_event(events[0]).text
+    assert "session open longer than 0.5 s" in Error.from_event(events[0]).text
     await wait_for(lambda: ctx.queue.depth == 0)
 
 

@@ -146,25 +146,28 @@ async def decode(
         upload.close()  # ffmpeg holds its own copy of the descriptor
     assert proc.stdout is not None and proc.stderr is not None
     stdout, stderr = proc.stdout, proc.stderr
+    read_out = asyncio.create_task(_read_at_most(stdout, limit))
+    read_err = asyncio.create_task(_read_head(stderr, _STDERR_KEEP))
+    reads = (read_out, read_err)
     try:
-        out, err = await asyncio.wait_for(
-            asyncio.gather(
-                _read_capped(stdout, limit), _read_capped(stderr, _STDERR_KEEP, drop_excess=True)
-            ),
-            timeout=_DECODE_TIMEOUT_S,
-        )
-    except TimeoutError:
-        raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
-    except _OverLimit:
-        assert max_seconds is not None
-        raise AudioTooLong(max_seconds) from None
-    finally:
-        if proc.returncode is None:
-            with suppress(ProcessLookupError):
-                proc.kill()
-        # Drain both pipes so wait() can return (see encode_stream).
+        await asyncio.wait_for(asyncio.gather(*reads), timeout=_DECODE_TIMEOUT_S)
+    except BaseException as exc:  # a timeout, too much audio, or cancellation: stop ffmpeg
+        for task in reads:
+            task.cancel()
+        await asyncio.gather(*reads, return_exceptions=True)
+        with suppress(ProcessLookupError):
+            proc.kill()
+        # Read both pipes to their end so wait() can return (see encode_stream).
         await asyncio.gather(stdout.read(), stderr.read(), return_exceptions=True)
         await proc.wait()
+        if isinstance(exc, TimeoutError):
+            raise AudioDecodeError(f"decoding took longer than {_DECODE_TIMEOUT_S:.0f} s") from None
+        if isinstance(exc, _OverLimit):
+            assert max_seconds is not None
+            raise AudioTooLong(max_seconds) from None
+        raise
+    out, err = read_out.result(), read_err.result()
+    await proc.wait()
     if proc.returncode != 0:
         # ffmpeg's stderr names internals; keep it out of the response.
         log.debug("ffmpeg could not decode the upload: %s", err.decode(errors="replace").strip())
@@ -178,19 +181,22 @@ class _OverLimit(Exception):
     pass
 
 
-async def _read_capped(
-    stream: asyncio.StreamReader, limit: int | None, *, drop_excess: bool = False
-) -> bytes:
-    """Read ``stream`` to EOF, keeping at most ``limit`` bytes. Past the limit,
-    the rest is read and dropped with ``drop_excess``, else :class:`_OverLimit`."""
+async def _read_at_most(stream: asyncio.StreamReader, limit: int | None) -> bytearray:
+    """Read ``stream`` to EOF; more than ``limit`` bytes raises :class:`_OverLimit`.
+    Returns the buffer itself: decoded audio can be 100 MB, not worth a copy."""
     buf = bytearray()
     while chunk := await stream.read(_READ_BYTES):
         if limit is not None and len(buf) + len(chunk) > limit:
-            if not drop_excess:
-                raise _OverLimit
-            buf += chunk[: max(0, limit - len(buf))]
-            continue
+            raise _OverLimit
         buf += chunk
+    return buf
+
+
+async def _read_head(stream: asyncio.StreamReader, keep: int) -> bytes:
+    """Read ``stream`` to EOF, keeping its first ``keep`` bytes."""
+    buf = bytearray()
+    while chunk := await stream.read(_READ_BYTES):
+        buf += chunk[: max(0, keep - len(buf))]
     return bytes(buf)
 
 

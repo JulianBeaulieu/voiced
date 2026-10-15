@@ -42,6 +42,7 @@ from voiced.settings_store import (
     file_stamp,
     settings_view,
 )
+from voiced.validate import is_int
 
 log = logging.getLogger("voiced.control")
 
@@ -138,7 +139,7 @@ def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, A
 
 def _int_arg(args: Mapping[str, Any], name: str, default: int) -> int:
     value = args.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int):
+    if not is_int(value):
         raise OpError(BAD_REQUEST, f'"{name}" must be an integer')
     return value
 

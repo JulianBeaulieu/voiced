@@ -50,18 +50,22 @@ class HealthState:
     last_inference_at: float | None = None
     last_inference_ms: float | None = None
     last_error: str | None = None
+    last_error_type: str | None = None
+    """The exception class name of ``last_error``, kept apart so it can be
+    shown without the message (``ServiceContext.public_health``)."""
 
     def mark_loaded(self) -> None:
         self.model_loaded = True
-        self.last_error = None
+        self.last_error = self.last_error_type = None
 
     def record_success(self, duration_ms: float) -> None:
         self.last_inference_at = time.time()
         self.last_inference_ms = duration_ms
-        self.last_error = None
+        self.last_error = self.last_error_type = None
 
     def record_error(self, error: BaseException) -> None:
-        self.last_error = f"{type(error).__name__}: {error}"
+        self.last_error_type = type(error).__name__
+        self.last_error = f"{self.last_error_type}: {error}"
 
     @property
     def status(self) -> HealthStatus:
