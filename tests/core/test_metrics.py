@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 
-from voiced.metrics import Metrics, Operation, Outcome, _percentile
+import pytest
+
+from voiced.metrics import Metrics, Operation, Outcome, _percentile, phys_footprint
 
 
 def test_percentile_interpolates() -> None:
@@ -31,6 +34,12 @@ def test_per_operation_latency_and_counts() -> None:
     }
     assert snap["operations"]["speech"]["latency"]["p50_ms"] == 5.0
     assert snap["memory"]["rss_bytes"] > 0
+    # MLX allocation is reported when MLX is installed, None otherwise (CI).
+    assert "mlx" in snap["memory"]
+    if sys.platform == "darwin":
+        assert snap["memory"]["footprint_bytes"] > 0
+    else:
+        assert snap["memory"]["footprint_bytes"] is None
     json.dumps(snap)
 
 
@@ -49,3 +58,15 @@ def test_error_ring_is_bounded_newest_first_and_skips_disconnects() -> None:
     assert errors[0]["outcome"] == "failure"
     assert snap["operations"]["speech"]["counts"]["disconnect"] == 1
     assert snap["operations"]["speech"]["latency"]["samples"] == 3
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="proc_pid_rusage is macOS only")
+def test_phys_footprint_counts_memory_that_rss_does_not_see() -> None:
+    """The footprint is read for this process and grows with a fresh allocation."""
+    before = phys_footprint()
+    assert before is not None and before > 0
+    block = bytearray(64 * 1024 * 1024)
+    block[::4096] = b"x" * len(block[::4096])  # touch every page
+    after = phys_footprint()
+    assert after is not None and after - before > 32 * 1024 * 1024
+    del block

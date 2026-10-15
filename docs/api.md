@@ -407,7 +407,7 @@ config file and apply when the service restarts.
 | `service` | `stt` or `tts` |
 | `engine` | `name`, `model`, `license`, `languages` |
 | `health` | The `/health` document |
-| `metrics` | `operations`: per operation (`transcribe`, `stream`, `speech`), counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`) and p50 and p95 latency over the last 1000 successful inferences. `recent_errors`: the last 50 errors. `memory.rss_bytes`: resident memory. |
+| `metrics` | `operations`: per operation (`transcribe`, `stream`, `speech`), counts by outcome (`ok`, `busy`, `client_error`, `disconnect`, `failure`) and p50 and p95 latency over the last 1000 successful inferences. `recent_errors`: the last 50 errors. `memory`: `rss_bytes` (resident set), `footprint_bytes` (physical footprint as Activity Monitor and memory pressure count it, which includes MLX's GPU buffers; `null` off macOS) and `mlx` (`active_bytes`, `cache_bytes`, `peak_bytes` from MLX's allocator; `null` without MLX). |
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
 | `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |

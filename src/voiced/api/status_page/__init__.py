@@ -4,7 +4,7 @@ The page is one self-contained HTML file with vanilla JavaScript and a few
 Lucide icons inlined as SVG. There is no build step and nothing is fetched
 from a CDN at runtime. It polls ``/metrics.json`` which merges the
 ``/health`` snapshot with the per-operation latency and error metrics
-(``voiced.metrics``, which also reports resident memory) and engine
+(``voiced.metrics``, which also reports memory) and engine
 metadata (license, languages). Both routes are
 unauthenticated, like ``/health``; the test boxes on the page call the
 ``/v1`` endpoints and send the API key the operator types in, if one is set.
@@ -64,7 +64,9 @@ async def metrics_json(ctx: Ctx) -> dict[str, Any]:
 
     ``health`` is the exact ``/health`` snapshot. ``metrics`` is the
     ``voiced.metrics`` snapshot: per-operation outcome counts and p50/p95
-    latency, the recent error log, and resident memory.
+    latency, the recent error log, and memory: RSS, the physical footprint
+    (which includes MLX's GPU buffers) and, when MLX is installed, its active,
+    cached and peak allocation under ``memory.mlx``.
     """
     engine = ctx.engine
     return {
