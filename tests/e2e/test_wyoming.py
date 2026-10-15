@@ -121,7 +121,14 @@ async def test_tts_plain_synthesize(tts_kokoro_service: LiveService) -> None:
     assert len(audio) > MIN_AUDIO_BYTES, "no audio produced"
 
 
-async def test_tts_streaming_synthesize(tts_kokoro_service: LiveService) -> None:
+async def test_tts_streaming_speaks_the_text_once(
+    tts_kokoro_service: LiveService, stt_service: LiveService
+) -> None:
+    """The streaming shape answers with one AudioStart, one AudioStop and one
+    SynthesizeStopped, and the mid-stream compatibility ``Synthesize`` is
+    ignored, not spoken. Round-trip the streamed audio through STT and assert
+    the message is heard once (``kitchen`` appears a single time), which
+    counting events cannot show."""
     async with AsyncTcpClient(
         tts_kokoro_service.wyoming_host, tts_kokoro_service.wyoming_port
     ) as client:
@@ -145,40 +152,13 @@ async def test_tts_streaming_synthesize(tts_kokoro_service: LiveService) -> None
     assert sum(SynthesizeStopped.is_type(t) for t in types) == 1
     audio = b"".join(AudioChunk.from_event(e).audio for e in events if AudioChunk.is_type(e.type))
     assert len(audio) > MIN_AUDIO_BYTES
-
-
-async def test_tts_streaming_speaks_the_text_once(
-    tts_kokoro_service: LiveService, stt_service: LiveService
-) -> None:
-    """The mid-stream compatibility ``Synthesize`` must be ignored, not spoken.
-    Round-trip the streamed audio through STT and assert the message is heard
-    once (``kitchen`` appears a single time), which counting events cannot show."""
-    async with AsyncTcpClient(
-        tts_kokoro_service.wyoming_host, tts_kokoro_service.wyoming_port
-    ) as client:
-        await client.write_event(SynthesizeStart(voice=SynthesizeVoice(name="af_heart")).event())
-        await client.write_event(SynthesizeChunk(text="Turn on the kitchen lights. ").event())
-        await client.write_event(
-            SynthesizeChunk(text="Set the thermostat to twenty degrees.").event()
-        )
-        await client.write_event(
-            Synthesize(
-                text="Turn on the kitchen lights. Set the thermostat to twenty degrees."
-            ).event()
-        )
-        await client.write_event(SynthesizeStop().event())
-        events = await _read_until(client, SynthesizeStopped)
-    audio = b"".join(AudioChunk.from_event(e).audio for e in events if AudioChunk.is_type(e.type))
-    assert len(audio) > MIN_AUDIO_BYTES
-    heard = (
-        stt_service.openai_client()
-        .audio.transcriptions.create(
-            model="voiced",
-            file=("stream.wav", pcm16_to_wav(audio, TTS_SAMPLE_RATE), "audio/wav"),
-            language="en",
-        )
-        .text
+    transcription = await asyncio.to_thread(
+        stt_service.openai_client().audio.transcriptions.create,
+        model="voiced",
+        file=("stream.wav", pcm16_to_wav(audio, TTS_SAMPLE_RATE), "audio/wav"),
+        language="en",
     )
+    heard = transcription.text
     said = words(heard)
     assert said.count("kitchen") == 1, f"text spoken more than once: {heard!r}"
     assert EXPECTED_WORDS <= set(said), heard

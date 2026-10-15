@@ -5,9 +5,15 @@ Every service here is the one ``voiced serve`` builds: the same config loader
 and app factory (:func:`voiced.cli.build_service_app`, which also attaches the
 Wyoming listener), the same uvicorn settings (:func:`voiced.cli.uvicorn_config`)
 and the configured real engine. Each runs under
-``uvicorn`` in its own thread, exactly as ``voiced serve`` runs it in the main
-thread, bound to an ephemeral HTTP port and an ephemeral Wyoming port so a test
-never collides with a running daemon or another test.
+``uvicorn`` in its own thread, as ``voiced serve`` runs it in the main thread,
+on an ephemeral HTTP port and an ephemeral Wyoming port so a test never
+collides with a running daemon or another test.
+
+One difference from ``voiced serve``: here uvicorn binds the HTTP socket itself
+(``port=0``), where ``voiced serve`` binds it before loading and hands uvicorn
+the pre-bound socket. That pre-bound path, and the port-clash exit it exists
+for, is tested through the real ``voiced serve`` in a subprocess
+(``tests/cli/test_serve.py``).
 
 Everything here is used only by ``@pytest.mark.model`` tests, which
 ``tests/conftest.py`` skips unless ``VOICED_MODEL_TESTS=1``; the service
@@ -20,6 +26,7 @@ extra models resident through the engine suites that follow.
 from __future__ import annotations
 
 import gc
+import logging
 import threading
 import time
 import wave
@@ -212,7 +219,8 @@ def _settings_for(service: Literal["stt", "tts"], tmp: Path, **overrides: str) -
     The Wyoming port is set to 0 (ephemeral) afterwards, by attribute
     assignment, because the config schema requires a port >= 1; ``build_*_app``
     then binds a free one that the test reads back from ``app.state.wyoming``.
-    The HTTP bind uses uvicorn's own ``port=0`` in :func:`start_service`.
+    The HTTP bind uses uvicorn's own ``port=0`` in :func:`start_service`
+    (not ``voiced serve``'s pre-bound socket; see the module docstring).
     """
     tmp.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -238,10 +246,12 @@ def start_service(
     into the settings' ``log_dir``, the same app factory, the same uvicorn
     settings) and run it on an ephemeral HTTP port.
 
-    In one test process every service shares the root logger, so the log file
-    of the service configured last receives the lines of all of them.
+    ``build_service_app`` configures logging on the root logger, which would
+    replace pytest's capture handlers and leave a file handler and the service's
+    level on the root logger for the rest of the session. The root handlers and
+    level are restored around it, so the services log into pytest's capture.
     """
-    app = build_service_app(settings, service)
+    app = _build_keeping_root_logging(settings, service)
     server = uvicorn.Server(uvicorn_config(app, settings, port=0))
     failure: list[BaseException] = []
 
@@ -270,6 +280,22 @@ def start_service(
             live.stop()  # do not leave the server thread and the engine behind
             raise
     return live
+
+
+def _build_keeping_root_logging(settings: Settings, service: Literal["stt", "tts"]) -> FastAPI:
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        return build_service_app(settings, service)
+    finally:
+        for handler in list(root.handlers):
+            if handler not in handlers:
+                root.removeHandler(handler)
+                handler.close()
+        for handler in handlers:
+            if handler not in root.handlers:
+                root.addHandler(handler)
+        root.setLevel(level)
 
 
 def wait_until_loaded(live: LiveService, timeout_s: float = LOAD_TIMEOUT_S) -> None:

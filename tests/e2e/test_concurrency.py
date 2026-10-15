@@ -13,9 +13,9 @@ import asyncio
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -66,28 +66,31 @@ async def _await_until(
     return False
 
 
-@contextmanager
-def _holding_the_tts_slot(service: LiveService) -> Iterator[None]:
+@asynccontextmanager
+async def _holding_the_tts_slot(service: LiveService) -> AsyncIterator[None]:
     """Hold the TTS service's only slot for the duration: a long synthesis
     (18 sentences, several seconds of GPU work) that has produced its first
     chunk. The slot is held while the engine runs, whatever the client reads,
     so the body runs while that synthesis is still in progress."""
-    with httpx.stream(
-        "POST",
-        f"{service.v1_url}/audio/speech",
-        json={
-            "model": "voiced",
-            "input": LONG_INPUT,
-            "voice": "af_heart",
-            "response_format": "pcm",
-        },
-        timeout=30,
-    ) as response:
+    async with (
+        httpx.AsyncClient(timeout=30) as http,
+        http.stream(
+            "POST",
+            f"{service.v1_url}/audio/speech",
+            json={
+                "model": "voiced",
+                "input": LONG_INPUT,
+                "voice": "af_heart",
+                "response_format": "pcm",
+            },
+        ) as response,
+    ):
         assert response.status_code == 200
-        next(response.iter_bytes())
-        assert _wait(lambda: service.health()["queue_depth"] >= 1), "slot never taken"
+        await anext(response.aiter_bytes())
+        assert await _await_until(lambda: service.health()["queue_depth"] >= 1), "slot never taken"
         yield
-        assert service.health()["queue_depth"] >= 1, "the long synthesis ended too early"
+        health = await asyncio.to_thread(service.health)
+        assert health["queue_depth"] >= 1, "the long synthesis ended too early"
 
 
 # --- several simultaneous clients -------------------------------------------
@@ -154,27 +157,30 @@ async def test_busy_response_when_queue_is_full(stt_service: LiveService) -> Non
     assert await _await_until(lambda: stt_service.health()["queue_depth"] == 0)
 
 
-def test_streamed_speech_is_busy_before_any_audio(tts_kokoro_service: LiveService) -> None:
+async def test_streamed_speech_is_busy_before_any_audio(tts_kokoro_service: LiveService) -> None:
     """A streamed synthesis that finds the queue full gets the 503
     ``server_busy`` status itself, not a 200 followed by a cut stream (ADR 0005:
     ``QueueFull`` surfaces before the first byte)."""
-    with tts_kokoro_service.override(queue_capacity=1), _holding_the_tts_slot(tts_kokoro_service):
-        with httpx.stream(
-            "POST",
-            f"{tts_kokoro_service.v1_url}/audio/speech",
-            json={
-                "model": "voiced",
-                "input": "Turn on the kitchen lights.",
-                "voice": "af_heart",
-                "response_format": "pcm",
-            },
-            timeout=30,
-        ) as busy:
-            body = busy.read()
+    with tts_kokoro_service.override(queue_capacity=1):
+        async with (
+            _holding_the_tts_slot(tts_kokoro_service),
+            httpx.AsyncClient(timeout=30) as http,
+            http.stream(
+                "POST",
+                f"{tts_kokoro_service.v1_url}/audio/speech",
+                json={
+                    "model": "voiced",
+                    "input": "Turn on the kitchen lights.",
+                    "voice": "af_heart",
+                    "response_format": "pcm",
+                },
+            ) as busy,
+        ):
+            body = await busy.aread()
     assert busy.status_code == 503, body[:200]
     assert busy.headers.get("Retry-After") == "1"
     assert json.loads(body)["error"]["type"] == "server_busy"
-    assert _wait(lambda: tts_kokoro_service.health()["queue_depth"] == 0)
+    assert await _await_until(lambda: tts_kokoro_service.health()["queue_depth"] == 0)
 
 
 async def test_wyoming_synthesize_is_server_busy_when_the_queue_is_full(
@@ -182,7 +188,7 @@ async def test_wyoming_synthesize_is_server_busy_when_the_queue_is_full(
 ) -> None:
     """Wyoming reports a full queue as ``Error(code="server_busy")`` (ADR 0011)."""
     with tts_kokoro_service.override(queue_capacity=1):
-        with _holding_the_tts_slot(tts_kokoro_service):
+        async with _holding_the_tts_slot(tts_kokoro_service):
             async with AsyncTcpClient(
                 tts_kokoro_service.wyoming_host, tts_kokoro_service.wyoming_port
             ) as client:
@@ -286,8 +292,8 @@ def test_write_timeout_frees_a_non_reading_client(tts_kokoro_service: LiveServic
 CONTENDED_PTT_CEILING_S = 0.4
 
 
-@contextmanager
-def _kokoro_synthesizing(service: LiveService) -> Iterator[Callable[[], int]]:
+@asynccontextmanager
+async def _kokoro_synthesizing(service: LiveService) -> AsyncIterator[Callable[[], int]]:
     """Keep Kokoro synthesizing back to back in a background thread. Yields a
     callable returning how many bytes of audio it has produced so far."""
     stop = threading.Event()
@@ -318,11 +324,11 @@ def _kokoro_synthesizing(service: LiveService) -> Iterator[Callable[[], int]]:
     thread = threading.Thread(target=loop, name="kokoro-load", daemon=True)
     thread.start()
     try:
-        assert _wait(lambda: produced[0] > 0, timeout_s=30), "Kokoro never started"
+        assert await _await_until(lambda: produced[0] > 0, timeout_s=30), "Kokoro never started"
         yield lambda: produced[0]
     finally:
         stop.set()
-        thread.join(timeout=60)
+        await asyncio.to_thread(thread.join, 60)
     assert not errors, errors
 
 
@@ -331,10 +337,10 @@ async def test_stt_bounds_hold_while_kokoro_synthesizes(
 ) -> None:
     """With Kokoro synthesizing continuously on the same GPU, streaming
     finalize keeps its words and, with 200 ms of trailing silence, its 150 ms
-    bound (64 and 100 ms chunks); with 0 ms it is held to a regression ceiling, and the idle bound
-    still frees the slot. Both services share one process here, as the e2e tier
+    bound (64 and 100 ms chunks); with 0 ms it is held to a regression ceiling,
+    and the idle bound still frees the slot. Both services share one process here, as the e2e tier
     runs them; the deployed services are two processes on the same GPU."""
-    with _kokoro_synthesizing(tts_kokoro_service) as produced:
+    async with _kokoro_synthesizing(tts_kokoro_service) as produced:
         before = produced()
         runs = [
             await collect_stream(

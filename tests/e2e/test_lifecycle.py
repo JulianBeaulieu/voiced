@@ -1,6 +1,6 @@
 """Service lifecycle with real engines: the warm-up 503 window and graceful
 shutdown. The port-clash behaviour is covered through the real CLI in
-``test_serve_cli.py`` (no model needed)."""
+``tests/cli/test_serve.py`` (no model needed)."""
 
 from __future__ import annotations
 
