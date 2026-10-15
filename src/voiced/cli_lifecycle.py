@@ -584,7 +584,12 @@ def _not_installed_hint(settings: Settings) -> str:
         return (
             f"The daemons are not installed. Review and run: sudo bash {shlex.quote(str(script))}"
         )
-    return "The daemons are not installed. Run `voiced install --source <your checkout>` first."
+    from voiced.launchd.install import homebrew_environment
+
+    command = (
+        "voiced install" if homebrew_environment() else "voiced install --source <your checkout>"
+    )
+    return f"The daemons are not installed. Run `{command}` first."
 
 
 # settings -----------------------------------------------------------------
@@ -765,6 +770,8 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         return 0
     if remove_targets(targets, plan, echo) == 0:
         echo("nothing to remove")
+    if plan.homebrew is not None:
+        echo("voiced itself is Homebrew's; remove it with `brew uninstall voiced`.")
     return 0
 
 

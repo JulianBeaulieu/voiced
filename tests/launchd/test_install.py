@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import os
 import plistlib
@@ -9,6 +10,7 @@ import pwd
 import shlex
 import stat
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -574,3 +576,142 @@ def test_plan_uses_the_real_account_not_logname(
     p = plan_install(settings, home=tmp_path, staging_dir=tmp_path / "s", uv=None)
     assert p.user == pwd.getpwuid(os.getuid()).pw_name != "System Administrator"
     assert f"<string>{p.user}</string>" in p.render("stt").decode()
+
+
+# Homebrew (ADR 0017) -----------------------------------------------------------
+
+
+def test_homebrew_environment_is_the_opt_path_of_the_keg() -> None:
+    from voiced.launchd.install import homebrew_environment
+
+    keg = "/opt/homebrew/Cellar/voiced/HEAD-afcb37e/libexec"
+    assert homebrew_environment(keg) == Path("/opt/homebrew/opt/voiced/libexec")
+    assert homebrew_environment("/usr/local/Cellar/voiced/0.1.0/libexec") == Path(
+        "/usr/local/opt/voiced/libexec"
+    )
+    assert homebrew_environment("/Users/u/.voiced") is None
+    assert homebrew_environment("/opt/homebrew/Cellar/other/1.0/libexec") is None
+    assert homebrew_environment("/opt/homebrew/opt/voiced/libexec") is None
+    assert homebrew_environment(sys.prefix) is None  # the test venv
+
+
+def _brew_plan(settings: Settings, tmp_path: Path, homebrew: Path) -> InstallPlan:
+    settings.server.log_dir = tmp_path / "logs"
+    return plan_install(
+        settings,
+        venv_dir=tmp_path / "venv",
+        home=tmp_path,
+        staging_dir=tmp_path / "stage",
+        config_file=tmp_path / "config.toml",
+        uv="/fake/uv",
+        homebrew=homebrew,
+    )
+
+
+def test_homebrew_plan_keeps_the_plists_and_builds_nothing(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The plists of a Homebrew install are byte for byte those of a source
+    install: switching between the two, or upgrading, needs no root step."""
+    brew = _brew_plan(settings, tmp_path, Path("/opt/homebrew/opt/voiced/libexec"))
+    source = _tmp_plan(settings, tmp_path)
+    assert brew.plists() == source.plists()
+    assert brew.venv_commands() == []
+    assert "Homebrew" in plan_summary(brew)
+    assert "/opt/homebrew/opt/voiced/libexec" in plan_summary(brew)
+    assert set(brew.launchers()) == {brew.voiced_bin, brew.python_bin}
+    assert source.launchers() == {}
+
+
+def test_homebrew_install_writes_working_launchers(settings: Settings, tmp_path: Path) -> None:
+    env = tmp_path / "opt voiced" / "libexec"  # a space, as in any quoted path
+    (env / "bin").mkdir(parents=True)
+    for name in ("voiced", "python"):
+        target = env / "bin" / name
+        target.write_text(f'#!/bin/sh\necho "{name} $#" "$@"\n')
+        target.chmod(0o755)
+    p = _brew_plan(settings, tmp_path, env)
+    calls: list[list[str]] = []
+    run_install(
+        p, runner=lambda argv: calls.append(list(argv)) or CommandResult(0), say=lambda _: None
+    )
+    assert calls[0][0] == "/usr/bin/env" and calls[0][-3] == str(p.python_bin)  # models only
+    assert (p.venv_dir / ".homebrew").read_text() == f"{env}\n"
+    for name in ("voiced", "python"):
+        launcher = p.venv_dir / "bin" / name
+        assert os.access(launcher, os.X_OK)
+        proc = subprocess.run(
+            [str(launcher), "serve", "a b"], capture_output=True, text=True, check=True
+        )
+        assert proc.stdout == f"{name} 2 serve a b\n"  # two arguments, quoting kept
+
+
+def test_homebrew_python_launcher_keeps_the_venv(settings: Settings, tmp_path: Path) -> None:
+    """A symlinked python would start the bare interpreter (Python finds its
+    venv from the path it was started as); the launcher keeps the venv."""
+    env = tmp_path / "libexec"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(env)], check=True)
+    p = _brew_plan(settings, tmp_path, env)
+    run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=lambda _: None)
+    out = subprocess.run(
+        [str(p.python_bin), "-c", "import sys; print(sys.prefix)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(out).resolve() == env.resolve()
+
+
+def test_homebrew_and_source_environments_do_not_overwrite_each_other(
+    settings: Settings, tmp_path: Path
+) -> None:
+    brew = _brew_plan(settings, tmp_path, tmp_path / "libexec")
+    source = _tmp_plan(settings, tmp_path)
+    brew.venv_dir.mkdir()
+    (brew.venv_dir / "pyvenv.cfg").write_text("home = /x\n")
+    with pytest.raises(InstallError, match="built from source"):
+        run_install(brew, runner=lambda argv: CommandResult(0), dry_run=True, say=lambda _: None)
+    assert not (brew.venv_dir / "bin").exists() and not brew.config_file.exists()
+    (brew.venv_dir / "pyvenv.cfg").unlink()
+    (brew.venv_dir / ".homebrew").write_text("/x\n")
+    with pytest.raises(InstallError, match="runs voiced from Homebrew"):
+        run_install(source, runner=lambda argv: CommandResult(0), say=lambda _: None)
+    assert not source.config_file.exists()
+
+
+def test_uninstall_removes_homebrew_launchers(settings: Settings, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = tmp_path / "libexec"
+    (env / "bin").mkdir(parents=True)
+    p = plan_install(settings, venv_dir=home / ".voiced", home=home, homebrew=env)
+    run_install(
+        dataclasses.replace(p, config_file=tmp_path / "c.toml", staging_dir=tmp_path / "s"),
+        runner=lambda argv: CommandResult(0),
+        skip_models=True,
+        say=lambda _: None,
+    )
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert remove_targets(targets, p, lambda _: None) == 1
+    assert not p.venv_dir.exists()
+    assert (env / "bin").is_dir(), "Homebrew's environment is Homebrew's to remove"
+
+
+def test_cli_install_from_homebrew_needs_no_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from voiced.launchd import install
+
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(install, "repo_root", lambda: None)
+    monkeypatch.setattr(
+        install,
+        "homebrew_environment",
+        lambda prefix=None: Path("/opt/homebrew/opt/voiced/libexec"),
+    )
+    code = main(["install", "--dry-run", "--venv", str(tmp_path / "v"), "--staging-dir", "s"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Homebrew" in out
+    assert f"would write {tmp_path / 'v' / 'bin' / 'voiced'}" in out
+    assert "uv venv" not in out and "pip install" not in out
