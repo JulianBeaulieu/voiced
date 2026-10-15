@@ -20,7 +20,9 @@ from wyoming.error import Error
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.tts import (
     Synthesize,
+    SynthesizeChunk,
     SynthesizeStart,
+    SynthesizeStop,
     SynthesizeVoice,
 )
 
@@ -257,15 +259,27 @@ async def test_tts_voice_outside_the_configured_languages_is_refused(
         Event("synthesize-start", {"voice": {"name": 7}}),
     ],
 )
+@pytest.mark.parametrize("gap_s", [0.0, 0.05, 0.3])
 async def test_tts_stream_that_cannot_start_fails_once_and_closes(
-    tts_listener: WyomingListener, start: Event
+    tts_listener: WyomingListener, start: Event, gap_s: float
 ) -> None:
-    """A rejected SynthesizeStart ends the stream: exactly one Error, then the
-    server closes the connection, so the chunks and the stop a client would
-    send next can get no errors of their own. (Before, the connection stayed
-    open and each of them was answered with an Error.)"""
+    """A rejected SynthesizeStart gets exactly one Error. Home Assistant writes
+    the whole stream (chunks, the compatibility Synthesize, the stop) before
+    it reads, so the server drops the rest of the stream and closes at
+    SynthesizeStop: closing at once would answer those writes with a reset,
+    which can discard the Error before the client reads it."""
     async with raw(tts_listener) as (reader, writer):
-        await async_write_event(start, writer)
-        events = await events_until_eof(reader)
+        for event in (
+            start,
+            SynthesizeChunk(text="Hello there. ").event(),
+            SynthesizeChunk(text="More text. ").event(),
+            SynthesizeChunk(text="And more.").event(),
+            Synthesize(text="Hello there. More text. And more.").event(),
+            SynthesizeStop().event(),
+        ):
+            await async_write_event(event, writer)  # no reset: nothing is read yet
+            await asyncio.sleep(gap_s)
+        events = await events_until_eof(reader)  # a reset here fails the test
     assert [e.type for e in events] == ["error"]
     assert Error.from_event(events[0]).code == "invalid_request_error"
+    assert tts_listener.ctx.health.status == "ok"

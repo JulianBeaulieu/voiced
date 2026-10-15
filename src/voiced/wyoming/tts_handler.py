@@ -66,6 +66,9 @@ class _Stream:
     worker: asyncio.Task[None] | None = None
     chars: int = 0
     failed: bool = False
+    refused: bool = False
+    """The SynthesizeStart was rejected and reported: no worker; the rest of
+    the stream is read and dropped until SynthesizeStop closes."""
 
 
 def _require_text(text: object, event: Event) -> None:
@@ -96,11 +99,14 @@ class TTSEventHandler(VoicedEventHandler):
                 start = parse(SynthesizeStart, event)
                 voice = await self._resolve(start.voice)
             except EngineError as exc:
-                # A stream that cannot start fails once and closes, like one
-                # that fails later; otherwise each chunk and the stop would
-                # get an error of their own.
+                # One Error for the stream. The connection stays open until
+                # SynthesizeStop and the stream's events are dropped: a client
+                # like Home Assistant writes the whole stream before it reads,
+                # and closing now would answer its next write with a reset,
+                # which can discard the Error before it is read.
                 await self.report(exc)
-                return False
+                self._stream = _Stream(voice="", refused=True)
+                return True
             self._audio_started = False
             self._stream = stream = _Stream(voice=voice)
             stream.worker = asyncio.create_task(self._worker(stream), name="wyoming tts stream")
@@ -109,6 +115,8 @@ class TTSEventHandler(VoicedEventHandler):
             open_stream = self._stream
             if open_stream is None:
                 raise EngineError("synthesize-chunk before synthesize-start")
+            if open_stream.refused:
+                return True  # reported at SynthesizeStart; dropped until the stop
             if open_stream.failed:
                 return False  # the worker already reported and closed
             text = parse(SynthesizeChunk, event).text
@@ -125,6 +133,9 @@ class TTSEventHandler(VoicedEventHandler):
         if SynthesizeStop.is_type(event.type):
             if self._stream is None:
                 raise EngineError("synthesize-stop before synthesize-start")
+            if self._stream.refused:
+                self._stream = None
+                return False  # the stream's one Error is already sent
             return await self._finish_stream()
         log.debug("tts %s: ignoring %s", self.peer, event.type)
         return True

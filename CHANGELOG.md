@@ -100,9 +100,10 @@ uses [Semantic Versioning](https://semver.org/).
   ffmpeg, and cancels superseded runs of the same branch.
 - `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to
   `>=0.5.8,<0.5.10`, the releases the engines were checked against.
-- An uploaded file may now decode to at most `stt.max_upload_mb` read as
-  16-bit 16 kHz audio, about 26 minutes at the default 50: a 30 MB mp3 of a
-  40-minute meeting now gets 413. Raise `max_upload_mb` to transcribe
+- Uploads that decode to more than about 26 minutes (1562 s) of audio now
+  get 413: the decoded audio is bounded by `stt.max_upload_mb` read as
+  16-bit 16 kHz samples (1562 s at the default 50). Before, a 30-minute mp3
+  was transcribed; now it is refused. Raise `max_upload_mb` to transcribe
   longer recordings (it bounds Wyoming utterances and WebSocket streams the
   same way).
 
