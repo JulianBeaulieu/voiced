@@ -54,6 +54,10 @@ class ModelThread:
     async def run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
         return await _run(self._executor, functools.partial(fn, *args, **kwargs))
 
+    def shutdown(self) -> None:
+        """Wait for queued calls, then end the thread (and its MLX stream)."""
+        self._executor.shutdown(wait=True)
+
 
 async def _run(executor: Executor | None, call: Callable[[], T]) -> T:
     context = contextvars.copy_context()

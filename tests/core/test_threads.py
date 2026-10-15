@@ -108,3 +108,10 @@ async def test_model_thread_cancel_waits_for_the_call() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert await thread.run(lambda: 42) == 42
+
+
+async def test_model_thread_shutdown_ends_the_thread() -> None:
+    thread = ModelThread("shutdown-test")
+    name = await thread.run(lambda: threading.current_thread().name)
+    thread.shutdown()
+    assert not any(t.name == name for t in threading.enumerate())
