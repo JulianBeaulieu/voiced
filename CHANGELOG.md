@@ -126,9 +126,10 @@ uses [Semantic Versioning](https://semver.org/).
   name of the last error.
 - `voiced install` refuses to run as root, and its `--user` option is gone:
   the daemons run the installing user's venv, so they must run as that
-  user, never as root or anyone else. Outside a checkout it
+  user, never as root or anyone else. That user comes from the process's
+  uid, not from `LOGNAME` or `USER`. Outside a checkout it
   requires `--source` until voiced is published. The config file is created
   0600, and re-running `voiced install` tightens an existing one: after
   upgrading, run it once (or `chmod 600 ~/.config/voiced/config.toml`).
-- Services raise their open file limit from launchd's 256 to 4096.
+- `voiced serve` raises its open file limit from launchd's 256 to 4096.
 

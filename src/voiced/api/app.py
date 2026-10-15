@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import resource
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -64,29 +63,6 @@ exit_process: Callable[[int], NoReturn] = os._exit
 STARTUP_FAILED_EXIT = 3
 """Exit code when startup fails while the engine loads (uvicorn's own code for
 a failed startup)."""
-
-
-OPEN_FILES = 4096
-"""Soft limit on open files the service raises itself to. launchd starts
-daemons with 256, which every HTTP and Wyoming connection, the model files
-and the logs share; uvicorn closes no connection that never sends a request,
-so a client holding a couple of hundred of them could otherwise stop the
-service accepting anything, ``/health`` included."""
-
-
-def raise_open_file_limit(target: int = OPEN_FILES) -> None:
-    """Raise the soft ``RLIMIT_NOFILE`` to ``target`` (never above the hard limit,
-    never lower than it already is)."""
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
-    if soft == resource.RLIM_INFINITY or soft >= want:
-        return
-    try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
-    except (ValueError, OSError) as exc:
-        log.warning("could not raise the open file limit from %d: %s", soft, exc)
-        return
-    log.info("open file limit raised from %d to %d", soft, want)
 
 
 async def _load(ctx: ServiceContext) -> None:
@@ -141,7 +117,6 @@ async def _error(
 def _build(ctx: ServiceContext) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        raise_open_file_limit()
         task = asyncio.create_task(_load(ctx), name=f"voiced-{ctx.service}-load")
         app.state.load_task = task
         try:

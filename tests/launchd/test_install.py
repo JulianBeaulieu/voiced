@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import getpass
 import inspect
+import os
 import plistlib
+import pwd
 import shlex
 import stat
 import subprocess
@@ -15,6 +16,7 @@ import pytest
 
 from voiced.cli import main
 from voiced.config import SERVICES, Settings
+from voiced.launchd import install as install_module
 from voiced.launchd.control import CommandResult, run_streaming
 from voiced.launchd.install import (
     InstallError,
@@ -35,14 +37,14 @@ GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
 
 
-def golden_plan(settings: Settings) -> InstallPlan:
+def golden_plan(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> InstallPlan:
     """Fixed user, home, label prefix and paths so the artifacts are reproducible."""
+    monkeypatch.setattr(install_module, "installing_user", lambda: "someone")
     settings.launchd.label_prefix = "org.example.voiced"
     settings.install.hf_home = None
     return plan_install(
         settings,
         venv_dir=HOME / ".voiced",
-        user="someone",
         home=HOME,
         staging_dir=HOME / ".config/voiced/launchd",
         config_file=HOME / ".config/voiced/config.toml",
@@ -55,7 +57,7 @@ def golden_plan(settings: Settings) -> InstallPlan:
 def plan(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> InstallPlan:
     monkeypatch.delenv("HF_HOME", raising=False)
     settings.server.log_dir = HOME / "Library/Logs/voiced"
-    return golden_plan(settings)
+    return golden_plan(settings, monkeypatch)
 
 
 def _compare(actual: str, name: str) -> None:
@@ -136,7 +138,7 @@ def test_scripts_never_escalate(plan: InstallPlan) -> None:
 def test_paths_with_spaces_are_quoted(settings: Settings, tmp_path: Path) -> None:
     weird = tmp_path / "dir with spaces $HOME"
     settings.server.log_dir = weird / "logs"
-    p = plan_install(settings, user="u", home=weird, staging_dir=weird / "st", uv=None)
+    p = plan_install(settings, home=weird, staging_dir=weird / "st", uv=None)
     script = p.sudo_install_script()
     assert shlex.quote(str(p.staged_plist("stt"))) in script
     lines = daemon_install_lines("a.b", weird / "a.b.plist")
@@ -153,7 +155,7 @@ def test_long_venv_path_is_not_flagged(settings: Settings, tmp_path: Path) -> No
     interpreter path is long or has spaces, and the engine reads espeak-ng data
     from Homebrew, not from the venv, so no venv path length is too long."""
     venv = tmp_path / "Application Support" / ("x" * 200) / ".voiced"
-    p = plan_install(settings, venv_dir=venv, user="u", home=tmp_path, uv=None)
+    p = plan_install(settings, venv_dir=venv, home=tmp_path, uv=None)
     summary = plan_summary(p)
     assert f"venv           {venv}" in summary
     assert "warning" not in summary
@@ -174,7 +176,7 @@ def test_hf_home_resolved_once_for_plist_and_download(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def make() -> InstallPlan:
-        return plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
+        return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
 
     monkeypatch.delenv("HF_HOME", raising=False)
     p = make()
@@ -204,7 +206,7 @@ def test_espeak_override_reaches_daemons_and_download(
     """The override `voiced doctor` suggests must be in the daemons' environment too."""
 
     def make() -> InstallPlan:
-        return plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path, uv=None)
+        return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
 
     p = make()
     assert not {"VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA"} & set(p.environment())
@@ -266,7 +268,6 @@ def test_venv_commands_with_pip(settings: Settings, tmp_path: Path) -> None:
     p = plan_install(
         settings,
         venv_dir=Path("/v"),
-        user="u",
         home=tmp_path,
         staging_dir=tmp_path,
         source=".",
@@ -286,7 +287,7 @@ def test_model_download_runs_in_venv_with_config(plan: InstallPlan) -> None:
 
 
 def test_write_staging(settings: Settings, tmp_path: Path) -> None:
-    p = plan_install(settings, user="u", home=tmp_path, staging_dir=tmp_path / "s", uv=None)
+    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path / "s", uv=None)
     written = write_staging(p)
     assert sorted(x.name for x in written) == sorted(
         [
@@ -316,7 +317,6 @@ def _tmp_plan(settings: Settings, tmp_path: Path) -> InstallPlan:
     return plan_install(
         settings,
         venv_dir=tmp_path / "venv",
-        user="u",
         home=tmp_path,
         staging_dir=tmp_path / "stage",
         config_file=tmp_path / "config.toml",
@@ -405,7 +405,7 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
     assert not (tmp_path / "logs").exists()
     assert "dry run" in out
     assert f"<string>{labels.label('watchdog')}</string>" in out
-    assert f"<string>{getpass.getuser()}</string>" in out
+    assert f"<string>{pwd.getpwuid(os.getuid()).pw_name}</string>" in out
     assert f"{staging / 'install-daemons.sh'} (would be written)" in out
     assert "-m venv" in out and "voiced[stt,tts]==0.0.1" in out
 
@@ -430,7 +430,7 @@ def test_removal_refusals(tmp_path: Path) -> None:
 def test_remove_targets_requires_pyvenv_cfg(settings: Settings, tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / ".voiced").mkdir(parents=True)
-    p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
     targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
     said: list[str] = []
     assert remove_targets(targets, p, said.append) == 0
@@ -446,9 +446,7 @@ def test_remove_targets_never_deletes_home(settings: Settings, tmp_path: Path) -
     home.mkdir()
     (home / "keep.txt").write_text("x")
     (home / "pyvenv.cfg").write_text("x")  # even if it looks like a venv
-    p = plan_install(
-        settings, venv_dir=home, user="u", home=home, config_file=home / "config.toml", uv=None
-    )
+    p = plan_install(settings, venv_dir=home, home=home, config_file=home / "config.toml", uv=None)
     said: list[str] = []
     targets = uninstall_targets(p, settings, logs=False, models=False, config=True)
     assert targets.trees == [home] and p.staging_dir == home / "launchd"
@@ -466,7 +464,7 @@ def test_remove_logs_only_touches_voiced_files(settings: Settings, tmp_path: Pat
     for name in ("stt.log", "stt.log.1", "tts.stderr.log", "watchdog.log", "metal-probe.json"):
         (logs / name).write_text("x")
     settings.server.log_dir = logs
-    p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
     targets = uninstall_targets(p, settings, logs=True, models=False, config=False)
     assert logs not in targets.trees and logs in targets.prune_dirs
     remove_targets(targets, p, lambda _: None)
@@ -479,7 +477,7 @@ def test_remove_logs_prunes_empty_dir(settings: Settings, tmp_path: Path) -> Non
     logs.mkdir(parents=True)
     (logs / "stt.log").write_text("x")
     settings.server.log_dir = logs
-    p = plan_install(settings, venv_dir=home / ".voiced", user="u", home=home, uv=None)
+    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
     remove_targets(
         uninstall_targets(p, settings, logs=True, models=False, config=False), p, lambda _: None
     )
@@ -494,7 +492,7 @@ def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path
     (home / "config.toml").write_text("x")
     (staging / "mine.plist").write_text("keep")
     p = plan_install(
-        settings, venv_dir=home / ".voiced", user="u", home=home, config_file=home / "config.toml"
+        settings, venv_dir=home / ".voiced", home=home, config_file=home / "config.toml"
     )
     for name in p.labels:
         p.staged_plist(name).write_text("x")
@@ -509,7 +507,7 @@ def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path
 
 def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
     settings.install.hf_home = tmp_path / "hf"
-    p = plan_install(settings, user="u", home=tmp_path)
+    p = plan_install(settings, home=tmp_path)
     targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
     assert tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16" in targets.trees
     assert tmp_path / "hf" / "hub" / "models--mlx-community--parakeet-tdt-0.6b-v3" in targets.trees
@@ -560,3 +558,15 @@ def test_run_install_tightens_an_existing_readable_config(
     p.voiced_bin.write_text("")
     run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
     assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
+
+
+def test_plan_uses_the_real_account_not_logname(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LOGNAME and USER are whatever the environment says; "System
+    Administrator" is uid 0, so believing it would write a root UserName."""
+    monkeypatch.setenv("LOGNAME", "System Administrator")
+    monkeypatch.setenv("USER", "System Administrator")
+    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path / "s", uv=None)
+    assert p.user == pwd.getpwuid(os.getuid()).pw_name != "System Administrator"
+    assert f"<string>{p.user}</string>" in p.render("stt").decode()

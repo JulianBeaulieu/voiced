@@ -9,8 +9,8 @@ review and run with ``sudo``. See ADR 0006 for the layout.
 
 from __future__ import annotations
 
-import getpass
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -127,6 +127,14 @@ def example_config_text() -> str:
         "# voiced configuration. All keys are optional; see\n"
         "# https://github.com/JulianBeaulieu/voiced/blob/main/config.example.toml\n"
     )
+
+
+def installing_user() -> str:
+    """The account running the installer, from its uid. Not
+    ``getpass.getuser()``, which believes ``LOGNAME`` and ``USER``: with
+    ``LOGNAME="System Administrator"`` it would name uid 0 as the daemons'
+    ``UserName``."""
+    return pwd.getpwuid(os.getuid()).pw_name
 
 
 def find_uv() -> str | None:
@@ -424,7 +432,6 @@ def plan_install(
     venv_dir: Path | None = None,
     python: str | None = None,
     source: str | None = None,
-    user: str | None = None,
     home: Path | None = None,
     staging_dir: Path | None = None,
     config_file: Path | None = None,
@@ -443,7 +450,7 @@ def plan_install(
         if (value := os.environ.get(key))
     }
     return InstallPlan(
-        user=user or getpass.getuser(),
+        user=installing_user(),
         home=home or Path.home(),
         venv_dir=(venv_dir or settings.install.venv_dir).expanduser(),
         config_file=config_file,

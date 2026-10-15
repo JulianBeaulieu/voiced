@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import re
-import resource
 from collections.abc import AsyncIterator
 
 import pytest
@@ -13,7 +12,6 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 
 from voiced import __version__
-from voiced.api.app import raise_open_file_limit
 from voiced.config import Settings
 from voiced.engines.base import EngineError, PCMChunk
 from voiced.inference import inference
@@ -134,21 +132,3 @@ async def test_health_withholds_the_error_message_when_a_key_is_set(
         assert snapshot["last_error"].startswith("RuntimeError")
         assert "secret words" not in snapshot["last_error"]
     assert "secret words" not in json.dumps(metrics)
-
-
-@pytest.mark.parametrize(
-    ("soft", "hard", "expected"),
-    [
-        (256, resource.RLIM_INFINITY, 4096),  # what launchd gives a daemon
-        (256, 1024, 1024),
-        (10_000, resource.RLIM_INFINITY, None),  # never lowered
-    ],
-)
-def test_open_file_limit_is_raised(
-    monkeypatch: pytest.MonkeyPatch, soft: int, hard: int, expected: int | None
-) -> None:
-    calls: list[tuple[int, int]] = []
-    monkeypatch.setattr(resource, "getrlimit", lambda which: (soft, hard))
-    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append(limits))
-    raise_open_file_limit()
-    assert calls == ([] if expected is None else [(expected, hard)])
