@@ -87,6 +87,12 @@ class STTConfig(_Section):
     queue_depth: int = Field(default=8, ge=1)
     max_upload_mb: int = Field(default=50, ge=1)
 
+    @property
+    def max_audio_s(self) -> float:
+        """Longest audio one request may carry, on any transport: ``max_upload_mb``
+        read as 16-bit samples at 16 kHz (about 26 minutes at the default 50)."""
+        return self.max_upload_mb * 1_000_000 / 2 / 16_000
+
 
 class TTSConfig(_Section):
     http_port: int = Field(default=8880, ge=1, le=65535)

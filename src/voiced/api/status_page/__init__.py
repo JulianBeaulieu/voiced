@@ -77,7 +77,7 @@ async def metrics_json(ctx: Ctx) -> dict[str, Any]:
             "license": engine.license,
             "languages": ctx.languages,
         },
-        "health": ctx.health.snapshot(ctx.queue.depth).model_dump(),
+        "health": ctx.public_health().model_dump(),
         "metrics": _public_metrics(ctx),
         "api_key_required": bool(ctx.settings.server.api_key),
         "default_voice": ctx.settings.tts.default_voice if ctx.service == "tts" else None,

@@ -7,7 +7,9 @@ Only the tests that really decode audio need ffmpeg; the rest stub
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
+import numpy as np
 import openai
 import pytest
 from fastapi import FastAPI
@@ -396,3 +398,53 @@ async def test_hang_up_mid_upload_is_quiet(
         await stt_app(scope, receive, send)  # must not raise
     assert fake_decode == []
     assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+@requires_ffmpeg
+async def test_upload_that_decodes_to_too_much_audio_is_413(settings: Settings) -> None:
+    """``max_upload_mb`` also bounds the decoded audio (as 16-bit 16 kHz, like a
+    Wyoming utterance): 40 s of 8 kHz audio is under 1 MB but over 31 s."""
+    settings.stt.max_upload_mb = 1
+    app = build_stt_app(settings, FakeSTTEngine())
+    async with lifespan_client(app) as c:
+        audio = sine_wav(seconds=40.0, sample_rate=8_000)
+        assert len(audio) < 1024 * 1024
+        r = await c.post("/v1/audio/transcriptions", files={"file": ("t.wav", audio, "audio/wav")})
+    assert r.status_code == 413
+    assert r.json()["error"]["type"] == "payload_too_large"
+    assert app.state.ctx.engine.calls == 0
+
+
+async def test_concurrent_decodes_are_bounded(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uploads are decoded before they queue for the slot, so the queue does
+    not bound them; each holds its bytes, an ffmpeg process and its audio.
+    At most ``queue_depth`` decode at once; the next is a 503."""
+    gate = asyncio.Event()
+    decoding: list[int] = []
+
+    async def slow_decode(
+        data: bytes, sample_rate: int = 16_000, *, max_seconds: float | None = None
+    ) -> Any:
+        decoding.append(len(data))
+        await gate.wait()
+        return np.zeros(sample_rate, dtype=np.float32)
+
+    monkeypatch.setattr(ffmpeg, "decode", slow_decode)
+    app = build_stt_app(settings, FakeSTTEngine())  # queue_depth is 2 in the test settings
+    async with lifespan_client(app) as c:
+
+        async def one() -> int:
+            files = {"file": ("t.wav", sine_wav(), "audio/wav")}
+            return (await c.post("/v1/audio/transcriptions", files=files)).status_code
+
+        first, second = asyncio.create_task(one()), asyncio.create_task(one())
+        for _ in range(500):
+            if len(decoding) == 2:
+                break
+            await asyncio.sleep(0.01)
+        assert await one() == 503
+        gate.set()
+        assert await asyncio.gather(first, second) == [200, 200]
+    assert app.state.ctx.uploads.active == 0

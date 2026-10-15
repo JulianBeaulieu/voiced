@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import re
+import resource
 from collections.abc import AsyncIterator
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
 from voiced import __version__
+from voiced.api.app import raise_open_file_limit
 from voiced.config import Settings
 from voiced.engines.base import EngineError, PCMChunk
+from voiced.inference import inference
+from voiced.metrics import Operation
 from voiced.testing import FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
 
@@ -104,3 +111,44 @@ async def test_error_detail_is_hidden_from_the_open_feed_when_a_key_is_set(
     assert set(err) == {"at", "operation", "outcome"}
     assert "jane-doe" not in str(doc)
     assert doc["metrics"]["operations"]["speech"]["counts"]["client_error"] == 1
+
+
+async def test_health_withholds_the_error_message_when_a_key_is_set(
+    stt_app: FastAPI, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An engine failure's message can echo what a client sent. /health and
+    /metrics.json are unauthenticated, so with an API key set they keep the
+    exception type only; the message goes to the service log."""
+    ctx = stt_app.state.ctx
+    ctx.settings.server.api_key = "s3cret"
+    async with lifespan_client(stt_app) as c:
+        with caplog.at_level("ERROR", logger="voiced.inference"):
+            with contextlib.suppress(RuntimeError):
+                async with inference(ctx, Operation.TRANSCRIBE):
+                    raise RuntimeError("client said: my secret words")
+        health = (await c.get("/health")).json()
+        metrics = (await c.get("/metrics.json")).json()
+    assert "my secret words" in caplog.text
+    for snapshot in (health, metrics["health"]):
+        assert snapshot["status"] == "degraded"
+        assert snapshot["last_error"].startswith("RuntimeError")
+        assert "secret words" not in snapshot["last_error"]
+    assert "secret words" not in json.dumps(metrics)
+
+
+@pytest.mark.parametrize(
+    ("soft", "hard", "expected"),
+    [
+        (256, resource.RLIM_INFINITY, 4096),  # what launchd gives a daemon
+        (256, 1024, 1024),
+        (10_000, resource.RLIM_INFINITY, None),  # never lowered
+    ],
+)
+def test_open_file_limit_is_raised(
+    monkeypatch: pytest.MonkeyPatch, soft: int, hard: int, expected: int | None
+) -> None:
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (soft, hard))
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: calls.append(limits))
+    raise_open_file_limit()
+    assert calls == ([] if expected is None else [(expected, hard)])

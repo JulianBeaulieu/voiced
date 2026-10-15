@@ -40,11 +40,17 @@ from wyoming.tts import (
     SynthesizeVoice,
 )
 
-from voiced.engines.base import TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError, PCMChunk
+from voiced.engines.base import (
+    TTS_SAMPLE_RATE,
+    TTS_SAMPLE_WIDTH,
+    EngineError,
+    PCMChunk,
+    UnknownVoice,
+)
 from voiced.inference import inference
 from voiced.metrics import Operation
 from voiced.text import normalize
-from voiced.wyoming.handlers import VoicedEventHandler, cancel_task
+from voiced.wyoming.handlers import MalformedEvent, VoicedEventHandler, cancel_task, parse
 from voiced.wyoming.info import tts_info
 from voiced.wyoming.text import SentenceAccumulator
 
@@ -63,6 +69,11 @@ class _Stream:
     failed: bool = False
 
 
+def _require_text(text: object, event: Event) -> None:
+    if not isinstance(text, str):
+        raise MalformedEvent(f"malformed {event.type}: text must be a string")
+
+
 class TTSEventHandler(VoicedEventHandler):
     _stream: _Stream | None = None
     _audio_started: bool = False
@@ -74,16 +85,18 @@ class TTSEventHandler(VoicedEventHandler):
         if Synthesize.is_type(event.type):
             if self._stream is not None:
                 return True  # compatibility copy of the streamed text
-            synthesize = Synthesize.from_event(event)
+            synthesize = parse(Synthesize, event)
+            _require_text(synthesize.text, event)
             self._enforce_input_limit(len(synthesize.text))
-            await self._synthesize_once(synthesize.text, self._resolve(synthesize.voice))
+            await self._synthesize_once(synthesize.text, await self._resolve(synthesize.voice))
             return True
         if SynthesizeStart.is_type(event.type):
             if self._stream is not None:
                 await self.cleanup()
-            start = SynthesizeStart.from_event(event)
+            start = parse(SynthesizeStart, event)
+            voice = await self._resolve(start.voice)
             self._audio_started = False
-            self._stream = stream = _Stream(voice=self._resolve(start.voice))
+            self._stream = stream = _Stream(voice=voice)
             stream.worker = asyncio.create_task(self._worker(stream), name="wyoming tts stream")
             return True
         if SynthesizeChunk.is_type(event.type):
@@ -92,7 +105,8 @@ class TTSEventHandler(VoicedEventHandler):
                 raise EngineError("synthesize-chunk before synthesize-start")
             if open_stream.failed:
                 return False  # the worker already reported and closed
-            text = SynthesizeChunk.from_event(event).text
+            text = parse(SynthesizeChunk, event).text
+            _require_text(text, event)
             open_stream.chars += len(text)
             if open_stream.chars > self.ctx.settings.tts.max_input_chars:
                 # One error for the stream, then close: every later chunk and
@@ -109,13 +123,24 @@ class TTSEventHandler(VoicedEventHandler):
         log.debug("tts %s: ignoring %s", self.peer, event.type)
         return True
 
-    def _resolve(self, voice: SynthesizeVoice | None) -> str:
+    async def _resolve(self, voice: SynthesizeVoice | None) -> str:
         """Pick the engine voice id. Home Assistant only ever sends ``name``
         (``wyoming/tts.py`` has no language field for synthesis), so an explicit
-        name wins and everything else falls back to the configured default."""
-        if voice is not None and voice.name:
-            return voice.name
-        return self.ctx.settings.tts.default_voice
+        name wins and everything else falls back to the configured default.
+
+        Like the HTTP route, the voice must be one the service serves (the
+        engine's voices in the configured languages, which ``Describe``
+        lists), checked before the engine sees it.
+        """
+        name = voice.name if voice is not None and voice.name else None
+        if name is not None and not isinstance(name, str):
+            raise MalformedEvent("voice name must be a string")
+        chosen = name or self.ctx.settings.tts.default_voice
+        self.ctx.check_loaded()
+        if chosen not in {v.id for v in await self.ctx.voices()}:
+            source = "" if name else " (tts.default_voice)"
+            raise UnknownVoice(f"voice {chosen!r}{source} is not served; see Describe")
+        return chosen
 
     def _enforce_input_limit(self, chars: int) -> None:
         if chars > self.ctx.settings.tts.max_input_chars:

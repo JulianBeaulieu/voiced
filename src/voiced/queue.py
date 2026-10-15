@@ -26,8 +26,8 @@ slot from a child task while its parent holds one, or both wait forever.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 
 
 class QueueFull(Exception):
@@ -69,3 +69,24 @@ class InferenceQueue:
                     self._holder = None
         finally:
             self._pending -= 1
+
+
+class Admission:
+    """A non-blocking counter for work done outside the slot, such as decoding
+    uploads: at most ``capacity`` at once, the next raises :class:`QueueFull`."""
+
+    def __init__(self, capacity: int) -> None:
+        if capacity < 1:
+            raise ValueError("capacity must be >= 1")
+        self.capacity = capacity
+        self.active = 0
+
+    @contextmanager
+    def admit(self) -> Iterator[None]:
+        if self.active >= self.capacity:
+            raise QueueFull(self.capacity)
+        self.active += 1
+        try:
+            yield
+        finally:
+            self.active -= 1

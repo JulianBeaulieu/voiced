@@ -38,7 +38,7 @@ from voiced.engines.base import STT_SAMPLE_RATE, EngineError
 from voiced.inference import ClientTimeout, bounded, inference
 from voiced.metrics import Operation
 from voiced.queue import QueueFull
-from voiced.wyoming.handlers import VoicedEventHandler, cancel_task
+from voiced.wyoming.handlers import MAX_PAYLOAD_BYTES, VoicedEventHandler, cancel_task, parse
 from voiced.wyoming.info import stt_info
 
 log = logging.getLogger(__name__)
@@ -47,16 +47,15 @@ log = logging.getLogger(__name__)
 # sends about 16 chunks per second, so this is a few seconds of audio; beyond
 # it the handler stops reading and TCP pushes back on the client.
 _QUEUE_CHUNKS = 64
-# Largest audio payload in one AudioChunk. Home Assistant sends about 2 KB; the
-# cap keeps the queue under _QUEUE_CHUNKS * MAX_CHUNK_BYTES (64 MB) whatever
-# chunk size a client picks.
-MAX_CHUNK_BYTES = 1_000_000
-_BYTES_PER_SAMPLE = 2  # the cap reads stt.max_upload_mb as 16-bit samples
+# Largest audio payload in one AudioChunk, enforced by the reader before the
+# payload is buffered (VoicedEventHandler.read_event). It keeps the queue under
+# _QUEUE_CHUNKS * MAX_CHUNK_BYTES (64 MB) whatever chunk size a client picks.
+MAX_CHUNK_BYTES = MAX_PAYLOAD_BYTES
 
 
 def max_utterance_s(settings: Settings) -> float:
     """Longest utterance a Wyoming client may stream, in seconds."""
-    return settings.stt.max_upload_mb * 1_000_000 / _BYTES_PER_SAMPLE / STT_SAMPLE_RATE
+    return settings.stt.max_audio_s
 
 
 class STTEventHandler(VoicedEventHandler):
@@ -70,7 +69,7 @@ class STTEventHandler(VoicedEventHandler):
             return True
         if Transcribe.is_type(event.type):
             self._language = None  # a rejected hint must not leave the old one in use
-            self._language = self.ctx.check_language(Transcribe.from_event(event).language)
+            self._language = self.ctx.check_language(parse(Transcribe, event).language)
             return True
         is_audio = any(t.is_type(event.type) for t in (AudioStart, AudioChunk, AudioStop))
         if is_audio and self._task is not None and self._task.done():
@@ -78,16 +77,11 @@ class STTEventHandler(VoicedEventHandler):
             # buffered through. None of them may reach or restart a session.
             return False
         if AudioStart.is_type(event.type):
-            start = AudioStart.from_event(event)
+            start = parse(AudioStart, event)
             await self._begin(start.rate, start.width, start.channels)
             return True
         if AudioChunk.is_type(event.type):
-            chunk = AudioChunk.from_event(event)
-            if len(chunk.audio) > MAX_CHUNK_BYTES:
-                # Reported and closed rather than raised: a client error keeps
-                # the connection, and the next chunk would start a new session.
-                await self.report(EngineError(f"audio chunk over {MAX_CHUNK_BYTES} bytes"))
-                return False
+            chunk = parse(AudioChunk, event)
             if self._task is None:
                 # Some clients skip AudioStart; take the format from the chunk.
                 await self._begin(chunk.rate, chunk.width, chunk.channels)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 
 import numpy as np
 import pytest
@@ -220,7 +221,8 @@ async def test_utterance_over_cap_closes_and_never_restarts(
     ctx.settings.stt.max_upload_mb = 1  # 500k int16 samples, about 31 s at 16 kHz
     async with client(stt_listener) as c:
         await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
-        await c.write_event(chunk16k(pcm16(40.0)).event())  # over the cap in one chunk
+        for _ in range(4):  # 40 s, over the cap; each chunk under MAX_CHUNK_BYTES
+            await c.write_event(chunk16k(pcm16(10.0)).event())
         event = await c.read_event()
         assert event is not None and Error.is_type(event.type)
         assert Error.from_event(event).text.startswith("EngineError")
@@ -304,7 +306,8 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
     stt_app: FastAPI, stt_listener: WyomingListener
 ) -> None:
     """The queue bound is in chunks, so each chunk is capped in bytes: queued
-    audio stays under _QUEUE_CHUNKS * MAX_CHUNK_BYTES per connection."""
+    audio stays under _QUEUE_CHUNKS * MAX_CHUNK_BYTES per connection. The
+    reader refuses the chunk from its header, before buffering the payload."""
     engine: FakeSTTEngine = stt_app.state.ctx.engine
     ctx = stt_listener.ctx
     gate = asyncio.Event()
@@ -312,12 +315,16 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
     try:
         async with client(stt_listener) as c:
             await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
-            await c.write_event(chunk16k(bytes(stt_handler.MAX_CHUNK_BYTES + 2)).event())
+            # Only the header: the server refuses on it and closes, so a client
+            # still writing the payload would race the close.
+            oversized = {"type": "audio-chunk", "payload_length": stt_handler.MAX_CHUNK_BYTES + 2}
+            assert c._writer is not None
+            c._writer.write(json.dumps(oversized).encode() + b"\n")
             event = await c.read_event()
             assert event is not None and Error.is_type(event.type)
             error = Error.from_event(event)
             assert error.code == "invalid_request_error"
-            assert error.text.startswith("EngineError: audio chunk over")
+            assert error.text.startswith("BadEvent: payload_length")
             # More oversized audio gets nothing back: the connection is closed.
             assert await _after_error(c, bytes(stt_handler.MAX_CHUNK_BYTES + 2)) == []
         assert engine.calls == 0

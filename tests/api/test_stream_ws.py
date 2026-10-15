@@ -17,6 +17,7 @@ from starlette.testclient import WebSocketDisconnect
 from starlette.websockets import WebSocket
 
 from tests.api.conftest import pcm16, sync_client
+from voiced.api import routes_stt
 from voiced.api.context import close_ws
 from voiced.audio import pcm16_to_float32
 from voiced.config import Settings
@@ -278,3 +279,40 @@ async def test_close_ws_truncates_the_reason_to_the_protocol_limit() -> None:
     (close,) = closes
     assert close["code"] == 1008
     assert len(close["reason"].encode()) <= 123 and close["reason"] == "é" * 61
+
+
+def test_stream_audio_is_bounded(stt_app: FastAPI) -> None:
+    """Like a Wyoming utterance, a session carries at most ``max_upload_mb`` of
+    16-bit 16 kHz audio; more is a client error (1008)."""
+    stt_app.state.ctx.settings.stt.max_upload_mb = 1  # about 31 s
+    with sync_client(stt_app) as client:
+        with client.websocket_connect(PATH) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                for _ in range(8):  # 40 s
+                    ws.send_bytes(pcm16(5.0))
+                while True:
+                    ws.receive_json()
+            assert exc.value.code == 1008
+            assert "stream longer than" in exc.value.reason
+        _wait_for_depth(stt_app, 0)
+        assert client.get("/health").json()["status"] == "ok"
+
+
+def test_stream_session_has_a_wall_clock_bound(
+    stt_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A client that sends a little audio just inside ``session_idle_s`` each
+    time could otherwise hold the slot forever."""
+    monkeypatch.setattr(routes_stt, "max_stream_s", lambda settings: 0.3)
+    stt_app.state.ctx.settings.server.session_idle_s = 0.2
+    with sync_client(stt_app) as client:
+        with client.websocket_connect(PATH) as ws:
+            for _ in range(20):  # 1 s of one sample every 50 ms, never idle for 0.2 s
+                ws.send_bytes(b"\0\0")
+                time.sleep(0.05)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                while True:
+                    ws.receive_json()
+            assert exc.value.code == 1008
+            assert "stream longer than" in exc.value.reason
+        _wait_for_depth(stt_app, 0)

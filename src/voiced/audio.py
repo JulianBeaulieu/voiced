@@ -23,6 +23,13 @@ _INT_DTYPES: dict[int, tuple[np.dtype[np.signedinteger] | np.dtype[np.unsignedin
 
 UNKNOWN_LENGTH = 0xFFFFFFFF
 
+MIN_INPUT_RATE = 8_000
+MAX_INPUT_RATE = 192_000
+"""Sample rates :class:`PCMConverter` accepts. Outside them the resampling
+ratio is unreasonable: 1 Hz input would turn each byte into thousands of
+output samples."""
+MAX_CHANNELS = 16
+
 
 class UnsupportedAudioFormat(EngineError):
     """The sample width, channel count or rate cannot be converted.
@@ -122,6 +129,10 @@ def wav_header(
     return b"RIFF" + sizes[0] + b"WAVE" + b"fmt " + fmt + b"data" + sizes[1]
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 class PCMConverter:
     """Stateful converter from integer PCM chunks to mono float32 at ``target_rate``.
 
@@ -136,12 +147,17 @@ class PCMConverter:
     def __init__(
         self, rate: int, width: int, channels: int, target_rate: int = STT_SAMPLE_RATE
     ) -> None:
-        if channels < 1:
-            raise UnsupportedAudioFormat(f"channels must be >= 1, got {channels}")
-        if rate < 1:
-            raise UnsupportedAudioFormat(f"invalid sample rate {rate}")
-        if width not in _INT_DTYPES:
-            raise UnsupportedAudioFormat(f"unsupported sample width {width}")
+        # The format comes from the client (Wyoming AudioStart, JSON), so it is
+        # checked for type as well as range: anything else would raise a
+        # TypeError, which counts as a server failure.
+        if not _is_int(channels) or not 1 <= channels <= MAX_CHANNELS:
+            raise UnsupportedAudioFormat(f"channels must be 1 to {MAX_CHANNELS}, got {channels!r}")
+        if not _is_int(rate) or not MIN_INPUT_RATE <= rate <= MAX_INPUT_RATE:
+            raise UnsupportedAudioFormat(
+                f"sample rate must be {MIN_INPUT_RATE} to {MAX_INPUT_RATE} Hz, got {rate!r}"
+            )
+        if not _is_int(width) or width not in _INT_DTYPES:
+            raise UnsupportedAudioFormat(f"unsupported sample width {width!r}")
         self.rate, self.width, self.channels = rate, width, channels
         self.target_rate = target_rate
         self._carry = b""

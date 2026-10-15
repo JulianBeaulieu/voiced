@@ -13,9 +13,9 @@ from voiced.engines.base import (
     UnsupportedLanguage,
     Voice,
 )
-from voiced.health import HealthState
+from voiced.health import HealthResponse, HealthState
 from voiced.metrics import Metrics
-from voiced.queue import InferenceQueue
+from voiced.queue import Admission, InferenceQueue
 
 
 @dataclass
@@ -26,6 +26,12 @@ class ServiceContext:
     queue: InferenceQueue
     health: HealthState
     metrics: Metrics = field(default_factory=Metrics)
+    uploads: Admission = field(init=False)
+    """Uploads being decoded before they queue for the slot (HTTP STT); as
+    many at once as the queue holds."""
+
+    def __post_init__(self) -> None:
+        self.uploads = Admission(self.queue.capacity)
 
     @property
     def stt_engine(self) -> STTEngine:
@@ -95,6 +101,20 @@ class ServiceContext:
         """
         if not self.health.model_loaded:
             raise EngineNotLoaded("model is still loading")
+
+    def public_health(self) -> HealthResponse:
+        """The ``/health`` snapshot as unauthenticated routes show it.
+
+        With ``server.api_key`` set, ``last_error`` keeps only the exception
+        type: its message can echo what a client sent, and these routes are
+        open to anyone who can reach the port (the same rule as the error log
+        in ``/metrics.json``).
+        """
+        snapshot = self.health.snapshot(self.queue.depth)
+        if self.settings.server.api_key and snapshot.last_error:
+            kind = snapshot.last_error.partition(":")[0]
+            snapshot.last_error = f"{kind} (details in the service log)"
+        return snapshot
 
     @property
     def _configured(self) -> list[str]:
