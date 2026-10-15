@@ -24,6 +24,7 @@ merge, and this index is updated when a record lands on `main`.
 | [0015](0015-integration-results.md) | Integration results | End-to-end tier and benchmark (a script, not a subcommand), memory measured as the physical footprint, the measured table, defects found and fixed, known misses. |
 | [0016](0016-verification-results.md) | Verification results | What an independent check of security, robustness, the quickstart, dependencies and repository hygiene found, what changed and which limits stay documented. |
 | [0017](0017-homebrew-packaging.md) | Homebrew packaging and the shared install layout | The state directory every install path shares (`bin/voiced` link, `envs/`, `install.json`, identical plists, one lock, the watchdog following a replaced environment); a tap formula built from the lock; why not `brew services` or resource blocks; the menu bar cask as the end-user path. |
+| [0018](0018-install-from-the-menu-bar-app.md) | Install from the menu bar app | Proposed. The app provisions Python and the venv with a bundled uv, ffmpeg and espeak-ng from PyPI wheels, and installs the user-run LaunchDaemons with one administrator prompt for a signed script in its bundle; SMAppService rejected because the plist is sealed at build time; permissions asked only when needed. |
 
 ## Writing one
 
