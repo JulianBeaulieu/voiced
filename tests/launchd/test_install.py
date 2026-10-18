@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import pwd
+import re
 import shlex
 import shutil
 import stat
@@ -950,7 +951,9 @@ def test_uninstall_through_a_symlinked_state_dir_removes_nothing(
     p = _plan(settings, tmp_path)
     p.state_dir.symlink_to(target)
     targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
-    assert targets.refused is not None and "symlink" in targets.refused
+    assert targets.refused is not None
+    assert f"symlink to {target.resolve()}" in targets.refused
+    assert f"--state-dir {target.resolve()}" in targets.refused, "says what to do"
     assert remove_targets(targets, p, lambda _: None) == 0
     assert (target / "python" / ".lock").exists()
     assert (target / "envs" / "20261018T120000" / "pyvenv.cfg").exists()
@@ -961,9 +964,23 @@ def test_install_refuses_a_symlinked_state_dir(settings: Settings, tmp_path: Pat
     target.mkdir()
     p = _plan(settings, tmp_path)
     p.state_dir.symlink_to(target)
-    with pytest.raises(InstallError, match="symlink"):
+    with pytest.raises(InstallError) as refused:
         _install(p)
+    assert f"symlink to {target.resolve()}" in str(refused.value)
+    assert f"--state-dir {target.resolve()}" in str(refused.value), "says what to do"
+    assert "move those files" not in str(refused.value)
     assert list(target.iterdir()) == []
+
+
+def test_symlinked_state_dir_message_quotes_the_real_path(
+    settings: Settings, tmp_path: Path
+) -> None:
+    target = tmp_path / "with space"
+    target.mkdir()
+    p = _plan(settings, tmp_path)
+    p.state_dir.symlink_to(target)
+    with pytest.raises(InstallError, match=re.escape(f"--state-dir '{target.resolve()}'")):
+        _install(p)
 
 
 def test_uninstall_refuses_a_directory_that_is_not_voiceds(

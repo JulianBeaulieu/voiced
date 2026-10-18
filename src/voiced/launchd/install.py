@@ -44,6 +44,7 @@ from voiced.layout import (
     ManifestError,
     NotVoiceds,
     Origin,
+    SymlinkedStateDir,
     built_environments,
     claim,
     entry_point,
@@ -567,6 +568,8 @@ def current_manifest(plan: InstallPlan) -> Manifest | None:
     """:func:`voiced.layout.claim` with the error said in installer terms."""
     try:
         return claim(plan.state_dir)
+    except SymlinkedStateDir as exc:
+        raise InstallError(f"Not installing into {plan.state_dir}: {exc}.") from exc
     except NotVoiceds as exc:
         raise InstallError(
             f"{plan.state_dir} is not voiced's: {exc}. "
@@ -859,6 +862,8 @@ def state_targets(state_dir: Path) -> UninstallTargets:
     outside it (Homebrew's keg is Homebrew's)."""
     try:
         manifest = claim(state_dir)
+    except SymlinkedStateDir as exc:
+        return UninstallTargets([], [], [], refused=str(exc))
     except NotVoiceds as exc:
         return UninstallTargets([], [], [], refused=f"not voiced's: {exc}")
     except ManifestError as exc:

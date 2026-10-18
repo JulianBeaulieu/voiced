@@ -15,6 +15,7 @@ from voiced.layout import (
     Manifest,
     NotVoiceds,
     RunningEnvironment,
+    SymlinkedStateDir,
     built_environments,
     claim,
     homebrew_busy,
@@ -93,8 +94,10 @@ def test_claim_refuses_a_symlinked_state_dir(tmp_path: Path, contents: str) -> N
         write_manifest(target, Manifest(source="app", environment=None))
     link = tmp_path / "link"
     link.symlink_to(target)
-    with pytest.raises(NotVoiceds, match="symlink"):
+    with pytest.raises(SymlinkedStateDir) as refused:
         claim(link)
+    assert refused.value.real == target.resolve()
+    assert f"--state-dir {target.resolve()}" in str(refused.value)
     assert claim(target) is None or contents != "empty"
 
 

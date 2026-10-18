@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -221,6 +222,18 @@ class NotVoiceds(ValueError):
     """The state directory holds someone else's files."""
 
 
+class SymlinkedStateDir(NotVoiceds):
+    """The state directory is a symlink: ``real`` is where it leads, the
+    path to pass instead."""
+
+    def __init__(self, link: Path) -> None:
+        self.real = Path(os.path.realpath(link))
+        super().__init__(
+            f"it is a symlink to {self.real}; pass the real path instead: "
+            f"--state-dir {shlex.quote(str(self.real))} (or [install] venv_dir in the config)"
+        )
+
+
 def claim(state_dir: Path) -> Manifest | None:
     """What voiced may do with ``state_dir``, for install and uninstall alike.
 
@@ -235,7 +248,7 @@ def claim(state_dir: Path) -> Manifest | None:
     path.
     """
     if state_dir.is_symlink():
-        raise NotVoiceds(f"it is a symlink to {os.readlink(state_dir)}; use that path itself")
+        raise SymlinkedStateDir(state_dir)
     manifest = read_manifest(state_dir)
     if manifest is not None:
         return manifest
