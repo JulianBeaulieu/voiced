@@ -7,7 +7,7 @@ set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="$here/voiced-privileged.sh"
 staging="$1"
-user="$(id -un)"; home="$HOME"; venv="$home/.voiced"
+user="$(id -un)"; home="$HOME"
 prefix="io.github.julianbeaulieu.voiced"
 scratch="$(mktemp -d)"; dest="$scratch/dest"; mkdir "$dest"
 failures=0
@@ -15,7 +15,7 @@ failures=0
 b64() { base64 -i "$1" | tr -d '\n'; }
 run() { VOICED_TEST_DEST="$dest" "$script" "$@"; }
 install_with() {  # $1 = path of the watchdog plist to use
-    run install "$user" "$venv" "$(b64 "$staging/$prefix.stt.plist")" \
+    run install "$user" "$(b64 "$staging/$prefix.stt.plist")" \
         "$(b64 "$staging/$prefix.tts.plist")" "$(b64 "$1")"
 }
 expect_refused() {
@@ -60,10 +60,9 @@ expect_refused "KeepAlive dict" install_with "$(variant ka -replace KeepAlive -j
 expect_refused "extra argument" install_with "$(variant arg -insert ProgramArguments -string --evil -append)"
 expect_refused "Label elsewhere" install_with "$(variant lbl -replace Label -string com.docker.vmnetd)"
 expect_refused "key with newline" install_with "$(variant nl -insert "$(printf 'Nice\n\t<key>Label')" -string x)"
-expect_refused "venv with .." run install "$user" "$home/x/../.voiced" "$(b64 "$staging/$prefix.stt.plist")" \
-    "$(b64 "$staging/$prefix.tts.plist")" "$(b64 "$staging/$prefix.watchdog.plist")"
-expect_refused "user root" run install root /var/root/.voiced x y z
-expect_refused "not base64" run install "$user" "$venv" '!!!' x y
+expect_refused "program elsewhere in home" install_with "$(variant elsewhere -replace ProgramArguments.0 -string "$home/x/bin/voiced")"
+expect_refused "user root" run install root x y z
+expect_refused "not base64" run install "$user" '!!!' x y
 
 # Another account's install is never replaced or removed.
 other() { find "$dest" -mindepth 1 -delete; cp "$staging/$prefix.stt.plist" "$dest/"; \

@@ -7,7 +7,7 @@
 # so neither the app's environment (BASH_ENV, PATH, ...) nor a file the user can edit reaches
 # root.
 #
-#   voiced-privileged install USER VENV STT_B64 TTS_B64 WATCHDOG_B64
+#   voiced-privileged install USER STT_B64 TTS_B64 WATCHDOG_B64
 #   voiced-privileged uninstall USER
 #
 # The plists arrive as base64 arguments, so root never opens a path the user controls (no
@@ -81,7 +81,7 @@ rebuild() {
             || fail "$label: key not allowed: ${line#$'\t'}"
     done < <(/usr/bin/plutil -convert xml1 -o - -- "$raw")
 
-    local voiced="$venv/bin/voiced" logs="$home/Library/Logs/voiced" throttle
+    local voiced="$home/.voiced/bin/voiced" logs="$home/Library/Logs/voiced" throttle
     [ "$(value "$raw" Label)" = "$label" ] || fail "$label: Label mismatch"
     [ "$(value "$raw" UserName)" = "$user" ] || fail "$label: UserName is not $user"
     [ "$(ptype "$raw" RunAtLoad)" = bool ] && [ "$(value "$raw" RunAtLoad)" = true ] || fail "$label: RunAtLoad"
@@ -142,11 +142,8 @@ wait_gone() {
 
 case "$mode" in
 install)
-    [ $# -eq 6 ] || fail "usage: install USER VENV STT_B64 TTS_B64 WATCHDOG_B64"
-    venv="$3"
-    [[ "$venv" == "$home/"?* && "$venv" != *$'\n'* ]] || fail "venv must be inside $home"
-    [[ "/$venv/" != */../* && "/$venv/" != */./* && "$venv" != */ ]] || fail "venv path is not canonical"
-    staged=("$4" "$5" "$6")
+    [ $# -eq 5 ] || fail "usage: install USER STT_B64 TTS_B64 WATCHDOG_B64"
+    staged=("$3" "$4" "$5")
     for i in "${!SERVICES[@]}"; do
         check_owner "$PREFIX.${SERVICES[$i]}"
         rebuild "${SERVICES[$i]}" "${staged[$i]}"
@@ -171,13 +168,21 @@ install)
         echo "installed $label"
     done
     # The services' Python is signed ad hoc and nobody can answer the firewall's prompt
-    # before login, so allow it explicitly when the application firewall is on.
+    # before login, so allow it explicitly when the application firewall is on. bin/voiced is
+    # a symlink to the active environment's bin/voiced; resolve its python as the user. A
+    # Python outside the home (a Homebrew keg's) is shared with other programs: left alone.
     fw=/usr/libexec/ApplicationFirewall/socketfilterfw
     if (( live )) && "$fw" --getglobalstate | /usr/bin/grep -q 'enabled'; then
-        python="$(/usr/bin/sudo -n -u "$user" /bin/realpath -- "$venv/bin/python")" || fail "no venv python"
-        [[ "$python" == "$home/"?* ]] || fail "venv python resolves outside $home"
-        "$fw" --add "$python" >/dev/null && "$fw" --unblockapp "$python" >/dev/null
-        echo "firewall: allowed $python"
+        entry="$(/usr/bin/sudo -n -u "$user" /bin/realpath -- "$home/.voiced/bin/voiced")" \
+            || fail "no $home/.voiced/bin/voiced"
+        python="$(/usr/bin/sudo -n -u "$user" /bin/realpath -- "${entry%/voiced}/python")" \
+            || fail "no python next to $entry"
+        if [[ "$python" == "$home/"?* ]]; then
+            "$fw" --add "$python" >/dev/null && "$fw" --unblockapp "$python" >/dev/null
+            echo "firewall: allowed $python"
+        else
+            echo "firewall: not changed, $python is outside $home"
+        fi
     fi
     (( ${#failed[@]} == 0 )) || { echo "bootstrap failed: ${failed[*]}" >&2; exit 3; }
     ;;

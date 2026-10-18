@@ -23,14 +23,26 @@ job run once and append a line to `$out/probe.out`. ADR 0018 has the results.
 
 ## PrivilegedInstall
 
-`install-daemons.sh`, the script the app would run as root behind one
-administrator prompt. It copies the staged plists, checks the root-owned copies
-and only then bootstraps them. To try it without root, point it at a scratch
-directory and skip launchctl:
+`voiced-privileged.sh`, the one script the app would run as root behind one
+administrator prompt, with two modes:
+
+```
+voiced-privileged.sh install   USER STT_B64 TTS_B64 WATCHDOG_B64
+voiced-privileged.sh uninstall USER
+```
+
+The plists arrive base64-encoded, are checked against a key allowlist and
+exact values (the program is always `~/.voiced/bin/voiced`), and are rebuilt from the checked values before anything is
+bootstrapped. In the app the script's text is compiled into the signed
+executable and run with `env -i` (ADR 0018 has the details). Run as a normal
+user it needs `VOICED_TEST_DEST` (a scratch directory standing in for
+`/Library/LaunchDaemons`) and skips launchctl and the firewall; as root that
+variable is ignored.
+
+`test.sh` runs it that way against the plists `voiced install` staged for
+the default `~/.voiced`, and against crafted variants that must all be
+refused with nothing written:
 
 ```sh
-VOICED_DEST="$(mktemp -d)" VOICED_NO_LAUNCHCTL=1 \
-  menubar/Prototypes/PrivilegedInstall/install-daemons.sh "$(id -un)" \
-  ~/.config/voiced/launchd io.github.julianbeaulieu.voiced.stt \
-  io.github.julianbeaulieu.voiced.tts io.github.julianbeaulieu.voiced.watchdog
+menubar/Prototypes/PrivilegedInstall/test.sh ~/.config/voiced/launchd
 ```
