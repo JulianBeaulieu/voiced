@@ -91,13 +91,32 @@ class Conn:
 
 async def test_hello_and_permissions(server: ControlServer) -> None:
     conn = await Conn.open(server.path)
-    assert await conn.recv() == {"event": "hello", "data": {"protocol": 1, "version": "9.9.9"}}
+    hello = {"protocol": 1, "version": "9.9.9", "install": None}
+    assert await conn.recv() == {"event": "hello", "data": hello}
     assert stat.S_IMODE(server.path.stat().st_mode) == 0o600
     assert stat.S_IMODE(server.path.parent.stat().st_mode) == 0o700
     await conn.send(b'{"id": 1, "op": "status"}\n')
     answer = await conn.answer(1)
     assert answer["ok"] is True and answer["result"]["installed"] is True
     await conn.close()
+
+
+async def test_hello_reads_the_manifest_for_each_connection(
+    short_dir: Path, ops: Operations
+) -> None:
+    """`voiced install` writes install.json after repointing the link, so a
+    watchdog that already followed the link must not keep what it read at
+    start: the app waits for a hello with the new lock hash."""
+    manifests: list[dict[str, Any] | None] = [None, {"source": "app", "lock_sha256": "new"}]
+    srv = ControlServer(short_dir / "control.sock", ops, version="x", install=lambda: manifests[0])
+    async with srv:
+        first = await Conn.open(srv.path)
+        assert (await first.recv())["data"]["install"] is None
+        manifests.pop(0)
+        second = await Conn.open(srv.path)
+        assert (await second.recv())["data"]["install"] == {"source": "app", "lock_sha256": "new"}
+        await first.close()
+        await second.close()
 
 
 async def test_socket_removed_on_close(short_dir: Path, ops: Operations) -> None:

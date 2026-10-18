@@ -257,7 +257,8 @@ weights. It says nothing about the transcripts you produce.
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
 espeak-ng at run time as a shared library from Homebrew
-(`brew install espeak-ng`), or from the path in `VOICED_ESPEAK_LIBRARY`, and
+(`brew install espeak-ng`), or from the path in `[tts] espeak_library` (or
+`VOICED_ESPEAK_LIBRARY`), and
 fails at startup with the install command if neither works. The `tts` extra
 also pulls in, as dependencies of `kokoro-onnx`, the `phonemizer` package
 (GPL-3.0-or-later), which the Kokoro engine imports, through

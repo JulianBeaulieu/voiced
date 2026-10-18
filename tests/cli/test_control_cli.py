@@ -468,3 +468,15 @@ def test_doctor_socket_silent(tmp_path: Path) -> None:
         assert doctor.check_control_socket(path).result == "fail"
     finally:
         shutil.rmtree(short, ignore_errors=True)
+
+
+def test_watchdog_hello_reports_the_manifest(tmp_path: Path) -> None:
+    """The app compares its pins with what install.json records."""
+    from voiced.layout import Manifest, write_manifest
+
+    assert lc.installed_manifest(tmp_path) is None  # nothing installed
+    manifest = Manifest("app", tmp_path / "env", "0.0.2", "ab12", "/py/python3.12")
+    write_manifest(tmp_path, manifest)
+    assert lc.installed_manifest(tmp_path) == manifest.to_json()
+    (tmp_path / "install.json").write_text("{not json")
+    assert lc.installed_manifest(tmp_path) is None  # unreadable: no hello field, no crash

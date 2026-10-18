@@ -31,8 +31,8 @@ sudo bash ~/.config/voiced/launchd/install-daemons.sh
 ```
 
 `voiced doctor` checks Apple Silicon, the macOS version, Python, the
-espeak-ng library Kokoro would load (the Homebrew keg or
-`VOICED_ESPEAK_LIBRARY`), ffmpeg, memory, the four ports (and which process
+espeak-ng library Kokoro would load (the Homebrew keg, `[tts]
+espeak_library` or `VOICED_ESPEAK_LIBRARY`), ffmpeg, memory, the four ports (and which process
 holds them), FileVault, whether the daemons are installed and loaded, Metal
 from the service environment, and the last `--metal-probe` result. It exits
 non-zero only on a failed check, not on a warning.
@@ -54,7 +54,7 @@ Each plist sets:
 | `ThrottleInterval` | 10 | Wait 10 s between restarts so a crash loop does not spin. |
 | `ProcessType` | Interactive | Full CPU and GPU scheduling priority. |
 | `WorkingDirectory` | the user's home | |
-| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, and `HF_HOME` when configured | The daemon reads the same config file and model cache as the CLI. `VOICED_STDIO_LOG` (`~/Library/Logs/voiced/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them. |
+| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, nothing else | The daemon reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and a custom `log_dir` from it, so the plists are the same fixed values the menu bar app renders (ADR 0018). `VOICED_STDIO_LOG` (`~/Library/Logs/voiced/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them; with a custom `log_dir` it moves them there once the config is read. |
 
 The plists do not set `StandardOutPath` or `StandardErrorPath`: launchd
 may open those files as root, in a log directory the user owns, so a

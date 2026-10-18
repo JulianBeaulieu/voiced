@@ -19,8 +19,10 @@ def test_encode_is_one_line() -> None:
 def test_hello() -> None:
     assert protocol.hello("1.2.3") == {
         "event": "hello",
-        "data": {"protocol": protocol.PROTOCOL_VERSION, "version": "1.2.3"},
+        "data": {"protocol": protocol.PROTOCOL_VERSION, "version": "1.2.3", "install": None},
     }
+    manifest = {"source": "app", "version": "1.2.2", "lock_sha256": "ab", "python": "/p"}
+    assert protocol.hello("1.2.3", manifest)["data"]["install"] == manifest
 
 
 def test_parse_request() -> None:

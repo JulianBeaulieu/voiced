@@ -9,7 +9,8 @@ voice's style vector. mlx-audio's own pipeline (misaki G2P) is bypassed.
 espeak-ng is an external, GPL-3 program and is never vendored. The engine
 uses the Homebrew installation (``brew install espeak-ng``), or the library
 and data directory named by ``VOICED_ESPEAK_LIBRARY`` and
-``VOICED_ESPEAK_DATA`` when those are set, and fails at ``load()`` with the
+``VOICED_ESPEAK_DATA`` when those are set (the services set them from
+``[tts] espeak_library`` and ``espeak_data``), and fails at ``load()`` with the
 install command if neither works. When no data directory is named, the
 tokenizer reads the data of the espeak-ng copy in the ``espeakng-loader``
 wheel; that copy is cloned to a short path first (``_espeak_data``).
@@ -36,6 +37,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16
+from voiced.config import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 from voiced.text.sentences import cut_to_length
@@ -54,8 +56,6 @@ __all__ = [
 ]
 
 ESPEAK_INSTALL_HINT = "brew install espeak-ng"
-ENV_ESPEAK_LIBRARY = "VOICED_ESPEAK_LIBRARY"
-ENV_ESPEAK_DATA = "VOICED_ESPEAK_DATA"
 HOMEBREW_PREFIXES = ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng")
 MAX_ESPEAK_DATA_PATH = 159
 """Bytes. The espeak-ng in the ``espeakng-loader`` wheel keeps its data path in

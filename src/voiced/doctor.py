@@ -23,7 +23,14 @@ from typing import Any, Literal
 
 import psutil
 
-from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings, config_path
+from voiced.config import (
+    HTTP_SERVICES,
+    SERVICES,
+    ServiceName,
+    Settings,
+    apply_engine_environment,
+    config_path,
+)
 from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
@@ -617,6 +624,7 @@ def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
 
 
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
+    apply_engine_environment(settings)  # check the espeak-ng the services will load
     entry = entry_point(state_dir(settings))
     venv_python = environment_python(entry) if entry.exists() else None
     return [

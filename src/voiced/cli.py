@@ -21,8 +21,9 @@ from typing import TYPE_CHECKING
 
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
-from voiced.config import Settings, config_path, load_settings
-from voiced.launchd.stdio import redirect_stdio_from_env
+from voiced.config import Settings, apply_engine_environment, config_path, load_settings
+from voiced.launchd.progress import Progress
+from voiced.launchd.stdio import follow_log_dir, redirect_stdio_from_env
 
 if TYPE_CHECKING:
     import uvicorn
@@ -140,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(settings: Settings, service: str) -> int:
     import uvicorn
 
+    apply_engine_environment(settings)  # before anything imports huggingface_hub
     try:
         http_socket = bind_service_ports(settings, service)
     except PortInUse as exc:
@@ -260,8 +262,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = load_settings()
     except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
-        print(f"config error at {config_path()}: {exc}", file=sys.stderr)
+        message = f"config error at {config_path()}: {exc}"
+        print(message, file=sys.stderr)
+        if getattr(args, "json_progress", False):  # the stream still opens and ends
+            progress = Progress(sys.stdout)
+            progress.hello()
+            progress.error(message)
         return 2
+    follow_log_dir(settings.server.log_dir)
     if args.command in LIFECYCLE:
         return run_lifecycle(args, settings)
     if args.command == "serve":
