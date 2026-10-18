@@ -44,6 +44,7 @@ from voiced.layout import (
     ManifestError,
     NotVoiceds,
     Origin,
+    SymlinkedStateDir,
     built_environments,
     claim,
     entry_point,
@@ -51,6 +52,7 @@ from voiced.layout import (
     is_legacy_venv,
     legacy_venv_paths,
     link_entry_point,
+    partial_environments,
     same_path,
     sha256_file,
     stable_environment,
@@ -566,6 +568,8 @@ def current_manifest(plan: InstallPlan) -> Manifest | None:
     """:func:`voiced.layout.claim` with the error said in installer terms."""
     try:
         return claim(plan.state_dir)
+    except SymlinkedStateDir as exc:
+        raise InstallError(f"Not installing into {plan.state_dir}: {exc}.") from exc
     except NotVoiceds as exc:
         raise InstallError(
             f"{plan.state_dir} is not voiced's: {exc}. "
@@ -854,10 +858,12 @@ class UninstallTargets:
 def state_targets(state_dir: Path) -> UninstallTargets:
     """What of the state directory voiced owns (:func:`voiced.layout.claim`,
     the same rule install applies): the layout's entries, the environments
-    it built, and a legacy venv's files. Nothing else in it, and nothing
+    it built or began to build, and a legacy venv's files. Nothing else in it, and nothing
     outside it (Homebrew's keg is Homebrew's)."""
     try:
         manifest = claim(state_dir)
+    except SymlinkedStateDir as exc:
+        return UninstallTargets([], [], [], refused=str(exc))
     except NotVoiceds as exc:
         return UninstallTargets([], [], [], refused=f"not voiced's: {exc}")
     except ManifestError as exc:
@@ -866,7 +872,9 @@ def state_targets(state_dir: Path) -> UninstallTargets:
     files = [entry, state_dir / "control.sock", state_dir / MANIFEST]
     if manifest is None:  # nothing installed; at most a stray socket
         return UninstallTargets([], files, [state_dir])
-    trees = [*built_environments(state_dir), state_dir / PYTHONS]
+    # Unfinished builds too: uninstall holds the lock the builder holds.
+    trees = [*built_environments(state_dir), *partial_environments(state_dir)]
+    trees.append(state_dir / PYTHONS)
     if is_legacy_venv(state_dir):
         legacy = legacy_venv_paths(state_dir)
         trees += [p for p in legacy if p.is_dir() and not p.is_symlink()]

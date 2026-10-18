@@ -15,6 +15,7 @@ from voiced.layout import (
     Manifest,
     NotVoiceds,
     RunningEnvironment,
+    SymlinkedStateDir,
     built_environments,
     claim,
     homebrew_busy,
@@ -23,6 +24,7 @@ from voiced.layout import (
     is_legacy_venv,
     legacy_venv_paths,
     link_entry_point,
+    partial_environments,
     read_link,
     write_manifest,
 )
@@ -78,6 +80,46 @@ def test_claim_is_one_rule(tmp_path: Path) -> None:
     write_manifest(state, Manifest(source="app", environment=None))
     claimed = claim(state)
     assert claimed is not None and claimed.source == "app"
+
+
+@pytest.mark.parametrize("contents", ["empty", "manifest", "legacy"])
+def test_claim_refuses_a_symlinked_state_dir(tmp_path: Path, contents: str) -> None:
+    """Uninstall would delete inside whatever the link points at."""
+    target = tmp_path / "target"
+    if contents == "legacy":
+        _venv(target)
+    else:
+        target.mkdir()
+    if contents == "manifest":
+        write_manifest(target, Manifest(source="app", environment=None))
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(SymlinkedStateDir) as refused:
+        claim(link)
+    assert refused.value.real == target.resolve()
+    assert f"--state-dir {target.resolve()}" in str(refused.value)
+
+
+def test_a_symlinked_envs_has_no_environments(tmp_path: Path) -> None:
+    """Pruning or uninstalling through it would delete inside its target."""
+    elsewhere = tmp_path / "elsewhere"
+    _venv(elsewhere / "20261018T120000")
+    (elsewhere / "20261018T130000.partial").mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "envs").symlink_to(elsewhere)
+    assert built_environments(state) == [] and partial_environments(state) == []
+
+
+def test_partial_environments_are_real_directories_only(tmp_path: Path) -> None:
+    envs = tmp_path / "envs"
+    unfinished = envs / "20261018T120000.partial"
+    unfinished.mkdir(parents=True)
+    _venv(envs / "20261018T110000")
+    (tmp_path / "elsewhere").mkdir()
+    (envs / "20261018T130000.partial").symlink_to(tmp_path / "elsewhere")
+    (envs / "20261018T140000.partial").write_text("")
+    assert partial_environments(tmp_path) == [unfinished]
 
 
 def test_legacy_venv_paths_never_include_the_entry_point(tmp_path: Path) -> None:

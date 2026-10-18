@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -129,13 +130,31 @@ def legacy_venv_paths(state_dir: Path) -> list[Path]:
     return [p for p in paths if p.exists() or p.is_symlink()]
 
 
+def environment_dirs(state_dir: Path) -> list[Path]:
+    """What is in ``envs/``; nothing if ``envs`` is a symlink, which leads
+    somewhere that is not voiced's to prune or uninstall."""
+    envs = state_dir / ENVS
+    return [] if envs.is_symlink() else sorted(envs.glob("*"))
+
+
 def built_environments(state_dir: Path) -> list[Path]:
     """The environments voiced built in ``envs/``: complete venvs, not a
     build still in progress."""
     return [
         env
-        for env in sorted((state_dir / ENVS).glob("*"))
+        for env in environment_dirs(state_dir)
         if (env / "pyvenv.cfg").is_file() and not env.name.endswith(PARTIAL_SUFFIX)
+    ]
+
+
+def partial_environments(state_dir: Path) -> list[Path]:
+    """Builds in ``envs/`` that never finished (``envs/<id>.partial``).
+    Never pruned, since a build may still be writing into one; only
+    uninstall removes them, holding the install lock the builder holds."""
+    return [
+        env
+        for env in environment_dirs(state_dir)
+        if env.name.endswith(PARTIAL_SUFFIX) and env.is_dir() and not env.is_symlink()
     ]
 
 
@@ -210,6 +229,18 @@ class NotVoiceds(ValueError):
     """The state directory holds someone else's files."""
 
 
+class SymlinkedStateDir(NotVoiceds):
+    """The state directory is a symlink: ``real`` is where it leads, the
+    path to pass instead."""
+
+    def __init__(self, link: Path) -> None:
+        self.real = link.resolve()
+        super().__init__(
+            f"it is a symlink to {self.real}; pass the real path instead: "
+            f"--state-dir {shlex.quote(str(self.real))} (or [install] venv_dir in the config)"
+        )
+
+
 def claim(state_dir: Path) -> Manifest | None:
     """What voiced may do with ``state_dir``, for install and uninstall alike.
 
@@ -218,7 +249,13 @@ def claim(state_dir: Path) -> Manifest | None:
     :data:`UNCLAIMED_OK` files (voiced's to use, nothing installed). Raises
     :class:`NotVoiceds` for anything else, and :class:`ManifestError` for a
     manifest that cannot be read.
+
+    A ``state_dir`` that is itself a symlink is refused: whatever it points
+    at, uninstall would delete inside the target, which is not voiced's
+    path.
     """
+    if state_dir.is_symlink():
+        raise SymlinkedStateDir(state_dir)
     manifest = read_manifest(state_dir)
     if manifest is not None:
         return manifest

@@ -208,7 +208,7 @@ The release job builds, from one commit:
 | Step | Command (bundled uv, `UV_NO_CONFIG=1`, `UV_LINK_MODE=clone`) |
 |---|---|
 | Python | `uv python install --no-bin 3.12.15` into `~/.voiced/python`. `--no-bin` because without it uv wrote `~/.local/bin/python3.12` onto the user's `PATH` (measured). The patch version, because the `3.12` minor link moves silently on the next install |
-| Environment | `uv venv --managed-python --python 3.12.15 ~/.voiced/envs/<id>.partial`, renamed to `envs/<id>` when the packages are in; `<id>` is a UTC timestamp, as ADR 0017 names environments |
+| Environment | `uv venv --relocatable --managed-python --python 3.12.15 ~/.voiced/envs/<id>.partial`, renamed to `envs/<id>` when the packages are in; `<id>` is a UTC timestamp, as ADR 0017 names environments. `--relocatable` because of the rename: without it every console script uv writes, `bin/voiced` included, starts the absolute path `envs/<id>.partial/bin/python` and fails once renamed (measured with uv 0.9.28); with it they find `python` next to their own resolved path, which also holds through the `~/.voiced/bin/voiced` symlink |
 | Packages | `uv pip install --require-hashes --no-deps -r requirements.lock`, then `uv pip install --no-deps <voiced wheel>` (a built wheel, so ADR 0017's `build-requirements.lock` has nothing to constrain) |
 
 *Measured* cold, with an empty uv cache, no Homebrew on `PATH`
@@ -346,11 +346,31 @@ Speech to Text and Text to Speech panes.
    download size and disk space from the manifest, and whether the disk has
    room. If an install already exists, this screen says so instead (see
    Lifecycle). One button: "Install".
-2. **Environment** (no prompt): the steps in the table above, holding ADR
-   0017's install lock (an exclusive `flock` on `~/.voiced`; installs never
-   prune an `envs/<id>.partial`) until the environment is renamed, then
-   releasing it for step 3, which takes it itself. A CLI install that gets
-   the lock in that moment could prune the renamed environment; step 3
+2. **Environment** (no prompt): holding ADR 0017's install lock (an
+   exclusive `flock` on `~/.voiced`; installs never prune an
+   `envs/<id>.partial`), the app first claims `~/.voiced`, the way
+   `voiced install` does, before it builds anything there:
+
+   - missing, empty, or holding only `control.sock` or `.DS_Store`: create
+     it if needed, write exactly
+
+     ```json
+     {"source": "app", "environment": null}
+     ```
+
+     to `~/.voiced/.install.json.tmp` and rename that to
+     `~/.voiced/install.json` (the other manifest fields default to
+     empty);
+   - `install.json` exists, or the directory is a legacy venv as ADR 0017
+     defines it (`pyvenv.cfg`, and a voiced `.dist-info` without
+     `"editable": true`), which `voiced install` adopts and replaces: leave
+     it as it is;
+   - a symlink, or anything else: refuse (naming the link's target or the
+     entries), as `voiced install` would, and build nothing.
+
+   Then the steps in the table above, until the environment is renamed,
+   then releasing it for step 3, which takes it itself. A CLI install that
+   gets the lock in that moment could prune the renamed environment; step 3
    then fails its engine check and "Try again" builds it again. uv has no
    machine-readable progress, so this step shows an indeterminate spinner
    with the current step's name, not an invented bar. It takes about 27 s.

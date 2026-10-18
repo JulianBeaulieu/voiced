@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import pwd
+import re
 import shlex
 import shutil
 import stat
@@ -730,15 +731,19 @@ def test_install_refuses_a_users_own_venv(settings: Settings, tmp_path: Path) ->
     assert sorted(str(x.relative_to(mine)) for x in mine.rglob("*")) == before
 
 
-def test_legacy_venv_through_a_symlinked_state_dir_installs_in_place(
+def test_legacy_venv_through_a_symlinked_state_dir_is_refused(
     settings: Settings, tmp_path: Path
 ) -> None:
-    """~/.voiced -> /elsewhere, a legacy venv, running its own install:
-    the same directory, so no self-link and no removal of its lib."""
+    """~/.voiced -> /elsewhere, a legacy venv: refused like any symlinked
+    state dir, untouched; installing with the target's own path works."""
     real = _environment(tmp_path / "real")
     (tmp_path / "state").symlink_to(real)
     p = _plan(settings, tmp_path, prefix=real)
-    _install(p)
+    with pytest.raises(InstallError, match="symlink"):
+        _install(p)
+    assert not (real / "install.json").exists()
+    direct = dataclasses.replace(p, state_dir=real)
+    _install(direct)
     assert not (real / "bin" / "voiced").is_symlink() and (real / "lib").is_dir()
 
 
@@ -864,6 +869,138 @@ def test_uninstall_removes_only_what_voiced_owns(settings: Settings, tmp_path: P
         uninstall_targets(p, settings, logs=False, models=False, config=False), p, said.append
     )
     assert not p.state_dir.exists()
+
+
+# What the app writes into ~/.voiced, holding the install lock, before it
+# builds anything there (ADR 0018, Flow step 2).
+APP_MARKER = '{"source": "app", "environment": null}'
+
+
+def _app_build(state: Path, *, environment: bool = True) -> Path:
+    """What the app leaves before `voiced install`: the marker, uv's Python
+    and the environment it built; returns the environment."""
+    state.mkdir(parents=True)
+    (state / "install.json").write_text(APP_MARKER)
+    installation = state / "python" / "cpython-3.12.15-macos-aarch64-none"
+    (installation / "bin").mkdir(parents=True)
+    (installation / "bin" / "python3").write_text("")
+    (state / "python" / ".lock").write_text("")
+    (state / "envs").mkdir()
+    env = state / "envs" / "20261018T120000"
+    return _environment(env) if environment else env
+
+
+def test_the_app_marker_is_a_manifest() -> None:
+    assert Manifest.from_json(json.loads(APP_MARKER)) == Manifest(source="app", environment=None)
+
+
+def test_install_adopts_what_the_app_built(settings: Settings, tmp_path: Path) -> None:
+    env = _app_build(tmp_path / "state")
+    (env.parent / "20261018T110000.partial").mkdir()  # another build, unfinished
+    p = _plan(settings, tmp_path, prefix=env, origin="app")
+    _install(p)
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None and manifest.source == "app"
+    assert manifest.environment == env
+    assert p.entry.resolve() == (env / "bin" / "voiced").resolve()
+    assert (env.parent / "20261018T110000.partial").is_dir(), "never pruned"
+
+
+def _uninstall(settings: Settings, tmp_path: Path) -> InstallPlan:
+    p = _plan(settings, tmp_path)
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert targets.refused is None
+    remove_targets(targets, p, lambda _: None)
+    return p
+
+
+def test_uninstall_removes_what_the_app_built_before_install(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The app built Python and an environment and `voiced install` never
+    ran (or failed): uninstall removes all of it, marker included."""
+    _app_build(tmp_path / "state")
+    (tmp_path / "state" / "control.sock").write_text("")
+    p = _uninstall(settings, tmp_path)
+    assert not p.state_dir.exists()
+
+
+def test_uninstall_after_the_app_deleted_a_failed_build(settings: Settings, tmp_path: Path) -> None:
+    """The environment step failed and the app removed its .partial: the
+    marker, python/ and an empty envs/ are left, and all go."""
+    _app_build(tmp_path / "state", environment=False)
+    p = _uninstall(settings, tmp_path)
+    assert not p.state_dir.exists()
+
+
+def test_uninstall_removes_an_interrupted_build(settings: Settings, tmp_path: Path) -> None:
+    """The app stopped while building: the .partial goes too (uninstall
+    holds the lock the builder holds), and so does the state dir."""
+    env = _app_build(tmp_path / "state", environment=False)
+    _environment(env.with_name(env.name + ".partial"))
+    (env.parent / "20261018T130000.partial").mkdir()  # before uv venv wrote anything
+    p = _uninstall(settings, tmp_path)
+    assert not p.state_dir.exists()
+
+
+def test_uninstall_leaves_a_symlinked_envs_alone(settings: Settings, tmp_path: Path) -> None:
+    env = _app_build(tmp_path / "state")
+    _environment(env.with_name(env.name + ".partial"))
+    elsewhere = tmp_path / "elsewhere"
+    shutil.move(env.parent, elsewhere)
+    env.parent.symlink_to(elsewhere)
+    said: list[str] = []
+    p = _plan(settings, tmp_path)
+    remove_targets(
+        uninstall_targets(p, settings, logs=False, models=False, config=False), p, said.append
+    )
+    assert sorted(x.name for x in elsewhere.iterdir()) == [
+        "20261018T120000",
+        "20261018T120000.partial",
+    ]
+    assert (elsewhere / "20261018T120000" / "pyvenv.cfg").exists()
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["envs"]
+    assert any("kept" in line and "envs" in line for line in said)
+
+
+def test_uninstall_through_a_symlinked_state_dir_removes_nothing(
+    settings: Settings, tmp_path: Path
+) -> None:
+    target = tmp_path / "elsewhere"
+    _app_build(target)
+    p = _plan(settings, tmp_path)
+    p.state_dir.symlink_to(target)
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert targets.refused is not None
+    assert f"symlink to {target.resolve()}" in targets.refused
+    assert f"--state-dir {target.resolve()}" in targets.refused, "says what to do"
+    assert remove_targets(targets, p, lambda _: None) == 0
+    assert (target / "python" / ".lock").exists()
+    assert (target / "envs" / "20261018T120000" / "pyvenv.cfg").exists()
+
+
+def test_install_refuses_a_symlinked_state_dir(settings: Settings, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    p = _plan(settings, tmp_path)
+    p.state_dir.symlink_to(target)
+    with pytest.raises(InstallError) as refused:
+        _install(p)
+    assert f"symlink to {target.resolve()}" in str(refused.value)
+    assert f"--state-dir {target.resolve()}" in str(refused.value), "says what to do"
+    assert "move those files" not in str(refused.value)
+    assert list(target.iterdir()) == []
+
+
+def test_symlinked_state_dir_message_quotes_the_real_path(
+    settings: Settings, tmp_path: Path
+) -> None:
+    target = tmp_path / "with space"
+    target.mkdir()
+    p = _plan(settings, tmp_path)
+    p.state_dir.symlink_to(target)
+    with pytest.raises(InstallError, match=re.escape(f"--state-dir '{target.resolve()}'")):
+        _install(p)
 
 
 def test_uninstall_refuses_a_directory_that_is_not_voiceds(
