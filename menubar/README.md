@@ -9,9 +9,10 @@ Settings window with a sidebar of panes: General (open at login, settings
 from the status page), Network (listen on this Mac or the local network,
 Home Assistant discovery, the API key), Speech to Text (engine), Text to
 Speech (engine and voice) and About (versions, the control socket, the
-config file and logs). When voiced is not
-installed the window points to the installation guide; when it cannot reach
-voiced it says why.
+config file and logs). When voiced is not installed the window offers the
+installer (see below), or points to the installation guide when the app was
+built without what the installer needs; when it cannot reach voiced it says
+why.
 
 It talks only to voiced's local control socket, a Unix socket served by the
 watchdog. It opens no network connection: no analytics, no update checks.
@@ -87,9 +88,49 @@ Pointing the app at a socket that does not exist shows the "not installed"
 or "not running" state, depending on whether a voiced watchdog plist is in
 `/Library/LaunchDaemons`.
 
-`swift run MenuBarSnapshots <directory>` renders the menu bar window and the
-Settings window in each state, in light and dark, to PNG files through the
-same fake server. Pull requests that change the UI attach these pictures.
+`swift run MenuBarSnapshots <directory>` renders the menu bar window, the
+Settings window and each installer screen, in light and dark, to PNG files
+through the same fake server and the fake install runner. Pull requests that change the UI attach these pictures.
+
+## The installer
+
+ADR 0018 has the design. The installer is a window with one screen per step:
+the welcome (what goes where, the download size, free disk space), building
+the environment with the bundled uv, `voiced install --origin app
+--json-progress` with its steps and download progress, one administrator
+prompt that runs the privileged script, waiting for the watchdog's `hello`,
+Connect Home Assistant, and Done. Each step that fails shows its cause and
+the last lines of output, with Try Again.
+
+`Installer` (in `Sources/VoicedMenuBarUI/Installer`) sequences the steps,
+which `InstallStages` implements, each returning what it made or why it
+failed. They reach the Mac only through an `InstallRunner`:
+`SystemInstallRunner` starts each command in a process group of its own and
+shows the prompt, and the tests and the snapshots use `FakeInstallRunner`
+(in `Tests/TestSupport`) with recorded lines of the progress protocol. The
+services are reached through the app's own `AppModel`, against the fake
+control server in tests. Nothing in `swift test` prompts, starts a daemon
+or touches `/Library`.
+
+The script that runs as root is
+`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`. Its bytes are
+compiled into the executable (`.embedInCode` in `Package.swift`); it is
+never a file in the bundle. The app runs it through `osascript` with an
+environment of `PATH` alone, so nothing of its own environment reaches the
+shells that run as root. Run as a normal user, the script has a test mode
+that writes to a scratch directory. `Scripts/test-privileged.sh` uses it to
+compare what the script renders with the plists `voiced install` stages, and
+checks every refusal. Stage the plists with the `voiced install` of the
+same commit first, as the comparison is exact:
+
+```sh
+menubar/Scripts/test-privileged.sh ~/.config/voiced/launchd
+```
+
+The app offers the installer only when its bundle carries
+`Contents/Helpers/uv` and, in `Contents/Resources`, `install-manifest.json`,
+`requirements.lock` and the wheel the manifest names. `bundle.sh` does not
+add them yet, so a bundle built today still points to the guide.
 
 ## How it finds the socket
 
@@ -116,13 +157,13 @@ On a crowded menu bar macOS can hide the icon. Launching the app again
 | Path | Contents |
 |---|---|
 | `Sources/VoicedControl` | Line framing, the control client (`NWConnection` over the Unix socket), payload models and `SettingKey`, the reduction from payloads to what the windows show, settings edits, the checks on what `open` may open, socket discovery and the install probe. No UI. |
-| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. |
+| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner and the privileged script. |
 | `Sources/VoicedMenuBar` | The `@main` app with its `MenuBarExtra` and `Settings` scenes. |
 | `Sources/FakeControlServerKit`, `Sources/FakeControlServer` | The fake control server and its command line. |
-| `Sources/MenuBarSnapshots` | Renders both windows in each state to PNG. |
+| `Sources/MenuBarSnapshots` | Renders the menu bar window, the Settings window and each installer screen to PNG. |
 | `Tests/VoicedControlTests` | Framing, client dispatch, connection failures and cancellation against the fake server; payload reduction; settings edits; open checks; install probe. |
-| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. |
-| `Tests/TestSupport` | Helpers shared by both. |
+| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, the progress protocol, the privileged script in its test mode and the process runner. |
+| `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner and recorded progress lines. |
 
 The protocol is the control channel's
 ([ADR 0013](../docs/decisions/0013-local-control-channel.md)); the app speaks

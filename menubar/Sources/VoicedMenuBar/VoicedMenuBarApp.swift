@@ -12,11 +12,14 @@ struct VoicedMenuBarApp: App {
         let model = AppModel()
         model.start()
         _model = State(initialValue: model)
+        Install.installer = InstallResources.inBundle().map {
+            Installer(configuration: InstallerConfiguration(resources: $0), runner: Install.runner, model: model)
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: model)
+            PopoverView(model: model, canInstall: Install.installer != nil)
         } label: {
             MenuBarIcon(dashboard: model.dashboard)
                 .background(SettingsOpener { delegate.openSettings = $0 })
@@ -27,7 +30,22 @@ struct VoicedMenuBarApp: App {
             SettingsView(model: model, loginItem: loginItem)
         }
         .windowResizability(.contentSize)
+
+        Window("Install voiced", id: InstallerView.windowID) {
+            if let installer = Install.installer {
+                InstallerWindow(installer: installer, loginItem: loginItem)
+            }
+        }
+        .windowResizability(.contentSize)
     }
+}
+
+/// The installer, when the bundle carries what it needs (ADR 0018), and the runner whose
+/// children are terminated when the app quits.
+@MainActor
+enum Install {
+    static let runner = SystemInstallRunner()
+    static var installer: Installer?
 }
 
 /// Hands SwiftUI's `openSettings` action to the app delegate, which has no environment.
@@ -49,6 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The bundle sets LSUIElement; this covers `swift run`, which has no Info.plist.
         NSApplication.shared.setActivationPolicy(.accessory)
+    }
+
+    /// Quitting mid-install stops the installer's children (SIGTERM to their process groups,
+    /// then SIGKILL after 5 s); the next launch continues from what is on disk.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Install.installer?.cancel()
+            Install.runner.terminateAll()
+        }
     }
 
     /// Launching the app again while it runs (from Finder, Spotlight or `open`) opens the

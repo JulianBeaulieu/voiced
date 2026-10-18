@@ -50,12 +50,19 @@ plist's contents change. Upgrading the environment, changing a setting and
 ### (a) One administrator prompt for a script in the signed executable: chosen
 
 The app runs the root half of the install through the standard
-authorization dialog: `NSAppleScript` with `do shell script ... with
-administrator privileges` (Apple TN2065). That command is not deprecated
-and notarization does not flag it. Internally it goes through
-`AuthorizationExecuteWithPrivileges`, and the root shell inherits the
-app's environment: `PATH`, a planted `BASH_ENV` and test variables all
-reached it when measured. So the command it runs is always
+authorization dialog: `do shell script ... with administrator privileges`
+(Apple TN2065). That command is not deprecated and notarization does not
+flag it. Internally it goes through `AuthorizationExecuteWithPrivileges`,
+and the root `/bin/sh -c` it starts inherits its caller's environment:
+`PATH`, a planted `BASH_ENV` and test variables all reached it when
+measured. That shell (bash 3.2) also reads `SHELLOPTS` and `PS4` before
+running anything, so `SHELLOPTS=xtrace` with a command substitution in
+`PS4` runs that command as root before `env -i` below, and
+`launchctl setenv` can plant both for every app the user starts.
+So the caller is never the app: the app runs `/usr/bin/osascript` as a
+child with an environment of `PATH=/usr/bin:/bin:/usr/sbin:/sbin` alone,
+and that `osascript` runs the `do shell script`. The command it runs is
+always
 
 ```sh
 /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
@@ -63,12 +70,13 @@ reached it when measured. So the command it runs is always
 ```
 
 with every tool inside the script called by its absolute path. The
-AppleScript source is fixed; the script text and the user name reach it as
-parameters of a handler (or through `quoted form of`), never spliced into
-the source.
+AppleScript source is fixed; the script text, the mode, the user name and
+the prompt reach it as `osascript` arguments (`on run argv`) and through
+`quoted form of`, never spliced into the source.
 
-`$SCRIPT` is a string constant compiled into the app's main executable,
-not a file in the bundle: a cask install puts the app in `/Applications`
+`$SCRIPT` is compiled into the app's main executable
+(`menubar/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`, embedded
+with SwiftPM's `.embedInCode`), not a file in the bundle: a cask install puts the app in `/Applications`
 owned by the user, so any process of that user could edit a script file
 inside it. That the copy which runs is the signed one depends on the
 hardened runtime without the `allow-dyld-environment-variables` and
@@ -79,6 +87,10 @@ validation, all architectures, and the designated requirement with
 voiced's team identifier). This catches accidental damage, such as a
 half-copied or partly modified bundle, and nothing more: an app someone
 tampered with on purpose simply skips its own check. Debug builds skip it.
+Until releases are signed with a Developer ID, the check runs without the
+designated requirement: an ad hoc build has no team identifier to
+require. The requirement is added with signing (see Signing and release
+CI).
 
 This narrows the risk; it does not remove it. A process running as the
 user can still replace the whole app with its own and show the same dialog,
@@ -87,7 +99,7 @@ or show a look-alike dialog of its own. That is the same-user attacker ADR
 to type a password. What the design guarantees is that root never parses
 or runs anything a user process wrote.
 
-The prototype is `menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh`:
+The script is `menubar/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`:
 
 ```
 voiced-privileged install   USER    render the three plists and bootstrap them
@@ -151,7 +163,7 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    warning (exit 4), not a refusal, and a Python deliberately left alone
    because it is outside the home is exit 5, so the app can say which.
 
-*Measured* with `menubar/Prototypes/PrivilegedInstall/test.sh`, run as a
+*Measured* with `menubar/Scripts/test-privileged.sh`, run as a
 normal user against a scratch destination with launchctl and the firewall
 skipped (the override is ignored when the script runs as root): the
 rendered plists equal those staged by `voiced install` on main (ADR 0017's
@@ -814,8 +826,10 @@ Two decisions:
 
 Needs the owner at the keyboard during implementation:
 
-- One admin-prompt probe: `BASH_ENV` set in the app's environment must not
-  reach the root shell (see the privileged step).
+- One admin-prompt probe: `BASH_ENV`, and `SHELLOPTS=xtrace` with a
+  command substitution in `PS4`, set in the app's environment (for example
+  with `launchctl setenv` before launching it) must not reach the root
+  shell (see the privileged step).
 - "Background Items Added" with `AssociatedBundleIdentifiers` set, and the
   firewall exception with a LAN client, on a real install.
 - Agree on the development override: a user default (`installSource`)

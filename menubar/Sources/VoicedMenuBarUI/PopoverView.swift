@@ -20,10 +20,14 @@ public struct MenuBarIcon: View {
 /// standard Settings window, opened from here.
 public struct PopoverView: View {
     let model: AppModel
+    /// The bundle carries what the installer needs; "not installed" then offers it.
+    let canInstall: Bool
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
-    public init(model: AppModel) {
+    public init(model: AppModel, canInstall: Bool = false) {
         self.model = model
+        self.canInstall = canInstall
     }
 
     public var body: some View {
@@ -34,7 +38,7 @@ public struct PopoverView: View {
                 .padding(.vertical, 12)
             Divider()
             if dashboard.showsInstallHelp {
-                InstallHelpView()
+                InstallHelpView(openInstaller: installAction)
                     .padding(14)
             } else if dashboard.isControllable {
                 ServiceList(model: model, dashboard: dashboard)
@@ -78,6 +82,16 @@ public struct PopoverView: View {
 
     private func showSettings() {
         SettingsWindow.show(openSettings)
+    }
+
+    private var installAction: (() -> Void)? {
+        guard canInstall else { return nil }
+        return openInstaller
+    }
+
+    private func openInstaller() {
+        NSApplication.shared.activate()
+        openWindow(id: InstallerView.windowID)
     }
 }
 
@@ -398,8 +412,28 @@ struct MessageView: View {
 
 struct InstallHelpView: View {
     static let guide = URL(string: "https://github.com/JulianBeaulieu/voiced#quickstart")
+    /// Opens the installer; without it the guide and the terminal commands are shown.
+    var openInstaller: (() -> Void)?
 
     var body: some View {
+        if let openInstaller {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("voiced is not installed on this Mac.")
+                    .font(.body.weight(.medium))
+                Text("The installer sets up voiced, downloads its speech models and starts its background services.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(action: openInstaller) {
+                    Label("Install voiced…", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        } else {
+            guideAndCommands
+        }
+    }
+
+    private var guideAndCommands: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("voiced is not installed on this Mac.")
                 .font(.body.weight(.medium))

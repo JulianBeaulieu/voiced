@@ -1,11 +1,12 @@
 #!/bin/bash
-# Throwaway prototype for ADR 0018: the one script the app runs as root, behind a single
-# administrator prompt. In the app its text is compiled into the signed main executable and
-# run as
+# ADR 0018: the one script the app runs as root, behind a single administrator prompt. Its
+# bytes are compiled into the signed main executable (`.embedInCode` in Package.swift); this
+# file is never in the bundle. The app runs `osascript` with a fixed environment of PATH
+# alone, whose `do shell script ... with administrator privileges` runs
 #   /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc \
 #       -c "$SCRIPT" voiced-privileged install|uninstall|check USER
-# so neither the app's environment (BASH_ENV, PATH, ...) nor a file the user can edit reaches
-# root.
+# so neither the app's environment (SHELLOPTS, PS4, BASH_ENV, PATH, ...) nor a file the user
+# can edit reaches root (PrivilegedScript.swift).
 #
 #   voiced-privileged install USER     render and bootstrap the three daemons for USER
 #   voiced-privileged uninstall USER   boot out and remove them, if they are USER's

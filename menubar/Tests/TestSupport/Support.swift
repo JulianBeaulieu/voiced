@@ -76,3 +76,34 @@ public func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool)
 public func decodeJSON<T: Decodable>(_ type: T.Type, _ text: String) throws -> T {
     try JSONDecoder().decode(type, from: Data(text.utf8))
 }
+
+/// Resumes a continuation once, whichever of several racers comes first.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T?, Never>?
+
+    init(_ continuation: CheckedContinuation<T?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: T?) {
+        let pending = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: value)
+    }
+}
+
+/// The task's value, or nil when it has none after `timeout`, so a test that would wait forever
+/// fails instead. The task itself is left running.
+public func finished<T: Sendable>(_ task: Task<T, Error>, within timeout: Duration = .seconds(5)) async -> T? {
+    await withCheckedContinuation { continuation in
+        let once = ResumeOnce(continuation)
+        Task { once.resume(try? await task.value) }
+        Task {
+            try? await Task.sleep(for: timeout)
+            once.resume(nil)
+        }
+    }
+}
