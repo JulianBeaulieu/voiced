@@ -64,7 +64,11 @@ struct InstallStages {
         func failure(_ cause: String) -> Result<URL, InstallFailure> {
             .failure(InstallFailure(stage: .environment, step: preparing, cause: cause))
         }
-        if let mismatch = configuration.resources.mismatch() { return failure(mismatch) }
+        let resources: InstallResources
+        switch await installResources() {
+        case .success(let found): resources = found
+        case .failure(let failure): return .failure(failure)
+        }
         let fileManager = FileManager.default
         do {
             try StateDirectory.checkNotSymlink(state)
@@ -87,7 +91,7 @@ struct InstallStages {
         }
         let target = newEnvironmentDirectory()
         let partial = target.appendingPathExtension("partial")
-        for (shown, command) in environmentCommands(building: partial) {
+        for (shown, command) in environmentCommands(building: partial, resources: resources) {
             progress(shown)
             if case .failure(let failure) = await execute(command, step: shown) { return .failure(failure) }
         }
@@ -99,20 +103,79 @@ struct InstallStages {
         return .success(target)
     }
 
-    /// ADR 0018's environment table, with the bundled uv. `--relocatable` because the
-    /// directory is renamed after the build: entry points then find their Python relative to
-    /// themselves instead of at the `.partial` path.
-    func environmentCommands(building partial: URL) -> [(String, InstallCommand)] {
-        let resources = configuration.resources
-        let python = resources.manifest.python
-        let uv = resources.uv.path
-        let interpreter = partial.appendingPathComponent("bin/python").path
-        let environment = [
+    /// The wheel and lock to install: the app's own, checked against its manifest, or in a
+    /// development build those of the `installSource` override (ADR 0018, "Open items"): a
+    /// wheel as it is, a checkout built into one with the bundled uv. The lock is always the
+    /// one the wheel carries, so the two cannot disagree.
+    func installResources() async -> Result<InstallResources, InstallFailure> {
+        let bundled = configuration.resources
+        guard let source = configuration.installSource else {
+            if let mismatch = bundled.mismatch() {
+                return .failure(InstallFailure(stage: .environment, step: "Checking the app", cause: mismatch))
+            }
+            return .success(bundled)
+        }
+        let step = "Using the install source \(source.path)"
+        func failure(_ cause: String) -> Result<InstallResources, InstallFailure> {
+            .failure(InstallFailure(stage: .environment, step: step, cause: cause))
+        }
+        let fileManager = FileManager.default
+        let work = configuration.developmentWork
+        try? fileManager.removeItem(at: work)
+        do {
+            try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
+        } catch {
+            return failure(error.localizedDescription)
+        }
+        var isDirectory: ObjCBool = false
+        let wheel: URL
+        if source.pathExtension == "whl", fileManager.fileExists(atPath: source.path) {
+            wheel = source
+        } else if fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue,
+            fileManager.fileExists(atPath: source.appendingPathComponent("pyproject.toml").path)
+        {
+            let build = InstallCommand(
+                bundled.uv.path, ["build", "--wheel", "--out-dir", work.path, source.path],
+                environment: uvEnvironment)
+            if case .failure(let failure) = await execute(build, step: step) { return .failure(failure) }
+            let built = ((try? fileManager.contentsOfDirectory(atPath: work.path)) ?? [])
+                .filter { $0.hasPrefix("voiced-") && $0.hasSuffix(".whl") }
+            guard built.count == 1 else { return failure("Building \(source.path) made no single voiced wheel.") }
+            wheel = work.appendingPathComponent(built[0])
+        } else {
+            return failure("It is neither a voiced wheel nor a checkout with a pyproject.toml.")
+        }
+        let unzip = InstallCommand("/usr/bin/unzip", ["-o", "-q", wheel.path, "voiced/requirements.lock", "-d", work.path])
+        if case .failure(let failure) = await execute(unzip, step: step) { return .failure(failure) }
+        let lock = work.appendingPathComponent("voiced/requirements.lock")
+        guard let lockDigest = InstallResources.sha256(of: lock), let wheelDigest = InstallResources.sha256(of: wheel) else {
+            return failure("\(wheel.lastPathComponent) carries no voiced/requirements.lock.")
+        }
+        var manifest = bundled.manifest
+        manifest.wheel = .init(name: wheel.lastPathComponent, sha256: wheelDigest)
+        manifest.lockSHA256 = lockDigest
+        return .success(InstallResources(uv: bundled.uv, lock: lock, wheel: wheel, manifest: manifest))
+    }
+
+    /// What every uv command gets: no user configuration, clones from the app's own cache,
+    /// Pythons under the state directory.
+    private var uvEnvironment: [String: String] {
+        [
             "UV_NO_CONFIG": "1",
             "UV_LINK_MODE": "clone",
             "UV_CACHE_DIR": configuration.home.appendingPathComponent("Library/Application Support/voiced/uv-cache").path,
             "UV_PYTHON_INSTALL_DIR": configuration.stateDirectory.appendingPathComponent("python").path,
         ]
+    }
+
+    /// ADR 0018's environment table, with the bundled uv. `--relocatable` because the
+    /// directory is renamed after the build: entry points then find their Python relative to
+    /// themselves instead of at the `.partial` path.
+    func environmentCommands(building partial: URL, resources: InstallResources) -> [(String, InstallCommand)] {
+        let python = resources.manifest.python
+        let uv = resources.uv.path
+        let interpreter = partial.appendingPathComponent("bin/python").path
+        let environment = uvEnvironment
         let install = ["pip", "install", "--python", interpreter, "--no-deps"]
         return [
             ("Installing Python \(python)", InstallCommand(uv, ["python", "install", "--no-bin", python], environment: environment)),

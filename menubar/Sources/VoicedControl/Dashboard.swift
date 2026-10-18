@@ -37,6 +37,21 @@ public enum OverallHealth: Sendable, Equatable {
     }
 }
 
+/// The menu bar icon (ADR 0018, "In the menu bar"): idle while voiced runs, busy while it
+/// starts, loads a model, connects or installs, and an error badge for everything else that
+/// needs a look (degraded, stopped, not running, not installed, an incompatible version).
+public enum MenuBarIconState: Sendable, Hashable {
+    case idle, busy, error
+
+    public init(dashboard: Dashboard, installing: Bool) {
+        if installing || dashboard.isBusy {
+            self = .busy
+        } else {
+            self = dashboard.health == .running ? .idle : .error
+        }
+    }
+}
+
 /// How a service row presents its state.
 public enum ServiceTone: Sendable, Equatable {
     case good, busy, bad, inactive
@@ -71,11 +86,13 @@ public struct Dashboard: Sendable, Equatable {
     public var notice: String?
     /// A command for the notice, shown copyable.
     public var noticeCommand: String?
+    /// On its way to running: connecting, starting, or loading a model.
+    public var isBusy: Bool
 
     public init(
         health: OverallHealth, headline: String, rows: [ServiceRowState] = [],
         showsInstallHelp: Bool = false, message: String? = nil, command: String? = nil,
-        notice: String? = nil
+        notice: String? = nil, isBusy: Bool = false
     ) {
         self.health = health
         self.headline = headline
@@ -84,6 +101,7 @@ public struct Dashboard: Sendable, Equatable {
         self.message = message
         self.command = command
         self.notice = notice
+        self.isBusy = isBusy
     }
 
     public var isControllable: Bool { !rows.isEmpty }
@@ -97,13 +115,13 @@ public enum DashboardReducer {
     ) -> Dashboard {
         switch connection {
         case .connecting:
-            return Dashboard(health: .attention, headline: "Connecting")
+            return Dashboard(health: .attention, headline: "Connecting", isBusy: true)
         case .unreachable(let installed, let reason):
             return unreachable(installed: installed, reason: reason, socketPath: socketPath)
         case .incompatible(let message):
             return Dashboard(health: .off, headline: "Incompatible version", message: message)
         case .connected:
-            guard let status else { return Dashboard(health: .attention, headline: "Connecting") }
+            guard let status else { return Dashboard(health: .attention, headline: "Connecting", isBusy: true) }
             var dashboard = reduce(status)
             if !status.installed {
                 // The watchdog answers (run by hand, say) but the LaunchDaemons are missing:
@@ -194,7 +212,7 @@ public enum DashboardReducer {
         } else {
             headline = "Unknown state"
         }
-        return Dashboard(health: .attention, headline: headline, rows: rows)
+        return Dashboard(health: .attention, headline: headline, rows: rows, isBusy: headline == "Starting")
     }
 
     static func row(kind: ServiceKind, status: ServiceStatus) -> ServiceRowState {

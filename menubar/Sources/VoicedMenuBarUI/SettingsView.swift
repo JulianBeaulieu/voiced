@@ -4,7 +4,7 @@ import VoicedControl
 
 /// The panes of the Settings window, in sidebar order.
 public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
-    case general, network, speechToText, textToSpeech, about
+    case general, network, speechToText, textToSpeech, about, debug
 
     public var id: String { rawValue }
 
@@ -19,6 +19,7 @@ public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
         case .speechToText: "Speech to Text"
         case .textToSpeech: "Text to Speech"
         case .about: "About"
+        case .debug: "Debug"
         }
     }
 
@@ -29,7 +30,16 @@ public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
         case .speechToText: "waveform"
         case .textToSpeech: "speaker.wave.2"
         case .about: "info.circle"
+        case .debug: "ladybug"
         }
+    }
+
+    /// The user default that shows the Debug pane, off by default (ADR 0018).
+    public static let showDebugKey = "showDebugPane"
+
+    /// The panes in the sidebar: Debug only while its switch in General is on.
+    public static func visible(showingDebug: Bool) -> [SettingsPane] {
+        allCases.filter { $0 != .debug || showingDebug }
     }
 
     /// Makes this the pane the Settings window shows, open or not.
@@ -44,25 +54,32 @@ public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
 public struct SettingsView: View {
     let model: AppModel
     let loginItem: LoginItem
+    let launch: LaunchChecks?
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
+    @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
     private let fixedPane: SettingsPane?
     @State private var newKey = ""
     @State private var confirmingRemoval = false
 
-    public init(model: AppModel, loginItem: LoginItem, pane: SettingsPane? = nil) {
+    public init(model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, pane: SettingsPane? = nil) {
         self.model = model
         self.loginItem = loginItem
+        self.launch = launch
         self.fixedPane = pane
     }
 
-    private var pane: SettingsPane { fixedPane ?? storedPane }
+    private var pane: SettingsPane {
+        if let fixedPane { return fixedPane }
+        // A remembered Debug pane whose switch was turned off falls back to General.
+        return storedPane == .debug && !showDebug ? .general : storedPane
+    }
 
     public var body: some View {
         // A fixed sidebar next to the pane rather than a split view: nothing to collapse or
         // resize, and it draws the same in the window and in snapshots.
         HStack(spacing: 0) {
-            List(SettingsPane.allCases, selection: selection) { pane in
+            List(SettingsPane.visible(showingDebug: showDebug || fixedPane == .debug), selection: selection) { pane in
                 Label(pane.title, systemImage: pane.symbol).tag(pane)
             }
             .listStyle(.sidebar)
@@ -110,6 +127,8 @@ public struct SettingsView: View {
             if let settings = model.settings { textToSpeech(settings) } else { notConnected }
         case .about:
             about
+        case .debug:
+            debug
         }
     }
 
@@ -145,6 +164,7 @@ public struct SettingsView: View {
                     Text("Available in the app bundle").foregroundStyle(.secondary)
                 }
             }
+            Toggle("Show Debug pane", isOn: $showDebug)
         } header: {
             Text("Menu bar app")
         } footer: {
@@ -304,7 +324,7 @@ public struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent("Menu bar app", value: Self.appVersion)
+            LabeledContent("Menu bar app", value: AppInfo.version)
             LabeledContent("voiced", value: voicedVersion)
             LabeledContent("Control protocol", value: "\(ControlClient.supportedProtocol)")
             LabeledContent("Control socket") {
@@ -321,6 +341,11 @@ public struct SettingsView: View {
                 }
             }
             LabeledContent("License", value: "MIT")
+            if let notice = AppInfo.notice {
+                LabeledContent("Third-party software") {
+                    Button("Show Notices") { NSWorkspace.shared.open(notice) }
+                }
+            }
         }
         if model.settings != nil {
             Section {
@@ -328,6 +353,54 @@ public struct SettingsView: View {
                 Button("Open Logs Folder") { Task { await model.open(.logsDirectory) } }
                 Button("Open Status Page") { Task { await model.open(.statusPage) } }
             }
+        }
+    }
+
+    // MARK: - Debug
+
+    private var diagnostics: Diagnostics {
+        Diagnostics(
+            appVersion: AppInfo.version, bundlePath: (launch?.bundleURL ?? Bundle.main.bundleURL).path,
+            translocatedFrom: launch?.translocatedFrom?.path, manifest: launch?.manifest,
+            installSource: launch?.installSource?.path, record: launch?.installRecord ?? model.installRecord,
+            connection: model.dashboard.headline, serverVersion: model.serverVersion, socketPath: model.socketPath,
+            home: launch?.home ?? FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    @ViewBuilder
+    private var debug: some View {
+        let diagnostics = diagnostics
+        ForEach(diagnostics.sections) { section in
+            Section(section.title) {
+                ForEach(section.entries) { entry in
+                    LabeledContent(entry.label) {
+                        HStack(spacing: 6) {
+                            Text(entry.value)
+                                .textSelection(.enabled)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                            if let path = entry.path, FileManager.default.fileExists(atPath: path) {
+                                Button {
+                                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                                } label: {
+                                    Image(systemName: "magnifyingglass")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Show in Finder")
+                                .accessibilityLabel("Show \(entry.label.lowercased()) in Finder")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Section {
+            Button("Copy Diagnostics") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(diagnostics.report, forType: .string)
+            }
+        } footer: {
+            Text("Copies the above as text for a bug report. It holds no settings and no API key.").footnote()
         }
     }
 
@@ -347,10 +420,6 @@ public struct SettingsView: View {
     private var voicedVersion: String {
         guard case .connected = model.connection else { return "Not connected" }
         return model.serverVersion ?? "Unknown version"
-    }
-
-    private static var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development build"
     }
 
     /// The catalogue's options, always including the current value so the picker never

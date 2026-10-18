@@ -45,6 +45,15 @@ public final class Installer {
 
     private var isInstalled: Bool { configuration.installProbe.isInstalled() }
 
+    /// Building, downloading, installing the services or waiting for them: the menu bar icon
+    /// shows it as busy.
+    public var isWorking: Bool {
+        switch phase {
+        case .environment, .installing, .approving, .starting, .homeAssistant(.applying): true
+        default: false
+        }
+    }
+
     /// A live account other than this one whose watchdog is installed. An install whose
     /// account was deleted is orphaned, and the privileged step takes it over.
     private func otherAccountsInstall() -> String? {

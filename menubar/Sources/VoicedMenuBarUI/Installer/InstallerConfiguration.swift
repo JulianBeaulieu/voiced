@@ -13,6 +13,9 @@ public struct InstallerConfiguration: Sendable {
     /// No new bytes for this long while a download is unfinished is a stall.
     public var stallTimeout: Duration = .seconds(60)
     public var pollInterval: Duration = .milliseconds(500)
+    /// The development override (`DevelopmentOverride`): a wheel or checkout to install
+    /// instead of the bundled wheel. Nil in release builds.
+    public var installSource: URL?
     /// The name and address Home Assistant reaches this Mac by.
     public var hostIdentity: @Sendable () -> HostIdentity = HostIdentity.current
     /// Free space on the volume holding a path.
@@ -36,6 +39,10 @@ public struct InstallerConfiguration: Sendable {
     var stateDirectory: URL { home.appendingPathComponent(".voiced", isDirectory: true) }
     var environments: URL { stateDirectory.appendingPathComponent("envs", isDirectory: true) }
     var manifest: URL { stateDirectory.appendingPathComponent("install.json") }
+    /// Where the override's wheel is built and its lock unpacked.
+    var developmentWork: URL {
+        home.appendingPathComponent("Library/Application Support/voiced/install-source", isDirectory: true)
+    }
 }
 
 /// This Mac as Home Assistant on the network sees it.

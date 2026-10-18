@@ -2,17 +2,74 @@ import AppKit
 import SwiftUI
 import VoicedControl
 
-/// The menu bar icon: one of three SF Symbols, with a spoken label.
+/// The menu bar icon in its three states (ADR 0018), with a spoken label. Each is a template
+/// image, so the menu bar draws it for light and dark and for a selected item.
 public struct MenuBarIcon: View {
     let dashboard: Dashboard
+    let installing: Bool
 
-    public init(dashboard: Dashboard) {
+    public init(dashboard: Dashboard, installing: Bool = false) {
         self.dashboard = dashboard
+        self.installing = installing
     }
 
     public var body: some View {
-        Image(systemName: dashboard.health.symbolName)
-            .accessibilityLabel("voiced: \(dashboard.headline)")
+        Image(nsImage: MenuBarIconImage.image(for: MenuBarIconState(dashboard: dashboard, installing: installing)))
+            .accessibilityLabel("voiced: \(installing ? "Installing" : dashboard.headline)")
+    }
+}
+
+/// The icon's images. Idle and error are SF Symbols; busy is drawn here, since SF Symbols has
+/// no waveform with a progress badge: the waveform with a filled circle cut out of its corner
+/// and three dots knocked out of the circle, the way the symbols draw their own badges.
+@MainActor
+public enum MenuBarIconImage {
+    static let pointSize: CGFloat = 15
+
+    public static func image(for state: MenuBarIconState) -> NSImage {
+        switch state {
+        case .idle: idle
+        case .busy: busy
+        case .error: error
+        }
+    }
+
+    static let idle = symbol("waveform")
+    static let error = symbol("waveform.badge.exclamationmark")
+    static let busy: NSImage = {
+        let wave = symbol("waveform")
+        // The badge sits on the bottom right and sticks out past the waveform, as the error
+        // symbol's does.
+        let diameter = (wave.size.height * 0.56).rounded()
+        let size = NSSize(width: (wave.size.width + diameter * 0.3).rounded(), height: wave.size.height)
+        let image = NSImage(size: size, flipped: false) { rect in
+            wave.draw(in: NSRect(origin: .zero, size: wave.size))
+            guard let context = NSGraphicsContext.current else { return true }
+            let badge = NSRect(x: rect.maxX - diameter, y: rect.minY, width: diameter, height: diameter)
+            context.compositingOperation = .destinationOut
+            NSBezierPath(ovalIn: badge.insetBy(dx: -1.5, dy: -1.5)).fill()
+            context.compositingOperation = .sourceOver
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: badge).fill()
+            context.compositingOperation = .destinationOut
+            let dot = max(1.5, diameter / 6)
+            for index in -1...1 {
+                let x = badge.midX + CGFloat(index) * dot * 1.6 - dot / 2
+                NSBezierPath(ovalIn: NSRect(x: x, y: badge.midY - dot / 2, width: dot, height: dot)).fill()
+            }
+            context.compositingOperation = .sourceOver
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }()
+
+    private static func symbol(_ name: String) -> NSImage {
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) ?? NSImage(size: NSSize(width: pointSize, height: pointSize))
+        image.isTemplate = true
+        return image
     }
 }
 
@@ -22,12 +79,15 @@ public struct PopoverView: View {
     let model: AppModel
     /// The bundle carries what the installer needs; "not installed" then offers it.
     let canInstall: Bool
+    /// What this launch found; nil where nothing is checked, as in some snapshots.
+    let launch: LaunchChecks?
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
-    public init(model: AppModel, canInstall: Bool = false) {
+    public init(model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil) {
         self.model = model
         self.canInstall = canInstall
+        self.launch = launch
     }
 
     public var body: some View {
@@ -37,6 +97,9 @@ public struct PopoverView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             Divider()
+            if let launch {
+                LaunchCards(launch: launch)
+            }
             if dashboard.showsInstallHelp {
                 InstallHelpView(openInstaller: installAction)
                     .padding(14)
@@ -78,6 +141,7 @@ public struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 340)
+        .onAppear { launch?.refresh() }
     }
 
     private func showSettings() {
@@ -85,7 +149,8 @@ public struct PopoverView: View {
     }
 
     private var installAction: (() -> Void)? {
-        guard canInstall else { return nil }
+        // A translocated app asks to be moved first (its card says so).
+        guard canInstall, launch?.translocatedFrom == nil else { return nil }
         return openInstaller
     }
 
@@ -491,16 +556,52 @@ struct FooterView: View {
 
     var body: some View {
         HStack {
-            if let version = model.serverVersion {
-                Text("voiced \(version)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            // The app's version, as a menu's last, disabled line; the services' is in About.
+            Text("voiced \(AppInfo.version)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("q")
                 .help("Quit the menu bar app. The voiced services keep running.")
+        }
+    }
+}
+
+/// What this launch found that needs the user (ADR 0018, "On every launch"): an app run from
+/// where it was downloaded, the services switched off in Login Items, or services that run
+/// another voiced than this app carries.
+struct LaunchCards: View {
+    let launch: LaunchChecks
+
+    var body: some View {
+        let mismatch = launch.installMatch?.notice
+        if launch.translocatedFrom != nil || launch.backgroundItemsOff || mismatch != nil {
+            VStack(spacing: 8) {
+                if let original = launch.translocatedFrom {
+                    Notice(
+                        symbol: "folder.badge.questionmark", tint: .orange,
+                        text: "Move voiced to your Applications folder, then open it from there. "
+                            + "macOS runs it from a temporary, read-only copy until then.",
+                        actionTitle: "Show in Finder"
+                    ) { NSWorkspace.shared.activateFileViewerSelecting([original]) }
+                }
+                if launch.backgroundItemsOff {
+                    Notice(
+                        symbol: "exclamationmark.triangle.fill", tint: .orange,
+                        text: "voiced can't start at boot while it is off in Login Items.",
+                        actionTitle: "Open Login Items", action: launch.openLoginItems)
+                }
+                if let mismatch {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Notice(symbol: "arrow.triangle.2.circlepath", tint: .accentColor, text: mismatch.text)
+                        if let command = mismatch.command { CommandBlock(command: command) }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
         }
     }
 }
