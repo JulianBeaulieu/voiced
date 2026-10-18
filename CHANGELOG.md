@@ -73,6 +73,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A streaming STT session that waited for the slot behind another (two
+  satellites talking at once) failed with "streaming backlog over 30s" when
+  its client had sent more than 30 s meanwhile. `add_audio` now waits for the
+  encoder past the backlog bound instead of failing, so the session catches
+  up at about six times real time. Sessions still run one at a time: a
+  Wyoming session waits about 34 s for the slot before `server_busy`, so
+  with three satellites at once the third still fails on utterances over
+  about 31 s. ADR 0008 documents the capacity (one stream within the
+  finalize target, the rest queue).
 - `voiced restart all` restarted stt and tts but not the watchdog, which
   kept running the old code after an upgrade until it was killed by hand.
   It now restarts the watchdog last (SIGTERM, then `launchctl kickstart`)

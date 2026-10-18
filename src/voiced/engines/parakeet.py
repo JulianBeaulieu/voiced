@@ -15,8 +15,9 @@ docs/decisions/0008-stt-engine-parakeet.md:
 * :class:`_LibraryStream` is the only code that touches ``StreamingParakeet``:
   encode one window, checkpoint and restore its state, and report the result
   with timestamps in session time.
-* :class:`ParakeetStreamSession` buffers ``add_audio`` (it never waits for the
-  encoder) and feeds both from one consumer task.
+* :class:`ParakeetStreamSession` buffers ``add_audio`` (it waits for the
+  encoder only when :data:`MAX_BACKLOG_S` is behind) and feeds both from one
+  consumer task.
 
 Every MLX call of an engine runs on the engine's :class:`ModelThread`. Entering
 the library's stream context switches the model to local attention globally;
@@ -105,8 +106,17 @@ HOLD_MAX_S = 2.5
 """How long a pause after a speculative call is held before it is given up on and
 the buffer goes on as if there had been no pause."""
 MAX_BACKLOG_S = 30.0
-"""A client streaming faster than real time must not grow the buffer without bound
-while holding the only inference slot; ``add_audio`` rejects audio past this."""
+"""Bound on the audio a session holds unencoded. ``add_audio`` waits while the
+new chunk would take the backlog past it, so a session that is behind (it waited
+for the slot while its client kept streaming, or the client sends faster than
+real time) pushes back on its transport instead of growing the buffer. Once the
+encoder has caught up the chunk is taken anyway, so the backlog can exceed this
+by what the planner holds (under :data:`HOLD_MAX_S` plus a pass). A single chunk
+larger than this is rejected."""
+FEED_MAX_S = 2.0
+"""Most audio one model-thread call feeds. A session catching up runs a burst as
+several calls, so ``add_audio`` waits for one call (about three passes) rather
+than for the whole burst, and ``close`` is never held up longer than that."""
 WARMUP_S = 1.0
 SILENCE_FLOOR_DBFS = -60.0
 """Batch only: input with no 32 ms frame above this RMS is silence, nothing to
@@ -129,6 +139,7 @@ _PRE_ROLL = round(PRE_ROLL_S * _SR)
 _MAX_HELD = round(HOLD_MAX_S * _SR)
 _BATCH_CHUNK = round(BATCH_CHUNK_S * _SR)
 _BATCH_OVERLAP = round(BATCH_OVERLAP_S * _SR)
+_FEED_MAX = round(FEED_MAX_S * _SR)
 
 
 class ParakeetEngine(STTEngine):
@@ -607,6 +618,7 @@ class ParakeetStreamSession(STTStreamSession):
         self._in_flight = 0
         self._samples_added = 0
         self._consumer: asyncio.Task[None] | None = None
+        self._progress = asyncio.Event()  # set after every call the consumer makes
         self._failure: BaseException | None = None
         self._closed = False
 
@@ -616,8 +628,10 @@ class ParakeetStreamSession(STTStreamSession):
 
     @property
     def backlog_s(self) -> float:
-        """Seconds of audio added but not yet encoded: pending, in the call
-        running now, and buffered by the adapter."""
+        """Seconds of audio added but not yet encoded: pending, taken by the
+        consumer but not yet fed through (the call running now and the rest of
+        its burst), and buffered by the adapter. While a call runs, the part of
+        it under one pass that the planner keeps is counted twice."""
         return (self._pending_samples + self._in_flight) / _SR + self._adapter.buffered_s
 
     async def add_audio(self, samples: NDArray[np.float32]) -> None:
@@ -625,15 +639,21 @@ class ParakeetStreamSession(STTStreamSession):
         arr = _check_samples(samples)
         if len(arr) == 0:
             return
-        if self.backlog_s + len(arr) / _SR > MAX_BACKLOG_S:
-            raise EngineError(
-                f"streaming backlog over {MAX_BACKLOG_S:.0f}s; feed no faster than real time"
-            )
+        if len(arr) / _SR > MAX_BACKLOG_S:
+            raise EngineError(f"audio chunk over {MAX_BACKLOG_S:.0f}s; send smaller chunks")
+        # Behind: wait for the encoder, pushing back on the caller.
+        while self.backlog_s + len(arr) / _SR > MAX_BACKLOG_S and self._consuming():
+            self._progress.clear()
+            await self._progress.wait()
+            self._check_open()
         self._pending.append(arr)
         self._pending_samples += len(arr)
         self._samples_added += len(arr)
         if self._consumer is None or self._consumer.done():
             self._consumer = asyncio.create_task(self._consume())
+
+    def _consuming(self) -> bool:
+        return self._consumer is not None and not self._consumer.done()
 
     async def _consume(self) -> None:
         try:
@@ -641,15 +661,19 @@ class ParakeetStreamSession(STTStreamSession):
                 chunk = (
                     np.concatenate(self._pending) if len(self._pending) > 1 else self._pending[0]
                 )
-                self._in_flight = len(chunk)
                 self._pending = []
                 self._pending_samples = 0
-                try:
-                    await self._thread.run(self._adapter.feed, chunk)
-                finally:
-                    self._in_flight = 0
+                for i in range(0, len(chunk), _FEED_MAX):
+                    self._in_flight = len(chunk) - i
+                    try:
+                        await self._thread.run(self._adapter.feed, chunk[i : i + _FEED_MAX])
+                    finally:
+                        self._in_flight = 0
+                        self._progress.set()
         except Exception as exc:
             self._failure = exc
+        finally:
+            self._progress.set()  # the task is done when a waiter wakes
 
     def partial(self) -> str:
         return self._adapter.text
