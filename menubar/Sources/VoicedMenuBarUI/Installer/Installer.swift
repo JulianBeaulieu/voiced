@@ -50,6 +50,14 @@ public final class Installer {
         refreshWelcome()
     }
 
+    /// Repair installs this app's voiced: said when the services run another version (after a
+    /// rollback, say), since repairing replaces it.
+    public var repairNote: String? {
+        let bundled = configuration.resources.manifest.version
+        guard managesInstall, let installed = record?.version, installed != bundled else { return nil }
+        return "Repair installs voiced \(bundled), the version this app carries, in place of \(installed)."
+    }
+
     /// What the pinned models take in the Hugging Face cache, for the uninstall's box.
     public var modelBytes: Int64 { configuration.resources.manifest.models.reduce(0) { $0 + $1.bytes } }
 
@@ -134,7 +142,12 @@ public final class Installer {
             switch failure.stage {
             case .environment, .uninstall: await runTask()
             case .install:
-                if let environment { await installAndContinue(in: environment) } else { await runTask() }
+                // A CLI install may have pruned the environment meanwhile: build it again.
+                if let environment, FileManager.default.fileExists(atPath: environment.path) {
+                    await installAndContinue(in: environment)
+                } else {
+                    await runTask()
+                }
             case .approval: await reconcileDaemons()
             case .starting: await startServices()
             }
@@ -375,12 +388,16 @@ public final class Installer {
 
     private func startServices() async {
         phase = .starting
-        guard task != .install, let environment = environment ?? record?.environment.map(URL.init(fileURLWithPath:)) else {
+        if task == .install {
             guard value(await stages.waitForServices(model)) != nil else { return }
             phase = .homeAssistant(.asking)
             return
         }
-        let waited = await stages.waitForServices(model, running: environment, restartFirst: task == .repair)
+        guard let environment = environment ?? record?.environment.map(URL.init(fileURLWithPath:)) else { return await runTask() }
+        // An update waits for this app's pins too, not only for the environment's path.
+        let waited = await stages.waitForServices(
+            model, running: environment, pins: task == .update ? configuration.resources.manifest : nil,
+            restartFirst: task == .repair)
         guard value(waited) != nil else { return }
         if task == .update { await stages.cleanUpAfterUpdate() }
         if !Task.isCancelled { phase = .finished(version: record?.version) }
@@ -389,34 +406,34 @@ public final class Installer {
     // MARK: - Uninstall
 
     /// ADR 0018's Uninstall: the privileged script's `uninstall`, then `voiced uninstall
-    /// --yes`. An environment too broken to run that is refused before the prompt: Repair
-    /// first, then Uninstall.
+    /// --yes`. Safe to run again after a failure: plists already removed need no prompt, and
+    /// when no `voiced` is left to run (an interrupted removal, a Python gone), the app removes
+    /// the state directory by the same rules and says the models, logs and config stayed.
     private func runUninstall(_ choices: UninstallChoices) async {
         let step = "Uninstalling voiced"
-        let active = record?.environment.map(URL.init(fileURLWithPath:))
-        if !FileManager.default.isExecutableFile(atPath: configuration.paths.entryPoint.path)
-            || active.map(InstallStages.hasPython) == false
-        {
-            return fail(InstallFailure(
-                stage: .uninstall, step: step,
-                cause: "voiced's environment is too broken to remove its files. Repair it, then uninstall again."))
-        }
-        phase = .uninstalling(step: "Removing the background services")
-        switch await stages.uninstallDaemons() {
-        case .done:
-            break
-        case .cancelled:
-            phase = .confirmUninstall
-            return
-        case .anotherAccount(let message):
-            phase = .refused(message)
-            return
-        case .failed(let cause, let output):
-            return fail(InstallFailure(stage: .uninstall, step: step, cause: cause, output: output))
+        if stages.daemonsInstalled {
+            phase = .uninstalling(step: "Removing the background services")
+            switch await stages.uninstallDaemons() {
+            case .done:
+                break
+            case .cancelled:
+                phase = .confirmUninstall
+                return
+            case .anotherAccount(let message):
+                phase = .refused(message)
+                return
+            case .failed(let cause, let output):
+                return fail(InstallFailure(stage: .uninstall, step: step, cause: cause, output: output))
+            }
         }
         phase = .uninstalling(step: "Removing voiced's files")
-        guard value(await stages.removeFiles(choices)) != nil else { return }
-        phase = .uninstalled(choices)
+        if let voiced = stages.runnableVoiced() {
+            guard value(await stages.removeFiles(with: voiced, choices)) != nil else { return }
+            phase = .uninstalled(choices)
+        } else {
+            guard value(await stages.removeStateDirectory()) != nil else { return }
+            phase = .uninstalled(UninstallChoices())
+        }
     }
 
     // MARK: - Home Assistant

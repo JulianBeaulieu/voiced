@@ -109,10 +109,18 @@ public enum ExternalInstall {
     public struct Command: Sendable, Equatable {
         public var purpose: String
         public var command: String
+        /// What to do with what it prints, or what has to come first.
+        public var note: String?
     }
 
-    /// The commands that update, repair and uninstall an install made by `source`; none for
-    /// the app's own.
+    /// `voiced uninstall` prints the root step and lists what it would remove; the services
+    /// have to be gone before anything else is.
+    static let rootStepNote =
+        "It prints the root step, sudo /bin/bash <environment>/.../voiced-privileged.sh uninstall <you>. "
+        + "Run that, then voiced uninstall --yes."
+
+    /// The commands that update, repair and uninstall an install made by `source`, in order;
+    /// none for the app's own.
     public static func commands(for source: InstallSource) -> [Command] {
         switch source {
         case .app:
@@ -121,12 +129,15 @@ public enum ExternalInstall {
             [
                 Command(purpose: "Update", command: "brew upgrade voiced"),
                 Command(purpose: "Repair", command: "brew reinstall voiced"),
-                Command(purpose: "Uninstall", command: "voiced uninstall && brew uninstall voiced"),
+                Command(purpose: "Uninstall, first", command: "voiced uninstall", note: rootStepNote),
+                Command(
+                    purpose: "Uninstall, then", command: "brew uninstall voiced",
+                    note: "Only once the services are removed: before that they keep running on a binary that is gone."),
             ]
         case .cli:
             [
                 Command(purpose: "Update or repair", command: "voiced install --source <checkout>"),
-                Command(purpose: "Uninstall", command: "voiced uninstall"),
+                Command(purpose: "Uninstall", command: "voiced uninstall", note: rootStepNote),
             ]
         }
     }

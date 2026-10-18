@@ -390,19 +390,27 @@ public struct SettingsView: View {
                         }
                         .disabled(working)
                     }
-                    Button("Repair voiced…") { inInstaller(installer.repair) }.disabled(working)
+                    Button("Repair voiced…") { inInstaller(installer.repair) }
+                        .disabled(working)
+                        .help(installer.repairNote ?? "Installs voiced again from this app, keeping the config and models.")
                     Button("Uninstall voiced…") { inInstaller(installer.confirmUninstall) }.disabled(working)
                 } else {
                     ForEach(ExternalInstall.commands(for: record.source), id: \.purpose) { entry in
-                        LabeledContent(entry.purpose) { CommandBlock(command: entry.command) }
+                        LabeledContent(entry.purpose) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                CommandBlock(command: entry.command)
+                                if let note = entry.note { Text(note).footnote() }
+                            }
+                        }
                     }
                 }
             } header: {
                 Text("Install")
             } footer: {
+                let note = managed ? installer?.repairNote.map { $0 + " " } ?? "" : ""
                 Text(
                     managed
-                        ? "Moving this app to the Trash leaves the services running; uninstall here first."
+                        ? note + "Moving this app to the Trash leaves the services running; uninstall here first."
                         : "This install is not the app's, so the app only shows it; these commands change it."
                 )
                 .footnote()

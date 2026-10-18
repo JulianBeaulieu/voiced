@@ -1063,6 +1063,31 @@ def test_the_manifest_records_the_environment_it_replaced(
     assert second.environment.exists()
 
 
+def test_a_missing_active_environment_is_no_rollback(settings: Settings, tmp_path: Path) -> None:
+    """The app moves an environment whose Python is gone to `<id>.broken`
+    before it builds a fresh one: the environment that one replaced stays
+    `previous`, and prune keeps it."""
+    first = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(first)
+    second = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(second)
+    second.environment.rename(second.environment.with_name(second.environment.name + ".broken"))
+    third = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(third)
+    manifest = read_manifest(third.state_dir)
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (third.environment, first.environment)
+    assert first.environment.exists()
+
+    # Without that one either, there is nothing to go back to.
+    shutil.rmtree(third.environment)
+    shutil.rmtree(first.environment)
+    fourth = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(fourth)
+    manifest = read_manifest(fourth.state_dir)
+    assert manifest is not None and manifest.previous is None
+
+
 def test_switching_away_from_a_legacy_venv_has_no_previous(
     settings: Settings, tmp_path: Path
 ) -> None:

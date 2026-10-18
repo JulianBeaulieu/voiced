@@ -179,8 +179,9 @@ window runs ADR 0018's Lifecycle with the same stages in another order:
   only if a plist differs, a label is not loaded, or the firewall is on and
   the services' Python changed. The app waits for a `hello` from the new
   environment, runs `voiced restart all` if none comes within the startup
-  grace, and afterwards removes the Pythons no environment uses and clears
-  its uv cache.
+  grace, and afterwards removes the Pythons no environment uses (none when
+  `~/.voiced`, `envs` or `python` is a link, or an environment's
+  `pyvenv.cfg` cannot be read) and clears its uv cache.
 - **Roll back**: the environment `install.json` names as `previous`, which
   pruning keeps, while it is still in `envs/`. Its own `voiced install`
   links it again. A failed update offers it once the new environment is
@@ -193,13 +194,18 @@ window runs ADR 0018's Lifecycle with the same stages in another order:
 - **Uninstall** (Settings > About): the privileged script's `uninstall`,
   then `voiced uninstall --yes`, which removes only voiced's files under the
   install lock and refuses symbolic links. Models, logs and the config are
-  boxes, unticked by default. An environment too broken to run `voiced
-  uninstall` is refused before the prompt, with Repair offered first.
-  Dragging the app to the Trash leaves the services running; the app,
-  and any models, logs and config left unticked, stay after Uninstall.
+  boxes, unticked by default. Running it again after a failure is safe:
+  plists already removed need no prompt, and when no `voiced` is left to
+  run (an interrupted removal, a Python gone), the app removes the state
+  directory by the same rules (`install.state_targets`), never through a
+  link, and says the models, logs and config stayed. Dragging the app to
+  the Trash leaves the services running; the app, anything left unticked,
+  and a firewall entry for voiced's Python (when the firewall is on) stay
+  after Uninstall.
 
 Homebrew's and the command line's installs are shown, never changed:
-Settings > About lists the commands that update, repair and remove them.
+Settings > About lists the commands that update, repair and remove them,
+with `voiced uninstall` and its root step before `brew uninstall voiced`.
 
 ### Installing a development voiced
 

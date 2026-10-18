@@ -698,6 +698,26 @@ def prune_environments(state_dir: Path, keep: Sequence[Path | None], say: Say) -
         say(f"removed unused environment {env}")
 
 
+def rollback_target(
+    plan: InstallPlan, previous: Manifest | None, *, unchanged: bool
+) -> Path | None:
+    """What ``install.json`` records as ``previous``: the environment this
+    install replaces, which prune keeps (ADR 0018's "Roll back")."""
+    if previous is None or previous.environment is None:
+        return None
+    if unchanged:
+        return previous.previous
+    old = previous.environment
+    if same_path(old, plan.state_dir):
+        return None  # a legacy venv, removed by this install: nothing to go back to
+    if old.exists():
+        return old
+    # The active environment is gone (the app moved a broken one aside to
+    # repair it): the one it replaced is still the way back, if it is there.
+    kept = previous.previous
+    return kept if kept is not None and kept.exists() else None
+
+
 @dataclass(frozen=True)
 class Step:
     """One step of ``voiced install``, in order: ``id`` names it (for the
@@ -829,11 +849,7 @@ def install_steps(
     # Re-running install from the active environment keeps who made it (an
     # app environment stays the app's), and what it replaced.
     source = previous.source if unchanged and previous is not None else plan.origin
-    if unchanged and previous is not None:
-        replaced = previous.previous
-    else:
-        # A legacy venv is removed below, so there is nothing to go back to.
-        replaced = None if old is None or same_path(old, plan.state_dir) else old
+    replaced = rollback_target(plan, previous, unchanged=unchanged)
 
     def manifest() -> None:
         write_manifest(
@@ -865,7 +881,7 @@ def install_steps(
                 "prune",
                 f"remove environments in {plan.state_dir / ENVS} other than "
                 "the new and the previous one",
-                lambda: prune_environments(plan.state_dir, [plan.environment, old], say),
+                lambda: prune_environments(plan.state_dir, [plan.environment, old, replaced], say),
             )
         )
     if any(path.exists() or path.is_symlink() for path in plan.legacy_staged_files()):

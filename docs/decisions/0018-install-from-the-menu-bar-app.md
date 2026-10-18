@@ -683,8 +683,8 @@ If step 4 fails, "Roll back" runs the previous environment's own
 back at it (models are cached, so it is quick). `install.json` names that
 environment in `previous` (ADR 0017); the app rolls back only to one inside
 `envs/` that still has its `bin/voiced`, and Settings > About offers the
-same "Roll back" afterwards. A failure in step 2 has not touched what runs,
-so it offers only "Try again". Pruning in step 2 keeps
+same "Roll back" afterwards. A failure in step 2 before it links the new
+environment has not touched what runs, so it offers only "Try again". Pruning in step 2 keeps
 the previous environment for one-click rollback; after a successful update
 the app also removes Python versions no remaining environment uses, and clears the
 uv cache: the cache only grows (706 MB to 928 MB after one update,

@@ -392,7 +392,9 @@ let installerShots = [
             await until(installer) { if case .uninstalled = $0 { true } else { false } }
         }),
     InstallerShot(
-        name: "lifecycle-failed-uninstall", leftovers: { appInstall(in: $0, python: false) },
+        name: "lifecycle-failed-uninstall",
+        setup: { $0.privilegedOutcomes = [.finished(status: 1, output: "refused: another voiced install or uninstall is running")] },
+        leftovers: { appInstall(in: $0) },
         steps: { installer in
             installer.confirmUninstall()
             installer.uninstall(UninstallChoices())
@@ -400,9 +402,8 @@ let installerShots = [
         }),
 ]
 
-/// An install the app made, in `home`: one environment, linked, with its Python unless
-/// `python` is false.
-func appInstall(in home: URL, python: Bool = true) {
+/// An install the app made, in `home`: one environment, linked, with its Python.
+func appInstall(in home: URL) {
     let fileManager = FileManager.default
     let state = home.appendingPathComponent(".voiced")
     let environment = state.appendingPathComponent("envs/20261001T120000")
@@ -410,7 +411,7 @@ func appInstall(in home: URL, python: Bool = true) {
     try? fileManager.createDirectory(at: bin, withIntermediateDirectories: true)
     try? Data("#!/bin/sh\n".utf8).write(to: bin.appendingPathComponent("voiced"))
     try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent("voiced").path)
-    if python { try? Data().write(to: bin.appendingPathComponent("python")) }
+    try? Data().write(to: bin.appendingPathComponent("python"))
     try? fileManager.createDirectory(at: state.appendingPathComponent("bin"), withIntermediateDirectories: true)
     try? fileManager.createSymbolicLink(
         at: state.appendingPathComponent("bin/voiced"), withDestinationURL: bin.appendingPathComponent("voiced"))

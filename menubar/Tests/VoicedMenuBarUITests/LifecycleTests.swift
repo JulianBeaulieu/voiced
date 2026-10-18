@@ -50,6 +50,8 @@ final class LifecycleTests: XCTestCase {
     /// What the next `voiced install` links: its environment gets this version and Python.
     private var installedVersion = "0.1.0"
     private var installedPython = "3.12.15"
+    /// The lock hash the next `voiced install` records; by default the app's for its version.
+    private var installedLock: String?
     /// The watchdog restarts itself when the entry point moves; off, it keeps its old hello
     /// until `voiced restart all`.
     private var watchdogFollowsTheLink = true
@@ -70,7 +72,9 @@ final class LifecycleTests: XCTestCase {
             try? populate(environment, version: installedVersion, python: installedPython)
             let before = InstallRecord.read(stateDirectory: state)
             let previous = before?.environment == environment.path ? before?.previous : before?.environment
-            try? writeRecord(environment: environment, version: installedVersion, previous: previous.map(URL.init(fileURLWithPath:)))
+            try? writeRecord(
+                environment: environment, version: installedVersion, previous: previous.map(URL.init(fileURLWithPath:)),
+                lock: installedLock)
             if watchdogFollowsTheLink { servers.forEach { $0.dropConnections() } }
             return .progress(RecordedProgress.success)
         case ("voiced", "restart"):
@@ -153,12 +157,13 @@ final class LifecycleTests: XCTestCase {
 
     /// install.json for an app install of `environment`, with `bin/voiced` linked to it.
     private func writeRecord(
-        environment: URL, version: String, previous: URL? = nil, source: String = "app"
+        environment: URL, version: String, previous: URL? = nil, source: String = "app", lock: String? = nil
     ) throws {
         let python = environment.appendingPathComponent("bin/python").resolvingSymlinksInPath().path
         var record: [String: Any] = [
             "source": source, "environment": environment.path, "version": version,
-            "lock_sha256": version == resources.manifest.version ? resources.manifest.lockSHA256 : "old", "python": python,
+            "lock_sha256": lock ?? (version == resources.manifest.version ? resources.manifest.lockSHA256 : "old"),
+            "python": python,
         ]
         record["previous"] = previous?.path ?? NSNull()
         try JSONSerialization.data(withJSONObject: record).write(to: state.appendingPathComponent("install.json"))
@@ -318,6 +323,32 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 1, "nothing is built")
     }
 
+    /// The new environment's hello must carry this app's lock too.
+    func testAnUpdateWaitsForThePinsNotOnlyThePath() async throws {
+        try startServer()
+        installedLock = "something else"
+        let installer = makeInstaller(startupTimeout: .milliseconds(300))
+        installer.update()
+        let failed = await failure(installer)
+        XCTAssertEqual(failed?.stage, .starting)
+    }
+
+    /// A command-line install pruned the environment the update built: Try Again builds again.
+    func testTryAgainBuildsAgainWhenTheEnvironmentWasPruned() async throws {
+        try startServer()
+        installResponse = .progress([RecordedProgress.hello, RecordedProgress.error("models", "no network")], status: 1)
+        let installer = makeInstaller()
+        installer.update()
+        _ = await failure(installer)
+        for name in environmentNames() where name != current.lastPathComponent {
+            try FileManager.default.removeItem(at: envs.appendingPathComponent(name))
+        }
+        installResponse = nil
+        installer.retry()
+        await finished(installer)
+        XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 2)
+    }
+
     func testAFailedInstallInAnUpdateOffersOnlyTryAgain() async throws {
         try startServer()
         installResponse = .progress([RecordedProgress.hello, RecordedProgress.error("models", "no network")], status: 1)
@@ -404,8 +435,10 @@ final class LifecycleTests: XCTestCase {
     func testRollBackNeedsAKeptAppEnvironment() throws {
         let installer = makeInstaller()
         XCTAssertNil(installer.rollbackTarget(), "no previous recorded")
-        try writeRecord(environment: current, version: "0.0.9", previous: home.appendingPathComponent("elsewhere"))
-        XCTAssertNil(installer.rollbackTarget(), "outside envs/")
+        let elsewhere = home.appendingPathComponent("elsewhere/20250101T000000")
+        try populate(elsewhere, version: "0.0.8", python: "3.12.15")
+        try writeRecord(environment: current, version: "0.0.9", previous: elsewhere)
+        XCTAssertNil(installer.rollbackTarget(), "a whole environment, but outside envs/")
         try writeRecord(environment: current, version: "0.0.9", previous: current)
         XCTAssertNil(installer.rollbackTarget(), "the active one")
         try writeRecord(environment: current, version: "0.0.9", previous: envs.appendingPathComponent("20250101T000000"))
@@ -438,6 +471,31 @@ final class LifecycleTests: XCTestCase {
         XCTAssertTrue(runner.privilegedCalls.isEmpty)
         XCTAssertEqual(environmentNames(), [current.lastPathComponent])
         XCTAssertNil(record?.previous, "a repair in place replaces nothing")
+    }
+
+    /// A repair in place moves no link, so nothing else would restart services that answer
+    /// but run broken code: the restart comes before the wait.
+    func testRepairRestartsBeforeItWaits() async throws {
+        let server = try startServer()
+        let installer = makeInstaller()
+        installer.repair()
+        await finished(installer)
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments.first), ["install", "restart"])
+        XCTAssertTrue(server.requests.isEmpty || !server.requests.contains { $0.op == "service.restart" })
+    }
+
+    /// A half-finished install whose only environment was moved aside builds a fresh one
+    /// instead of resuming the broken one.
+    func testRepairNeverResumesABrokenEnvironment() async throws {
+        try Data(#"{"source": "app", "environment": null}"#.utf8).write(to: state.appendingPathComponent("install.json"))
+        try FileManager.default.removeItem(at: state.appendingPathComponent("bin/voiced"))
+        try FileManager.default.removeItem(at: current)
+        try makeEnvironment("20261018T120000.broken", version: resources.manifest.version)
+        let installer = makeInstaller()
+        installer.repair()
+        await finished(installer)
+        XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 1)
+        XCTAssertFalse(runner.commands(named: "voiced").contains { $0.executable.contains(".broken") })
     }
 
     func testRepairReinstallsMissingDaemons() async throws {
@@ -557,15 +615,60 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(failed?.cause, "Daemons still loaded: stt. Run the sudo script first, then")
     }
 
-    func testAnEnvironmentTooBrokenToUninstallAsksForRepairFirst() async throws {
+    /// No voiced left to run `voiced uninstall`: the services go, then the app removes the
+    /// state directory by the same rules and says the models, logs and config stayed.
+    func testAnEnvironmentTooBrokenToUninstallIsStillRemoved() async throws {
+        try FileManager.default.removeItem(at: pythonDirectory("3.12.15"))
+        try makeEnvironment("20261018T120000.partial", version: "0.1.0", python: "3.12.16")
+        let notVoiceds = envs.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: notVoiceds, withIntermediateDirectories: true)
+        let installer = makeInstaller()
+        installer.confirmUninstall()
+        installer.uninstall(UninstallChoices(models: true, logs: true, config: true))
+        await reach(installer, "uninstalled") { $0 == .uninstalled(UninstallChoices()) }
+        XCTAssertEqual(runner.privilegedCalls, ["uninstall \(user)"])
+        XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: state.path), ["envs"])
+        XCTAssertEqual(environmentNames(), ["notes"], "what voiced did not build stays")
+    }
+
+    /// Try Again after the services were removed: no second prompt.
+    func testAnUninstallAfterTheServicesWentAsksNoAdministrator() async throws {
+        try FileManager.default.removeItem(at: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         try FileManager.default.removeItem(at: pythonDirectory("3.12.15"))
         let installer = makeInstaller()
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices())
-        let failed = await failure(installer)
-        XCTAssertEqual(failed?.stage, .uninstall)
-        XCTAssertTrue(failed?.cause.contains("Repair it, then uninstall again") == true)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty, "the services stay until the files can go too")
+        await reach(installer, "uninstalled") { if case .uninstalled = $0 { true } else { false } }
+        XCTAssertTrue(runner.privilegedCalls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state.path))
+    }
+
+    /// The active environment is broken but the rollback one runs: it removes the files, with
+    /// the boxes ticked.
+    func testUninstallUsesAnyVoicedThatStillRuns() async throws {
+        let older = try makeEnvironment("20250101T000000", version: "0.0.8", python: "3.12.8")
+        try FileManager.default.removeItem(at: pythonDirectory("3.12.15"))
+        let installer = makeInstaller()
+        installer.confirmUninstall()
+        installer.uninstall(UninstallChoices(models: true))
+        await reach(installer, "uninstalled") { $0 == .uninstalled(UninstallChoices(models: true)) }
+        let remove = try XCTUnwrap(runner.commands(named: "voiced").first)
+        XCTAssertEqual(remove.executable, older.appendingPathComponent("bin/voiced").path)
+        XCTAssertEqual(remove.arguments, ["uninstall", "--yes", "--remove-models"])
+    }
+
+    /// The app's own removal never goes through a link.
+    func testTheAppsRemovalDoesNotFollowLinks() async throws {
+        let theirs = home.appendingPathComponent("theirs", isDirectory: true)
+        try FileManager.default.createDirectory(at: theirs.appendingPathComponent("cpython-3.11.4/bin"), withIntermediateDirectories: true)
+        try FileManager.default.removeItem(at: state.appendingPathComponent("python"))
+        try FileManager.default.createSymbolicLink(at: state.appendingPathComponent("python"), withDestinationURL: theirs)
+        let installer = makeInstaller()
+        installer.confirmUninstall()
+        installer.uninstall(UninstallChoices())
+        await reach(installer, "uninstalled") { if case .uninstalled = $0 { true } else { false } }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: theirs.appendingPathComponent("cpython-3.11.4").path))
     }
 
     func testAnotherAccountsUninstallIsRefused() async throws {
@@ -593,7 +696,8 @@ final class LifecycleTests: XCTestCase {
         }
         XCTAssertEqual(
             ExternalInstall.commands(for: .homebrew).map(\.command),
-            ["brew upgrade voiced", "brew reinstall voiced", "voiced uninstall && brew uninstall voiced"])
+            ["brew upgrade voiced", "brew reinstall voiced", "voiced uninstall", "brew uninstall voiced"],
+            "the services go before the formula")
         XCTAssertEqual(ExternalInstall.commands(for: .cli).map(\.command), ["voiced install --source <checkout>", "voiced uninstall"])
         XCTAssertTrue(ExternalInstall.commands(for: .app).isEmpty)
     }
@@ -629,11 +733,42 @@ final class LifecycleTests: XCTestCase {
         let left = try fileManager.contentsOfDirectory(atPath: pythons.path).sorted()
         XCTAssertEqual(left, [".cache", "cpython-3.12-macos-aarch64-none", "cpython-3.12.15-macos-aarch64-none"])
 
-        // Without one readable environment, nothing is removed.
-        try fileManager.removeItem(at: current.appendingPathComponent("pyvenv.cfg"))
+        // An environment whose home cannot be read could use any of them: nothing goes.
+        try makeEnvironment("20261018T120000", version: "0.1.0", python: "3.13.9")
+        try fileManager.removeItem(at: envs.appendingPathComponent("20261018T120000/pyvenv.cfg"))
         try fileManager.createDirectory(at: unused, withIntermediateDirectories: true)
         stages.removeUnusedPythons()
         XCTAssertTrue(fileManager.fileExists(atPath: unused.path))
+    }
+
+    /// `~/.voiced/python`, `envs` or `~/.voiced` itself as a link: the Pythons there are not
+    /// voiced's, so none is removed.
+    func testPythonsBehindALinkAreNeverRemoved() throws {
+        let fileManager = FileManager.default
+        let stages = InstallStages(configuration: makeInstallerConfiguration(), runner: runner)
+        let theirs = home.appendingPathComponent("uv-python", isDirectory: true)
+        try fileManager.createDirectory(at: theirs.appendingPathComponent("cpython-3.11.4-macos-aarch64-none/bin"), withIntermediateDirectories: true)
+        let pythons = state.appendingPathComponent("python")
+        try fileManager.moveItem(at: pythons, to: theirs.appendingPathComponent("moved"))
+        try fileManager.createSymbolicLink(at: pythons, withDestinationURL: theirs)
+        stages.removeUnusedPythons()
+        XCTAssertTrue(fileManager.fileExists(atPath: theirs.appendingPathComponent("cpython-3.11.4-macos-aarch64-none").path))
+
+        try fileManager.removeItem(at: pythons)
+        try fileManager.createDirectory(at: pythons.appendingPathComponent("cpython-3.11.4-macos-aarch64-none"), withIntermediateDirectories: true)
+        let realEnvs = home.appendingPathComponent("real-envs")
+        try fileManager.moveItem(at: envs, to: realEnvs)
+        try fileManager.createSymbolicLink(at: envs, withDestinationURL: realEnvs)
+        stages.removeUnusedPythons()
+        XCTAssertTrue(fileManager.fileExists(atPath: pythons.appendingPathComponent("cpython-3.11.4-macos-aarch64-none").path))
+
+        try fileManager.removeItem(at: envs)
+        try fileManager.moveItem(at: realEnvs, to: envs)
+        let linked = home.appendingPathComponent("linked-state")
+        try fileManager.moveItem(at: state, to: linked)
+        try fileManager.createSymbolicLink(at: state, withDestinationURL: linked)
+        stages.removeUnusedPythons()
+        XCTAssertTrue(fileManager.fileExists(atPath: linked.appendingPathComponent("python/cpython-3.11.4-macos-aarch64-none").path))
     }
 
     private func makeInstallerConfiguration() -> InstallerConfiguration {

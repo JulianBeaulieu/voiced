@@ -412,9 +412,6 @@ private struct FailureScreen: View {
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
         } buttons: {
-            if failure.stage == .uninstall {
-                Button("Repair", action: installer.repair)
-            }
             if installer.offersRollback, let target = installer.rollbackTarget() {
                 Button(target.version.map { "Roll Back to \($0)" } ?? "Roll Back", action: installer.rollBack)
             }
@@ -486,6 +483,11 @@ private struct ConfirmUninstallScreen: View {
                 Toggle(
                     "The downloaded speech models (about \(ByteText.size(installer.modelBytes)))",
                     isOn: $choices.models)
+                Text("voiced's two models in the Hugging Face cache (~/.cache/huggingface/hub, or the configured hf_home). Another app that uses the same models downloads them again.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 20)
                 Toggle("The logs in ~/Library/Logs/voiced", isOn: $choices.logs)
                 Toggle("The config file, with your settings and API key", isOn: $choices.config)
                 Text("What you leave unticked stays, so a later install reuses it.")
@@ -528,6 +530,9 @@ private struct UninstalledScreen: View {
                 if !choices.models { Place(symbol: "waveform.circle", text: "The speech models, in the Hugging Face cache.") }
                 if !choices.logs { Place(symbol: "doc.text", text: "The logs, in ~/Library/Logs/voiced.") }
                 if !choices.config { Place(symbol: "doc.badge.gearshape", text: "The config file, in ~/.config/voiced.") }
+                Place(
+                    symbol: "shield",
+                    text: "If the firewall is on, its entry for voiced's Python, which now names a removed file. Remove it in System Settings > Network > Firewall > Options.")
             }
         } buttons: {
             Button("Done", action: close)
