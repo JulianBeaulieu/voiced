@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -136,7 +137,7 @@ def test_status_says_what_to_do_before_the_daemons_are_installed(
     monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
     out: list[str] = []
     assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 1
-    assert out[-1].endswith("Run `voiced install --source <your checkout>` first.")
+    assert out[-1].endswith("Run `voiced install` first.")
     script = tmp_path / "launchd" / "install-daemons.sh"
     script.parent.mkdir()
     script.write_text("")
@@ -171,7 +172,7 @@ def test_logs_tail_and_missing(settings: Settings) -> None:
 
 def _uninstall_args(**overrides: bool) -> argparse.Namespace:
     base = {
-        "venv": None,
+        "state_dir": None,
         "yes": False,
         "remove_config": False,
         "remove_logs": False,
@@ -202,6 +203,9 @@ def test_uninstall_dry_then_real(
     settings.install.venv_dir = tmp_path / "venv"
     settings.install.venv_dir.mkdir()
     (settings.install.venv_dir / "pyvenv.cfg").write_text("home = /x\n")
+    (settings.install.venv_dir / "lib/python3.12/site-packages/voiced-0.0.1.dist-info").mkdir(
+        parents=True
+    )
     settings.server.log_dir.mkdir()
     settings.install.hf_home = tmp_path / "hf"
     model_dir = tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16"
@@ -270,3 +274,32 @@ def test_doctor_metal_probe_stages_script(
     assert (staging / "metal-probe.sh").exists()
     assert (staging / f"{settings.launchd.label('metalprobe')}.plist").exists()
     assert any(line.startswith("Run:  sudo bash ") for line in out)
+
+
+def test_uninstall_waits_for_an_install(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`uninstall --yes` takes the same lock as install: nothing goes while
+    the app or another terminal is installing."""
+    import threading
+
+    from voiced.layout import Manifest, install_lock, write_manifest
+
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    state = settings.install.venv_dir = tmp_path / "state"
+    write_manifest(state, Manifest(source="cli", environment=None))
+    out: list[str] = []
+    with install_lock(state):
+        thread = threading.Thread(
+            target=lc.cmd_uninstall,
+            args=(_uninstall_args(yes=True), settings, FakeLaunchctl({}), out.append),
+        )
+        thread.start()
+        for _ in range(100):
+            if any("waiting" in line for line in out):
+                break
+            time.sleep(0.05)
+        assert any("waiting for an install" in line for line in out)
+        assert (state / "install.json").exists()
+    thread.join(10)
+    assert not state.exists()

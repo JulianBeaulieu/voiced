@@ -122,3 +122,14 @@ down before bootstrapping again; `bootout` is asynchronous and an immediate
   `install` and the sudo script.
 - `voiced doctor` reports the venv's Metal device using the venv's Python,
   not the interpreter running `doctor`.
+
+## Amendment (ADR 0017)
+
+`~/.voiced` is the state directory, not necessarily a venv: `bin/voiced`
+links to the active environment, which `voiced install` takes from the
+`voiced` it runs as, or builds with `--source` into `~/.voiced/envs/<id>`
+from the shipped lock (no more upgrade in place, no pip fallback: `--source`
+needs uv). `install.json` marks the directory as voiced's. `uninstall`
+removes only what that layout owns and keeps anything else in the
+directory, instead of deleting a directory that has `pyvenv.cfg`. ADR 0017
+has the rules.

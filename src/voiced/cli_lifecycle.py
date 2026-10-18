@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from voiced import __version__
 from voiced.config import (
@@ -31,7 +32,7 @@ from voiced.config import (
     config_path,
     load_settings,
 )
-from voiced.control import NOT_SERVED, socket_path
+from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import (
     DEFAULT_TIMEOUT_S,
     ControlClient,
@@ -40,7 +41,7 @@ from voiced.control.client import (
     request,
 )
 from voiced.control.logs import tail_lines
-from voiced.control.ops import NoSupervisor, Operations
+from voiced.control.ops import NoSupervisor, Operations, engines_in_subprocess
 from voiced.control.protocol import OpError
 from voiced.launchd.control import (
     Runner,
@@ -53,6 +54,7 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.plist import log_paths
+from voiced.layout import ORIGINS, RunningEnvironment, entry_point, install_lock
 from voiced.settings_store import SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
@@ -65,6 +67,9 @@ from voiced.watchdog import (
     restart_service,
 )
 
+if TYPE_CHECKING:
+    from voiced.launchd.install import UninstallTargets
+
 # voiced.launchd.install (and voiced.doctor) import the engine modules, and
 # with them numpy; they are imported inside the commands that need them so
 # that `voiced watchdog` never loads them (ADR 0012, ADR 0013).
@@ -74,19 +79,33 @@ SERVICE_CHOICES = (*SERVICES, "all")
 
 
 def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    install = sub.add_parser("install", help="create the venv, download models, stage the plists")
+    install = sub.add_parser(
+        "install", help="link the environment, download models, stage the plists"
+    )
     install.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
     install.add_argument(
+        "--state-dir",
         "--venv",
+        dest="state_dir",
         type=Path,
-        help="venv location (default: [install] venv_dir; set that key too so doctor, "
+        help="state directory (default: [install] venv_dir; set that key too so doctor, "
         "uninstall and the daemons agree)",
     )
-    install.add_argument("--python", help='interpreter or version for the venv, e.g. "3.12"')
-    install.add_argument("--source", help="pip requirement or path to install (default: auto)")
+    install.add_argument(
+        "--source",
+        type=Path,
+        help="checkout to build a new environment from, with uv and the shipped lock "
+        "(default: the environment this voiced runs from)",
+    )
+    install.add_argument("--python", help='Python version for a --source build, e.g. "3.12"')
     install.add_argument("--staging-dir", type=Path, help="where plists and scripts are written")
     install.add_argument("--skip-models", action="store_true", help="do not download models")
-    install.add_argument("--no-uv", action="store_true", help="use python -m venv and pip")
+    install.add_argument(
+        "--origin",
+        choices=ORIGINS,
+        help="who made the environment, for install.json (default: homebrew for a keg, "
+        "else cli; the menu bar app passes app)",
+    )
 
     start = sub.add_parser("start", help="start the daemons")
     start.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
@@ -125,9 +144,15 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     logs.add_argument("-f", "--follow", action="store_true", help="keep printing (tail -F)")
     logs.add_argument("--stderr", action="store_true", help="also show launchd's stderr capture")
 
-    uninstall = sub.add_parser("uninstall", help="print the sudo script and remove the venv")
+    uninstall = sub.add_parser(
+        "uninstall", help="print the sudo script and remove what voiced installed"
+    )
     uninstall.add_argument(
-        "--venv", type=Path, help="venv location if it differs from [install] venv_dir"
+        "--state-dir",
+        "--venv",
+        dest="state_dir",
+        type=Path,
+        help="state directory if it differs from [install] venv_dir",
     )
     uninstall.add_argument("--yes", action="store_true", help="actually delete files")
     uninstall.add_argument(
@@ -183,13 +208,7 @@ def _services(name: str) -> tuple[DaemonName, ...]:
 def cmd_install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
 ) -> int:
-    from voiced.launchd.install import (
-        InstallError,
-        needs_source,
-        plan_install,
-        plan_summary,
-        run_install,
-    )
+    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
     if is_root():
         echo(
@@ -197,20 +216,17 @@ def cmd_install(
             "It prints the one step that needs root."
         )
         return 2
-    if args.source is None and needs_source():
-        echo(
-            "voiced is not published on PyPI yet, so there is nothing to install by name. "
-            "Pass your checkout: voiced install --source ~/voiced"
-        )
-        return 2
     plan = plan_install(
         settings,
-        venv_dir=args.venv,
+        state_dir=args.state_dir,
         python=args.python,
         source=args.source,
         staging_dir=args.staging_dir,
-        uv=None if args.no_uv else "auto",
+        origin=args.origin,
     )
+    # Piped (the app, a log), the build's and our own lines stay in order.
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
     echo(plan_summary(plan))
     echo("")
     if args.dry_run:
@@ -238,7 +254,7 @@ def cmd_install(
     echo("")
     echo(plan.sudo_install_script().rstrip())
     echo("")
-    echo(f"Then: {plan.voiced_bin} status")
+    echo(f"Then: {plan.entry} status")
     return 0
 
 
@@ -584,7 +600,7 @@ def _not_installed_hint(settings: Settings) -> str:
         return (
             f"The daemons are not installed. Review and run: sudo bash {shlex.quote(str(script))}"
         )
-    return "The daemons are not installed. Run `voiced install --source <your checkout>` first."
+    return "The daemons are not installed. Run `voiced install` first."
 
 
 # settings -----------------------------------------------------------------
@@ -726,7 +742,7 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
 
-    plan = plan_install(settings, venv_dir=args.venv)
+    plan = plan_install(settings, state_dir=args.state_dir)
     script = plan.sudo_uninstall_script()
     try:
         plan.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -747,15 +763,20 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         echo("re-run `voiced uninstall --yes` to remove the files.")
         return 1
 
-    targets = uninstall_targets(
-        plan,
-        settings,
-        logs=args.remove_logs,
-        models=args.remove_models,
-        config=args.remove_config,
-    )
+    def targets() -> UninstallTargets:
+        return uninstall_targets(
+            plan,
+            settings,
+            logs=args.remove_logs,
+            models=args.remove_models,
+            config=args.remove_config,
+        )
+
     if not args.yes:
-        present = [t for t in targets.all() if t.exists() or t.is_symlink()]
+        found = targets()
+        if found.refused is not None:
+            echo(f"Leaving {plan.state_dir} alone: {found.refused}.")
+        present = [t for t in found.all() if t.exists() or t.is_symlink()]
         if not present:
             echo("nothing to remove")
             return 0
@@ -763,8 +784,22 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         for t in present:
             echo(f"  {t}")
         return 0
-    if remove_targets(targets, plan, echo) == 0:
-        echo("nothing to remove")
+    # Not while an install (the app's or another terminal's) is running.
+    waiting = lambda: echo(f"waiting for an install in {plan.state_dir}")  # noqa: E731
+    held = (
+        install_lock(plan.state_dir, waiting)
+        if plan.state_dir.is_dir()
+        else contextlib.nullcontext()
+    )
+    with held:
+        found = targets()
+        if remove_targets(found, plan, echo) == 0:
+            echo("nothing to remove")
+    if found.manifest is not None and found.manifest.source == "homebrew":
+        echo(
+            f"voiced itself ({found.manifest.environment}) is Homebrew's; "
+            "remove it with `brew uninstall voiced`."
+        )
     return 0
 
 
@@ -776,9 +811,10 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
     from voiced.launchd.install import plan_install
 
     if args.metal_probe:
+        from voiced.layout import environment_python
+
         plan = plan_install(settings)
-        python = plan.python_bin if plan.python_bin.exists() else Path(sys.executable)
-        probe = plan.metal_probe(python)
+        probe = plan.metal_probe(environment_python(plan.entry))
         probe.write()
         echo(f"staged {probe.plist_path}")
         echo(f"staged {probe.script_path}")
@@ -836,7 +872,10 @@ def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
     log_file = None if once else log_paths(settings.server.log_dir, "watchdog").app
     configure_watchdog_logging(settings.server.log_level, log_file)
     dog = Watchdog(
-        services=watchdog_specs(settings), policy=settings.watchdog, respec=spec_from_file
+        services=watchdog_specs(settings),
+        policy=settings.watchdog,
+        respec=spec_from_file,
+        environment=None if once else RunningEnvironment.current(entry_point(state_dir(settings))),
     )
     if once:
         for name, decision in dog.tick().items():
@@ -858,7 +897,10 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stop.set)
-    ops = Operations(WatchdogSupervisor(dog), config_path())
+    entry = entry_point(state_dir(settings))
+    ops = Operations(
+        WatchdogSupervisor(dog), config_path(), engines=lambda: engines_in_subprocess(entry=entry)
+    )
     server = ControlServer(socket_path(settings), ops, version=__version__)
     try:
         await server.start()
@@ -868,8 +910,10 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
         print(f"voiced watchdog: control socket not started: {exc}", file=sys.stderr)
         serving = False
     try:
-        await dog.run_async(stop)
+        replaced = await dog.run_async(stop)
     finally:
         if serving:
             await server.close()
+    if replaced is not None:
+        print(f"voiced watchdog: environment replaced ({replaced}); exiting", file=sys.stderr)
     return 0

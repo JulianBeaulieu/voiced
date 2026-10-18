@@ -24,8 +24,9 @@ NOT_SERVED = "watchdog running but control socket not served; see `voiced logs w
 
 
 def state_dir(settings: Settings) -> Path:
-    """The per-user state directory of the install layout (ADR 0006): the
-    venv directory, so moving the venv moves the socket."""
+    """The per-user state directory (ADR 0006, ADR 0017): ``[install]
+    venv_dir``, which holds the entry point and, in installs from before
+    ADR 0017, the venv itself; moving it moves the socket."""
     return settings.install.venv_dir
 
 
