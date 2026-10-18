@@ -188,10 +188,6 @@ the public SDK header). It reads the role back; ``setpriority`` with it is
 refused inside a launchd job (``ENOTSUP``), so the role is set with
 ``task_policy_set``."""
 
-PRIO_DARWIN_ROLE_UI_FOCAL = 1
-"""What ``PRIO_DARWIN_ROLE`` reads for ``TASK_FOREGROUND_APPLICATION``
-(XNU ``proc_task_role_to_darwin_role``)."""
-
 TASK_CATEGORY_POLICY = 1
 TASK_FOREGROUND_APPLICATION = 1
 TASK_CATEGORY_POLICY_COUNT = 1  # natural_t words in task_category_policy_data_t
@@ -211,22 +207,27 @@ def request_foreground_role() -> None:
 
     try:
         libc = ctypes.CDLL(None)
+        libc.mach_task_self.restype = ctypes.c_uint  # task_t
         libc.task_policy_set.argtypes = [
             ctypes.c_uint,  # task_t
             ctypes.c_uint,  # task_policy_flavor_t
             ctypes.c_void_p,  # task_policy_t
             ctypes.c_uint,  # mach_msg_type_number_t
         ]
-        task = ctypes.c_uint.in_dll(libc, "mach_task_self_").value  # mach_task_self()
-        role = ctypes.c_int(TASK_FOREGROUND_APPLICATION)
-        kr = libc.task_policy_set(
-            task, TASK_CATEGORY_POLICY, ctypes.byref(role), TASK_CATEGORY_POLICY_COUNT
-        )
-        if kr != 0:
-            raise OSError(f"task_policy_set returned kern_return {kr}")
-        read_back = os.getpriority(PRIO_DARWIN_ROLE, 0)
-    except (OSError, AttributeError, ValueError) as exc:
+    except (OSError, AttributeError) as exc:  # libSystem or a symbol missing
         log.warning("could not set the foreground task role: %s", exc)
+        return
+    role = ctypes.c_int(TASK_FOREGROUND_APPLICATION)
+    kr = libc.task_policy_set(
+        libc.mach_task_self(), TASK_CATEGORY_POLICY, ctypes.byref(role), TASK_CATEGORY_POLICY_COUNT
+    )
+    if kr != 0:
+        log.warning("could not set the foreground task role: kern_return %d", kr)
+        return
+    try:
+        read_back = os.getpriority(PRIO_DARWIN_ROLE, 0)
+    except OSError as exc:
+        log.info("task role set to foreground application; read back failed: %s", exc)
         return
     log.info("task role set to foreground application (darwin role read back: %d)", read_back)
 

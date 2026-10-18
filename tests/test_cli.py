@@ -15,6 +15,10 @@ from voiced import cli
 from voiced.cli import main
 from voiced.config import Settings
 
+PRIO_DARWIN_ROLE_UI_FOCAL = 1
+"""What ``PRIO_DARWIN_ROLE`` reads for ``TASK_FOREGROUND_APPLICATION``
+(XNU ``proc_task_role_to_darwin_role``)."""
+
 
 def test_config_prints_effective_settings(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -90,10 +94,10 @@ def test_request_foreground_role_sets_the_task_role() -> None:
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout.split()
-    assert out == ["0", str(cli.PRIO_DARWIN_ROLE_UI_FOCAL)]
+    assert out == ["0", str(PRIO_DARWIN_ROLE_UI_FOCAL)]
 
 
-@pytest.mark.parametrize("error", [AttributeError("no task_policy_set"), OSError("refused")])
+@pytest.mark.parametrize("error", [AttributeError("no task_policy_set"), OSError("no libSystem")])
 def test_request_foreground_role_failure_does_not_stop_serving(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, error: Exception
 ) -> None:
@@ -105,6 +109,40 @@ def test_request_foreground_role_failure_does_not_stop_serving(
     with caplog.at_level("WARNING", logger="voiced.cli"):
         cli.request_foreground_role()
     assert f"could not set the foreground task role: {error}" in caplog.text
+
+
+class FakeLibc:
+    """``task_policy_set`` and ``mach_task_self`` with a set return code."""
+
+    def __init__(self, kr: int) -> None:
+        self.mach_task_self = lambda: 7
+        self.task_policy_set = lambda *args: kr
+
+
+def test_request_foreground_role_logs_a_refused_task_policy_set(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda name: FakeLibc(kr=4))  # KERN_INVALID_ARGUMENT
+    monkeypatch.setattr(os, "getpriority", lambda *a: pytest.fail("read back after a refusal"))
+    with caplog.at_level("WARNING", logger="voiced.cli"):
+        cli.request_foreground_role()
+    assert "could not set the foreground task role: kern_return 4" in caplog.text
+
+
+def test_request_foreground_role_survives_a_failed_read_back(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def refuse(which: int, who: int) -> int:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda name: FakeLibc(kr=0))
+    monkeypatch.setattr(os, "getpriority", refuse)
+    with caplog.at_level("INFO", logger="voiced.cli"):
+        cli.request_foreground_role()
+    assert "task role set to foreground application; read back failed" in caplog.text
+    assert "could not set" not in caplog.text
 
 
 def test_request_foreground_role_is_a_no_op_off_macos(monkeypatch: pytest.MonkeyPatch) -> None:

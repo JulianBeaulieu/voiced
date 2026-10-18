@@ -371,9 +371,12 @@ unless noted):
 start (`voiced.cli.request_foreground_role`), with `task_policy_set` and
 `TASK_CATEGORY_POLICY`, which a task may do for itself without privileges,
 and logs the role read back with `getpriority(PRIO_DARWIN_ROLE)`
-(`darwin role read back: 1`), or a warning if anything fails. The shorter
+(`darwin role read back: 1`), or a warning if setting it fails. The shorter
 `setpriority(PRIO_DARWIN_ROLE, ...)` sets the same role from a terminal but
-is refused inside a launchd job (`ENOTSUP`), so it is not used. From a
+is refused inside a launchd job (`ENOTSUP`), so it is not used. The evidence
+is a probe run as a LaunchAgent, where `setpriority` raised `ENOTSUP` and
+`task_policy_set` returned 0 with the role reading back 1; the unit tests run
+from a terminal and cannot show the difference. From a
 terminal the call makes no difference (microbenchmark 16.6 against 17.1 ms).
 With the shipped code in a LaunchAgent, the microbenchmark read role 1 and
 took 21 to 26 ms, against 38 ms without it and 14 to 21 ms from a terminal.
@@ -403,9 +406,10 @@ there was no clear change: median 176 to 205 ms and worst 213 to 231 after,
 against 196 to 204 and 236 to 274 before (terminal 136 to 145). Memory is
 unchanged.
 
-**What remains.** A terminal is still up to about 15 ms faster alone, and
-40 to 60 ms faster on the 0 ms contention row, which none of the settings
-tried above changed; the untested candidates are listed above. These were
+**What remains.** In the bench table a terminal is still 8 ms faster alone
+(122 against 114 ms median, 64 ms chunks) and 40 ms faster on the 0 ms
+contention row (180 against 140 ms), which none of the settings tried above
+changed; the untested candidates are listed above. These were
 LaunchAgents in the user's GUI domain on macOS 15.7.4. The installed
 LaunchDaemons run in the system domain, and the Mac Studio runs macOS 27;
 both may schedule a job differently. On the Studio: re-measure the rows
