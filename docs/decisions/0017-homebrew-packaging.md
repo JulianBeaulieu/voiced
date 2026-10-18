@@ -77,6 +77,31 @@ anything else is written, and uninstall leaves it alone. A fresh directory
 is claimed by writing the manifest first, with `environment: null`, so an
 interrupted install is still recognised.
 
+The app (ADR 0018) builds Python and the environment before it runs
+`voiced install`, so a first app install finds a directory with no
+`install.json`. Without a manifest, a directory whose every entry is one
+voiced makes is voiced's too, with nothing installed: `control.sock`,
+`.DS_Store`, and
+
+- `envs/`, a real directory holding at least one entry, each named by a UTC
+  timestamp `<id>` (`20261018T120000`, or `-<n>` after it) and a real
+  directory: `envs/<id>` a venv with voiced installed in it, not editable
+  (the rule above), or `envs/<id>.partial`, a build in progress;
+- `python/`, a real directory that uv manages: it has uv's two markers,
+  a `.lock` file and a `.gitignore` of exactly `*`, which `uv python
+  install` writes into every install directory; besides them only `.temp`
+  and `.cache`, and installations, `cpython-3.<minor>[.<patch>]-macos-<arch>-none`
+  directories with `bin/python3`, or a minor-version link of that name to
+  one of them in the same directory.
+
+uv's markers and its naming scheme, not the presence of some Python, are
+the test, because uninstall removes the whole of `python/`: an empty
+directory, a symlink, a stray file, a Python at another path, or any other
+name refuses the directory as before. The same goes for `envs/`: empty,
+symlinked, a file in it, a venv without voiced (or with an editable one) or
+a name voiced does not use. Uninstall of such a directory removes the
+environments and `python/` and keeps an `envs/<id>.partial`.
+
 **One install at a time.** `voiced install` (all of it) and `voiced
 uninstall --yes` hold an exclusive `flock` on the state directory itself
 (no lock file, which in a refused directory would be litter); a second one

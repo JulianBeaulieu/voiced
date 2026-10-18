@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -50,6 +51,15 @@ VENV_ENTRIES = ("lib", "include", "share", "pyvenv.cfg", ".gitignore", "CACHEDIR
 # Files a state directory may hold without a manifest: what a watchdog that
 # ran before any install leaves, and Finder's.
 UNCLAIMED_OK = frozenset({"control.sock", ".DS_Store"})
+# An environment's <id>: the UTC timestamp new environments are named by,
+# with "-<n>" when two builds start in the same second.
+ENV_ID = re.compile(r"\d{8}T\d{6}(-\d+)?")
+# What uv keeps in a Python install directory besides the installations:
+# its lock, scratch space and download cache, and a ``.gitignore`` of "*".
+UV_PYTHON_ENTRIES = frozenset({".lock", ".gitignore", ".temp", ".cache"})
+# One installation, ``cpython-3.12.15-macos-aarch64-none``, or the minor
+# version link uv may point at one, ``cpython-3.12-macos-aarch64-none``.
+UV_PYTHON_INSTALLATION = re.compile(r"cpython-3\.\d+(\.\d+)?[a-z0-9+]*-macos-(aarch64|x86_64)-none")
 
 
 def entry_point(state_dir: Path) -> Path:
@@ -102,14 +112,14 @@ def stable_environment(prefix: str | Path) -> tuple[Path, Origin]:
     return path, "cli"
 
 
-def is_legacy_venv(state_dir: Path) -> bool:
-    """Whether ``state_dir`` is voiced's own venv from before ADR 0017: a
-    venv with voiced installed in it, not editable (``voiced install``
-    always made a regular install; a checkout's ``.venv`` from ``uv sync``
-    has an editable one). Any other venv is someone else's."""
-    if not (state_dir / "pyvenv.cfg").is_file():
+def is_voiced_venv(path: Path) -> bool:
+    """Whether ``path`` is a venv voiced built: voiced installed in it, not
+    editable (``voiced install`` and the app always make a regular install;
+    a checkout's ``.venv`` from ``uv sync`` has an editable one). Any other
+    venv is someone else's."""
+    if not (path / "pyvenv.cfg").is_file():
         return False
-    info = voiced_dist_info(state_dir)
+    info = voiced_dist_info(path)
     if info is None:
         return False
     try:
@@ -118,6 +128,12 @@ def is_legacy_venv(state_dir: Path) -> bool:
         return True  # installed by name, not from a directory
     dir_info = direct.get("dir_info") if isinstance(direct, dict) else None
     return not (isinstance(dir_info, dict) and dir_info.get("editable"))
+
+
+def is_legacy_venv(state_dir: Path) -> bool:
+    """Whether ``state_dir`` is voiced's own venv from before ADR 0017
+    (:func:`is_voiced_venv`)."""
+    return is_voiced_venv(state_dir)
 
 
 def legacy_venv_paths(state_dir: Path) -> list[Path]:
@@ -210,14 +226,99 @@ class NotVoiceds(ValueError):
     """The state directory holds someone else's files."""
 
 
+def is_real_dir(path: Path) -> bool:
+    """A directory, not a symlink to one."""
+    return path.is_dir() and not path.is_symlink()
+
+
+def foreign_environments(envs: Path) -> list[str]:
+    """What in ``envs`` is not an environment voiced built (as
+    ``envs/<name>``), for a state directory without a manifest: every entry
+    must be ``<id>`` holding a voiced venv (:func:`is_voiced_venv`) or a
+    build in progress, ``<id>.partial``; ``.DS_Store`` aside. An empty or
+    symlinked ``envs`` is refused too: the app always builds into it."""
+    if not is_real_dir(envs):
+        return [envs.name]
+    entries = [p for p in envs.iterdir() if p.name != ".DS_Store"]
+    if not entries:
+        return [f"{envs.name} (empty)"]
+    foreign = []
+    for env in entries:
+        partial = env.name.endswith(PARTIAL_SUFFIX)
+        name = env.name.removesuffix(PARTIAL_SUFFIX)
+        ok = (
+            ENV_ID.fullmatch(name) is not None
+            and is_real_dir(env)
+            and (partial or is_voiced_venv(env))
+        )
+        if not ok:
+            foreign.append(f"{envs.name}/{env.name}")
+    return sorted(foreign)
+
+
+def foreign_pythons(pythons: Path) -> list[str]:
+    """What in ``pythons`` uv did not make, for a state directory without a
+    manifest (as ``python/<name>``). uv marks every directory it installs
+    Pythons into with a ``.lock`` file and a ``.gitignore`` of ``*``; besides
+    :data:`UV_PYTHON_ENTRIES` it holds only installations, each a directory
+    with ``bin/python3``, and links to them. Both markers are required, so
+    neither an empty directory nor some other ``python`` is taken for uv's."""
+    if not is_real_dir(pythons):
+        return [pythons.name]
+    try:
+        marked = (pythons / ".gitignore").read_text() == "*" and (pythons / ".lock").is_file()
+    except OSError:
+        marked = False
+    if not marked:
+        return [f"{pythons.name} (not uv's)"]
+    real = os.path.realpath(pythons)
+    foreign = []
+    for entry in pythons.iterdir():
+        if entry.name in UV_PYTHON_ENTRIES or entry.name == ".DS_Store":
+            continue
+        ok = UV_PYTHON_INSTALLATION.fullmatch(entry.name) is not None
+        if ok and entry.is_symlink():
+            target = Path(os.path.realpath(entry))
+            ok = (
+                str(target.parent) == real
+                and target.name != entry.name
+                and UV_PYTHON_INSTALLATION.fullmatch(target.name) is not None
+            )
+        if ok:
+            ok = entry.is_dir() and (entry / "bin" / "python3").exists()
+        if not ok:
+            foreign.append(f"{pythons.name}/{entry.name}")
+    return sorted(foreign)
+
+
+def foreign_entries(state_dir: Path) -> list[str]:
+    """What in a state directory without a manifest voiced did not make.
+
+    Allowed: :data:`UNCLAIMED_OK`, and what the app builds before it runs
+    ``voiced install`` (ADR 0018): a uv-managed ``python/``
+    (:func:`foreign_pythons`) and ``envs/`` (:func:`foreign_environments`).
+    """
+    foreign = []
+    for entry in state_dir.iterdir():
+        if entry.name in UNCLAIMED_OK:
+            continue
+        if entry.name == ENVS:
+            foreign += foreign_environments(entry)
+        elif entry.name == PYTHONS:
+            foreign += foreign_pythons(entry)
+        else:
+            foreign.append(entry.name)
+    return sorted(foreign)
+
+
 def claim(state_dir: Path) -> Manifest | None:
     """What voiced may do with ``state_dir``, for install and uninstall alike.
 
     Returns its manifest; for a legacy venv one that adopts the directory as
-    its own environment; None when it is missing or holds only
-    :data:`UNCLAIMED_OK` files (voiced's to use, nothing installed). Raises
-    :class:`NotVoiceds` for anything else, and :class:`ManifestError` for a
-    manifest that cannot be read.
+    its own environment; None when it is missing or holds only what voiced
+    makes before a manifest exists (:func:`foreign_entries`: voiced's to
+    use, nothing installed). Raises :class:`NotVoiceds` for anything else,
+    and :class:`ManifestError` for a manifest that cannot be read.
     """
     manifest = read_manifest(state_dir)
     if manifest is not None:
@@ -226,7 +327,7 @@ def claim(state_dir: Path) -> Manifest | None:
         return Manifest(source="cli", environment=state_dir)
     if not state_dir.is_dir():
         return None
-    others = sorted(p.name for p in state_dir.iterdir() if p.name not in UNCLAIMED_OK)
+    others = foreign_entries(state_dir)
     if others:
         shown = ", ".join(others[:5]) + (", ..." if len(others) > 5 else "")
         raise NotVoiceds(f"it is not empty and has no {MANIFEST}: {shown}")

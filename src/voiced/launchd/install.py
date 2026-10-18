@@ -864,8 +864,8 @@ def state_targets(state_dir: Path) -> UninstallTargets:
         return UninstallTargets([], [], [], refused=str(exc))
     entry = entry_point(state_dir)
     files = [entry, state_dir / "control.sock", state_dir / MANIFEST]
-    if manifest is None:  # nothing installed; at most a stray socket
-        return UninstallTargets([], files, [state_dir])
+    # Without a manifest, claim has checked every environment and the Python
+    # directory are voiced's (what the app builds before `voiced install`).
     trees = [*built_environments(state_dir), state_dir / PYTHONS]
     if is_legacy_venv(state_dir):
         legacy = legacy_venv_paths(state_dir)

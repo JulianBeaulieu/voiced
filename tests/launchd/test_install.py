@@ -866,6 +866,61 @@ def test_uninstall_removes_only_what_voiced_owns(settings: Settings, tmp_path: P
     assert not p.state_dir.exists()
 
 
+def _app_build(state: Path) -> Path:
+    """What the app builds before `voiced install` (ADR 0018); returns the
+    environment."""
+    installation = state / "python" / "cpython-3.12.15-macos-aarch64-none"
+    (installation / "bin").mkdir(parents=True)
+    (installation / "bin" / "python3").write_text("")
+    (state / "python" / ".lock").write_text("")
+    (state / "python" / ".gitignore").write_text("*")
+    (state / "envs" / "20261018T110000.partial").mkdir(parents=True)
+    return _environment(state / "envs" / "20261018T120000")
+
+
+def test_install_from_the_app_environment_before_a_manifest(
+    settings: Settings, tmp_path: Path
+) -> None:
+    env = _app_build(tmp_path / "state")
+    p = _plan(settings, tmp_path, prefix=env, origin="app")
+    _install(p)
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None and manifest.source == "app"
+    assert manifest.environment == env
+    assert (p.state_dir / "envs" / "20261018T110000.partial").is_dir(), "never pruned"
+
+
+def test_uninstall_before_a_manifest_removes_only_the_app_build(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The app built Python and an environment, and `voiced install` never
+    ran: uninstall removes them, and leaves a build still in progress."""
+    _app_build(tmp_path / "state")
+    p = _plan(settings, tmp_path)
+    (p.state_dir / "control.sock").write_text("")
+    said: list[str] = []
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert targets.refused is None and targets.manifest is None
+    remove_targets(targets, p, said.append)
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["envs"]
+    assert [x.name for x in (p.state_dir / "envs").iterdir()] == ["20261018T110000.partial"]
+
+
+def test_uninstall_before_a_manifest_refuses_a_user_venv_in_envs(
+    settings: Settings, tmp_path: Path
+) -> None:
+    _app_build(tmp_path / "state")
+    p = _plan(settings, tmp_path)
+    mine = p.state_dir / "envs" / "20261018T130000"
+    _environment(mine)
+    shutil.rmtree(next(mine.glob("lib/python3*/site-packages/voiced-*.dist-info")))
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert targets.refused is not None and "envs/20261018T130000" in targets.refused
+    assert remove_targets(targets, p, lambda _: None) == 0
+    assert (mine / "pyvenv.cfg").exists()
+    assert (p.state_dir / "python" / ".lock").exists()
+
+
 def test_uninstall_refuses_a_directory_that_is_not_voiceds(
     settings: Settings, tmp_path: Path
 ) -> None:
