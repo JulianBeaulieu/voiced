@@ -31,6 +31,7 @@ from voiced.control.protocol import (
     UNKNOWN_OP,
     OpError,
 )
+from voiced.layout import environment_python
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
@@ -105,16 +106,22 @@ class NoSupervisor:
         raise ServiceUnavailable("the watchdog is not running")
 
 
-def engines_in_subprocess(timeout_s: float = CATALOGUE_TIMEOUT_S) -> dict[str, Any]:
+def engines_in_subprocess(
+    timeout_s: float = CATALOGUE_TIMEOUT_S, entry: Path | None = None
+) -> dict[str, Any]:
     """``engines.list`` from ``python -m voiced.engines.catalogue``.
 
     Engine plugins are third-party code that imports numpy and more; running
     them in a child process keeps them out of the watchdog, which must not be
-    wedged by them (ADR 0012, ADR 0013).
+    wedged by them (ADR 0012, ADR 0013). With ``entry`` (the state
+    directory's ``bin/voiced``) the child runs that environment's
+    interpreter, looked up on every call: the watchdog's own may have been
+    deleted by an upgrade (ADR 0017).
     """
+    python = sys.executable if entry is None else str(environment_python(entry))
     # -P: `-m` would otherwise put the working directory (the user's home,
     # for the daemon) first on sys.path, ahead of the standard library.
-    argv = [sys.executable, "-P", "-m", "voiced.engines.catalogue"]
+    argv = [python, "-P", "-m", "voiced.engines.catalogue"]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
@@ -280,6 +287,10 @@ class Operations:
     def _restart(self, name: ServiceName) -> None:
         try:
             log.info("%s: %s", name, self.supervisor.restart(name))
+        except ServiceUnavailable as exc:
+            # Expected: it became unavailable after check_restart (Homebrew
+            # took its lock in between, say).
+            log.warning("%s: requested restart not done: %s", name, exc)
         except Exception:
             log.exception("%s: requested restart failed", name)
 

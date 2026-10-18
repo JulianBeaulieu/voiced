@@ -151,3 +151,16 @@ process now imports `voiced.settings_store` (pydantic, tomlkit) and
 code, FastAPI or numpy: the engine catalogue is read in a child process, and
 the CLI imports the installer and `doctor` only in the commands that need
 them. A test enforces this.
+
+## Amendment (ADR 0017)
+
+Before each poll the watchdog checks that its own environment is still the
+installed one. Two things say it is not: a file it runs from
+(`sys.prefix`, `sys.base_prefix`, `sys.executable`, resolved at start) was
+deleted or replaced (an old keg or Python removed, a keg rebuilt by
+`brew reinstall`, an old environment pruned), or `~/.voiced/bin/voiced`
+was repointed (`voiced install`, the app). Then it restarts both services
+and exits, and launchd starts it again from the new environment; while
+Homebrew still holds the lock of one of those formulae it waits, without
+restarting anything. Details, and why it does not follow Homebrew's `opt`
+link, are in [ADR 0017](0017-homebrew-packaging.md#the-install-layout).

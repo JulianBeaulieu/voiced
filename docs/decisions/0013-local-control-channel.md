@@ -310,3 +310,13 @@ Soprano service shows the new name too), and the language display names
 - `voiced status` gains state, uptime and restart counts when the watchdog
   answers; `voiced doctor` checks that the socket exists, is 0600, belongs
   to the user and answers `status`.
+
+## Amendment (ADR 0017)
+
+The state directory is `[install] venv_dir`, but it is no longer the venv:
+it holds the entry point link `bin/voiced`, the environments voiced built,
+`install.json` and the socket, and the environment may live elsewhere
+(Homebrew's keg). Moving the state directory still moves the socket. The
+engine catalogue child process runs the interpreter of the environment
+`bin/voiced` resolves to, not the watchdog's `sys.executable`, which an
+upgrade may have deleted.

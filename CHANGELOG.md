@@ -8,6 +8,41 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Homebrew formula (`packaging/homebrew/voiced.rb`, for the
+  `JulianBeaulieu/homebrew-voiced` tap): `brew install --HEAD` builds the
+  `voiced` command and its environment from the shipped lock, then
+  `voiced install` sets up the services with no `--source`. ADR 0017.
+- One install layout for every install path (ADR 0017): `~/.voiced` is the
+  state directory, `~/.voiced/bin/voiced` a link to the active environment,
+  and `install.json` records it. `voiced install` links the environment it
+  runs from (Homebrew's keg through `opt`), or with `--source <checkout>`
+  builds a fresh one into `~/.voiced/envs/` on a uv-managed Python in
+  `~/.voiced/python`, and checks that it imports the engines before linking.
+  Switching between Homebrew and a checkout is `voiced install` plus
+  `voiced restart all`, with no root step; a `~/.voiced` from before this
+  release (a venv) is adopted and replaced on the first switch
+  (`voiced install --source <checkout>`). A state directory that is not
+  voiced's, a venv of your own included, is refused and never deleted.
+  Installs and uninstalls hold a lock on the state directory, and a failed
+  install changes nothing.
+- Every install path installs `src/voiced/requirements.lock` (`uv export` of
+  `uv.lock`, shipped in the package) with `--require-hashes --no-deps`, and
+  builds voiced with the hashed build backend in
+  `src/voiced/build-requirements.lock`. A test keeps both equal to `uv.lock`.
+- The watchdog restarts both services, then itself, when the environment it
+  started from is replaced: a keg deleted by `brew upgrade` and cleanup, an
+  interpreter deleted by a `python@3.12` upgrade, a keg rebuilt by
+  `brew reinstall`, or `~/.voiced/bin/voiced` repointed. It does not follow
+  `opt/voiced`, which Homebrew repoints before the new keg is finished, and
+  while Homebrew holds the formula's lock it makes no restarts at all (up
+  to 30 minutes). The engine catalogue runs that environment's interpreter.
+- `voiced doctor` has an Install row (source, environment, version, lock),
+  warns when a listening service runs another environment than
+  `~/.voiced/bin/voiced` links, and when a daemon is loaded but not
+  running.
+- The plists' `KeepAlive` holds only while `~/.voiced/bin/voiced` exists, so
+  launchd stops respawning the daemons after `brew uninstall voiced`.
+  Existing installs pick this up with `voiced install` and the sudo step.
 - Project skeleton: `src/voiced` package with a `uv` development setup,
   frozen engine interfaces (`STTEngine`, `STTStreamSession`, `TTSEngine`),
   entry-point engine registry, one config file plus `VOICED_*` environment
@@ -132,6 +167,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `voiced install` refuses a state directory holding files that are not
+  voiced's, and `voiced uninstall` removes only what the layout owns, keeping
+  the rest; before, a directory with `pyvenv.cfg` was deleted whole.
+- `voiced install --source` takes a checkout path (no longer a pip
+  requirement) and needs uv; `--no-uv` is gone, and `--venv` is now
+  `--state-dir` (the old name still works). `[install] python` is a version.
+- `voiced doctor` recognises voiced's daemon on a port by its argv[1], the
+  entry point.
 - CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.0`, installs
   ffmpeg, and cancels superseded runs of the same branch.
 - `parakeet-mlx` is pinned to `>=0.5,<0.6` and `mlx-audio` to

@@ -10,32 +10,32 @@ import pytest
 from voiced.cli import LIFECYCLE, build_parser
 
 CASES: list[tuple[list[str], dict[str, Any]]] = [
-    (["install"], {"dry_run": False, "venv": None, "python": None, "source": None}),
+    (["install"], {"dry_run": False, "state_dir": None, "python": None, "source": None}),
     (
         [
             "install",
             "--dry-run",
-            "--venv",
+            "--state-dir",
             "/opt/v",
             "--python",
             "3.12",
             "--source",
-            "voiced==1.0",
+            "/src/voiced",
             "--staging-dir",
             "/tmp/stage",
             "--skip-models",
-            "--no-uv",
         ],
         {
             "dry_run": True,
-            "venv": Path("/opt/v"),
+            "state_dir": Path("/opt/v"),
             "python": "3.12",
-            "source": "voiced==1.0",
+            "source": Path("/src/voiced"),
             "staging_dir": Path("/tmp/stage"),
             "skip_models": True,
-            "no_uv": True,
         },
     ),
+    (["install", "--venv", "/opt/v"], {"state_dir": Path("/opt/v")}),  # the older name
+    (["uninstall", "--venv", "/opt/v"], {"state_dir": Path("/opt/v")}),
     (["start"], {"service": "all"}),
     (["start", "stt"], {"service": "stt"}),
     (["stop", "watchdog"], {"service": "watchdog"}),

@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
+import json
 import os
 import plistlib
 import pwd
 import shlex
+import shutil
 import stat
 import subprocess
+import sys
+import threading
+import time
+import tomllib
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,12 +34,12 @@ from voiced.launchd.install import (
     plan_summary,
     removal_refusal,
     remove_targets,
-    requirement_with_extras,
     run_install,
     uninstall_targets,
     write_default_config,
     write_staging,
 )
+from voiced.layout import Manifest, install_lock, read_manifest, sha256_file, write_manifest
 
 GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
@@ -44,12 +52,11 @@ def golden_plan(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> InstallP
     settings.install.hf_home = None
     return plan_install(
         settings,
-        venv_dir=HOME / ".voiced",
+        state_dir=HOME / ".voiced",
         home=HOME,
         staging_dir=HOME / ".config/voiced/launchd",
         config_file=HOME / ".config/voiced/config.toml",
-        source="voiced==0.0.1",
-        uv="/opt/homebrew/bin/uv",
+        prefix="/opt/homebrew/Cellar/voiced/0.1.0/libexec",
     )
 
 
@@ -75,7 +82,9 @@ def test_plists_match_golden(plan: InstallPlan, service: str) -> None:
     parsed = plistlib.loads(plan.render(service))
     assert parsed["Label"] == plan.labels[service]
     assert parsed["UserName"] == "someone"
-    assert parsed["KeepAlive"] is True and parsed["RunAtLoad"] is True
+    assert parsed["RunAtLoad"] is True
+    # Respawned only while the entry point resolves (not after `brew uninstall`).
+    assert parsed["KeepAlive"] == {"PathState": {str(HOME / ".voiced/bin/voiced"): True}}
     assert parsed["EnvironmentVariables"]["VOICED_CONFIG"] == str(plan.config_file)
     assert "StandardOutPath" not in parsed and "StandardErrorPath" not in parsed
     stdio = parsed["EnvironmentVariables"]["VOICED_STDIO_LOG"]
@@ -159,9 +168,9 @@ def test_long_venv_path_is_not_flagged(settings: Settings, tmp_path: Path) -> No
     interpreter path is long or has spaces, and the engine reads espeak-ng data
     from Homebrew, not from the venv, so no venv path length is too long."""
     venv = tmp_path / "Application Support" / ("x" * 200) / ".voiced"
-    p = plan_install(settings, venv_dir=venv, home=tmp_path, uv=None)
+    p = plan_install(settings, state_dir=venv, home=tmp_path, uv=None)
     summary = plan_summary(p)
-    assert f"venv           {venv}" in summary
+    assert f"state dir      {venv}" in summary
     assert "warning" not in summary
 
 
@@ -176,6 +185,11 @@ def test_reinstall_waits_for_bootout() -> None:
     assert lines.index(next(line for line in lines if "bootstrap" in line)) > 1
 
 
+def _download_env(p: InstallPlan) -> dict[str, str]:
+    env: dict[str, str] = json.loads(p.model_download_command()[-1])
+    return env
+
+
 def test_hf_home_resolved_once_for_plist_and_download(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -184,24 +198,24 @@ def test_hf_home_resolved_once_for_plist_and_download(
 
     monkeypatch.delenv("HF_HOME", raising=False)
     p = make()
-    assert "HF_HOME" not in p.environment()
-    assert not any(a.startswith("HF_HOME=") for a in p.model_download_command())
+    assert "HF_HOME" not in p.environment_variables()
+    assert "HF_HOME" not in _download_env(p)
 
     monkeypatch.setenv("HF_HOME", str(tmp_path / "from-env"))
     p = make()  # the shell's HF_HOME reaches the daemons and the download alike
-    assert p.environment()["HF_HOME"] == str(tmp_path / "from-env")
-    assert f"HF_HOME={tmp_path / 'from-env'}" in p.model_download_command()
+    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "from-env")
+    assert _download_env(p)["HF_HOME"] == str(tmp_path / "from-env")
 
     settings.install.hf_home = tmp_path / "from-config"
     p = make()  # the config key wins over the environment
-    assert p.environment()["HF_HOME"] == str(tmp_path / "from-config")
-    assert f"HF_HOME={tmp_path / 'from-config'}" in p.model_download_command()
+    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "from-config")
+    assert _download_env(p)["HF_HOME"] == str(tmp_path / "from-config")
 
     settings.install.hf_home = None
     monkeypatch.setenv("HF_HOME", "relative/cache")
     monkeypatch.chdir(tmp_path)
     p = make()  # a relative HF_HOME is made absolute: the daemon's cwd differs
-    assert p.environment()["HF_HOME"] == str(tmp_path / "relative/cache")
+    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "relative/cache")
 
 
 def test_espeak_override_reaches_daemons_and_download(
@@ -213,7 +227,7 @@ def test_espeak_override_reaches_daemons_and_download(
         return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
 
     p = make()
-    assert not {"VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA"} & set(p.environment())
+    assert not {"VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA"} & set(p.environment_variables())
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "lib/libespeak-ng.dylib")
@@ -226,68 +240,105 @@ def test_espeak_override_reaches_daemons_and_download(
     for service in ("stt", "tts", "watchdog"):
         env = plistlib.loads(p.render(service))["EnvironmentVariables"]
         assert {k: env[k] for k in expected} == expected
-    command = p.model_download_command()
-    assert all(f"{k}={v}" in command for k, v in expected.items())
+    assert {k: _download_env(p)[k] for k in expected} == expected
     assert f"VOICED_ESPEAK_LIBRARY {expected['VOICED_ESPEAK_LIBRARY']}" in plan_summary(p)
 
 
-def test_venv_commands_with_uv(plan: InstallPlan) -> None:
-    cmds = plan.venv_commands()
-    assert cmds[0] == [
-        "/opt/homebrew/bin/uv",
-        "venv",
-        "--allow-existing",
-        "--python",
-        "3.12",
-        "/Users/someone/.voiced",
-    ]
-    assert cmds[1][:3] == ["/opt/homebrew/bin/uv", "pip", "install"]
-    # Extras go before the version, not after: `voiced==0.0.1[stt,tts]` is
-    # invalid PEP 508 and pip rejects it.
-    assert cmds[1][-1] == "voiced[stt,tts]==0.0.1"
-
-
-def test_requirement_places_extras_before_a_version_specifier(settings: Settings) -> None:
-    """A pinned release source (`voiced==X`, the default after the first PyPI
-    release) must keep the extras before the version: `voiced==X[stt,tts]` is
-    invalid PEP 508 and a bare `voiced install` would fail on it."""
-    pinned = plan_install(settings, source="voiced==0.0.1")
-    assert pinned.requirement == "voiced[stt,tts]==0.0.1"
-    # A dev checkout source is a path; its extras go at the end.
-    path = plan_install(settings, source="/Users/someone/voiced")
-    assert path.requirement == "/Users/someone/voiced[stt,tts]"
-
-
-def test_requirement_with_extras_variants() -> None:
-    e = ("stt", "tts")
-    assert requirement_with_extras("voiced==0.0.1", e) == "voiced[stt,tts]==0.0.1"
-    assert requirement_with_extras("voiced>=1,<2", e) == "voiced[stt,tts]>=1,<2"
-    assert requirement_with_extras("/home/me/voiced", e) == "/home/me/voiced[stt,tts]"
-    assert requirement_with_extras(".", e) == ".[stt,tts]"
-    assert requirement_with_extras("voiced", e) == "voiced[stt,tts]"
-    assert requirement_with_extras("voiced==0.0.1", ()) == "voiced==0.0.1"
-
-
-def test_venv_commands_with_pip(settings: Settings, tmp_path: Path) -> None:
+def test_build_commands_use_the_locks_and_a_managed_python(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """--source: a fresh environment under envs/ on a uv-managed Python in the
+    state dir, every dependency with its hash from the lock, then voiced
+    without dependencies and with a hashed build backend."""
+    checkout = tmp_path / "checkout"
     p = plan_install(
-        settings,
-        venv_dir=Path("/v"),
-        home=tmp_path,
-        staging_dir=tmp_path,
-        source=".",
-        uv=None,
-        python="/usr/bin/python3",
+        settings, state_dir=tmp_path / "state", home=tmp_path, source=checkout, uv="/fake/uv"
     )
-    cmds = p.venv_commands()
-    assert cmds[0] == ["/usr/bin/python3", "-m", "venv", "/v"]
-    assert cmds[-1] == ["/v/bin/python", "-m", "pip", "install", "--upgrade", ".[stt,tts]"]
+    assert p.environment.parent == tmp_path / "state" / "envs"
+    assert p.origin == "cli"
+    python = str(p.environment / "bin" / "python")
+    assert p.build_commands() == [
+        [
+            "/usr/bin/env",
+            f"UV_PYTHON_INSTALL_DIR={tmp_path / 'state' / 'python'}",
+            "/fake/uv",
+            "venv",
+            "--managed-python",
+            "--python",
+            "3.12",
+            str(p.environment),
+        ],
+        [
+            *("/fake/uv", "pip", "install", "--python", python, "--no-deps"),
+            *("--require-hashes", "-r", str(checkout / "src/voiced/requirements.lock")),
+        ],
+        [
+            *("/fake/uv", "pip", "install", "--python", python, "--no-deps"),
+            *("--build-constraints", str(checkout / "src/voiced/build-requirements.lock")),
+            str(checkout),
+        ],
+    ]
 
 
-def test_model_download_runs_in_venv_with_config(plan: InstallPlan) -> None:
+def test_without_source_the_environment_is_the_running_one(settings: Settings) -> None:
+    keg = "/opt/homebrew/Cellar/voiced/HEAD-afcb37e/libexec"
+    brewed = plan_install(settings, prefix=keg)
+    assert brewed.environment == Path("/opt/homebrew/opt/voiced/libexec")
+    assert brewed.origin == "homebrew" and brewed.build_commands() == []
+    assert plan_install(settings).environment == Path(sys.prefix)  # this test venv
+    assert plan_install(settings).origin == "cli"
+
+
+def test_stable_environment_maps_only_a_voiced_keg() -> None:
+    from voiced.layout import stable_environment
+
+    assert stable_environment("/usr/local/Cellar/voiced/0.1.0/libexec") == (
+        Path("/usr/local/opt/voiced/libexec"),
+        "homebrew",
+    )
+    for other in (
+        "/Users/u/.voiced",
+        "/opt/homebrew/Cellar/other/1.0/libexec",
+        "/opt/homebrew/opt/voiced/libexec",
+    ):
+        assert stable_environment(other) == (Path(other), "cli")
+
+
+def test_plists_are_the_same_for_every_environment(settings: Settings, tmp_path: Path) -> None:
+    """Switching between Homebrew, a source build and the app is repointing
+    bin/voiced; the plists, and so the root step, never change."""
+    common = {"state_dir": tmp_path / "state", "home": tmp_path, "uv": "/fake/uv"}
+    brewed = plan_install(settings, prefix="/opt/homebrew/Cellar/voiced/1/libexec", **common)
+    built = plan_install(settings, source=tmp_path, **common)
+    assert brewed.plists() == built.plists()
+
+
+def test_model_download_runs_in_the_new_environment(plan: InstallPlan) -> None:
+    """The environment travels as JSON, so a state path with ``=`` in it is
+    not taken for an assignment the way ``/usr/bin/env`` would."""
+    plan = dataclasses.replace(plan, environment=Path("/tmp/a=b/env"))
     cmd = plan.model_download_command()
-    assert cmd[:2] == ["/usr/bin/env", f"VOICED_CONFIG={plan.config_file}"]
-    assert cmd[-3] == str(plan.python_bin)
-    assert "engine.load()" in cmd[-1]
+    assert cmd[0] == "/tmp/a=b/env/bin/python"
+    assert "engine.load()" in cmd[2]
+    assert json.loads(cmd[3])["VOICED_CONFIG"] == str(plan.config_file)
+
+
+def test_shipped_lock_matches_uv_lock() -> None:
+    """Every install path installs from these files; they must say what
+    uv.lock says. Regenerate with the commands in CONTRIBUTING.md."""
+    uv = shutil.which("uv")
+    root = Path(__file__).resolve().parents[2]
+    if uv is None or not (root / "uv.lock").is_file():
+        pytest.skip("needs uv and a checkout")
+    exports = {
+        "src/voiced/requirements.lock": ["--no-dev", "--extra", "stt", "--extra", "tts"],
+        "src/voiced/build-requirements.lock": ["--only-group", "build"],
+    }
+    for path, flags in exports.items():
+        argv = [uv, "export", "--frozen", *flags, "--no-emit-project", "--no-header", "-q"]
+        out = subprocess.run(argv, cwd=root, capture_output=True, text=True, check=True).stdout
+        assert out == (root / path).read_text(), f"{path} is stale"
+    assert install_module.packaged_lock().is_file()
 
 
 def test_write_staging(settings: Settings, tmp_path: Path) -> None:
@@ -316,107 +367,6 @@ def test_write_default_config(tmp_path: Path) -> None:
     assert target.read_text() == "# mine"
 
 
-def _tmp_plan(settings: Settings, tmp_path: Path) -> InstallPlan:
-    settings.server.log_dir = tmp_path / "logs"
-    return plan_install(
-        settings,
-        venv_dir=tmp_path / "venv",
-        home=tmp_path,
-        staging_dir=tmp_path / "stage",
-        config_file=tmp_path / "config.toml",
-        source="voiced==0.0.1",
-        uv="/fake/uv",
-    )
-
-
-def test_run_install_executes_steps_in_order(settings: Settings, tmp_path: Path) -> None:
-    p = _tmp_plan(settings, tmp_path)
-    calls: list[list[str]] = []
-    said: list[str] = []
-
-    def runner(argv: Sequence[str]) -> CommandResult:
-        calls.append(list(argv))
-        if argv[1] == "venv":  # the venv step produces the entry point
-            p.voiced_bin.parent.mkdir(parents=True)
-            p.voiced_bin.write_text("#!/bin/sh\n")
-        return CommandResult(0)
-
-    run_install(p, runner=runner, say=said.append)
-    assert [c[:2] for c in calls] == [
-        ["/fake/uv", "venv"],
-        ["/fake/uv", "pip"],
-        ["/usr/bin/env", f"VOICED_CONFIG={p.config_file}"],
-    ]
-    assert p.config_file.exists()
-    assert (tmp_path / "logs").is_dir()
-    assert p.install_script_path.exists()
-    assert any("created from config.example.toml" in line for line in said)
-
-
-def test_run_install_dry_run_touches_nothing(settings: Settings, tmp_path: Path) -> None:
-    p = _tmp_plan(settings, tmp_path)
-    said: list[str] = []
-
-    def runner(argv: Sequence[str]) -> CommandResult:
-        pytest.fail("dry run must not execute anything")
-
-    run_install(p, runner=runner, dry_run=True, say=said.append)
-    assert not p.config_file.exists()
-    assert not p.staging_dir.exists()
-    assert not (tmp_path / "logs").exists()
-    text = "\n".join(said)
-    assert "would be created" in text
-    assert "$ /fake/uv venv" in text
-    assert f"would write {p.install_script_path}" in text
-
-
-def test_run_install_fails_if_entry_point_missing(settings: Settings, tmp_path: Path) -> None:
-    p = _tmp_plan(settings, tmp_path)
-    with pytest.raises(InstallError, match="missing after install"):
-        run_install(p, runner=lambda argv: CommandResult(0), say=lambda _: None)
-
-
-def test_run_install_stops_on_failure(settings: Settings, tmp_path: Path) -> None:
-    p = _tmp_plan(settings, tmp_path)
-    with pytest.raises(InstallError, match="boom"):
-        run_install(p, runner=lambda argv: CommandResult(1, "", "boom"), say=lambda _: None)
-    assert not p.install_script_path.exists()
-
-
-def test_cli_dry_run_prints_everything_and_writes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
-    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
-    staging = tmp_path / "stage"
-    code = main(
-        [
-            "install",
-            "--dry-run",
-            "--venv",
-            str(tmp_path / "venv"),
-            "--staging-dir",
-            str(staging),
-            "--source",
-            "voiced==0.0.1",
-            "--no-uv",
-        ]
-    )
-    out = capsys.readouterr().out
-    labels = Settings().launchd
-    assert code == 0
-    assert not staging.exists()
-    assert not (tmp_path / "logs").exists()
-    assert "dry run" in out
-    assert f"<string>{labels.label('watchdog')}</string>" in out
-    assert f"<string>{pwd.getpwuid(os.getuid()).pw_name}</string>" in out
-    assert f"{staging / 'install-daemons.sh'} (would be written)" in out
-    assert "-m venv" in out and "voiced[stt,tts]==0.0.1" in out
-
-
-# Uninstall safety --------------------------------------------------------------
-
-
 def test_removal_refusals(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
@@ -431,34 +381,6 @@ def test_removal_refusals(tmp_path: Path) -> None:
     assert removal_refusal(ok, home) is None
 
 
-def test_remove_targets_requires_pyvenv_cfg(settings: Settings, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    (home / ".voiced").mkdir(parents=True)
-    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
-    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
-    said: list[str] = []
-    assert remove_targets(targets, p, said.append) == 0
-    assert (home / ".voiced").exists()
-    assert "no pyvenv.cfg" in said[0]
-    (home / ".voiced" / "pyvenv.cfg").write_text("home = /x\n")
-    assert remove_targets(targets, p, said.append) == 1
-    assert not (home / ".voiced").exists()
-
-
-def test_remove_targets_never_deletes_home(settings: Settings, tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    (home / "keep.txt").write_text("x")
-    (home / "pyvenv.cfg").write_text("x")  # even if it looks like a venv
-    p = plan_install(settings, venv_dir=home, home=home, config_file=home / "config.toml", uv=None)
-    said: list[str] = []
-    targets = uninstall_targets(p, settings, logs=False, models=False, config=True)
-    assert targets.trees == [home] and p.staging_dir == home / "launchd"
-    remove_targets(targets, p, said.append)
-    assert (home / "keep.txt").exists()
-    assert any("is the home directory" in line for line in said)
-
-
 def test_remove_logs_only_touches_voiced_files(settings: Settings, tmp_path: Path) -> None:
     """``log_dir = ~/Library/Logs`` is legal; other apps' logs must survive."""
     home = tmp_path / "home"
@@ -468,7 +390,7 @@ def test_remove_logs_only_touches_voiced_files(settings: Settings, tmp_path: Pat
     for name in ("stt.log", "stt.log.1", "tts.stderr.log", "watchdog.log", "metal-probe.json"):
         (logs / name).write_text("x")
     settings.server.log_dir = logs
-    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
+    p = plan_install(settings, state_dir=home / ".voiced", home=home, uv=None)
     targets = uninstall_targets(p, settings, logs=True, models=False, config=False)
     assert logs not in targets.trees and logs in targets.prune_dirs
     remove_targets(targets, p, lambda _: None)
@@ -481,7 +403,7 @@ def test_remove_logs_prunes_empty_dir(settings: Settings, tmp_path: Path) -> Non
     logs.mkdir(parents=True)
     (logs / "stt.log").write_text("x")
     settings.server.log_dir = logs
-    p = plan_install(settings, venv_dir=home / ".voiced", home=home, uv=None)
+    p = plan_install(settings, state_dir=home / ".voiced", home=home, uv=None)
     remove_targets(
         uninstall_targets(p, settings, logs=True, models=False, config=False), p, lambda _: None
     )
@@ -496,7 +418,7 @@ def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path
     (home / "config.toml").write_text("x")
     (staging / "mine.plist").write_text("keep")
     p = plan_install(
-        settings, venv_dir=home / ".voiced", home=home, config_file=home / "config.toml"
+        settings, state_dir=home / ".voiced", home=home, config_file=home / "config.toml"
     )
     for name in p.labels:
         p.staged_plist(name).write_text("x")
@@ -517,53 +439,6 @@ def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
     assert tmp_path / "hf" / "hub" / "models--mlx-community--parakeet-tdt-0.6b-v3" in targets.trees
 
 
-@pytest.mark.parametrize(
-    ("argv", "root", "message"),
-    [
-        (["install", "--source", "."], True, "not with sudo"),
-        (["install"], False, "--source ~/voiced"),
-    ],
-)
-def test_cli_install_refuses_unsafe_requests(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    argv: list[str],
-    root: bool,
-    message: str,
-) -> None:
-    """Root daemons running a user-writable venv would hand root to anything
-    that can write to it; and an unpublished name from PyPI is whatever
-    someone else registers under it. Both stop before anything is written."""
-    from voiced import cli_lifecycle
-    from voiced.launchd import install
-
-    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
-    monkeypatch.setattr(cli_lifecycle, "is_root", lambda: root)
-    monkeypatch.setattr(install, "repo_root", lambda: None)  # as after `uv tool install`
-    assert main([*argv, "--dry-run"]) == 2
-    assert message in capsys.readouterr().out
-    assert not (tmp_path / "config.toml").exists()
-
-
-def test_run_install_tightens_an_existing_readable_config(
-    settings: Settings, tmp_path: Path
-) -> None:
-    """Older installs created the config 0644; re-installing makes it 0600."""
-    p = _tmp_plan(settings, tmp_path)
-    p.config_file.parent.mkdir(parents=True, exist_ok=True)
-    p.config_file.write_text('[server]\napi_key = "k"\n')
-    p.config_file.chmod(0o644)
-    said: list[str] = []
-    run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=said.append)
-    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o644, "dry run changes nothing"
-    assert any("would tighten" in line for line in said)
-    p.voiced_bin.parent.mkdir(parents=True)
-    p.voiced_bin.write_text("")
-    run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
-    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
-
-
 def test_plan_uses_the_real_account_not_logname(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -574,3 +449,475 @@ def test_plan_uses_the_real_account_not_logname(
     p = plan_install(settings, home=tmp_path, staging_dir=tmp_path / "s", uv=None)
     assert p.user == pwd.getpwuid(os.getuid()).pw_name != "System Administrator"
     assert f"<string>{p.user}</string>" in p.render("stt").decode()
+
+
+# The state directory (ADR 0017) -----------------------------------------------
+
+
+def _environment(path: Path, version: str = "0.0.1") -> Path:
+    """A minimal environment: bin/voiced, bin/python, a dist-info."""
+    (path / "bin").mkdir(parents=True)
+    for name in ("voiced", "python"):
+        (path / "bin" / name).write_text("#!/bin/sh\n")
+        (path / "bin" / name).chmod(0o755)
+    (path / "lib/python3.12/site-packages" / f"voiced-{version}.dist-info").mkdir(parents=True)
+    (path / "pyvenv.cfg").write_text("home = /x\n")
+    return path
+
+
+def _plan(settings: Settings, tmp_path: Path, **kwargs: Any) -> InstallPlan:
+    settings.server.log_dir = tmp_path / "logs"
+    kwargs.setdefault("prefix", tmp_path / "env")
+    return plan_install(
+        settings,
+        state_dir=tmp_path / "state",
+        home=tmp_path,
+        staging_dir=tmp_path / "stage",
+        config_file=tmp_path / "config.toml",
+        uv="/fake/uv",
+        **kwargs,
+    )
+
+
+def _check_ok(argv: Sequence[str]) -> CommandResult:
+    """The engine check of an environment that has them."""
+    return CommandResult(0, "voiced 0.0.1\n")
+
+
+def _install(p: InstallPlan, said: list[str] | None = None) -> list[list[str]]:
+    """Runs ``p``; returns every command, the engine check included."""
+    calls: list[list[str]] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        calls.append(list(argv))
+        if argv[-1:] == [str(p.environment)]:  # uv venv
+            _environment(p.environment)
+        return CommandResult(0)
+
+    def query(argv: Sequence[str]) -> CommandResult:
+        calls.append(list(argv))
+        return _check_ok(argv)
+
+    run_install(p, runner=runner, query=query, say=(said if said is not None else []).append)
+    return calls
+
+
+def test_install_links_the_running_environment(settings: Settings, tmp_path: Path) -> None:
+    env = _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    calls = _install(p)
+    assert [c[0] for c in calls] == [str(env / "bin/python")] * 2  # check, then models
+    assert "import mlx.core" in calls[0][-1]
+    assert "engine.load()" in calls[1][2]
+    assert p.entry.is_symlink() and os.readlink(p.entry) == str(env / "bin" / "voiced")
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None
+    assert (manifest.source, manifest.environment) == ("cli", env)
+    assert manifest.lock_sha256 == sha256_file(install_module.packaged_lock())
+    assert manifest.python == os.path.realpath(env / "bin" / "python")
+    assert p.install_script_path.exists()
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["bin", "install.json"]
+
+
+def test_install_builds_a_source_environment(settings: Settings, tmp_path: Path) -> None:
+    p = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    calls = _install(p)
+    assert [c[3] if c[0] == "/usr/bin/env" else c[1] for c in calls[:3]] == [
+        "venv",
+        "pip",
+        "pip",
+    ]
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None and manifest.environment == p.environment
+    assert manifest.version == "0.0.1"  # what the engine check printed
+    assert p.entry.resolve() == (p.environment / "bin" / "voiced").resolve()
+
+
+def test_switching_environments_repoints_and_prunes(settings: Settings, tmp_path: Path) -> None:
+    """Homebrew -> source -> source: no refusal, no rm -rf of the state dir;
+    the previous environment stays for daemons not yet restarted, older
+    ones built by voiced go."""
+    _environment(tmp_path / "env")
+    _install(_plan(settings, tmp_path))
+    first = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    _install(first)
+    said: list[str] = []
+    second = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    assert second.environment != first.environment
+    _install(second, said)
+    assert first.environment.exists()  # the previous one
+    assert any("voiced restart all" in line for line in said)
+    third = _plan(settings, tmp_path, prefix=tmp_path / "env")
+    _install(third)
+    assert not first.environment.exists() and second.environment.exists()
+    assert (tmp_path / "env").exists(), "an environment voiced did not build is never removed"
+    assert os.readlink(third.entry) == str(tmp_path / "env" / "bin" / "voiced")
+
+
+def test_install_refuses_a_directory_that_is_not_voiceds(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """A state dir with someone else's files is refused before anything is
+    written, so that uninstall can never mistake it for voiced's."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    p.state_dir.mkdir()
+    (p.state_dir / "precious.txt").write_text("mine")
+    with pytest.raises(InstallError, match=r"precious\.txt"):
+        _install(p)
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["precious.txt"]
+    assert not p.config_file.exists()
+    (p.state_dir / "precious.txt").unlink()
+    (p.state_dir / "control.sock").write_text("")  # left by a watchdog: allowed
+    _install(p)
+
+
+def test_install_adopts_and_replaces_a_legacy_venv(settings: Settings, tmp_path: Path) -> None:
+    """~/.voiced as a venv (before ADR 0017) is adopted; the first switch away
+    removes the venv's files and nothing else."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    legacy = _environment(p.state_dir)
+    (legacy / "include").mkdir()
+    (legacy / "notes.txt").write_text("mine")
+    said: list[str] = []
+    _install(p, said)
+    assert sorted(x.name for x in legacy.iterdir()) == ["bin", "install.json", "notes.txt"]
+    assert [x.name for x in (legacy / "bin").iterdir()] == ["voiced"]
+    assert p.entry.is_symlink()
+    assert any("before ADR 0017" in line for line in said)
+
+
+def test_legacy_venv_installing_itself_keeps_its_entry_point(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """`~/.voiced/bin/voiced install` from a legacy venv: the environment is
+    the state dir itself, so there is nothing to link and nothing to remove."""
+    settings.server.log_dir = tmp_path / "logs"
+    state = _environment(tmp_path / "state")
+    p = plan_install(
+        settings,
+        state_dir=state,
+        home=tmp_path,
+        staging_dir=tmp_path / "stage",
+        config_file=tmp_path / "c.toml",
+        prefix=state,
+    )
+    _install(p)
+    assert not p.entry.is_symlink() and (state / "lib").is_dir()
+    manifest = read_manifest(state)
+    assert manifest is not None and manifest.environment == state
+
+
+def test_run_install_dry_run_touches_nothing(settings: Settings, tmp_path: Path) -> None:
+    p = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    said: list[str] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        pytest.fail("dry run must not execute anything")
+
+    run_install(p, runner=runner, dry_run=True, say=said.append)
+    assert not p.config_file.exists()
+    assert not p.staging_dir.exists()
+    assert not p.state_dir.exists()
+    assert not (tmp_path / "logs").exists()
+    text = "\n".join(said)
+    assert f"would create {p.config_file}" in text
+    assert "/fake/uv venv --managed-python" in text
+    assert f"would link {p.entry}" in text
+    assert f"would write the plists and scripts to {p.staging_dir}" in text
+
+
+def test_run_install_fails_if_the_environment_has_no_entry_point(
+    settings: Settings, tmp_path: Path
+) -> None:
+    p = _plan(settings, tmp_path)
+    with pytest.raises(InstallError, match="missing"):
+        run_install(p, runner=lambda argv: CommandResult(0), say=lambda _: None)
+    assert not p.entry.exists()
+
+
+def test_install_refuses_an_environment_without_the_engines(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """`uv tool install ~/voiced` has no extras; linking it would leave
+    daemons that cannot load a model."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    with pytest.raises(InstallError, match="--source"):
+        run_install(p, runner=pytest.fail, query=lambda argv: CommandResult(1), say=lambda _: None)
+    assert not p.entry.exists()
+
+
+def test_run_install_stops_on_failure(settings: Settings, tmp_path: Path) -> None:
+    p = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    with pytest.raises(InstallError, match="boom"):
+        run_install(p, runner=lambda argv: CommandResult(1, "", "boom"), say=lambda _: None)
+    assert not p.install_script_path.exists()
+    # The directory was claimed first, so the next install still knows it.
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None and manifest.environment is None
+
+
+def test_source_build_needs_uv(settings: Settings, tmp_path: Path) -> None:
+    p = dataclasses.replace(_plan(settings, tmp_path, source=tmp_path), uv=None)
+    with pytest.raises(InstallError, match="brew install uv"):
+        run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=lambda _: None)
+
+
+def test_run_install_tightens_an_existing_readable_config(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Older installs created the config 0644; re-installing makes it 0600."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    p.config_file.write_text('[server]\napi_key = "k"\n')
+    p.config_file.chmod(0o644)
+    said: list[str] = []
+    run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=said.append)
+    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o644, "dry run changes nothing"
+    assert any("would tighten" in line for line in said)
+    run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
+    assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
+
+
+def test_cli_dry_run_prints_everything_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
+    staging = tmp_path / "stage"
+    argv = ["install", "--dry-run", "--state-dir", str(tmp_path / "state")]
+    code = main([*argv, "--staging-dir", str(staging), "--source", str(tmp_path)])
+    out = capsys.readouterr().out
+    labels = Settings().launchd
+    assert code == 0
+    assert not staging.exists() and not (tmp_path / "state").exists()
+    assert not (tmp_path / "logs").exists()
+    assert "dry run" in out
+    assert f"<string>{labels.label('watchdog')}</string>" in out
+    assert f"<string>{pwd.getpwuid(os.getuid()).pw_name}</string>" in out
+    assert f"{staging / 'install-daemons.sh'} (would be written)" in out
+    assert "--require-hashes" in out and "--build-constraints" in out
+
+
+def test_cli_install_refuses_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Root daemons running a user-writable environment would hand root to
+    anything that can write to it."""
+    from voiced import cli_lifecycle
+
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(cli_lifecycle, "is_root", lambda: True)
+    assert main(["install", "--dry-run"]) == 2
+    assert "not with sudo" in capsys.readouterr().out
+    assert not (tmp_path / "config.toml").exists()
+
+
+def test_install_refuses_a_users_own_venv(settings: Settings, tmp_path: Path) -> None:
+    """A venv without voiced in it is not a legacy install: refused, and
+    nothing in it is touched by install or uninstall."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    mine = _environment(p.state_dir)
+    shutil.rmtree(next(mine.glob("lib/python3*/site-packages/voiced-*.dist-info")))
+    before = sorted(str(x.relative_to(mine)) for x in mine.rglob("*"))
+    with pytest.raises(InstallError, match="not voiced's"):
+        _install(p)
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    assert remove_targets(targets, p, lambda _: None) == 0
+    assert sorted(str(x.relative_to(mine)) for x in mine.rglob("*")) == before
+
+
+def test_legacy_venv_through_a_symlinked_state_dir_installs_in_place(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """~/.voiced -> /elsewhere, a legacy venv, running its own install:
+    the same directory, so no self-link and no removal of its lib."""
+    real = _environment(tmp_path / "real")
+    (tmp_path / "state").symlink_to(real)
+    p = _plan(settings, tmp_path, prefix=real)
+    _install(p)
+    assert not (real / "bin" / "voiced").is_symlink() and (real / "lib").is_dir()
+
+
+def test_install_waits_for_another_install(settings: Settings, tmp_path: Path) -> None:
+    """The app and the CLI never relink or prune under each other."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    p.state_dir.mkdir()
+    said: list[str] = []
+    with install_lock(p.state_dir):
+        thread = threading.Thread(target=_install, args=(p, said))
+        thread.start()
+        for _ in range(100):
+            if said:
+                break
+            time.sleep(0.05)
+        assert said and said[0].startswith("waiting for another install")
+        assert not p.entry.exists()
+    thread.join(10)
+    assert p.entry.is_symlink()
+
+
+def test_install_reads_the_manifest_again_under_the_lock(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """What an install that held the lock left decides what this one keeps:
+    its environment is this one's rollback, not pruned."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    p.state_dir.mkdir()
+    said: list[str] = []
+    with install_lock(p.state_dir):
+        thread = threading.Thread(target=_install, args=(p, said))
+        thread.start()
+        for _ in range(100):
+            if said:
+                break
+            time.sleep(0.05)
+        # Meanwhile another install (the app's) finished:
+        other = _environment(p.state_dir / "envs" / "20260101T000000")
+        write_manifest(p.state_dir, Manifest(source="app", environment=other))
+    thread.join(10)
+    assert other.exists()
+    assert any(f"changed from {other}" in line for line in said)
+
+
+def test_prune_keeps_what_voiced_did_not_build(settings: Settings, tmp_path: Path) -> None:
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    _install(p)
+    envs = p.state_dir / "envs"
+    (envs / "not-a-venv").mkdir(parents=True)
+    _environment(envs / "20260101T000000.partial")  # the app, still building
+    old = _environment(envs / "20250101T000000")
+    _install(_plan(settings, tmp_path, source=tmp_path / "checkout"))
+    left = {x.name for x in envs.iterdir()}
+    assert {"20260101T000000.partial", "not-a-venv"} <= left
+    assert not old.exists()
+
+
+def test_a_failed_model_download_changes_nothing(settings: Settings, tmp_path: Path) -> None:
+    """The link, the manifest and the environments switch only after the
+    models are in."""
+    _environment(tmp_path / "env")
+    _install(_plan(settings, tmp_path))
+    p = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    before = (os.readlink(p.entry), (p.state_dir / "install.json").read_text())
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        if argv[-1:] == [str(p.environment)]:
+            _environment(p.environment)
+        return CommandResult(1, "", "no network") if "-c" in argv else CommandResult(0)
+
+    with pytest.raises(InstallError, match="model download"):
+        run_install(p, runner=runner, query=_check_ok, say=lambda _: None)
+    assert (os.readlink(p.entry), (p.state_dir / "install.json").read_text()) == before
+
+
+def test_reinstalling_the_active_environment_keeps_its_origin_and_rollback(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """`voiced install` re-run from an app environment stays the app's, and
+    the environment before it (the rollback) is not pruned."""
+    _install(_plan(settings, tmp_path, source=tmp_path / "checkout"))
+    p_app = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    first = read_manifest(p_app.state_dir)
+    _install(p_app)
+    again = _plan(settings, tmp_path, prefix=p_app.environment)
+    assert again.origin == "cli"
+    _install(again)
+    manifest = read_manifest(p_app.state_dir)
+    assert manifest is not None and manifest.source == "app"
+    assert first is not None and first.environment is not None and first.environment.exists()
+
+
+def test_build_system_matches_the_build_group() -> None:
+    """[build-system] requires what the hashed build lock pins."""
+    data = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text())
+    assert data["build-system"]["requires"] == data["dependency-groups"]["build"]
+
+
+# Uninstall ---------------------------------------------------------------------
+
+
+def test_uninstall_removes_only_what_voiced_owns(settings: Settings, tmp_path: Path) -> None:
+    """A file the user put into the state dir survives, and so does the dir."""
+    _environment(tmp_path / "env")
+    _install(_plan(settings, tmp_path))
+    p = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    _install(p)
+    (p.state_dir / "python" / "cpython-3.12").mkdir(parents=True)
+    (p.state_dir / "control.sock").write_text("")
+    (p.state_dir / "precious.txt").write_text("mine")
+    said: list[str] = []
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    remove_targets(targets, p, said.append)
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["precious.txt"]
+    assert (tmp_path / "env" / "bin" / "voiced").exists(), "not voiced's to remove"
+    assert any("kept" in line and "precious.txt" in line for line in said)
+    (p.state_dir / "precious.txt").unlink()
+    _install(_plan(settings, tmp_path))
+    remove_targets(
+        uninstall_targets(p, settings, logs=False, models=False, config=False), p, said.append
+    )
+    assert not p.state_dir.exists()
+
+
+def test_uninstall_refuses_a_directory_that_is_not_voiceds(
+    settings: Settings, tmp_path: Path
+) -> None:
+    state = tmp_path / "state"
+    (state / "bin").mkdir(parents=True)
+    (state / "bin" / "voiced").write_text("someone else's")
+    p = _plan(settings, tmp_path)
+    targets = uninstall_targets(p, settings, logs=False, models=False, config=False)
+    said: list[str] = []
+    assert targets.refused is not None and targets.all() == []
+    assert remove_targets(targets, p, said.append) == 0
+    assert (state / "bin" / "voiced").exists()
+    assert "not voiced's" in said[0]
+
+
+def test_uninstall_removes_a_legacy_venv(settings: Settings, tmp_path: Path) -> None:
+    p = _plan(settings, tmp_path)
+    legacy = _environment(p.state_dir)
+    (legacy / "notes.txt").write_text("mine")
+    remove_targets(
+        uninstall_targets(p, settings, logs=False, models=False, config=False), p, lambda _: None
+    )
+    assert sorted(x.name for x in legacy.iterdir()) == ["notes.txt"]
+
+
+def test_uninstall_never_deletes_home(settings: Settings, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "keep.txt").write_text("x")
+    (home / "pyvenv.cfg").write_text("x")  # even if it looks like a venv
+    p = plan_install(settings, state_dir=home, home=home, config_file=home / "c.toml", uv=None)
+    remove_targets(
+        uninstall_targets(p, settings, logs=False, models=False, config=True), p, lambda _: None
+    )
+    assert (home / "keep.txt").exists() and home.exists()
+
+
+def test_cli_uninstall_names_homebrew_from_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from voiced.layout import Manifest, write_manifest
+
+    state = tmp_path / "state"
+    keg = Path("/opt/homebrew/opt/voiced/libexec")
+    write_manifest(state, Manifest(source="homebrew", environment=keg))
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    runner = lambda argv: CommandResult(113, "", "not found")  # noqa: E731
+    from voiced.cli import build_parser
+    from voiced.cli_lifecycle import run_lifecycle
+
+    args = build_parser().parse_args(["uninstall", "--yes", "--state-dir", str(state)])
+    assert run_lifecycle(args, Settings(), runner, print) == 0
+    out = capsys.readouterr().out
+    assert f"voiced itself ({keg}) is Homebrew's" in out
+    assert not state.exists()

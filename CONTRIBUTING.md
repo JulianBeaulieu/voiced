@@ -105,7 +105,14 @@ under 300 KB each, free of personal content. Never commit model weights.
   `voiced.inference.inference()`; see
   [ADR 0005](docs/decisions/0005-shared-inference-and-audio-primitives.md).
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
-  the `stt` or `tts` extras; test and lint tools in the `dev` group.
+  the `stt` or `tts` extras; test and lint tools in the `dev` group. After
+  `uv lock`, regenerate the two locks every install path uses (ADR 0017); a
+  test fails while they differ from `uv.lock`:
+
+  ```sh
+  uv export --frozen --no-dev --extra stt --extra tts --no-emit-project --no-header -o src/voiced/requirements.lock
+  uv export --frozen --only-group build --no-emit-project --no-header -o src/voiced/build-requirements.lock
+  ```
 - Documentation that describes behaviour which has not landed yet carries an
   HTML comment `<!-- TODO(release): ... -->` on its own line. The canonical
   list of open items is
@@ -136,9 +143,9 @@ a user would notice.
 ## Releasing
 
 Maintainers only. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
-the installed package metadata), set `PUBLISHED = True` in
-`voiced.launchd.install` with the first release that goes to PyPI (until
-then `voiced install` outside a checkout insists on `--source`), move the Unreleased section of the changelog under the new version with the
-date, tag `v<version>`, and build with `uv build`.
+the installed package metadata), move the Unreleased section of the changelog under the new version with the
+date, tag `v<version>`, and build with `uv build`. Then fill in `url` and
+`sha256` in `packaging/homebrew/voiced.rb` for the tag and copy it to the tap
+([packaging/homebrew/README.md](packaging/homebrew/README.md)).
 
 <!-- TODO(release): verify the publish step once the package is on PyPI -->

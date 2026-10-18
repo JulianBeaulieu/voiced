@@ -39,6 +39,7 @@ from voiced.launchd.control import (
 )
 from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
 from voiced.launchd.stdio import log_redirect_error
+from voiced.layout import RunningEnvironment
 
 if TYPE_CHECKING:
     from voiced.config import WatchdogConfig
@@ -437,6 +438,12 @@ def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> RestartR
     return RestartResult(True, "; ".join(steps))
 
 
+# How long a Homebrew install may hold back restarts before it is taken for
+# hung (a large upgrade takes minutes), and how often the wait is logged.
+HOMEBREW_HOLD_MAX_S = 30 * 60.0
+HOMEBREW_HOLD_LOG_S = 5 * 60.0
+
+
 # The loop -----------------------------------------------------------------
 
 
@@ -454,11 +461,16 @@ class Watchdog:
     restart: Restarter | None = None
     clock: Callable[[], float] = time.monotonic
     respec: Respec | None = None
+    # Checked before every tick; None in tests and for `voiced watchdog --once`.
+    environment: RunningEnvironment | None = None
     states: dict[str, ServiceState] = field(default_factory=dict)
     # A tick and a restart asked for over the control socket run in background
     # threads; they must not interleave on ``services`` or a ServiceState.
     # Held for decisions and restarts, not while observing.
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    # Since when Homebrew has held a formula of the environment, and which.
+    brew_hold: tuple[str, float] | None = None
+    brew_logged: float = 0.0
 
     def _observe(self, spec: ServiceSpec) -> Observation:
         if self.observe is not None:
@@ -507,6 +519,47 @@ class Watchdog:
             log.warning("%s: %s", spec.name, result.detail)
         return result
 
+    def held_by_homebrew(self) -> str | None:
+        """The formula Homebrew is installing under this environment, or None.
+
+        While it holds the formula's lock (``brew upgrade``, ``reinstall``),
+        Homebrew may repoint ``opt`` and rewrite and re-sign extension
+        modules in place; a service started on them in that window can make
+        them unloadable for every later process (ADR 0017). So nothing is
+        restarted until it lets go: no health restarts, no requested ones,
+        no move to a new environment. A hold longer than
+        :data:`HOMEBREW_HOLD_MAX_S` (a hung or suspended ``brew``) no longer
+        counts. Logged when it starts, every :data:`HOMEBREW_HOLD_LOG_S`, and
+        when it ends.
+        """
+        formula = self.environment.busy() if self.environment is not None else None
+        now = self.clock()
+        with self.lock:
+            if formula is None:
+                if self.brew_hold is not None:
+                    log.info("Homebrew finished %s; restarts resume", self.brew_hold[0])
+                    self.brew_hold = None
+                return None
+            if self.brew_hold is None or self.brew_hold[0] != formula:
+                self.brew_hold = (formula, now)
+                self.brew_logged = now
+                log.warning("Homebrew is installing %s; no restarts until it is done", formula)
+                return formula
+            held = now - self.brew_hold[1]
+            if held > HOMEBREW_HOLD_MAX_S:
+                if self.brew_logged <= self.brew_hold[1] + HOMEBREW_HOLD_MAX_S:
+                    log.warning(
+                        "Homebrew has held %s for %d min; restarting as usual again",
+                        formula,
+                        held // 60,
+                    )
+                    self.brew_logged = now
+                return None
+            if now - self.brew_logged >= HOMEBREW_HOLD_LOG_S:
+                log.warning("still waiting for Homebrew to finish %s (%d min)", formula, held // 60)
+                self.brew_logged = now
+            return formula
+
     def restart_now(self, name: str, reason: str = "requested") -> RestartResult:
         """Restart a service on request, outside the poll cycle.
 
@@ -514,8 +567,14 @@ class Watchdog:
         same way, so the startup grace period and the cooldown apply to the
         watchdog's own decisions afterwards. The cooldown does not hold back
         a requested restart. Waits only for a decision or restart in
-        progress, not for a health poll.
+        progress, not for a health poll. Refused while Homebrew is
+        installing under the environment (:meth:`held_by_homebrew`).
         """
+        formula = self.held_by_homebrew()
+        if formula is not None:
+            return RestartResult(
+                False, f"not now: Homebrew is installing {formula}; try again when it is done"
+            )
         with self.lock:
             spec = self.spec(name)
             if spec is None:
@@ -560,6 +619,15 @@ class Watchdog:
                 log.debug("%s: %s", spec.name, decision.reason)
         return decisions
 
+    def replace_environment(self, reason: str) -> None:
+        """Restart every service onto the new environment; the caller then
+        exits so that launchd's KeepAlive starts the watchdog there too."""
+        log.warning("environment replaced: %s; restarting the services, then the watchdog", reason)
+        with self.lock:
+            now = self.clock()
+            for spec in list(self.services):
+                self._restart_logged(spec, self.state(spec), now, "environment replaced")
+
     def _announce(self) -> None:
         for spec in self.services:
             self.state(spec)  # start every grace period now
@@ -571,8 +639,9 @@ class Watchdog:
             self.policy.probe,
         )
 
-    async def run_async(self, stop: asyncio.Event) -> None:
-        """Tick every ``interval_s`` until ``stop`` is set.
+    async def run_async(self, stop: asyncio.Event) -> str | None:
+        """Tick every ``interval_s`` until ``stop`` is set, or until the
+        environment is replaced; then returns why.
 
         The loop runs on asyncio so the control socket is served on the same
         event loop; each tick runs in a background thread (it blocks on HTTP
@@ -580,13 +649,21 @@ class Watchdog:
         self._announce()
         while not stop.is_set():
             started = self.clock()
-            try:
-                await asyncio.to_thread(self.tick)
-            except Exception:
-                log.exception("tick failed")
+            # Before anything else: while Homebrew works on the environment
+            # nothing is restarted, not even for health (held_by_homebrew).
+            if self.held_by_homebrew() is None:
+                reason = self.environment.replaced() if self.environment is not None else None
+                if reason is not None:
+                    await asyncio.to_thread(self.replace_environment, reason)
+                    return reason
+                try:
+                    await asyncio.to_thread(self.tick)
+                except Exception:
+                    log.exception("tick failed")
             elapsed = self.clock() - started
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), max(0.0, self.policy.interval_s - elapsed))
+        return None
 
 
 def configure_watchdog_logging(level: str = "info", log_file: Path | None = None) -> None:
