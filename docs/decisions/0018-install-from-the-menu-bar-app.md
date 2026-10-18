@@ -31,40 +31,9 @@ are not part of the app.
 
 ## One layout for every install
 
-Homebrew, CLI and app installs share one layout, and ADR 0017 owns its
-rules in one section; this record cites them rather than restating them.
-In short:
-
-- `~/.voiced` is the state directory, not necessarily a venv. It holds
-  `bin/voiced`, a symlink to the active environment's `bin/voiced`;
-  `envs/<id>/`, the environments built by the app or by `--source`;
-  `control.sock`; and `install.json`.
-- `install.json` records `{source: cli|homebrew|app, environment, version,
-  lock_sha256, python}`. Uninstall uses it to know what is voiced's,
-  `voiced install` to adopt or refuse, and the app to detect a version or
-  lock mismatch.
-- `voiced install` has one mode: without `--source`, the environment is the
-  `sys.prefix` of the `voiced` that runs it, and it links `bin/voiced` to
-  it. The app therefore runs `<its environment>/bin/voiced install
-  --json-progress`.
-- The plists are identical for every source and run `~/.voiced/bin/voiced`.
-  Switching sources or versions is repointing that symlink and
-  `voiced restart all`: never root, never a delete.
-- One lock for every path: `uv export --frozen --no-dev --extra stt
-  --extra tts --no-emit-project`, shipped as package data
-  (`voiced/requirements.lock`, checked against `uv.lock` in CI), installed
-  with `install --require-hashes --no-deps -r <lock>` and then voiced with
-  `--no-deps`. `install`, not `pip sync`: sync would remove third-party
-  engine plugins (ADR 0013).
-- The watchdog restarts both services and exits when its environment
-  disappears or `realpath(~/.voiced/bin/voiced)` changes, so a swapped
-  environment takes effect without a separate step.
-- A legacy install, where `~/.voiced` itself is a venv, is adopted with
-  `environment = ~/.voiced`.
-
-What this record adds for the app: it keeps uv's state in two places only,
-`~/.voiced/python/` (`UV_PYTHON_INSTALL_DIR`, the CPython the environments
-link to, for app and CLI installs alike) and
+Homebrew, CLI and app installs share the layout that ADR 0017 specifies in
+its shared-layout section (`~/.voiced/bin/voiced`, `envs/<id>`,
+`install.json`, `~/.voiced/python/`); this record only adds the uv cache in
 `~/Library/Application Support/voiced/uv-cache/` (`UV_CACHE_DIR`).
 
 ## The privileged step
@@ -77,7 +46,7 @@ plist's contents change. Upgrading the environment, changing a setting and
 ### (a) One administrator prompt for a script in the signed executable: chosen
 
 The app runs the root half of the install through the standard
-authorization dialog: `NSAppleScript` with `do shell script "..." with
+authorization dialog: `NSAppleScript` with `do shell script ... with
 administrator privileges` (Apple TN2065). That command is not deprecated
 and notarization does not flag it. Internally it goes through
 `AuthorizationExecuteWithPrivileges`, and the root shell inherits the
@@ -86,85 +55,93 @@ reached it when measured. So the command it runs is always
 
 ```sh
 /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-    /bin/bash --noprofile --norc -c "$SCRIPT" voiced-privileged <mode> <args>
+    /bin/bash --noprofile --norc -c "$SCRIPT" voiced-privileged <mode> <user>
 ```
 
-with every tool inside the script called by its absolute path. `$SCRIPT`
-is a string constant compiled into the app's main executable, not a file in
-the bundle. A cask install puts the app in `/Applications` owned by the
-user, so any process of that user can edit a script file inside the bundle;
-the main executable's text is covered by the code signature, and the copy
-that runs is the one the signed, running process loaded. Before showing the
-prompt, the app checks its own bundle with `SecStaticCodeCheckValidity`
-(strict validation, all architectures; in release builds also against the
-designated requirement with voiced's team identifier) and refuses to ask
-for an administrator if the check fails.
+with every tool inside the script called by its absolute path. The
+AppleScript source is fixed; the script text and the user name reach it as
+parameters of a handler (or through `quoted form of`), never spliced into
+the source.
+
+`$SCRIPT` is a string constant compiled into the app's main executable,
+not a file in the bundle: a cask install puts the app in `/Applications`
+owned by the user, so any process of that user could edit a script file
+inside it. That the copy which runs is the signed one depends on the
+hardened runtime without the `allow-dyld-environment-variables` and
+`disable-library-validation` entitlements, so nothing can be injected into
+the running app; that is a release requirement. Before showing the prompt,
+the app checks its own bundle with `SecStaticCodeCheckValidity` (strict
+validation, all architectures, and the designated requirement with
+voiced's team identifier). This catches accidental damage, such as a
+half-copied or partly modified bundle, and nothing more: an app someone
+tampered with on purpose simply skips its own check. Debug builds skip it.
 
 This narrows the risk; it does not remove it. A process running as the
 user can still replace the whole app with its own and show the same dialog,
 or show a look-alike dialog of its own. That is the same-user attacker ADR
 0016 accepted: one who can already run code as the user and wait for them
-to type a password. What the design guarantees is that root never runs
-text a user process wrote, and that the prompt the user sees came from an
-intact voiced.
+to type a password. What the design guarantees is that root never parses
+or runs anything a user process wrote.
 
-The prototype is `menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh`,
-one script with two modes and shared validation:
+The prototype is `menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh`:
 
 ```
-voiced-privileged install   USER STT_B64 TTS_B64 WATCHDOG_B64
-voiced-privileged uninstall USER
+voiced-privileged install   USER    render the three plists and bootstrap them
+voiced-privileged uninstall USER    boot out and remove them, if they are USER's
+voiced-privileged check     USER    installed plists match and are loaded? (no root needed)
 ```
 
-1. The plists arrive as base64 arguments. Root never opens a path the user
-   controls, so there is no symlink or FIFO to follow.
-2. The user must exist, have a uid of 500 or more and a home directory,
-   which is read with `dscl -plist` so a home with spaces works. `root` is
-   refused.
-3. The labels are hard-coded (`io.github.julianbeaulieu.voiced.{stt,tts,watchdog}`).
-   They are never taken from the caller, who could otherwise name another
-   product's daemon.
-4. **The security boundary is `UserName` plus a key allowlist**, not the
-   program path. A plist may contain only `Label`, `ProgramArguments`,
-   `UserName`, `RunAtLoad`, `KeepAlive`, `ThrottleInterval`,
-   `StandardOutPath`, `StandardErrorPath`, `ProcessType`,
-   `WorkingDirectory`, `EnvironmentVariables` and
-   `AssociatedBundleIdentifiers`; anything else (`Program`, `Sockets`,
-   `MachServices`, `Nice`, `SessionCreate`, `GroupName` ...) is refused.
-   Each value is checked exactly: `UserName` is the user;
-   `ProgramArguments` is `<home>/.voiced/bin/voiced`, the one entry point
-   of the shared layout, followed by `watchdog` or `serve <service>` and
-   nothing else; the log
-   paths are `<home>/Library/Logs/voiced/<service>.std{out,err}.log`;
-   `WorkingDirectory` is the home; `RunAtLoad` and `KeepAlive` are `true`.
-5. The installed plist is rebuilt from the checked values, written to a
-   root-owned 0700 temporary directory, and made 0644 only when it is
-   complete.
-6. **One install per Mac.** If `/Library/LaunchDaemons/<label>.plist`
-   exists with another `UserName`, both modes refuse, and the app says
-   "voiced is already installed for <user> on this Mac."
-7. Only after all three plists pass does it touch launchd: per label,
-   boot out, wait until the label is gone, move into place, bootstrap. A
-   bootstrap that fails is reported per label (exit 3) and the others stay
-   as they are; the app offers Repair. A trap removes every temporary file
-   on any exit. A refusal never writes anything to `/Library`; a launchd
-   failure halfway can leave a label booted out, which is why the result
-   is per label.
+1. **The only input is the user name.** Root renders the plists itself from
+   fixed values: the labels `io.github.julianbeaulieu.voiced.{stt,tts,watchdog}`,
+   `ProgramArguments` `<home>/.voiced/bin/voiced` plus `watchdog` or
+   `serve <service>`, `UserName`, `RunAtLoad`, `KeepAlive` `true` (or, if
+   ADR 0017 adopts it, exactly `{PathState: {<home>/.voiced/bin/voiced:
+   true}}`), `ThrottleInterval` 10, `ProcessType Interactive`,
+   `WorkingDirectory` the home, `AssociatedBundleIdentifiers` the app, and
+   a fixed environment: `HOME`, `PATH` (`<home>/.voiced/bin` first),
+   `VOICED_CONFIG` (`<home>/.config/voiced/config.toml`) and
+   `PYTHONUNBUFFERED`. No plist the user wrote is parsed as root, so there is
+   no allowlist to get wrong. These are the plists `voiced install` stages,
+   minus the log keys below: the test compares them.
+2. **No `StandardOutPath` or `StandardErrorPath`.** launchd opens those
+   files as root, and `~/Library/Logs/voiced` belongs to the user, so a
+   symlink planted there would be a root write anywhere. The services open
+   their own log files instead (`O_NOFOLLOW`, then `dup2` onto stdout and
+   stderr); a separate CLI change does that, and `voiced install` then stops
+   writing the keys too.
+3. Settings that used to travel in the plist environment (`HF_HOME`,
+   `VOICED_ESPEAK_*`) come from the config file, which the services read
+   at start (`[install] hf_home`). A custom config path or `[launchd]
+   label_prefix` is not supported by the app (see Lifecycle).
+4. The user must exist and have a uid of 500 or more. `root` is refused.
+   The home comes from `dscl -plist`, so spaces and quotes work, and is
+   converted to NFC (Directory Services may return it decomposed).
+5. **One install per Mac**, compared by uid: if a
+   `/Library/LaunchDaemons/<label>.plist` belongs to another account, both
+   modes refuse, and the app says "voiced is already installed for <user>
+   on this Mac." A lock directory in `/var/run` stops two runs at once; a
+   lock whose process is gone is taken over.
+6. Temporary files go to a root-owned 0700 directory under `/private/tmp`
+   (never `$TMPDIR`) and are removed by a trap on any exit.
+7. Only after all three plists are rendered does it touch launchd: per
+   label, boot out, wait until the label is gone, move into place,
+   bootstrap. A bootstrap that fails is reported per label (exit 3) and the
+   others stay as they are; the app offers Repair. A refusal writes nothing
+   to `/Library`; a launchd failure halfway can leave a label booted out,
+   which is why the result is per label.
 8. When the application firewall is on, it allows the services' Python
-   (see Permissions).
+   (see Permissions). A failure there after a successful bootstrap is a
+   warning with its own exit code (4), not a refusal.
 
 *Measured* with `menubar/Prototypes/PrivilegedInstall/test.sh`, run as a
-normal user against a scratch destination with launchctl skipped (the
-destination override is ignored when the script runs as root): the plists
-staged by today's `voiced install` install, and the installed copy has only
-allowlisted keys. Refused with nothing written: `ProgramArguments[0] =
-$HOME/../../bin/sh`, a `Program`, `Sockets` or `MachServices` key,
-`StandardOutPath = /etc/sudoers.d/voiced`, `Nice = -20`, `SessionCreate`,
-`UserName root`, no `UserName`, `KeepAlive` as a dictionary, an extra
-argument, `Label com.docker.vmnetd`, a key containing a newline, any
-program other than `~/.voiced/bin/voiced`, user `root`, input that is not
-base64. Another user's install is neither replaced nor removed. 21 of 21
-cases pass.
+normal user against a scratch destination with launchctl and the firewall
+skipped (the override is ignored when the script runs as root): the
+rendered plists equal those staged by today's `voiced install` without the
+two log keys and with the bundle identifier; `check` reports them up to
+date and notices a changed one. Refused with nothing written: user `root`,
+a uid below 500, an unknown user, a malformed name, extra arguments, a
+held lock. Another account's install is neither replaced nor removed, and
+a stale lock is taken over. 17 of 17 cases pass.
 
 The prompt says what it is for (`with prompt "voiced needs an
 administrator to install its background services."`). Cancelling it
@@ -173,10 +150,6 @@ services" screen. This path works unsigned, so development builds take it
 too. It keeps the `UserName` daemons that ADR 0004 measured, including
 starting at boot before login; with FileVault they start once the disk is
 unlocked, as today.
-
-During implementation, one probe needs the owner at the keyboard: run the
-admin prompt once with `BASH_ENV` set in the app's environment and confirm
-the `env -i` line keeps it out of the root shell.
 
 ### (b) `SMJobBless` privileged helper: rejected
 
@@ -386,7 +359,7 @@ script rebuilds and replaces the plists.
 | No network | "Can't reach the internet." before the first download, checked against PyPI and Hugging Face |
 | Not enough disk | Welcome says how much is needed (4.4 GB) and how much is free; Install is disabled |
 | Admin prompt cancelled (-128) | Back to "Install background services", no error |
-| Port in use | `voiced install` checks the configured ports before approval and names the process holding one |
+| Port in use | `voiced install` checks the configured ports before approval and names the process holding one; a port held by voiced's own running services (a reinstall or update) is not a conflict |
 | Download interrupted | "Try again" resumes from the `.incomplete` files |
 | App quit mid-install | The app terminates its children (SIGTERM, then SIGKILL after 5 s). The next launch reads progress from disk (a `.partial` environment is deleted, a complete one in `envs/` is kept, cached models count as done, installed plists mean only Starting is left) and offers "Continue" |
 | One label failed to bootstrap | Names the service; offers Repair |
@@ -414,12 +387,13 @@ human output goes to stderr.
 ### Updates, with rollback
 
 The app compares its own pins with the running services. The watchdog's
-`hello` reports what `install.json` records (`version`, `lock_sha256`,
-`python`; added fields, so protocol 1 still applies), and without a
-watchdog the app reads `~/.voiced/install.json` itself. Any difference, in
-either direction, is a mismatch, and the app's lock wins: an older app on a
-newer environment offers to install its own pins too, so app and services
-are always one version (ADR 0014).
+`hello` reports what `install.json` records (`source`, `version`,
+`lock_sha256`, `python`; added fields, so protocol 1 still applies), and
+without a watchdog the app reads `~/.voiced/install.json` itself. Any
+difference, in either direction, is a mismatch. For `source = app` the
+app's lock wins: an older app on a newer environment offers to install its
+own pins too, so app and services are one version (ADR 0014). For any other
+source the app shows the mismatch and does not act on it (see below).
 
 "Update voiced" then:
 
@@ -427,15 +401,19 @@ are always one version (ADR 0014).
    renamed when its packages are in);
 2. runs the new environment's `voiced install --json-progress ...`, which
    smoke-tests it (`voiced --version` and the engine imports), downloads
-   any changed model revision, stages the plists, and only then repoints
-   `~/.voiced/bin/voiced` and rewrites `install.json`;
-3. runs `voiced-privileged install` only if the rebuilt plists differ from
-   the installed ones or a label is not loaded. The app finds out without
-   root: the plists in `/Library/LaunchDaemons` are world-readable and
-   `launchctl print system/<label>` needs no root (measured);
+   any changed model revision, and only then repoints `~/.voiced/bin/voiced`
+   and rewrites `install.json`;
+3. runs `voiced-privileged check` as the user (no root: the plists in
+   `/Library/LaunchDaemons` are world-readable and `launchctl print
+   system/<label>` needs no root, measured), and `voiced-privileged
+   install` with its prompt only if a plist differs or a label is not
+   loaded. When the firewall is on and the resolved Python changed (a new
+   Python version), that also counts as a difference, so the exception
+   follows it;
 4. waits for a `hello` with the new lock hash. The watchdog restarts the
-   services and itself when the symlink changes (ADR 0017); the app runs
-   `voiced restart all` only if that has not happened within the grace.
+   services and itself when the symlink changes (ADR 0017); if no such
+   `hello` arrives within the startup grace, the two minutes of step 5 of
+   the Flow, the app runs `voiced restart all` and waits once more.
 
 If step 2 or 4 fails, "Roll back" runs the previous environment's own
 `voiced install --json-progress`, which points the symlink back at it
@@ -450,32 +428,41 @@ update re-downloads only what changed.
 
 The app reads `~/.voiced/install.json` and the installed plists in
 `/Library/LaunchDaemons` (whose `UserName` says whose install it is), and
-follows ADR 0017's adopt-or-refuse rules:
+follows ADR 0017's adopt-or-refuse rules. "Controls" means status, settings
+and restarts through the socket; "manages" means the app also updates,
+repairs and rolls back the environment.
 
 | Found | The app |
 |---|---|
-| plists for another user | refuses (one install per Mac) |
+| plists for another account | refuses (one install per Mac) |
 | `source = app` | manages it: the normal case |
-| `source = homebrew` | controls it through the socket and leaves the environment to Homebrew: Update says "Updated by Homebrew: `brew upgrade voiced`". "Switch to updates from the app" builds an app environment and runs its `voiced install`, which repoints the symlink; config and models stay, and the keg is untouched until the user runs `brew uninstall voiced` |
-| `source = cli` (a `--source` environment in `envs/`) | the same: controls it, and switches only when asked. If that environment's voiced was installed from a local checkout (an editable or `file://` install in `direct_url.json`), the app says so before switching |
-| a legacy install (`~/.voiced` itself is a venv) | adopts it as `environment = ~/.voiced`, controls it as is, and builds no second environment until the user updates. The first update switches as above; if the legacy plists ran a custom `venv_dir`, that update's privileged step rewrites them to `~/.voiced/bin/voiced` |
-| staged plists but none installed | continues at Approval |
+| `source = homebrew` | controls it; a version mismatch is shown, with "Updated by Homebrew: `brew upgrade voiced`". "Switch to updates from the app" builds an app environment and runs its `voiced install`, which repoints the symlink; config and models stay, and the keg is untouched until the user runs `brew uninstall voiced` |
+| `source = cli` (a `--source` environment in `envs/`) | the same: controls it, shows a mismatch, and switches only when asked. If that environment's voiced was installed from a local checkout (an editable or `file://` install in `direct_url.json`), the app says so before switching |
+| a legacy install (`~/.voiced` itself is a venv) | adopts it as `environment = ~/.voiced` and controls it as is. The first switch has no rollback: the legacy venv's own `bin/voiced` is the entry point path, so the two cannot coexist. The new environment is built first; once it answers `hello`, the legacy venv's files are removed under ADR 0006's rules. If the legacy plists ran a custom `venv_dir`, that switch's privileged step replaces them with the fixed ones |
+| plists with a custom `[launchd] label_prefix` | controls it (ADR 0014 finds it whatever the prefix); does not manage it. The first switch to the app's environment boots out the custom labels and installs the default ones, in one prompt |
+| no plists installed, environment present | continues at Approval |
 
-Switching never needs root (the plists do not change) and never deletes the
-previous environment on the spot; it becomes the rollback target and is
-pruned on the next update, legacy files by ADR 0006's rules.
+Apart from the legacy case, switching never needs root (the plists do not
+change) and never deletes the previous environment on the spot; it becomes
+the rollback target and is pruned on the next update.
 
 ### Repair
 
 Shown when the plists are installed but the socket does not answer after
 the startup grace, when the services report an environment error, or after
-a failed bootstrap. It runs uv's `pip install --reinstall --require-hashes
---no-deps -r` of the bundled lock and uv's `pip install --reinstall
---no-deps` of the bundled wheel into the active environment, then that
-environment's `voiced install --json-progress`. If the environment's Python
-is gone, it builds a fresh environment instead, exactly as an update does.
-The administrator prompt appears only if the plists differ or a label is
-not loaded.
+a failed bootstrap.
+
+- For `source = app`: uv's `pip install --reinstall --require-hashes
+  --no-deps -r` of the bundled lock and uv's `pip install --reinstall
+  --no-deps` of the bundled wheel into the active environment, then that
+  environment's `voiced install --json-progress`. If the environment's
+  Python is gone, the broken environment directory is moved aside
+  (`envs/<id>.broken`) and a fresh one is built, exactly as an update does.
+- For any other source the app does not touch the environment. It offers
+  the switch to a fresh app environment, or shows that source's own fix
+  (`brew reinstall voiced`, or `voiced install --source ...` again).
+
+The administrator prompt appears only if `check` reports a difference.
 
 ### Uninstall and removing the app
 
@@ -483,13 +470,12 @@ not loaded.
 (one prompt), then `voiced uninstall --yes`. Models (with their size), logs
 and config are separate checkboxes, unticked by default, as in ADR 0006.
 The privileged uninstall does not need a working environment: it takes the
-labels from the hard-coded list, removes only plists whose `UserName` is
-this user, and deletes nothing else. `voiced uninstall` deletes only what
+labels from the hard-coded list, removes only plists that belong to this
+account, and deletes nothing else. `voiced uninstall` deletes only what
 `install.json` and ADR 0006's rules say is voiced's (environments only if
-they contain `pyvenv.cfg`), plus `~/.voiced/python`; a Homebrew keg is never
-touched. If the active environment is broken, the app runs the CLI from the
-other environment in `envs/`, and failing that it says which directories
-remain.
+they contain `pyvenv.cfg`, and `~/.voiced/python`); a Homebrew keg is never
+touched. If the active environment is too broken to run `voiced
+uninstall`, the app offers Repair first and Uninstall after it.
 
 Moving voiced.app to the Trash leaves voiced running; the daemons do not
 need the app. The welcome text and the README say: use Uninstall in
@@ -527,10 +513,12 @@ Swift orchestrates and Python keeps the knowledge. The app runs three kinds
 of child process: the bundled `uv` (environment, update, repair), the
 environment's `voiced` CLI as the user (`install --json-progress`,
 `uninstall`, `restart all`), and the privileged script through one
-authorization prompt. Paths, plist contents, the model list and every
-uninstall safety rule from ADR 0006 stay in Python, so the CLI and the app
-cannot install different things; the privileged script only checks and
-rebuilds what Python staged.
+authorization prompt. Paths, the model list and every uninstall safety
+rule from ADR 0006 stay in Python. The one exception is the plist
+contents: the privileged script renders them itself, from the user name
+alone, so root never parses a file the user wrote. They are fixed values,
+and the prototype's test checks they equal what `voiced install` stages, so
+the CLI and the app cannot install different daemons.
 
 This deliberately amends ADR 0014, and ADR 0014's text now says so: the app
 runs `launchctl` only inside its signed, root-run privileged script, and
@@ -546,7 +534,7 @@ and says why in one line. If it does not need something, it never asks.
 | Permission | Needed? | When and why | What the user sees |
 |---|---|---|---|
 | Administrator authorization | Yes | Approval, uninstall, and an update or repair whose plists changed: writing to `/Library/LaunchDaemons` needs root. | Before the system dialog: "To start voiced at boot, macOS needs an administrator to install three background services. They run as you, not as root." |
-| Application firewall exception | Only if the firewall is on | Same prompt as above, no second one. The services' Python is signed ad hoc, and nobody can answer the firewall's "accept incoming connections" prompt before login, so Home Assistant on the LAN would be silently blocked. If `socketfilterfw --getglobalstate` reports it on, the privileged step adds and unblocks the resolved path of the active environment's Python (resolved as the user, through `~/.voiced/bin/voiced`), but only if it lies inside the user's home, as it does for app and `--source` environments. It runs again whenever that path changes (a new Python version). A Homebrew environment's Python is shared with every brewed Python program, so the app does not allow it and says so; that user can allow it in System Settings > Network > Firewall. | One line on the approval screen: "Your firewall is on; voiced will allow its services to accept connections." |
+| Application firewall exception | Only if the firewall is on | Same prompt as above, no second one. The services' Python is signed ad hoc, and nobody can answer the firewall's "accept incoming connections" prompt before login, so Home Assistant on the LAN would be silently blocked. If `socketfilterfw --getglobalstate` reports it on, the privileged step adds and unblocks the active environment's Python: resolved as the user through `~/.voiced/bin/voiced`, re-resolved by root right before it is added, and accepted only as a regular file (not a symlink) owned by the user inside the home, as it is for app and `--source` environments. In effect the exception says "this user's Python may accept connections"; signed programs already pass by default. It runs again on an update whenever the resolved path changes (a new Python version). A failure here is a warning, not a failed install. A Homebrew environment's Python is shared with every brewed Python program, so the app does not allow it and says so; that user can allow it in System Settings > Network > Firewall. | One line on the approval screen: "Your firewall is on; voiced will allow its services to accept connections." |
 | Background items (System Settings > Login Items > Allow in the Background) | Not asked; macOS shows it | macOS 13+ lists every LaunchDaemon here and posts "Background Items Added". The plists name the app in `AssociatedBundleIdentifiers`, so the entry shows as voiced with its icon. If the user turns it off, launchd will not run the services. | After install: "voiced appears in Login Items as a background item; leave it on." If it is off, the menu says so and offers "Open Login Items" (`SMAppService.openSystemSettingsLoginItems()`). |
 | Open at login (`SMAppService.mainApp`) | Optional | Only the menu bar icon needs it. The services run without the app. | A checkbox on the Done screen, off by default, also in Settings > General. |
 | Notifications | No | Status is in the menu bar icon. If "notify me when voiced stops" is added later, the app asks then, from that toggle. | Nothing |
@@ -573,6 +561,12 @@ and says why in one line. If it does not need something, it never asks.
   Python.
 - The CLI's uv layout: Python under the state directory,
   `UV_NO_CONFIG=1`, `--managed-python`.
+- The services open their own log files (`O_NOFOLLOW`, `dup2` onto stdout
+  and stderr), and `voiced install` stops writing `StandardOutPath` and
+  `StandardErrorPath` (a separate CLI change).
+- The services take `HF_HOME` and the espeak-ng overrides from the config
+  file instead of the plist environment, so the plists carry only the
+  fixed environment the privileged script renders.
 - The ffmpeg, espeak-ng and model items above, each with tests:
   `imageio-ffmpeg` in core dependencies and preferred; the espeak-ng clone
   and length check; `download_patterns()`, pinned revisions and
@@ -659,29 +653,32 @@ and says why in one line. If it does not need something, it never asks.
   password; later updates usually take none.
 - The app grows from about 1 MB to about 30 MB because of uv.
 - The app's main executable carries a script that runs as root. It is
-  reviewed like security code: hard-coded labels and paths, a key
-  allowlist, plists rebuilt from checked values, no inherited environment.
+  reviewed like security code: the user name as its only input, plists
+  rendered from fixed values, no log paths, no inherited environment.
 - Each release builds the app, the voiced wheel and the lock from one
   commit in one job.
 - One install per Mac. A second account sees who has it.
 
 ## Open items for the owner
 
+Two decisions:
+
 - **Developer ID ($99 a year).** It blocks the cask and any download a
   non-technical user can open: Gatekeeper on macOS 15 blocks an
   unnotarized app. It does not block the implementation or development
   builds, which work ad hoc today. `menubar/Scripts/SIGNING.md` has the
   steps once the certificate exists.
-- **PyPI: claim the `voiced` name now.** The app no longer needs it (it
-  ships the wheel), but the formula's name-based path and anyone's
-  `pip install voiced` do, and a squatted name is hard to get back.
-- **Development override.** A user default (`installSource`) pointing at a
-  local wheel or checkout, so an unpushed development build of the app can
-  install the matching voiced. Agree on the name and that release builds
-  ignore it.
-- **One admin-prompt probe** during implementation: `BASH_ENV` set in the
-  app's environment must not reach the root shell (see the privileged
-  step).
-- **"Background Items Added"** with `AssociatedBundleIdentifiers` set, and
-  the firewall exception with a LAN client, need a real install; they come
-  with the implementation.
+- **Tag v0.1.0 and claim the `voiced` name on PyPI.** The tag gives the
+  cask its release asset and lets the formula drop `--HEAD`. The PyPI name
+  is needed only for `pip install voiced` and `uv tool install voiced`;
+  neither the app (it ships the wheel) nor Homebrew needs it.
+
+Needs the owner at the keyboard during implementation:
+
+- One admin-prompt probe: `BASH_ENV` set in the app's environment must not
+  reach the root shell (see the privileged step).
+- "Background Items Added" with `AssociatedBundleIdentifiers` set, and the
+  firewall exception with a LAN client, on a real install.
+- Agree on the development override: a user default (`installSource`)
+  pointing at a local wheel or checkout, so an unpushed development build
+  of the app can install the matching voiced; release builds ignore it.
