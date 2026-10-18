@@ -412,7 +412,12 @@ async def test_session_wall_clock_is_bounded(
 
         trickler = asyncio.create_task(trickle())
         try:
-            events = await read_until(c)
+            events = await read_until(c, "error")
+            # The server closes right after the Error. A chunk the trickler
+            # wrote just before is then unread on the server, so the kernel
+            # resets the connection instead of closing it cleanly.
+            with contextlib.suppress(ConnectionError):
+                assert await c.read_event() is None
         finally:
             trickler.cancel()
             with contextlib.suppress(asyncio.CancelledError):
