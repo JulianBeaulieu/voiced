@@ -104,21 +104,22 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    `ThrottleInterval` 10, `ProcessType Interactive`,
    `WorkingDirectory` the home, `AssociatedBundleIdentifiers` the app, and
    a fixed environment: `HOME`, `PATH` (`<home>/.voiced/bin` first),
-   `VOICED_CONFIG` (`<home>/.config/voiced/config.toml`) and
-   `PYTHONUNBUFFERED`. No plist the user wrote is parsed as root, so there is
-   no allowlist to get wrong. These are the plists `voiced install` stages,
-   minus the log keys below and with ADR 0017's `KeepAlive`: the test
+   `VOICED_CONFIG` (`<home>/.config/voiced/config.toml`),
+   `PYTHONUNBUFFERED` and `VOICED_STDIO_LOG`
+   (`<home>/Library/Logs/voiced/<service>`). No plist the user wrote is
+   parsed as root, so there is no allowlist to get wrong. These are the
+   plists `voiced install` stages, plus the bundle identifier: the test
    compares them.
-2. **No `StandardOutPath` or `StandardErrorPath`.** launchd opens those
-   files as root, and `~/Library/Logs/voiced` belongs to the user, so a
-   symlink planted there would be a root write anywhere. The services open
-   their own log files instead (`O_NOFOLLOW`, then `dup2` onto stdout and
-   stderr); a separate CLI change does that, and `voiced install` then stops
-   writing the keys too.
+2. **No `StandardOutPath` or `StandardErrorPath`**, as `voiced install`
+   already writes them (ADR 0006): launchd opens those files as root, and
+   `~/Library/Logs/voiced` belongs to the user, so a symlink planted there
+   would be a root write anywhere. `VOICED_STDIO_LOG` tells each service to
+   open its own log (`O_NOFOLLOW`, then `dup2` onto stdout and stderr).
 3. Settings that used to travel in the plist environment (`HF_HOME`,
    `VOICED_ESPEAK_*`) come from the config file, which the services read
-   at start (`[install] hf_home`). A custom config path or `[launchd]
-   label_prefix` is not supported by the app (see Lifecycle).
+   at start (`[install] hf_home`); so does a custom `log_dir`, which then
+   wins over the default `VOICED_STDIO_LOG`. A custom config path or
+   `[launchd] label_prefix` is not supported by the app (see Lifecycle).
 4. The user must exist and be a regular account: a uid from 500 to
    2147483647, which excludes `root`, system accounts and `nobody`
    (4294967294). The name is replaced by the account's own spelling
@@ -151,8 +152,8 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
 *Measured* with `menubar/Prototypes/PrivilegedInstall/test.sh`, run as a
 normal user against a scratch destination with launchctl and the firewall
 skipped (the override is ignored when the script runs as root): the
-rendered plists equal those staged by today's `voiced install` without the
-two log keys, with the bundle identifier and ADR 0017's `KeepAlive`;
+rendered plists equal those staged by `voiced install` on main (ADR 0017's
+`KeepAlive`, no log keys), plus the bundle identifier;
 `check` reports them up to date and notices a changed one. Refused with
 nothing written: user `root`, a uid below 500, `nobody`, an unknown user,
 a malformed name, extra arguments, a home owned by another account, a held
@@ -261,7 +262,7 @@ An app install's data path is `~/.voiced/envs/<id>/lib/python3.12/site-packages/
 109 bytes for a 14-character user name, so a longer user name or a custom
 `venv_dir` crosses the limit. Used in place it would work on most Macs and
 kill the TTS service on some.
-Implementation item: at each load the engine clones `espeak-ng-data` with
+Done since (ADR 0009, `kokoro._espeak_data`): at each load the engine clones `espeak-ng-data` with
 `/bin/cp -cR` (an APFS clone, no extra blocks) into the per-user cache
 directory from `os.confstr(65538)` (`CS_DARWIN_USER_CACHE_DIR`, e.g.
 `/private/var/folders/6p/<random>/C/voiced/espeak-ng-data`, 78 bytes and
@@ -345,16 +346,24 @@ Speech to Text and Text to Speech panes.
    download size and disk space from the manifest, and whether the disk has
    room. If an install already exists, this screen says so instead (see
    Lifecycle). One button: "Install".
-2. **Environment** (no prompt): the steps in the table above. uv has no
+2. **Environment** (no prompt): the steps in the table above, holding ADR
+   0017's install lock (an exclusive `flock` on `~/.voiced`; installs never
+   prune an `envs/<id>.partial`) until the environment is renamed, then
+   releasing it for step 3, which takes it itself. A CLI install that gets
+   the lock in that moment could prune the renamed environment; step 3
+   then fails its engine check and "Try again" builds it again. uv has no
    machine-readable progress, so this step shows an indeterminate spinner
    with the current step's name, not an invented bar. It takes about 27 s.
 3. **Models** (no prompt):
-   `~/.voiced/envs/<id>/bin/voiced install --json-progress --app-bundle-id io.github.julianbeaulieu.voiced.menubar`
-   checks the environment imports the engines, writes the config if absent
-   and the log directory, checks the configured ports are free, downloads
-   the models with byte progress, loads each engine once, stages the
-   plists, and finally links `~/.voiced/bin/voiced` to its own environment
-   and writes `install.json` with `source = app`.
+   `~/.voiced/envs/<id>/bin/voiced install --origin app --json-progress`
+   runs ADR 0017's install steps (`install_steps`, under its install
+   lock): writes the config if absent, creates the log directory and claims
+   `~/.voiced`, checks the environment imports the engines, checks the
+   configured ports are free (added here), downloads the models with byte
+   progress and loads each engine once, and only then links
+   `~/.voiced/bin/voiced` to its own environment, writes `install.json`
+   (`--origin app` makes its `source` `app`), prunes old environments and
+   stages the plists.
 4. **Approval**: one administrator prompt runs `voiced-privileged install`.
 5. **Starting**: the app waits for the watchdog's control socket and its
    `hello` (up to two minutes; model loading is slow on a cold disk).
@@ -413,6 +422,7 @@ script rebuilds and replaces the plists.
 | Download goes wrong | Progress shows speed and time remaining and is capped at the manifest's size; more bytes than that is an error, and that file's `.incomplete` is deleted and the file restarted. No bytes for 60 s counts as a stall and offers "Try again". The error names the manual fallback: the repository, revision and target folder, with "Show in Finder" for the models folder |
 | App quit mid-install | The app terminates its children (SIGTERM, then SIGKILL after 5 s). The next launch reads progress from disk (a `.partial` environment is deleted, a complete one in `envs/` is kept, cached models count as done, installed plists mean only Starting is left) and offers "Continue" |
 | One label failed to bootstrap | Names the service; offers Repair |
+| Homebrew is working on voiced (`source = homebrew`) | The watchdog refuses a requested restart while Homebrew holds the formula's lock (`service_unavailable`, ADR 0017); the app says "Homebrew is updating voiced" and tries again when it ends |
 | Another user's install | "voiced is already installed for <user> on this Mac." Nothing else is offered |
 
 ### The progress protocol
@@ -424,7 +434,12 @@ human output goes to stderr.
   The app refuses any other protocol number with "Update voiced" or
   "Update the app", whichever side is older. Unknown events and unknown
   fields are ignored, so adding either keeps protocol 1.
-- `{"event": "step", "step": "env|config|ports|models|staging|link", "state": "start|done|skipped"}`
+- `{"event": "step", "step": "<id>", "state": "start|done", "shown": "..."}`
+  for each of ADR 0017's `install_steps`, by their `Step.id` (`config`,
+  `claim`, `check`, `ports`, `models`, `link`, `manifest`, `legacy`,
+  `prune`, `stage`); the app's own environment step is `env`. A step that
+  does not apply is not in the list. The same list drives `--dry-run`, so
+  `--dry-run --json-progress` gives the app the steps before it starts.
 - `{"event": "download", "model": "<repo>", "bytes": n, "total": n}`, with
   the total from the manifest, throttled to four a second.
 - `{"event": "log", "line": "..."}`
@@ -449,10 +464,11 @@ source the app shows the mismatch and does not act on it (see below).
 
 1. builds a new environment beside the old one (`envs/<id>.partial`,
    renamed when its packages are in);
-2. runs the new environment's `voiced install --json-progress ...`, which
-   smoke-tests it (`voiced --version` and the engine imports), downloads
-   any changed model revision, and only then repoints `~/.voiced/bin/voiced`
-   and rewrites `install.json`;
+2. runs the new environment's `voiced install --origin app --json-progress`,
+   which checks it (ADR 0017's engine check, which also reports its
+   version), downloads any changed model revision, and only then repoints
+   `~/.voiced/bin/voiced`, rewrites `install.json` and prunes all but the
+   new and the previous environment;
 3. runs `voiced-privileged check` as the user (no root: the plists in
    `/Library/LaunchDaemons` are world-readable and `launchctl print
    system/<label>` needs no root, measured), and `voiced-privileged
@@ -466,10 +482,10 @@ source the app shows the mismatch and does not act on it (see below).
    the Flow, the app runs `voiced restart all` and waits once more.
 
 If step 2 or 4 fails, "Roll back" runs the previous environment's own
-`voiced install --json-progress`, which points the symlink back at it
-(models are cached, so it is quick). After a successful update the app
-keeps the previous environment for one-click rollback, deletes any older
-one, removes Python versions no remaining environment uses, and clears the
+`voiced install --origin app --json-progress`, which points the symlink
+back at it (models are cached, so it is quick). Pruning in step 2 keeps
+the previous environment for one-click rollback; after a successful update
+the app also removes Python versions no remaining environment uses, and clears the
 uv cache: the cache only grows (706 MB to 928 MB after one update,
 measured) and `uv cache prune` finds nothing to remove, while the next
 update re-downloads only what changed.
@@ -625,12 +641,15 @@ and says why in one line. If it does not need something, it never asks.
 
 ### Python side (`voiced`)
 
-- The shared layout, `install.json`, the one install mode and the
-  watchdog's self-restart, as ADR 0017 specifies them.
-- `voiced install --json-progress` with the versioned protocol above.
-- `voiced install --app-bundle-id ID` adds `AssociatedBundleIdentifiers`.
-- No other new flags: no `--skip-venv` (the one install mode already uses
-  the running environment), no `--uv`, no `--remove-uv-state` (the uv state
+- Already in place (ADR 0017): the shared layout, `install.json`,
+  `--origin app`, the install lock, `install_steps`, the one install mode,
+  the watchdog's self-restart and its Homebrew-lock wait, and the services
+  opening their own logs (ADR 0006).
+- `voiced install --json-progress` with the versioned protocol above,
+  emitted from `install_steps`.
+- No other new flags: no `--app-bundle-id` (the privileged script adds
+  `AssociatedBundleIdentifiers`), no `--skip-venv` (the one install mode
+  already uses the running environment), no `--uv`, no `--remove-uv-state` (the uv state
   lives in the state directory and goes with it), no `--version --json`
   (`hello` and `install.json` carry the version). `voiced uninstall
   --json` is optional.
@@ -638,16 +657,13 @@ and says why in one line. If it does not need something, it never asks.
   Python.
 - `UV_NO_CONFIG=1` for the CLI's `--source` build (ADR 0017 already puts
   its Python under the state directory with `--managed-python`).
-- The services open their own log files (`O_NOFOLLOW`, `dup2` onto stdout
-  and stderr), and `voiced install` stops writing `StandardOutPath` and
-  `StandardErrorPath` (a separate CLI change).
-- The services take `HF_HOME` and the espeak-ng overrides from the config
-  file instead of the plist environment, so the plists carry only the
-  fixed environment the privileged script renders.
-- The ffmpeg, espeak-ng and model items above, each with tests:
-  `imageio-ffmpeg` in core dependencies and preferred; the espeak-ng clone
-  and length check; `download_patterns()`, pinned revisions and
-  `snapshot_download` progress; a port check before approval.
+- The services take `HF_HOME`, the espeak-ng overrides and a custom
+  `log_dir` from the config file instead of the plist environment, so the
+  plists carry only the fixed environment the privileged script renders.
+- The ffmpeg and model items above, each with tests: `imageio-ffmpeg` in
+  core dependencies and preferred; `download_patterns()`, pinned revisions
+  and `snapshot_download` progress; a port check before approval. (The
+  espeak-ng clone and length check are done, ADR 0009.)
 - The sudo script printed by the CLI stays for terminal users. It should
   gain the firewall step and the same checks; that is a follow-up.
 

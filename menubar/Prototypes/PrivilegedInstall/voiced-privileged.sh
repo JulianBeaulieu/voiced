@@ -15,7 +15,7 @@
 # The only input is the user name. Root renders the plists itself from fixed values and the
 # account's home directory, so nothing the user wrote is parsed as root. There are no
 # StandardOutPath/StandardErrorPath keys: launchd would open those paths in the user's home
-# as root, and the services open their own logs.
+# as root; VOICED_STDIO_LOG tells the services to open their own logs (ADR 0006).
 # Exit codes: 0 done, 1 refused (nothing written), 3 a bootstrap failed (per label on stderr),
 # 4 the firewall exception could not be added, 5 the firewall is on but the Python is outside
 # the home (a Homebrew keg's) and was left alone. 4 and 5 come after a successful install.
@@ -129,6 +129,7 @@ render() {
     /usr/bin/plutil -insert EnvironmentVariables.PATH -string "$home/.voiced/bin:$BASE_PATH" -- "$out"
     /usr/bin/plutil -insert EnvironmentVariables.VOICED_CONFIG -string "$home/.config/voiced/config.toml" -- "$out"
     /usr/bin/plutil -insert EnvironmentVariables.PYTHONUNBUFFERED -string 1 -- "$out"
+    /usr/bin/plutil -insert EnvironmentVariables.VOICED_STDIO_LOG -string "$home/Library/Logs/voiced/$svc" -- "$out"
     /usr/bin/plutil -insert AssociatedBundleIdentifiers -array -- "$out"
     /usr/bin/plutil -insert AssociatedBundleIdentifiers -string "$APP_ID" -append -- "$out"
     /usr/bin/plutil -lint -s -- "$out" >/dev/null || fail "$PREFIX.$svc: rendered plist invalid"

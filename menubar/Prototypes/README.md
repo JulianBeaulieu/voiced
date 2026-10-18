@@ -41,7 +41,7 @@ for `/Library/LaunchDaemons`) and skips launchctl and the firewall; as root
 that variable is ignored.
 
 `test.sh` runs it that way. It compares the rendered plists with the ones
-`voiced install` stages for the default `~/.voiced` (minus the log keys)
+`voiced install` stages for the default `~/.voiced` (plus the app's bundle id)
 and checks that bad input, another account's install and a held lock are
 refused with nothing written:
 

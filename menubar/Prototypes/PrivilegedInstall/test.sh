@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs voiced-privileged.sh as the current user (test mode: a scratch destination, no
 # launchctl, no firewall). Checks that what root would install matches what `voiced install`
-# stages, apart from the log keys root no longer writes, and that bad input, another account's
+# stages, plus the app's bundle id, and that bad input, another account's
 # install and a concurrent run are refused with nothing written.
 #   test.sh STAGING_DIR      # plists `voiced install` staged for the default ~/.voiced
 set -uo pipefail
@@ -28,17 +28,15 @@ expect_refused() {
     else ok "$name: ${out##*refused: }"; fi
 }
 
-# What root renders equals the staged plists without the log keys, plus the app's bundle id.
+# What root renders equals the staged plists plus the app's bundle id.
 clear_dest
 if run install "$user" >/dev/null; then
     for svc in stt tts watchdog; do
         want="$scratch/want.$svc.plist"
         cp "$staging/$prefix.$svc.plist" "$want"
-        plutil -remove StandardOutPath "$want"; plutil -remove StandardErrorPath "$want"
         plutil -insert AssociatedBundleIdentifiers -json "[\"$prefix.menubar\"]" "$want"
-        plutil -replace KeepAlive -json "{\"PathState\":{\"$HOME/.voiced/bin/voiced\":true}}" "$want"
         if [ "$(canon "$want")" = "$(canon "$dest/$prefix.$svc.plist")" ]; then
-            ok "$svc: rendered plist matches voiced install's, without log paths, KeepAlive PathState"
+            ok "$svc: rendered plist matches voiced install's"
         else
             bad "$svc: rendered plist differs"; diff <(canon "$want") <(canon "$dest/$prefix.$svc.plist")
         fi
