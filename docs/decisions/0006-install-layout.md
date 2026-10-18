@@ -67,9 +67,8 @@ and symlinks.
 ### Logs
 
 Each service writes its log through a `RotatingFileHandler` to
-`<log_dir>/<service>.log` (10 MB, five backups). The plist also points
-`StandardErrorPath` at `<service>.stderr.log`, and launchd never rotates
-that file, so a service that logged every line to stderr as well would grow
+`<log_dir>/<service>.log` (10 MB, five backups). Stdout and stderr go to
+`<service>.stdout.log` and `<service>.stderr.log`, which nothing rotates, so a service that logged every line to stderr as well would grow
 it without bound and duplicate the rotated log. `configure_logging`
 therefore adds a stderr handler only when there is no log directory or
 stderr is a terminal (`voiced serve` run by hand, which shows every line).
@@ -81,6 +80,22 @@ writes only its rotating file, and with `--once` only stderr; both
 configurers share the size and backup count from `voiced.launchd.plist`. `voiced logs` reads
 the rotated `<service>.log`; `voiced logs --stderr` adds the stderr file
 when looking for a crash.
+
+The plists do not use `StandardOutPath`/`StandardErrorPath` for those two
+files. launchd may open or create them as root before it drops to
+`UserName`, and they live in a directory the user owns, so a process
+running as the user could replace one with a symlink to a root-only path,
+make the daemon exit, and have launchd open that path as root on the
+restart. Instead the plist sets `VOICED_STDIO_LOG=<log_dir>/<service>`, and
+the process opens both files itself, as the user, first thing
+(`voiced.entry`, before the CLI is imported, so an import traceback is
+kept; `voiced.launchd.metal_probe` does the same). Each is opened
+`O_APPEND|O_CREAT|O_NOFOLLOW`, created 0600, and must be a regular file;
+then `dup2` puts them on fds 1 and 2, so C-level output (MLX, espeak-ng)
+lands there too. A file that cannot be opened is reported on the original
+stderr and the daemon runs on without the redirect rather than
+crash-looping. Plists rendered before this change keep the two keys, and
+the old exposure, until `voiced install` and its sudo script replace them.
 
 `HF_HOME` is resolved once when the plan is built (`[install] hf_home`,
 else the installing shell's `HF_HOME`, else unset) and written identically

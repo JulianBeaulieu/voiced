@@ -114,6 +114,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- The LaunchDaemon plists no longer set `StandardOutPath` or
+  `StandardErrorPath`. launchd opened those files as root in the
+  user-owned log directory, so a symlink planted there could make root
+  create or append to any file. The daemons now open
+  `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
+  a symlink, and point their stdout and stderr at them (`VOICED_STDIO_LOG`
+  in the plist). Existing installs keep the old plists, and the exposure,
+  until `voiced install` and its sudo script are run again.
 - Uploads can no longer make ffmpeg open other files: ffmpeg reads the
   upload through an inherited descriptor and may open nothing else, so an
   `ffconcat` list or playlist is refused. Upload files are anonymous and

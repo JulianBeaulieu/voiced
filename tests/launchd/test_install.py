@@ -77,6 +77,9 @@ def test_plists_match_golden(plan: InstallPlan, service: str) -> None:
     assert parsed["UserName"] == "someone"
     assert parsed["KeepAlive"] is True and parsed["RunAtLoad"] is True
     assert parsed["EnvironmentVariables"]["VOICED_CONFIG"] == str(plan.config_file)
+    assert "StandardOutPath" not in parsed and "StandardErrorPath" not in parsed
+    stdio = parsed["EnvironmentVariables"]["VOICED_STDIO_LOG"]
+    assert stdio == str(plan.log_dir / service)
 
 
 def test_install_script_matches_golden(plan: InstallPlan) -> None:
@@ -92,6 +95,7 @@ def test_metal_probe_matches_golden(plan: InstallPlan) -> None:
     _compare(probe.script, "metal-probe.sh")
     _compare(probe.plist.decode(), "metalprobe.plist")
     assert plistlib.loads(probe.plist)["KeepAlive"] is False
+    assert "StandardErrorPath" not in plistlib.loads(probe.plist)
     assert probe.label == "org.example.voiced.metalprobe"
     assert "trap " in probe.script and "EXIT" in probe.script
 
