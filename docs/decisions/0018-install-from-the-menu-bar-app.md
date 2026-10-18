@@ -11,7 +11,10 @@ bar app and the app installs the daemons. The Homebrew cask installs the
 app, the app installs and manages the services, and the app is where
 progress and errors are shown. Permissions are asked for only when a step
 needs them, each with a one-line reason, and the app never uses the
-microphone. The `voiced` CLI stays for headless and advanced use, and the
+microphone. The model for the experience is Handy (handy.computer), an
+open-source local speech-to-text app with a menu bar icon, first-run model
+downloads and a signed, notarized release; voiced takes its patterns, not
+its code. The `voiced` CLI stays for headless and advanced use, and the
 Homebrew formula (ADR 0017) stays the terminal path.
 
 The app (ADR 0014) talks only to the watchdog's control socket and reads
@@ -328,7 +331,10 @@ install runs.
 ## Flow
 
 The app's existing states (ADR 0014) gain an installer in front of them.
-"Not installed" opens the installer instead of the guide link.
+"Not installed" opens the installer instead of the guide link. Each screen
+says what it does in one sentence. There is no model picker on first run:
+each engine gets its pinned default, and the model is chosen later in the
+Speech to Text and Text to Speech panes.
 
 0. **Before anything.** If the app is translocated
    (`SecTranslocateIsTranslocatedURL`, an app opened from Downloads
@@ -366,6 +372,31 @@ The app's existing states (ADR 0014) gain an installer in front of them.
 7. **Done.** "Open voiced at login" checkbox, off by default; then the
    normal menu.
 
+### On every launch
+
+Installing once is not enough: the user can turn the background item off,
+a plist can change, and the app can be updated under the services. So each
+launch of an installed app re-checks, without root:
+
+- the background item's approval (`SMAppService` status for the app's
+  `AssociatedBundleIdentifiers` entry, polled while the card is shown): if
+  it is off, a card says "voiced can't start at boot while it is off in
+  Login Items" with "Open Login Items";
+- the plists, with `voiced-privileged check`: a difference offers Repair;
+- the `hello` version and lock hash: a mismatch offers "Update voiced" (for
+  `source = app`) or shows it (other sources).
+
+### In the menu bar
+
+The icon has three states, each drawn for light and dark: idle (running),
+busy (starting or installing), and an error badge. The menu ends with a
+disabled line showing the app's version. A Debug pane in Settings (log
+locations, paths, the environment in use, "Copy diagnostics") is hidden
+until a "Show Debug pane" switch in General turns it on.
+
+After a successful "Update voiced", a "What's new" window shows the release
+notes bundled with the app (Markdown), once.
+
 ### Failure states
 
 Each step fails on its own and shows the step, a one-line cause, the last
@@ -380,6 +411,7 @@ script rebuilds and replaces the plists.
 | Admin prompt cancelled (-128) | Back to "Install background services", no error |
 | Port in use | `voiced install` checks the configured ports before approval and names the process holding one; a port held by voiced's own running services (a reinstall or update) is not a conflict |
 | Download interrupted | "Try again" resumes from the `.incomplete` files |
+| Download goes wrong | Progress shows speed and time remaining and is capped at the manifest's size; more bytes than that is an error, and that file's `.incomplete` is deleted and the file restarted. No bytes for 60 s counts as a stall and offers "Try again". The error names the manual fallback: the repository, revision and target folder, with "Show in Finder" for the models folder |
 | App quit mid-install | The app terminates its children (SIGTERM, then SIGKILL after 5 s). The next launch reads progress from disk (a `.partial` environment is deleted, a complete one in `envs/` is kept, cached models count as done, installed plists mean only Starting is left) and offers "Continue" |
 | One label failed to bootstrap | Names the service; offers Repair |
 | Another user's install | "voiced is already installed for <user> on this Mac." Nothing else is offered |
@@ -523,8 +555,35 @@ caveats say so.
 Through the cask only (`brew upgrade --cask voiced`), or a new download
 from the GitHub release. The app does not update itself, and there is no
 Sparkle: one more signing key and feed for a tool whose users mostly come
-through Homebrew is not worth it yet. A new app version finds the mismatch
+through Homebrew is not worth it yet. So the cask has no `auto_updates`
+stanza, and `brew upgrade` handles it. A new app version finds the mismatch
 above on its next launch and offers "Update voiced".
+
+### Signing and release CI
+
+One manually started workflow builds a release from a tag and creates a
+draft GitHub release:
+
+1. Repository secrets hold the Developer ID Application certificate
+   (base64 `.p12` and its password) and an App Store Connect API key
+   (`.p8`, key ID, issuer ID). The API key is used rather than an Apple ID
+   and app-specific password: it is scoped, revocable and not a person's
+   login.
+2. A temporary keychain: decode the `.p12`, create and unlock the keychain,
+   `security import -T /usr/bin/codesign`, `set-key-partition-list`, and
+   check `find-identity` finds "Developer ID Application". The keychain is
+   deleted at the end of the job.
+3. `codesign --options runtime --timestamp`, inside out: the bundled uv
+   first, then the app.
+4. `xcrun notarytool submit --wait` with the API key, then
+   `xcrun stapler staple`, then `spctl -a -vv` as the check that Gatekeeper
+   accepts it.
+5. The zip (and a DMG) with the voiced wheel built from the same commit go
+   on the draft release; a person publishes it. The cask lives in the
+   project's tap first and goes to `homebrew/cask` once releases are
+   notarized; at about 16 MB zipped the app is in the usual range there.
+
+`menubar/Scripts/SIGNING.md` gains these steps.
 
 ## Where the logic lives, and the change to ADR 0014
 
@@ -603,8 +662,11 @@ and says why in one line. If it does not need something, it never asks.
   third-party notice in `Contents/Resources`; the privileged script
   compiled into the executable. `bundle.sh` fetches uv at a pinned version
   and checksum and takes the lock from the wheel it bundles.
-- The bundle self-check before the prompt, the translocation check, and the
-  Update, Roll back, Repair and Uninstall actions.
+- The bundle self-check before the prompt, the translocation check, the
+  launch re-check with its Login Items card, the icon states, the hidden
+  Debug pane, "What's new", and the Update, Roll back, Repair and
+  Uninstall actions.
+- The release workflow above.
 - `InstallProbe` stays as it is: the plists still come from `voiced
   install`, and the state directory, where the socket lives, is always
   `~/.voiced`.
