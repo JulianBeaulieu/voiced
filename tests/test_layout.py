@@ -288,3 +288,32 @@ def test_homebrew_busy_while_the_formula_lock_is_held(tmp_path: Path) -> None:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # as Homebrew's LockFile does
         assert homebrew_busy((keg_file,)) == "python@3.12"
     assert homebrew_busy((keg_file,)) is None
+
+
+def test_watchdog_hello_reports_the_manifest(tmp_path: Path) -> None:
+    """The app compares its pins with what install.json records."""
+    from voiced.layout import Manifest, installed_manifest, write_manifest
+
+    assert installed_manifest(tmp_path) is None  # nothing installed
+    manifest = Manifest("app", tmp_path / "env", "0.0.2", "ab12", "/py/python3.12")
+    write_manifest(tmp_path, manifest)
+    assert installed_manifest(tmp_path) == manifest.to_json()
+
+
+@pytest.mark.parametrize("kind", ["not json", "not utf-8", "fifo", "huge"])
+def test_an_unreadable_manifest_is_none_and_never_blocks(tmp_path: Path, kind: str) -> None:
+    """The watchdog reads it on its event loop for every hello: a bad one
+    must neither raise (UnicodeDecodeError closed every connection without
+    a hello) nor block (a FIFO, a huge file)."""
+    from voiced.layout import MAX_MANIFEST_BYTES, ManifestError, installed_manifest, read_manifest
+
+    path = tmp_path / "install.json"
+    if kind == "fifo":
+        os.mkfifo(path)  # no writer: a blocking open would hang here
+    elif kind == "huge":
+        path.write_text('{"source": "app"' + " " * MAX_MANIFEST_BYTES + "}")
+    else:
+        path.write_bytes(b"{not json" if kind == "not json" else b'\xff\xfe{"source": "app"}')
+    assert installed_manifest(tmp_path) is None
+    with pytest.raises(ManifestError):
+        read_manifest(tmp_path)

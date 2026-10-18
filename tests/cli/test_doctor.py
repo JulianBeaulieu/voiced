@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -87,7 +86,7 @@ def test_espeak_missing_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
     check = doctor.check_espeak()
     assert check.result == "fail"
-    assert "brew install espeak-ng" in check.detail and ENV_ESPEAK_LIBRARY in check.detail
+    assert "brew install espeak-ng" in check.detail and "[tts] espeak_library" in check.detail
     assert doctor.check_espeak(required=False).result == "warn"
 
 
@@ -96,7 +95,7 @@ def test_espeak_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     lib.write_bytes(b"")
     monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
     check = doctor.check_espeak()
-    assert check == doctor.Check("espeak-ng", "pass", f"found {lib} ({ENV_ESPEAK_LIBRARY})")
+    assert check == doctor.Check("espeak-ng", "pass", f"found {lib} ([tts] espeak_library)")
 
 
 def test_espeak_stale_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -125,25 +124,6 @@ def test_espeak_required_follows_tts_engine(
     settings.tts.engine = "soprano"
     doctor.run_all(settings, runner)
     assert seen == [True, False]
-
-
-def test_doctor_checks_the_espeak_the_config_names(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The services export [tts] espeak_library; doctor looks at the same one."""
-    monkeypatch.setenv(ENV_ESPEAK_LIBRARY, "")
-    monkeypatch.delenv(ENV_ESPEAK_LIBRARY)  # restored to unset afterwards
-    seen: list[str | None] = []
-
-    def fake(required: bool = True) -> doctor.Check:
-        seen.append(os.environ.get(ENV_ESPEAK_LIBRARY))
-        return doctor.Check("espeak-ng", "pass")
-
-    monkeypatch.setattr(doctor, "check_espeak", fake)
-    monkeypatch.setattr(doctor, "daemon_evidence", lambda s, r: [])
-    settings.tts.espeak_library = tmp_path / "libespeak-ng.dylib"
-    doctor.run_all(settings, make_runner({}))
-    assert seen == [str(tmp_path / "libespeak-ng.dylib")]
 
 
 PROTOCOLS = "Supported file protocols:\nInput:\n  {inputs}\nOutput:\n  fd\n  file\n  pipe\n"

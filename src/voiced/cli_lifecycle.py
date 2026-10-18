@@ -58,11 +58,10 @@ from voiced.launchd.control import (
 from voiced.launchd.plist import log_paths
 from voiced.layout import (
     ORIGINS,
-    ManifestError,
     RunningEnvironment,
     entry_point,
     install_lock,
-    read_manifest,
+    installed_manifest,
 )
 from voiced.settings_store import SETTABLE
 from voiced.table import render_table
@@ -228,9 +227,10 @@ def cmd_install(
 ) -> int:
     """With ``--json-progress``, stdout carries only the events of
     :mod:`voiced.launchd.progress`: human output, the steps' own output
-    included, goes to stderr, and that output is relayed as events too."""
+    included, goes to stderr, and that output is sent as ``log`` events too.
+    SIGTERM ends the install with an ``error``, its child stopped."""
     from voiced.launchd.install import InstallError
-    from voiced.launchd.progress import Progress
+    from voiced.launchd.progress import Progress, exit_on_sigterm
 
     progress = Progress(sys.stdout if args.json_progress else None)
     run: Runner = runner
@@ -239,7 +239,7 @@ def cmd_install(
 
         def tee(line: str) -> None:
             echo(line)
-            progress.relay(line)
+            progress.log(line)
 
         run = functools.partial(runner, on_line=tee)
     progress.hello()
@@ -252,13 +252,18 @@ def cmd_install(
         progress.error(refusal)
         return 2
     try:
-        with progress.reporting():
+        with exit_on_sigterm(), progress.reporting():
             plan = _install(args, settings, echo, run, progress)
+            _show_staged(plan, echo, dry_run=args.dry_run)
     except InstallError as exc:
         echo(f"install failed: {exc}")
         return 1
-    progress.done(plan.staging_dir)
-    if args.dry_run:
+    progress.done(plan.staging_dir)  # last, so it cannot disagree with the exit code
+    return 0
+
+
+def _show_staged(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
+    if dry_run:
         for service in SERVICES:
             echo("")
             echo(f"--- {plan.staged_plist(service)} (would be written)")
@@ -266,7 +271,7 @@ def cmd_install(
         echo("")
         echo(f"--- {plan.install_script_path} (would be written)")
         echo(plan.sudo_install_script().rstrip())
-        return 0
+        return
     echo("")
     echo("User-level install done. The LaunchDaemons need root. Review and run:")
     echo("")
@@ -275,7 +280,6 @@ def cmd_install(
     echo(plan.sudo_install_script().rstrip())
     echo("")
     echo(f"Then: {plan.entry} status")
-    return 0
 
 
 def _install(
@@ -933,16 +937,6 @@ def cmd_watchdog(settings: Settings, echo: Echo, *, once: bool = False) -> int:
             echo(f"{name}: {decision.action}: {decision.reason}")
         return 0
     return asyncio.run(_run_watchdog(dog, settings))
-
-
-def installed_manifest(state: Path) -> dict[str, Any] | None:
-    """``install.json`` for the watchdog's ``hello``: None when there is none
-    or it cannot be read."""
-    try:
-        manifest = read_manifest(state)
-    except ManifestError:
-        return None
-    return None if manifest is None else manifest.to_json()
 
 
 async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:

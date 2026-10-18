@@ -67,8 +67,9 @@ installing user. The plists set `RunAtLoad`, `KeepAlive`, `ThrottleInterval
 background work), `WorkingDirectory` = the user's home, and an explicit
 environment: `HOME`, `PATH` (venv first, then Homebrew, then system),
 `VOICED_CONFIG` (so the daemon reads the same file as the CLI regardless of
-how launchd resolves `~`), `PYTHONUNBUFFERED=1`, and (until ADR 0018 moved it into the config file)
-`HF_HOME` when configured. Stdout and stderr go to `<log_dir>/<service>.stdout.log` and
+how launchd resolves `~`), `PYTHONUNBUFFERED=1` and `VOICED_STDIO_LOG`;
+everything else, `HF_HOME` included, the daemon reads from that config file
+(ADR 0018). Stdout and stderr go to `<log_dir>/<service>.stdout.log` and
 `.stderr.log`, opened by the process itself rather than through
 `StandardOutPath`/`StandardErrorPath` (ADR 0006, Logs); the application log
 is `<log_dir>/<service>.log`.

@@ -1,14 +1,13 @@
 {"event": "hello", "protocol": 1, "version": "<version>"}
 {"event": "step", "step": "config", "state": "start", "shown": "create <tmp>/missing.toml from config.example.toml"}
 {"event": "step", "step": "config", "state": "done", "shown": "create <tmp>/missing.toml from config.example.toml"}
-{"event": "step", "step": "claim", "state": "start", "shown": "create log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
-{"event": "step", "step": "claim", "state": "done", "shown": "create log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
+{"event": "step", "step": "claim", "state": "start", "shown": "create the configured log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
+{"event": "step", "step": "claim", "state": "done", "shown": "create the configured log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
 {"event": "step", "step": "check", "state": "start", "shown": "<tmp>/env/bin/python -P -c <engine check>"}
 {"event": "step", "step": "check", "state": "done", "shown": "<tmp>/env/bin/python -P -c <engine check>"}
 {"event": "step", "step": "models", "state": "start", "shown": "<tmp>/env/bin/python -c <model download>"}
 {"event": "log", "line": "stt: engine=fake model=m"}
-{"event": "download", "model": "mlx-community/parakeet-tdt-0.6b-v3", "bytes": 0, "total": 2508}
-{"event": "download", "model": "mlx-community/parakeet-tdt-0.6b-v3", "bytes": 2508, "total": 2508}
+{"event": "log", "line": "  loaded fake (m)"}
 {"event": "step", "step": "models", "state": "done", "shown": "<tmp>/env/bin/python -c <model download>"}
 {"event": "step", "step": "link", "state": "start", "shown": "link <tmp>/state/bin/voiced -> <tmp>/env/bin/voiced"}
 {"event": "step", "step": "link", "state": "done", "shown": "link <tmp>/state/bin/voiced -> <tmp>/env/bin/voiced"}

@@ -186,91 +186,46 @@ def test_reinstall_waits_for_bootout() -> None:
     assert lines.index(next(line for line in lines if "bootstrap" in line)) > 1
 
 
-def _download_env(p: InstallPlan) -> dict[str, str | None]:
-    env: dict[str, str | None] = json.loads(p.model_download_command()[-1])
+def _download_env(p: InstallPlan) -> dict[str, str]:
+    env: dict[str, str] = json.loads(p.model_download_command()[-1])
     return env
 
 
-ENGINE_VARS = ("HF_HOME", "VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA")
-
-
 def test_engine_variables_come_from_the_config_not_the_plists(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path
 ) -> None:
     """The plists carry only the fixed environment the privileged script
-    renders (ADR 0018); the services export these from the config, and the
-    download gets exactly what they will, so models land where they look."""
-
-    def make() -> InstallPlan:
-        return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-
-    for key in ENGINE_VARS:
-        monkeypatch.delenv(key, raising=False)
-    p = make()
-    assert _download_env(p) == {**dict.fromkeys(ENGINE_VARS), "VOICED_CONFIG": str(p.config_file)}
-
+    renders (ADR 0018). The services, and the download as a child of a
+    voiced that set them (apply_engine_environment), get the rest from the
+    config; the download's own argument is only the config path."""
     settings.install.hf_home = tmp_path / "hf"
     settings.tts.espeak_library = tmp_path / "lib/libespeak-ng.dylib"
     settings.tts.espeak_data = tmp_path / "data"
-    p = make()
-    expected = {
-        "HF_HOME": str(tmp_path / "hf"),
-        "VOICED_ESPEAK_LIBRARY": str(tmp_path / "lib/libespeak-ng.dylib"),
-        "VOICED_ESPEAK_DATA": str(tmp_path / "data"),
-    }
-    assert {k: _download_env(p)[k] for k in ENGINE_VARS} == expected
+    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
+    assert _download_env(p) == {"VOICED_CONFIG": str(p.config_file)}
     for service in SERVICES:
         env = plistlib.loads(p.render(service))["EnvironmentVariables"]
         assert set(env) == {"HOME", "PATH", "VOICED_CONFIG", "PYTHONUNBUFFERED", "VOICED_STDIO_LOG"}
     summary = plan_summary(p)
     assert f"hf_home        {tmp_path / 'hf'}" in summary
     assert f"VOICED_ESPEAK_DATA {tmp_path / 'data'}" in summary
-    assert "warning" not in summary
 
 
-def test_a_shell_only_engine_variable_is_unset_for_the_download_and_named(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """HF_HOME exported in the installing shell no longer reaches the
-    services: the download must not use it either, and the summary says
-    where to set it. The same value in the config is no warning."""
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "shell"))
-    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", str(tmp_path / "lib.dylib"))
-    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-    assert _download_env(p)["HF_HOME"] is None
-    assert _download_env(p)["VOICED_ESPEAK_LIBRARY"] is None
-    summary = plan_summary(p)
-    assert f"HF_HOME={tmp_path / 'shell'} is set in this shell" in summary
-    assert "[install] hf_home" in summary and "[tts] espeak_library" in summary
-
-    settings.install.hf_home = tmp_path / "shell"
-    settings.tts.espeak_library = tmp_path / "lib.dylib"
-    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-    assert "warning" not in plan_summary(p)
-
-
-def test_model_download_script_applies_the_environment(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The script itself: None unsets a variable the shell has, a value sets it."""
+def test_model_download_names_the_cache_it_uses(settings: Settings, tmp_path: Path) -> None:
     p = dataclasses.replace(
         plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None),
         environment=Path(sys.prefix),
     )
     script = p.model_download_command()[2].split("from voiced.config")[0]
 
-    def cache(env: dict[str, str | None]) -> str:
-        out = subprocess.run(
-            [sys.executable, "-c", script, json.dumps(env)],
-            env={**os.environ, "HF_HOME": str(tmp_path / "shell")},
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+    def cache(**env: str) -> str:
+        argv = [sys.executable, "-c", script, p.model_download_command()[3]]
+        base = {k: v for k, v in os.environ.items() if k != "HF_HOME"}
+        out = subprocess.run(argv, env={**base, **env}, capture_output=True, text=True, check=True)
         return out.stdout.strip()
 
-    assert cache({"HF_HOME": None}) == "Hugging Face cache: the default"
-    assert cache({"HF_HOME": "/x/hf"}) == "Hugging Face cache: /x/hf"
+    assert cache() == "Hugging Face cache: the default"
+    assert cache(HF_HOME="/x/hf") == "Hugging Face cache: /x/hf"
 
 
 def test_build_commands_use_the_locks_and_a_managed_python(

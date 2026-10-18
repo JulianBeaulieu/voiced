@@ -127,6 +127,6 @@ venv_dir = "~/.voiced"
 # "3.12"; uv downloads it into <venv_dir>/python. Empty means 3.12.
 python = ""
 # Hugging Face cache directory for model downloads. Leave unset to use the
-# Hugging Face default (~/.cache/huggingface). The services set HF_HOME from
-# it; an HF_HOME exported in your shell does not reach them.
+# Hugging Face default (~/.cache/huggingface). voiced sets HF_HOME from it
+# and ignores one exported in your shell. Absolute, or starting with ~.
 # hf_home = "~/.cache/huggingface"

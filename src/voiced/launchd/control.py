@@ -73,25 +73,30 @@ def run_streaming(
     progress, and nothing is lost if the step takes ten minutes. With
     ``on_line``, each line of output (stdout and stderr together) goes there
     instead, as it comes (``voiced install --json-progress`` keeps its own
-    stdout for events).
+    stdout for events); of a progress bar's ``\r`` refreshes only the last
+    state of the line. Any exception here (SIGTERM, Ctrl-C) kills the child
+    before it goes on, so no install step keeps running on its own.
     """
     pipe = subprocess.PIPE if on_line is not None else None
     try:
-        proc = subprocess.Popen(
-            list(argv),
-            stdout=pipe,
-            stderr=subprocess.STDOUT if pipe else None,
-            text=True,
-            errors="replace",
-        )
+        proc = subprocess.Popen(list(argv), stdout=pipe, stderr=subprocess.STDOUT if pipe else None)
     except FileNotFoundError as exc:
         return CommandResult(127, "", f"{argv[0]}: not found ({exc})")
     except OSError as exc:
         return CommandResult(126, "", f"{argv[0]}: {exc}")
-    with proc:
+    try:
         if on_line is not None and proc.stdout is not None:
-            for line in proc.stdout:
-                on_line(line.rstrip("\n"))
+            for raw in proc.stdout:
+                last = raw.rstrip(b"\r\n").rsplit(b"\r", 1)[-1]
+                on_line(last.decode(errors="replace"))
+        proc.wait()
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
     return CommandResult(proc.returncode)
 
 

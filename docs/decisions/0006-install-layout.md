@@ -101,11 +101,11 @@ original stderr (`/dev/null` under launchd) and logged as a warning in
 redirect rather than crash-looping. Plists rendered before this change keep the two keys, and
 the old exposure, until `voiced install` and its sudo script replace them.
 
-`HF_HOME` comes from `[install] hf_home`, which the services export at
-start (ADR 0018), not from the plists. The model download gets exactly what
-the services will (an `HF_HOME` only the installing shell has is unset for
-it, and the plan summary says to set the key), so the daemons find the
-weights the installer fetched.
+`HF_HOME` comes from `[install] hf_home`, not from the plists: every
+`voiced` command sets it, and the espeak-ng variables, from the config file
+alone and clears what the shell exported (ADR 0018). The services and the
+installer's model download, its child, therefore see the same cache, so
+the daemons find the weights the installer fetched.
 
 Every path that ends up in a generated shell script is quoted with
 `shlex.quote`, and `[launchd] label_prefix` is validated to letters, digits,

@@ -145,7 +145,8 @@ def kokoro_voices(languages: list[str]) -> list[Voice]:
 def espeak_candidates() -> list[tuple[str, str | None]]:
     """``(library_path, data_path)`` pairs to try, most preferred first.
 
-    ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``) is the one
+    ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``), which
+    ``voiced`` sets from ``[tts] espeak_library`` and ``espeak_data``, is the one
     override and is the only candidate when set; a path that does not exist
     is an error naming it. Otherwise the Homebrew keg for Apple Silicon and
     for Intel, whichever exists.
@@ -154,9 +155,9 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
     if override:
         data = os.environ.get(ENV_ESPEAK_DATA) or None
         if not Path(override).is_file():
-            raise EspeakNotFound(f"{ENV_ESPEAK_LIBRARY}={override} is not a file")
+            raise EspeakNotFound(f"[tts] espeak_library {override} is not a file")
         if data and not Path(data).is_dir():
-            raise EspeakNotFound(f"{ENV_ESPEAK_DATA}={data} is not a directory")
+            raise EspeakNotFound(f"[tts] espeak_data {data} is not a directory")
         return [(override, data)]
     return [
         (f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data")
@@ -374,7 +375,7 @@ def _espeak_data(data: str | None) -> str | None:
         raise EspeakNotFound(
             f"espeak-ng data path {resolved} is {size} bytes, longer than the "
             f"{MAX_ESPEAK_DATA_PATH} the espeak-ng from espeakng-loader accepts. Use "
-            f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set {ENV_ESPEAK_DATA} "
+            f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set [tts] espeak_data "
             f"to a copy at a path of {MAX_ESPEAK_DATA_PATH} bytes or less."
         )
     return data
@@ -407,7 +408,7 @@ def _load_espeak() -> Any:
     raise EspeakNotFound(
         "Kokoro needs espeak-ng for pronunciation but it is not installed or not "
         f"working ({detail}). Install it with `{ESPEAK_INSTALL_HINT}`, or point "
-        f"{ENV_ESPEAK_LIBRARY} and {ENV_ESPEAK_DATA} at a working copy."
+        "[tts] espeak_library and espeak_data at a working copy."
     )
 
 

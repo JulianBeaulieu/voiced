@@ -25,7 +25,6 @@ from typing import Literal
 
 import voiced
 from voiced.config import (
-    ENGINE_ENV,
     ENV_HF_HOME,
     LOG_DIR_IN_HOME,
     SERVICES,
@@ -169,10 +168,8 @@ class InstallPlan:
     python: str = ""
     uv: str | None = None
     # HF_HOME and the espeak-ng overrides as the config sets them, which is
-    # how the services get them (ADR 0018), and those this shell sets
-    # otherwise, which the services do not see.
+    # how the services get them (ADR 0018).
     engine_env: dict[str, str] = field(default_factory=dict)
-    shell_only_env: dict[str, str] = field(default_factory=dict)
 
     # Paths -------------------------------------------------------------
 
@@ -276,13 +273,12 @@ class InstallPlan:
         return [str(self.python_bin), "-P", "-c", ENGINE_CHECK]
 
     def model_download_command(self) -> list[str]:
-        """The download sees the engine variables the services will (None
-        unsets one this shell has), so the models land in the cache the
-        services read. The environment goes in as a JSON argument, not
-        through ``/usr/bin/env``, which would take a state path containing
-        ``=`` for one more assignment."""
-        env: dict[str, str | None] = dict.fromkeys(ENGINE_ENV)
-        env |= {**self.engine_env, "VOICED_CONFIG": str(self.config_file)}
+        """The engine variables come with this process's environment, which
+        ``voiced`` set from the config (``apply_engine_environment``), so
+        the models land in the cache the services read. The rest goes in as
+        a JSON argument, not through ``/usr/bin/env``, which would take a
+        state path containing ``=`` for one more assignment."""
+        env = {"VOICED_CONFIG": str(self.config_file)}
         return [str(self.python_bin), "-c", MODEL_DOWNLOAD_SCRIPT, json.dumps(env)]
 
     def sudo_install_script(self) -> str:
@@ -422,11 +418,7 @@ ENGINE_CHECK = (
 # installed (for example a dev install without the MLX extras).
 MODEL_DOWNLOAD_SCRIPT = """
 import asyncio, json, os, sys
-for key, value in json.loads(sys.argv[1]).items():
-    if value is None:
-        os.environ.pop(key, None)
-    else:
-        os.environ[key] = value
+os.environ.update(json.loads(sys.argv[1]))
 print(f"Hugging Face cache: {os.environ.get('HF_HOME') or 'the default'}", flush=True)
 from voiced.config import load_settings
 from voiced.engines.registry import UnknownEngine, get_stt_engine, get_tts_engine
@@ -498,12 +490,6 @@ def plan_install(
     else:
         source = source.expanduser().absolute()
         environment, found = new_environment_dir(state), "cli"
-    engine_env = settings.engine_environment()
-    shell_only = {
-        key: value
-        for key in ENGINE_ENV
-        if (value := os.environ.get(key)) and value != engine_env.get(key)
-    }
     return InstallPlan(
         user=installing_user(),
         home=home or Path.home(),
@@ -518,8 +504,7 @@ def plan_install(
         state_dir_flag="[install] venv_dir" if state_dir is None else "--state-dir",
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
-        engine_env=engine_env,
-        shell_only_env=shell_only,
+        engine_env=settings.engine_environment(),
     )
 
 
@@ -543,12 +528,6 @@ def plan_summary(plan: InstallPlan) -> str:
         f"hf_home        {plan.hf_home or '(Hugging Face default)'}",
     ]
     lines += [f"{key:<14} {value}" for key, value in plan.engine_env.items() if key != ENV_HF_HOME]
-    for key, value in plan.shell_only_env.items():
-        section, name = ENGINE_ENV[key]
-        lines.append(
-            f"warning: {key}={value} is set in this shell, but the services read "
-            f"[{section}] {name} from {plan.config_file}; set it there"
-        )
     for service in SERVICES:
         lines.append(f"label {service:<9}{plan.labels[service]}")
     return "\n".join(lines)
@@ -662,9 +641,8 @@ def install_steps(
         def go() -> None:
             result = runner(argv)
             if not result.ok:
-                raise InstallError(
-                    f"{what} failed (exit {result.returncode}): {result.output}".rstrip()
-                )
+                output = f": {result.output}" if result.output else ""
+                raise InstallError(f"{what} failed (exit {result.returncode}){output}")
 
         return go
 
@@ -698,7 +676,7 @@ def install_steps(
             write_manifest(plan.state_dir, Manifest(source=plan.origin, environment=None))
 
     claimed = "" if previous is not None else f", and claim {plan.state_dir} ({MANIFEST})"
-    steps.append(Step("claim", f"create log dir {plan.log_dir}{claimed}", claim_dir))
+    steps.append(Step("claim", f"create the configured log dir {plan.log_dir}{claimed}", claim_dir))
     for argv in plan.build_commands():
         what = "uv venv" if "venv" in argv else "uv pip install"
         steps.append(Step("build", shlex.join(argv), run(argv, what), command=True))

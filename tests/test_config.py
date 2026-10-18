@@ -75,11 +75,7 @@ def test_engine_environment_comes_from_the_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What the plists used to carry (ADR 0018): HF_HOME and the espeak-ng
-    overrides, exported by the services from the config file. A variable
-    already set wins, as VOICED_* ones win over the file."""
-    for key in ENGINE_ENV:
-        monkeypatch.setenv(key, "")
-        monkeypatch.delenv(key)
+    overrides, set from the config file, and only from it."""
     cfg = tmp_path / "config.toml"
     cfg.write_text('[install]\nhf_home = "~/hf"\n[tts]\nespeak_library = "/x/libespeak-ng.dylib"\n')
     settings = load_settings(cfg)
@@ -88,7 +84,32 @@ def test_engine_environment_comes_from_the_file(
         "VOICED_ESPEAK_LIBRARY": "/x/libespeak-ng.dylib",
     }
     monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/terminal/lib.dylib")
+    monkeypatch.setenv("VOICED_ESPEAK_DATA", "/terminal/data")
     apply_engine_environment(settings)
-    assert os.environ["HF_HOME"] == str(Path.home() / "hf")
-    assert os.environ["VOICED_ESPEAK_LIBRARY"] == "/terminal/lib.dylib"
-    assert "VOICED_ESPEAK_DATA" not in os.environ
+    assert {k: os.environ.get(k) for k in ENGINE_ENV} == {
+        "HF_HOME": str(Path.home() / "hf"),
+        "VOICED_ESPEAK_LIBRARY": "/x/libespeak-ng.dylib",
+        "VOICED_ESPEAK_DATA": None,  # the shell's is cleared
+    }
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("server", "log_dir"),
+        ("install", "hf_home"),
+        ("tts", "espeak_library"),
+        ("tts", "espeak_data"),
+    ],
+)
+def test_paths_the_services_and_installer_share_must_be_absolute(
+    tmp_path: Path, section: str, key: str
+) -> None:
+    """The services run in the home, the installer and its children anywhere:
+    a relative path would mean two different places."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'[{section}]\n{key} = "relative/dir"\n')
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        load_settings(cfg)
+    cfg.write_text(f'[{section}]\n{key} = "~/dir"\n')
+    assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"

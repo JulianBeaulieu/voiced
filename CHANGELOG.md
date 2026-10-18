@@ -9,9 +9,9 @@ uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - `voiced install --json-progress` (ADR 0018): one JSON event per line on
-  stdout (`hello`, `step` start and done per install step, `download`
-  throttled to four a second, `log`, then `done` or `error`, with the exit
-  code agreeing); human output goes to stderr. `--dry-run --json-progress`
+  stdout (`hello`, `step` start and done per install step, `log`, then
+  `done` or `error`, with the exit code agreeing; SIGTERM ends it with
+  `error` and stops the running step); human output goes to stderr. `--dry-run --json-progress`
   lists the steps. The watchdog's control-socket `hello` adds what
   `install.json` records.
 - `[tts] espeak_library` and `espeak_data` config keys for the espeak-ng
@@ -179,14 +179,14 @@ uses [Semantic Versioning](https://semver.org/).
   `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG` for the default
   log directory), the same values the menu bar app's privileged step
   renders. The services take `HF_HOME` (`[install] hf_home`), the espeak-ng
-  paths and a custom `[server] log_dir` from the config file at start. An
-  `HF_HOME` or `VOICED_ESPEAK_*` set only in the installing shell no longer
-  reaches the services; `voiced install` warns and downloads into the cache
-  they will use. Re-run `voiced install` and its sudo script if you relied
-  on either.
+  paths and a custom `[server] log_dir` from the config file at start, and
+  these must be absolute (or start with `~`). Every `voiced` command now
+  sets `HF_HOME` and `VOICED_ESPEAK_*` from the config alone: values
+  exported in your shell are ignored, so the services, `doctor` and the
+  installer's model download agree. Re-run `voiced install` and its sudo
+  script if you relied on the shell's.
 - `voiced install --source` runs uv with `UV_NO_CONFIG=1`, so a `uv.toml`
   of yours cannot change what is installed.
-
 - `voiced install` refuses a state directory holding files that are not
   voiced's, and `voiced uninstall` removes only what the layout owns, keeping
   the rest; before, a directory with `pyvenv.cfg` was deleted whole.

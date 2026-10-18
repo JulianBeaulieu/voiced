@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from voiced.config import Settings
+from voiced.config import ENGINE_ENV, Settings
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
@@ -26,6 +26,17 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("model") is not None:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def restore_engine_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``voiced``'s main() sets HF_HOME and the espeak-ng variables from the
+    config (apply_engine_environment); in-process calls must not leak them
+    into the next test."""
+    for key in ENGINE_ENV:
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+        if not os.environ[key]:
+            monkeypatch.delenv(key)
 
 
 def free_port() -> int:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -15,66 +17,14 @@ from voiced import __version__, cli_lifecycle
 from voiced.cli import build_parser, main
 from voiced.config import Settings
 from voiced.launchd.control import CommandResult
-from voiced.launchd.progress import Progress, download_line
+from voiced.launchd.progress import Progress
 
 from .test_install import _compare, _environment
-
-MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
-
-
-class Clock:
-    def __init__(self) -> None:
-        self.now = 100.0
-
-    def __call__(self) -> float:
-        return self.now
 
 
 def _events(text: str) -> list[dict[str, Any]]:
     """Every stdout line is one JSON object; nothing else is on stdout."""
     return [json.loads(line) for line in text.splitlines()]
-
-
-def test_download_is_throttled_but_keeps_first_and_last() -> None:
-    out, clock = io.StringIO(), Clock()
-    progress = Progress(out, clock=clock)
-    progress.download(MODEL, 0, 100)  # the first of a model
-    clock.now += 0.1
-    progress.download(MODEL, 10, 100)  # too soon
-    progress.download("other/model", 5, 50)  # another model's first
-    clock.now += 0.1
-    progress.download(MODEL, 20, 100)  # the last event was another model's
-    clock.now += 0.06
-    progress.download(MODEL, 30, 100)  # too soon again
-    progress.download(MODEL, 100, 100)  # the last, however soon
-    assert [(e["model"], e["bytes"]) for e in _events(out.getvalue())] == [
-        (MODEL, 0),
-        ("other/model", 5),
-        (MODEL, 20),
-        (MODEL, 100),
-    ]
-
-
-def test_at_most_four_downloads_a_second() -> None:
-    out, clock = io.StringIO(), Clock()
-    progress = Progress(out, clock=clock)
-    for n in range(100):  # 100 updates over one second
-        progress.download(MODEL, n, 1000)
-        clock.now += 0.01
-    assert len(_events(out.getvalue())) == 4
-
-
-def test_relay_turns_a_download_line_into_an_event() -> None:
-    out = io.StringIO()
-    progress = Progress(out)
-    progress.relay(download_line(MODEL, 5, 10))
-    progress.relay('{"event": "download", "model": 1}')  # malformed: just a line
-    progress.relay("Fetching 3 files")
-    assert _events(out.getvalue()) == [
-        {"event": "download", "model": MODEL, "bytes": 5, "total": 10},
-        {"event": "log", "line": '{"event": "download", "model": 1}'},
-        {"event": "log", "line": "Fetching 3 files"},
-    ]
 
 
 def test_without_a_stream_nothing_is_written(capsys: pytest.CaptureFixture[str]) -> None:
@@ -155,8 +105,7 @@ def test_a_run_reports_every_step_and_ends_with_done(
 ) -> None:
     def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
         on_line("stt: engine=fake model=m")
-        on_line(download_line(MODEL, 0, 2508))
-        on_line(download_line(MODEL, 2508, 2508))
+        on_line("  loaded fake (m)")
         return CommandResult(0)
 
     assert run(models) == 0
@@ -179,7 +128,7 @@ def test_a_failed_step_ends_with_its_error(
     assert events[-1] == {
         "event": "error",
         "step": "models",
-        "message": "model download failed (exit 1):",
+        "message": "model download failed (exit 1)",
     }
 
 
@@ -231,3 +180,22 @@ def test_a_config_error_still_opens_and_ends_the_stream(
     assert [e["event"] for e in events] == ["hello", "error"]
     assert events[1]["message"].startswith(f"config error at {config}")
     assert "config error" in err
+
+
+def test_sigterm_ends_with_an_error_and_exit_143(
+    run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The app's Cancel: the stream still ends with error, and the exit code
+    says the install was terminated."""
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        os.kill(os.getpid(), signal.SIGTERM)
+        pytest.fail("SIGTERM did not stop the install")
+
+    before = signal.getsignal(signal.SIGTERM)
+    with pytest.raises(SystemExit) as info:
+        run(models)
+    assert info.value.code == 143
+    last = _events(capsys.readouterr().out)[-1]
+    assert last == {"event": "error", "step": "models", "message": "terminated (SIGTERM)"}
+    assert signal.getsignal(signal.SIGTERM) == before  # restored after the install

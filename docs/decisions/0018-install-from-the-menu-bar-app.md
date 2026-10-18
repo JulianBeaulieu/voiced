@@ -468,21 +468,23 @@ stderr (`voiced.launchd.progress`).
   `shown` is the step's description without the dry run's "would" or a
   command's `$ `.
 - `{"event": "download", "model": "<repo>", "bytes": n, "total": n}`, with
-  the total from the manifest, throttled to four a second; the first event
-  of each model and its last (`bytes == total`) always go out. A step's
-  child process reports progress by printing `download_line(...)` as a line
-  of its own output, and the parent turns it into this event. Until models
-  are downloaded with `snapshot_download` and pinned revisions, the model
-  step prints none, and the app shows that step without a byte count.
+  the total from the manifest, throttled to four a second. It arrives with
+  the model download that reports bytes (`snapshot_download` with pinned
+  revisions); until then the app shows the models step without a byte
+  count. The child will report on a line with an explicit prefix of its
+  own, not one that merely looks like this event.
 - `{"event": "log", "line": "..."}`: each line the steps' child processes
-  print (uv, the model download), as it comes.
+  print (uv, the model download), as it comes; of a progress bar's `\r`
+  redraws, only the last state of the line.
 - The last line is `{"event": "done", "staging_dir": "..."}` or
   `{"event": "error", "step": "...", "message": "..."}`, and the exit code
   agrees with it (0 only with `done`). `step` is the step that was running,
   or null for a refusal before any step (another account's state
   directory, root, a config file that does not parse). An unexpected
   exception still ends the stream with `error`, then exits non-zero with
-  its traceback on stderr.
+  its traceback on stderr. SIGTERM (the app's Cancel) kills the running
+  step's child process, ends the stream with `error` ("terminated
+  (SIGTERM)") and exits 143.
 
 The watchdog's control-socket `hello` (ADR 0013) gains `install`: what
 `install.json` records (`source`, `environment`, `version`, `lock_sha256`,

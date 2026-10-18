@@ -65,6 +65,17 @@ _LABEL_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 _toml_path: ContextVar[Path | None] = ContextVar("voiced_toml_path", default=None)
 
 
+def _absolute(value: Path | None) -> Path | None:
+    """``~`` expanded, and refused unless absolute: the services (cwd the
+    home), the installer and its children (any cwd) must agree on it."""
+    if value is None:
+        return None
+    path = value.expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{value} must be an absolute path, or start with ~")
+    return path
+
+
 class _Section(BaseModel):
     """Unknown keys are errors so typos in the config file do not go unnoticed."""
 
@@ -87,10 +98,7 @@ class ServerConfig(_Section):
     session_idle_s: float = Field(default=30.0, gt=0)
     write_timeout_s: float = Field(default=10.0, gt=0)
 
-    @field_validator("log_dir", mode="after")
-    @classmethod
-    def _expand(cls, value: Path) -> Path:
-        return value.expanduser()
+    _absolute_log_dir = field_validator("log_dir", mode="after")(_absolute)
 
 
 # voiced.engines.base.STT_SAMPLE_RATE and the 16-bit sample width, restated:
@@ -131,10 +139,7 @@ class TTSConfig(_Section):
     espeak_library: Path | None = None
     espeak_data: Path | None = None
 
-    @field_validator("espeak_library", "espeak_data", mode="after")
-    @classmethod
-    def _expand(cls, value: Path | None) -> Path | None:
-        return value.expanduser() if value is not None else None
+    _absolute_espeak = field_validator("espeak_library", "espeak_data", mode="after")(_absolute)
 
 
 class LaunchdConfig(_Section):
@@ -180,10 +185,12 @@ class InstallConfig(_Section):
     # Hugging Face cache for model downloads; empty = the Hugging Face default.
     hf_home: Path | None = None
 
-    @field_validator("venv_dir", "hf_home", mode="after")
+    _absolute_hf_home = field_validator("hf_home", mode="after")(_absolute)
+
+    @field_validator("venv_dir", mode="after")
     @classmethod
-    def _expand(cls, value: Path | None) -> Path | None:
-        return value.expanduser() if value is not None else None
+    def _expand(cls, value: Path) -> Path:
+        return value.expanduser()
 
 
 class Settings(BaseSettings):
@@ -243,12 +250,13 @@ class Settings(BaseSettings):
 
 
 def apply_engine_environment(settings: Settings) -> None:
-    """Export :meth:`Settings.engine_environment` for the engines (and
-    ``huggingface_hub``, which reads ``HF_HOME`` on import). A variable that
-    is already set wins, as ``VOICED_*`` ones win over the file; under
-    launchd none is."""
-    for key, value in settings.engine_environment().items():
-        os.environ.setdefault(key, value)
+    """Make :data:`ENGINE_ENV` in this process exactly what the config says,
+    for the engines, ``huggingface_hub`` (which reads ``HF_HOME`` on import)
+    and every child: one rule for the services, ``doctor`` and the
+    installer's model download, whatever the shell exported."""
+    for key in ENGINE_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(settings.engine_environment())
 
 
 def config_path() -> Path:
