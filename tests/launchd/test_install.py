@@ -1047,7 +1047,10 @@ def test_cli_uninstall_names_homebrew_from_the_manifest(
     assert not state.exists()
 
 
-PRIVILEGED = Path(__file__).parents[2] / "menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh"
+# The script the menu bar app compiles in (ADR 0018); the tests run the file itself.
+PRIVILEGED = (
+    Path(__file__).parents[2] / "menubar/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh"
+)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")

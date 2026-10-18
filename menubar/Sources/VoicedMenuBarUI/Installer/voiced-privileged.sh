@@ -227,4 +227,3 @@ check)
     ;;
 *) fail "usage: install|uninstall|check USER" ;;
 esac
-
