@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from voiced.config import (
-    CLEARED_HF_ENV,
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENGINE_ENV,
     Settings,
@@ -121,7 +120,7 @@ def test_paths_the_services_and_installer_share_must_be_absolute(
     assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"
 
 
-@pytest.mark.parametrize("key", CLEARED_HF_ENV)
+@pytest.mark.parametrize("key", ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT"])
 def test_a_shell_hf_cache_or_mirror_is_cleared(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
 ) -> None:
