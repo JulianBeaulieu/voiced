@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import json
+import os
 import resource
 import socket
+import subprocess
+import sys
 
 import pytest
 import uvicorn
@@ -49,11 +53,12 @@ def test_open_file_limit_is_raised(
     assert logged in caplog.text
 
 
-def test_serve_raises_the_limit_before_serving(
+def test_serve_raises_the_limit_and_task_role_before_serving(
     monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
-    """The service process raises its own limit once, before uvicorn accepts
-    a connection; the app (and so every test that runs a lifespan) does not."""
+    """The service process raises its own limit and sets its task role once,
+    before uvicorn accepts a connection; the app (and so every test that runs
+    a lifespan) does not."""
     order: list[str] = []
 
     class FakeServer:
@@ -67,6 +72,42 @@ def test_serve_raises_the_limit_before_serving(
     monkeypatch.setattr(cli, "build_service_app", lambda s, svc: object())
     monkeypatch.setattr(cli, "uvicorn_config", lambda app, s: object())
     monkeypatch.setattr(cli, "raise_open_file_limit", lambda: order.append("limit"))
+    monkeypatch.setattr(cli, "request_foreground_role", lambda: order.append("role"))
     monkeypatch.setattr(uvicorn, "Server", FakeServer)
     assert cli.cmd_serve(settings, "tts") == 0
-    assert order == ["limit", "serve"]
+    assert order == ["limit", "role", "serve"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="task roles are a macOS policy")
+def test_request_foreground_role_sets_the_task_role() -> None:
+    # In a child process, so the test runner keeps its own role.
+    code = (
+        "import os; from voiced import cli; "
+        "before = os.getpriority(cli.PRIO_DARWIN_ROLE, 0); "
+        "cli.request_foreground_role(); "
+        "print(before, os.getpriority(cli.PRIO_DARWIN_ROLE, 0))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert out == ["0", str(cli.PRIO_DARWIN_ROLE_UI_FOCAL)]
+
+
+@pytest.mark.parametrize("error", [AttributeError("no task_policy_set"), OSError("refused")])
+def test_request_foreground_role_failure_does_not_stop_serving(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, error: Exception
+) -> None:
+    def fail(name: object) -> None:
+        raise error
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ctypes, "CDLL", fail)
+    with caplog.at_level("WARNING", logger="voiced.cli"):
+        cli.request_foreground_role()
+    assert f"could not set the foreground task role: {error}" in caplog.text
+
+
+def test_request_foreground_role_is_a_no_op_off_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "getpriority", lambda *a: pytest.fail("called off macOS"))
+    cli.request_foreground_role()

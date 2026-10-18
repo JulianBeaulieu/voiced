@@ -99,9 +99,12 @@ table's footer says `auth: key` or `auth: none`, never the key.
 
 Measured on the development machine: Apple M1 Max, 64 GB, macOS 15.7.4, warm
 models, loopback requests, each service in its own process, with the command
-above. "First audio" is from sending the request with the `openai` client
-(streamed, `pcm`) to the first byte of audio, for the single sentence "Turn on
-the kitchen lights."; "finalize" is from sending `end` to the `final` event.
+above. The services were started from a terminal (`uv run voiced serve`), not
+by launchd as an installed service runs them; under launchd the short bursts
+were slower until the fix in [Under launchd](#under-launchd). "First audio" is
+from sending the request with the `openai` client (streamed, `pcm`) to the
+first byte of audio, for the single sentence "Turn on the kitchen lights.";
+"finalize" is from sending `end` to the `final` event.
 
 | Metric | Measured | Target |
 |---|---|---|
@@ -291,11 +294,14 @@ Misses on the Studio:
 - **GPU contention is much worse than on the development machine.** With
   Kokoro synthesizing in the other process, finalize after 200 ms of trailing
   silence is median 179 / worst 250 ms (development machine: median 1, worst
-  54), and with 0 ms median 366 / worst 510 ms (140 / 192). The cause is not
-  yet established; the candidates are macOS 27's GPU scheduling and the resident
-  Ollama model. It matters when one satellite is speaking while another's
-  reply is synthesized; a single Home Assistant pipeline does not overlap STT
-  and TTS.
+  54), and with 0 ms median 366 / worst 510 ms (140 / 192). Part of the gap
+  is launchd, not the Studio: the development machine's numbers came from a
+  terminal, and the same code under launchd on the development machine is
+  slower too (see [Under launchd](#under-launchd)); a resident Ollama model
+  was ruled out there. What remains after that fix (macOS 27, the system
+  domain) is to be measured on the Studio. It matters when one satellite is
+  speaking while another's reply is synthesized; a single Home Assistant
+  pipeline does not overlap STT and TTS.
 - The idle footprint after use is 2.36 GB, within the 3 GB budget.
 
 Self-healing, with the installed LaunchDaemons on 48e1f20:
@@ -306,6 +312,107 @@ Self-healing, with the installed LaunchDaemons on 48e1f20:
   polls (15 s interval, 5 s timeout); stt was healthy again after 45 s, tts
   after 40 s. Before the watchdog's startup grace ended at the first healthy
   poll (48e1f20), a hang within 300 s of a restart took 157 to 180 s.
+
+## Under launchd
+
+An installed service runs as a LaunchDaemon (`ProcessType` Interactive), not
+from a terminal, and on the development machine that alone made short,
+bursty work slower. Sustained work (the 10 s batch) was unchanged.
+
+**What was measured.** LaunchAgents under `gui/<uid>` carrying the daemons'
+plist keys, alternating with a terminal baseline. A microbenchmark (sleep 1 s,
+then a 12 ms Python loop, 20 times) took median 13 to 21 ms from a terminal
+and 33 to 38 ms in a LaunchAgent; run back to back, without the gap, it took
+11 ms in both. So a launchd job runs the first burst of CPU work after an idle
+gap far slower than a terminal child does, and the same once warm. A
+streaming finalize is that shape: the client's `end` arrives after a gap in
+the work, and the tail encode is a short burst.
+
+**What it is attributed to (inferred, not measured).** Both a terminal child
+and a launchd job have task role 0 (`TASK_UNSPECIFIED`; the role is not
+inherited). What differs is the coalition: a terminal child runs in the
+terminal app's coalition, a launchd job in one of its own. Which policy
+macOS applies to that coalition, whether a slower core, a lower clock, or a
+QoS ceiling on an unspecified task (which would explain why raising the
+threads' QoS did nothing), was not observable without root.
+
+**What was tried.** 0 ms finalize alone, 64 ms chunks, median of n=16 per
+run, 2 to 3 runs each (this row exercises only the stt service, which
+carried the change under test):
+
+| Condition | median ms |
+|---|---|
+| terminal | 104 to 118 |
+| LaunchAgent, `ProcessType` Interactive (as installed) | 145 to 148 |
+| + main thread at `QOS_CLASS_USER_INTERACTIVE` | 145 to 148 |
+| + every Python thread, model threads included, at `QOS_CLASS_USER_INTERACTIVE` | 143 to 144 |
+| + task role `TASK_FOREGROUND_APPLICATION` | 120 to 122 |
+| + task role and every thread at `QOS_CLASS_USER_INTERACTIVE` | 120 to 123 |
+
+The brief's other candidates, on the microbenchmark (LaunchAgent 33 to 38 ms
+unless noted):
+
+- `ProcessType` Standard or unset: no change. Adaptive: slower (62 ms).
+- `Nice` -10: no change.
+- Timer coalescing: latency tier 0 and throughput tier 0 (`taskpolicy -l 0
+  -t 0`): no change. `LegacyTimers` true: no change (35 to 37 ms).
+- `taskpolicy -a` (application resource policies): no change.
+- Task roles `TASK_CONTROL_APPLICATION` and `TASK_GRAPHICS_SERVER`: refused
+  without privileges. `TASK_DEFAULT_APPLICATION`: no change.
+- `LowPriorityIO`: not tested; it is off by default and the finalize path
+  does no disk I/O.
+- P-core against E-core placement and the GPU performance state: not
+  measured; both need `powermetrics`, which needs root. On the
+  microbenchmark the first GPU burst after a gap (34 ms warm in both) took
+  median 56 to 73 ms from a terminal and 65 to 84 ms in a LaunchAgent: the
+  ranges overlap, so no GPU difference is claimed.
+
+**Fix.** `voiced serve` sets its own task role to foreground application at
+start (`voiced.cli.request_foreground_role`), with `task_policy_set` and
+`TASK_CATEGORY_POLICY`, which a task may do for itself without privileges,
+and logs the role read back with `getpriority(PRIO_DARWIN_ROLE)`
+(`darwin role read back: 1`), or a warning if anything fails. The shorter
+`setpriority(PRIO_DARWIN_ROLE, ...)` sets the same role from a terminal but
+is refused inside a launchd job (`ENOTSUP`), so it is not used. From a
+terminal the call makes no difference (microbenchmark 16.6 against 17.1 ms).
+With the shipped code in a LaunchAgent, the microbenchmark read role 1 and
+took 21 to 26 ms, against 38 ms without it and 14 to 21 ms from a terminal.
+
+`scripts/bench.py --alignments 32 --trials 10` against LaunchAgents, before
+and after the fix, on the same machine in one session; each run started only
+once no other benchmark or model test was running. The terminal column is the
+table above; terminal runs in the same session matched it within noise:
+
+| Metric | Before (LaunchAgent) | After (LaunchAgent) | Terminal |
+|---|---|---|---|
+| Kokoro first audio | median 87 / worst 89 ms | median 87 / worst 88 ms | median 96 / worst 112 ms |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence | median 3 / p95 31 / worst 37 ms | median 2 / p95 6 / worst 14 ms | median 1 / worst 3 ms |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 145 / p95 168 / worst 192 ms | median 122 / p95 134 / worst 136 ms | median 114 / worst 141 ms |
+| Streaming finalize, 100 ms chunks, 200 ms trailing silence | median 3 / p95 7 / worst 45 ms | median 3 / p95 7 / worst 22 ms | median 1 / worst 16 ms |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 147 / p95 161 / worst 168 ms | median 124 / p95 132 / worst 139 ms | median 114 / worst 130 ms |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 15 / p95 90 / worst 121 ms | median 2 / p95 75 / worst 87 ms | median 1 / worst 54 ms |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 196 / p95 244 / worst 245 ms | median 180 / p95 216 / worst 223 ms | median 140 / worst 192 ms |
+| Batch transcription, 10.1 s clip | median 250 / worst 261 ms | median 244 / worst 251 ms | median 253 / worst 258 ms |
+
+Push-to-talk finalize alone went from 31 ms slower than a terminal to 8 ms.
+Across three alternating rounds of the shorter run (n=16 per row), the
+contention rows were less clear. With 200 ms of trailing silence, Kokoro
+synthesizing, the fix helped: median 2 to 17 ms and worst 45 to 102 ms,
+against 17 to 29 and 86 to 132 before (terminal 1, and 44 to 60). With 0 ms
+there was no clear change: median 176 to 205 ms and worst 213 to 231 after,
+against 196 to 204 and 236 to 274 before (terminal 136 to 145). Memory is
+unchanged.
+
+**What remains.** A terminal is still up to about 15 ms faster alone, and
+40 to 60 ms faster on the 0 ms contention row, which none of the settings
+tried above changed; the untested candidates are listed above. These were
+LaunchAgents in the user's GUI domain on macOS 15.7.4. The installed
+LaunchDaemons run in the system domain, and the Mac Studio runs macOS 27;
+both may schedule a job differently. On the Studio: re-measure the rows
+above, and confirm that the role holds after a long idle with a one-off
+check, `python3 -c "import os; print(os.getpriority(6, PID))"` for each
+service's PID (prints 1 while the role holds; it reads another process of the
+same user without root).
 
 ## Versions
 
