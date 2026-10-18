@@ -1,10 +1,11 @@
 import AppKit
 import FakeControlServerKit
 import SwiftUI
+import TestSupport
 import VoicedControl
 import VoicedMenuBarUI
 
-// Renders the status window and the settings window in each state, in light and dark, to PNG
+// Renders the status window, the settings window and the installer in each state, in light and dark, to PNG
 // files. Pull requests that change the UI attach these. Every state is driven through the
 // real client against the fake server, so the pictures show what the app shows.
 //
@@ -25,6 +26,8 @@ struct Shot {
     var options = FakeControlServer.Options()
     /// The Settings pane to render.
     var pane = SettingsPane.general
+    /// The bundle carries the installer, so "not installed" offers it.
+    var canInstall = false
 }
 
 var overriding = FakeControlServer.Options()
@@ -37,6 +40,7 @@ let shots = [
     Shot(name: "stopped", scenario: .stopped),
     Shot(name: "watchdog-without-install", scenario: .notInstalled),
     Shot(name: "not-installed", scenario: nil, installed: false),
+    Shot(name: "not-installed-installer", scenario: nil, installed: false, canInstall: true),
     Shot(name: "not-running", scenario: nil, installed: true),
     Shot(name: "newer-protocol", scenario: .newerProtocol),
     Shot(name: "settings-general", scenario: .running, window: .settings, pane: .general),
@@ -128,7 +132,7 @@ func run() async {
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
-            case .status: await render(PopoverView(model: model), dark: dark, to: file)
+            case .status: await render(PopoverView(model: model, canInstall: shot.canInstall), dark: dark, to: file)
             case .settings:
                 await render(SettingsView(model: model, loginItem: LoginItem(), pane: shot.pane), dark: dark, to: file)
             }
@@ -137,6 +141,8 @@ func run() async {
         model.stop()
         server?.stop()
     }
+
+    await renderInstaller(in: scratch)
 
     // The three menu bar icons side by side.
     let icons = HStack(spacing: 18) {
@@ -152,6 +158,179 @@ func run() async {
         let file = output.appendingPathComponent("icons-\(dark ? "dark" : "light").png")
         await render(icons, dark: dark, to: file)
         print(file.path)
+    }
+}
+
+// MARK: - Installer
+
+/// One installer screen: how to set up the fake runner, and what to do to get there.
+struct InstallerShot {
+    var name: String
+    var setup: @MainActor (FakeInstallRunner) -> Void = { _ in }
+    var server = false
+    var otherAccount = false
+    var steps: @MainActor (Installer) async -> Void = { _ in }
+}
+
+let resources = InstallResources(
+    uv: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Helpers/uv"),
+    lock: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/requirements.lock"),
+    wheel: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/voiced-0.1.0-py3-none-any.whl"),
+    manifest: InstallManifest(
+        python: "3.12.15", lockSHA256: "", wheel: .init(name: "voiced-0.1.0-py3-none-any.whl", sha256: ""),
+        wheelsBytes: 205_000_000,
+        models: [
+            .init(repo: RecordedProgress.parakeet, revision: "", bytes: 2_508_500_000),
+            .init(repo: RecordedProgress.kokoro, revision: "", bytes: 355_300_000),
+        ]))
+
+@MainActor
+func until(_ installer: Installer, _ condition: (InstallerPhase) -> Bool) async {
+    for _ in 0..<250 where !condition(installer.phase) {
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+}
+
+@MainActor
+func reachApproval(_ installer: Installer) async {
+    installer.install()
+    await until(installer) { if case .approval = $0 { true } else { false } }
+}
+
+@MainActor
+func reachHomeAssistant(_ installer: Installer) async {
+    await reachApproval(installer)
+    installer.approve()
+    await until(installer) { $0 == .homeAssistant(.asking) }
+}
+
+let installerShots = [
+    InstallerShot(name: "installer-welcome"),
+    InstallerShot(name: "installer-welcome-no-room", setup: { $0.capacity = 1_500_000_000 }),
+    InstallerShot(
+        name: "installer-environment",
+        setup: { runner in
+            runner.respond = { $0.arguments.first == "python" ? .init([], hangs: true) : FakeInstallRunner.defaultResponse($0) }
+        },
+        steps: { installer in
+            installer.install()
+            await until(installer) { if case .environment(let step) = $0 { step.hasPrefix("Installing") } else { false } }
+        }),
+    InstallerShot(
+        name: "installer-downloading",
+        setup: { runner in
+            runner.respond = { command in
+                command.arguments.first == "install"
+                    ? .init(RecordedProgress.downloading.map(ProcessOutput.stdout), delay: .milliseconds(40), hangs: true)
+                    : FakeInstallRunner.defaultResponse(command)
+            }
+        },
+        steps: { installer in
+            installer.install()
+            await until(installer) {
+                if case .installing(let progress) = $0 { progress.downloads.last?.bytes == 177_650_000 } else { false }
+            }
+        }),
+    InstallerShot(
+        name: "installer-approval",
+        setup: { runner in
+            runner.respond = { command in
+                command.executable.hasSuffix("socketfilterfw")
+                    ? .init([.stdout("Firewall is enabled. (State = 1)"), .exit(0)]) : FakeInstallRunner.defaultResponse(command)
+            }
+        },
+        steps: reachApproval),
+    InstallerShot(
+        name: "installer-starting",
+        setup: { $0.privilegedOutcomes = [.finished(status: 4, output: "")] },
+        steps: { installer in
+            await reachApproval(installer)
+            installer.approve()
+            await until(installer) { $0 == .starting }
+        }),
+    InstallerShot(name: "installer-home-assistant", server: true, steps: reachHomeAssistant),
+    InstallerShot(
+        name: "installer-home-assistant-connected", server: true,
+        steps: { installer in
+            await reachHomeAssistant(installer)
+            installer.connectHomeAssistant(true)
+            await until(installer) { if case .homeAssistant(.connected) = $0 { true } else { false } }
+            installer.generateAPIKey()
+            await until(installer) { if case .homeAssistant(.connected(let info)) = $0 { info.apiKey != nil } else { false } }
+        }),
+    InstallerShot(
+        name: "installer-done", server: true,
+        steps: { installer in
+            await reachHomeAssistant(installer)
+            installer.connectHomeAssistant(false)
+        }),
+    InstallerShot(
+        name: "installer-failed-port",
+        setup: { runner in
+            runner.respond = { command in
+                command.arguments.first == "install"
+                    ? .progress(
+                        [
+                            RecordedProgress.hello, RecordedProgress.step("ports", "start"),
+                            #"{"event": "log", "line": "port 10300: in use by python3.12 (pid 4242)"}"#,
+                            RecordedProgress.error("ports", "Port 10300 is in use by python3.12 (pid 4242)."),
+                        ], status: 1)
+                    : FakeInstallRunner.defaultResponse(command)
+            }
+        },
+        steps: { installer in
+            installer.install()
+            await until(installer) { if case .failed = $0 { true } else { false } }
+        }),
+    InstallerShot(
+        name: "installer-failed-network", setup: { $0.isOnline = false },
+        steps: { installer in
+            installer.install()
+            await until(installer) { if case .failed = $0 { true } else { false } }
+        }),
+    InstallerShot(name: "installer-refused", otherAccount: true),
+]
+
+@MainActor
+func renderInstaller(in scratch: URL) async {
+    for shot in installerShots {
+        let home = scratch.appendingPathComponent(shot.name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let daemons = home.appendingPathComponent("LaunchDaemons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
+        if shot.otherAccount {
+            try? writePlist(
+                ["ProgramArguments": ["/Users/alex/.voiced/bin/voiced", "watchdog"], "UserName": "root"],
+                to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+        }
+        let socket = scratch.appendingPathComponent("i-\(shot.name.suffix(6)).sock").path
+        var server: FakeControlServer?
+        if shot.server {
+            var options = FakeControlServer.Options()
+            options.restartDuration = 0.1
+            server = FakeControlServer(socketPath: socket, scenario: .running, options: options)
+            server?.update { $0.settings.zeroconf = false }
+            try? server?.start()
+        }
+        let runner = FakeInstallRunner()
+        runner.capacity = 412_000_000_000
+        shot.setup(runner)
+        var configuration = InstallerConfiguration(
+            resources: resources, home: home, socketPath: socket,
+            installProbe: InstallProbe(launchDaemonsDirectory: daemons))
+        configuration.startupTimeout = .seconds(600)
+        configuration.pollInterval = .milliseconds(20)
+        // Documentation names, not this Mac's.
+        configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
+        let installer = Installer(configuration: configuration, runner: runner)
+        await shot.steps(installer)
+        for dark in [false, true] {
+            let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
+            await render(InstallerView(installer: installer, loginItem: LoginItem(), close: {}), dark: dark, to: file)
+            print(file.path)
+        }
+        installer.cancel()
+        server?.stop()
     }
 }
 

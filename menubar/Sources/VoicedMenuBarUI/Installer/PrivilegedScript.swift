@@ -1,7 +1,64 @@
+import AppKit
+import Carbon
+
+/// The root half of the install (ADR 0018, the privileged step). Its text is a constant in
+/// the signed executable, not a file in the bundle: a cask install leaves the bundle writable
+/// by the user, and root must never run anything a user process wrote. Its only input is the
+/// user name; it renders the three plists itself from fixed values.
+///
+/// `Scripts/test-privileged.sh` runs this text in its test mode (a scratch destination, no
+/// launchctl, no firewall); it reads it from between the delimiters below, so keep them on
+/// lines of their own.
+enum PrivilegedScript {
+    /// The fixed AppleScript that shows the prompt. The script text, the mode, the user name
+    /// and the prompt reach it as handler parameters and are quoted by `quoted form of`, so
+    /// nothing is spliced into source. `env -i` and `--noprofile --norc` keep the app's
+    /// environment (`BASH_ENV`, `PATH`) away from the root shell, which inherits it otherwise.
+    static let appleScript = """
+        on run_privileged(script_text, mode_name, user_name, prompt_text)
+            do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c " & quoted form of script_text & " voiced-privileged " & quoted form of mode_name & " " & quoted form of user_name with prompt prompt_text with administrator privileges
+        end run_privileged
+        """
+
+    static func prompt(for mode: PrivilegedMode) -> String {
+        switch mode {
+        case .install: "voiced needs an administrator to install its background services."
+        case .uninstall: "voiced needs an administrator to remove its background services."
+        }
+    }
+
+    /// Shows the administrator prompt and runs the script as root. Blocks until it is done.
+    @MainActor
+    static func run(_ mode: PrivilegedMode, user: String) -> PrivilegedOutcome {
+        var error: NSDictionary?
+        guard let script = NSAppleScript(source: appleScript), script.compileAndReturnError(&error) else {
+            return .finished(status: -1, output: "The installer's AppleScript does not compile: \(describe(error))")
+        }
+        let call = NSAppleEventDescriptor(
+            eventClass: AEEventClass(kASAppleScriptSuite), eventID: AEEventID(kASSubroutineEvent),
+            targetDescriptor: .null(), returnID: AEReturnID(kAutoGenerateReturnID),
+            transactionID: AETransactionID(kAnyTransactionID))
+        call.setDescriptor(NSAppleEventDescriptor(string: "run_privileged"), forKeyword: AEKeyword(keyASSubroutineName))
+        let parameters = NSAppleEventDescriptor.list()
+        for (index, value) in [text, mode.rawValue, user, prompt(for: mode)].enumerated() {
+            parameters.insert(NSAppleEventDescriptor(string: value), at: index + 1)
+        }
+        call.setDescriptor(parameters, forKeyword: AEKeyword(keyDirectObject))
+        let result = script.executeAppleEvent(call, error: &error)
+        guard let error else { return .finished(status: 0, output: result.stringValue ?? "") }
+        let number = (error[NSAppleScript.errorNumber] as? Int) ?? -1
+        if number == -128 { return .cancelled }
+        return .finished(status: Int32(clamping: number), output: describe(error))
+    }
+
+    private static func describe(_ error: NSDictionary?) -> String {
+        (error?[NSAppleScript.errorMessage] as? String) ?? "unknown error"
+    }
+
+    static let text = #"""
 #!/bin/bash
-# Throwaway prototype for ADR 0018: the one script the app runs as root, behind a single
-# administrator prompt. In the app its text is compiled into the signed main executable and
-# run as
+# ADR 0018: the one script the app runs as root, behind a single administrator prompt. Its
+# text is compiled into the signed main executable (PrivilegedScript.swift) and run as
 #   /usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc \
 #       -c "$SCRIPT" voiced-privileged install|uninstall|check USER
 # so neither the app's environment (BASH_ENV, PATH, ...) nor a file the user can edit reaches
@@ -226,3 +283,5 @@ check)
     ;;
 *) fail "usage: install|uninstall|check USER" ;;
 esac
+"""#
+}

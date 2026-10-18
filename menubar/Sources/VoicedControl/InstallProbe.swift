@@ -19,19 +19,24 @@ public struct InstallProbe: Sendable {
     }
 
     public func isInstalled() -> Bool {
+        watchdogUsers().contains(userName)
+    }
+
+    /// The accounts a voiced watchdog LaunchDaemon runs as, this user's or not.
+    public func watchdogUsers() -> [String] {
         let fileManager = FileManager.default
         let names = (try? fileManager.contentsOfDirectory(atPath: launchDaemonsDirectory.path)) ?? []
-        return names.filter { $0.hasSuffix(".watchdog.plist") }.contains { name in
+        return names.filter { $0.hasSuffix(".watchdog.plist") }.sorted().compactMap { name in
             let url = launchDaemonsDirectory.appendingPathComponent(name)
             guard let data = try? Data(contentsOf: url),
                 let plist = try? PropertyListSerialization.propertyList(from: data, format: nil)
                     as? [String: Any],
-                let arguments = plist["ProgramArguments"] as? [String]
-            else { return false }
-            return arguments.count == 2
-                && URL(fileURLWithPath: arguments[0]).lastPathComponent == "voiced"
-                && arguments[1] == "watchdog"
-                && plist["UserName"] as? String == userName
+                let arguments = plist["ProgramArguments"] as? [String],
+                arguments.count == 2,
+                URL(fileURLWithPath: arguments[0]).lastPathComponent == "voiced",
+                arguments[1] == "watchdog"
+            else { return nil }
+            return plist["UserName"] as? String
         }
     }
 }

@@ -16,7 +16,7 @@ struct VoicedMenuBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: model)
+            PopoverView(model: model, canInstall: Install.installer != nil)
         } label: {
             MenuBarIcon(dashboard: model.dashboard)
                 .background(SettingsOpener { delegate.openSettings = $0 })
@@ -27,6 +27,23 @@ struct VoicedMenuBarApp: App {
             SettingsView(model: model, loginItem: loginItem)
         }
         .windowResizability(.contentSize)
+
+        Window("Install voiced", id: InstallerView.windowID) {
+            if let installer = Install.installer {
+                InstallerWindow(installer: installer, loginItem: loginItem)
+            }
+        }
+        .windowResizability(.contentSize)
+    }
+}
+
+/// The installer, when the bundle carries what it needs (ADR 0018), and the runner whose
+/// children are terminated when the app quits.
+@MainActor
+enum Install {
+    static let runner = SystemInstallRunner()
+    static let installer: Installer? = InstallResources.inBundle().map {
+        Installer(configuration: InstallerConfiguration(resources: $0), runner: runner)
     }
 }
 
@@ -54,6 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Launching the app again while it runs (from Finder, Spotlight or `open`) opens the
     /// Settings window: on a crowded menu bar macOS may hide the icon, and this is the way
     /// back in.
+    /// Quitting mid-install stops the installer's children (SIGTERM, then SIGKILL after
+    /// 5 s); the next launch continues from what is on disk.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            Install.installer?.cancel()
+            Install.runner.terminateAll()
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if let openSettings { SettingsWindow.show(openSettings) }
         return false
