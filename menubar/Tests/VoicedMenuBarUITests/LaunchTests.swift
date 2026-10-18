@@ -12,6 +12,9 @@ private final class StatusBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value: SMAppService.Status
     private(set) var asked: [String] = []
+    /// Whether each call came on the main thread: `SMAppService` answers over XPC, which
+    /// must not block the main actor.
+    private(set) var onMainThread: [Bool] = []
 
     init(_ value: SMAppService.Status) {
         self.value = value
@@ -22,8 +25,10 @@ private final class StatusBox: @unchecked Sendable {
     }
 
     func status(_ url: URL) -> SMAppService.Status {
-        lock.withLock {
+        let main = Thread.isMainThread
+        return lock.withLock {
             asked.append(url.lastPathComponent)
+            onMainThread.append(main)
             return value
         }
     }
@@ -206,6 +211,29 @@ final class LaunchTests: XCTestCase {
         let cleared = await eventually { !launch.backgroundItemsOff }
         XCTAssertTrue(cleared, "polled while watched")
         XCTAssertEqual(launch.backgroundItems.count, 3)
+    }
+
+    func testLoginItemsAreNeverAskedOnTheMainThread() async throws {
+        try installPlists()
+        let status = StatusBox(.enabled)
+        let (launch, _) = makeChecks(status: status)
+        await launch.refresh()
+        let watching = Task { await launch.watch() }
+        let asked = await eventually { status.asked.count >= 6 }
+        watching.cancel()
+        await watching.value
+        XCTAssertTrue(asked)
+        XCTAssertFalse(status.onMainThread.isEmpty)
+        XCTAssertEqual(status.onMainThread.filter { $0 }.count, 0, "SMAppService was asked on the main thread")
+    }
+
+    func testTheInstallButtonHonoursTranslocation() {
+        let (launch, model) = makeChecks()
+        let translocated = makeChecks(translocation: { _ in URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app") }).0
+        XCTAssertNotNil(PopoverView(model: model, canInstall: true, launch: launch).installAction)
+        XCTAssertNotNil(PopoverView(model: model, canInstall: true, launch: nil).installAction)
+        XCTAssertNil(PopoverView(model: model, canInstall: true, launch: translocated).installAction, "move it first")
+        XCTAssertNil(PopoverView(model: model, canInstall: false, launch: launch).installAction, "no resources: the guide")
     }
 
     func testWatchingStopsWhenCancelled() async throws {

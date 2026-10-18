@@ -154,7 +154,9 @@ public struct PopoverView: View {
         SettingsWindow.show(openSettings)
     }
 
-    private var installAction: (() -> Void)? {
+    /// What "Install voiced…" does, or nil to show the guide instead: also nil while the app
+    /// runs translocated.
+    var installAction: (() -> Void)? {
         // A translocated app asks to be moved first (its card says so).
         guard canInstall, launch?.allowsInstall ?? true else { return nil }
         return openInstaller

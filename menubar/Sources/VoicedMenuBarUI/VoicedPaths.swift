@@ -3,6 +3,9 @@ import Foundation
 /// Where voiced and the app keep things: the shared install layout in the home (ADR 0017,
 /// with ADR 0018's additions under Application Support), and what the app bundle carries.
 /// The installer, the launch checks and the Debug pane all name paths through this.
+/// `VoicedControl`, the module below this one, keeps its own two literals: `SocketLocation`'s
+/// default `~/.voiced/control.sock` and `InstallRecord.read`'s `install.json`. It has no UI
+/// and does not depend on this module, so it cannot use this type.
 public struct VoicedPaths: Sendable, Equatable {
     public var home: URL
     public var bundle: URL
