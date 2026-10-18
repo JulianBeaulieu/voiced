@@ -249,14 +249,25 @@ class Settings(BaseSettings):
         return tuple(sources)
 
 
-def apply_engine_environment(settings: Settings) -> None:
+def apply_engine_environment(settings: Settings) -> list[str]:
     """Make :data:`ENGINE_ENV` in this process exactly what the config says,
     for the engines, ``huggingface_hub`` (which reads ``HF_HOME`` on import)
     and every child: one rule for the services, ``doctor`` and the
-    installer's model download, whatever the shell exported."""
+    installer's model download, whatever the shell exported.
+
+    Returns a notice for each ``VOICED_ESPEAK_*`` the shell set otherwise
+    (voiced's own variables; ``HF_HOME`` is often exported for other tools).
+    """
+    wanted = settings.engine_environment()
+    notices = [
+        f"ignoring {key} from the environment; set [{section}] {name} in the config"
+        for key, (section, name) in ENGINE_ENV.items()
+        if key != ENV_HF_HOME and os.environ.get(key, wanted.get(key)) != wanted.get(key)
+    ]
     for key in ENGINE_ENV:
         os.environ.pop(key, None)
-    os.environ.update(settings.engine_environment())
+    os.environ.update(wanted)
+    return notices
 
 
 def config_path() -> Path:

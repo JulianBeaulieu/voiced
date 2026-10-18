@@ -199,3 +199,23 @@ def test_sigterm_ends_with_an_error_and_exit_143(
     last = _events(capsys.readouterr().out)[-1]
     assert last == {"event": "error", "step": "models", "message": "terminated (SIGTERM)"}
     assert signal.getsignal(signal.SIGTERM) == before  # restored after the install
+
+
+@pytest.mark.usefixtures("running_env")
+def test_sigterm_right_after_hello_still_ends_with_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No gap between the first line and the handler: the stream that has
+    begun always gets its last line."""
+
+    def terminated_now() -> bool:
+        os.kill(os.getpid(), signal.SIGTERM)
+        return False
+
+    monkeypatch.setattr(cli_lifecycle, "is_root", terminated_now)
+    with pytest.raises(SystemExit) as info:
+        main(_argv(tmp_path))
+    assert info.value.code == 143
+    events = _events(capsys.readouterr().out)
+    assert [e["event"] for e in events] == ["hello", "error"]
+    assert events[1] == {"event": "error", "step": None, "message": "terminated (SIGTERM)"}

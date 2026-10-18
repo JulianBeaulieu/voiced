@@ -300,7 +300,7 @@ def test_watchdog_hello_reports_the_manifest(tmp_path: Path) -> None:
     assert installed_manifest(tmp_path) == manifest.to_json()
 
 
-@pytest.mark.parametrize("kind", ["not json", "not utf-8", "fifo", "huge"])
+@pytest.mark.parametrize("kind", ["not json", "not utf-8", "fifo", "huge", "directory"])
 def test_an_unreadable_manifest_is_none_and_never_blocks(tmp_path: Path, kind: str) -> None:
     """The watchdog reads it on its event loop for every hello: a bad one
     must neither raise (UnicodeDecodeError closed every connection without
@@ -310,6 +310,8 @@ def test_an_unreadable_manifest_is_none_and_never_blocks(tmp_path: Path, kind: s
     path = tmp_path / "install.json"
     if kind == "fifo":
         os.mkfifo(path)  # no writer: a blocking open would hang here
+    elif kind == "directory":
+        path.mkdir()
     elif kind == "huge":
         path.write_text('{"source": "app"' + " " * MAX_MANIFEST_BYTES + "}")
     else:

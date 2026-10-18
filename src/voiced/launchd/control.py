@@ -10,7 +10,10 @@ running job do not (ADR 0004).
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
+import signal
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -75,11 +78,17 @@ def run_streaming(
     instead, as it comes (``voiced install --json-progress`` keeps its own
     stdout for events); of a progress bar's ``\r`` refreshes only the last
     state of the line. Any exception here (SIGTERM, Ctrl-C) kills the child
-    before it goes on, so no install step keeps running on its own.
+    and everything it started (it runs in a session of its own: uv's build
+    backends, say) before it goes on, so no install step keeps running.
     """
     pipe = subprocess.PIPE if on_line is not None else None
     try:
-        proc = subprocess.Popen(list(argv), stdout=pipe, stderr=subprocess.STDOUT if pipe else None)
+        proc = subprocess.Popen(
+            list(argv),
+            stdout=pipe,
+            stderr=subprocess.STDOUT if pipe else None,
+            start_new_session=True,
+        )
     except FileNotFoundError as exc:
         return CommandResult(127, "", f"{argv[0]}: not found ({exc})")
     except OSError as exc:
@@ -91,7 +100,8 @@ def run_streaming(
                 on_line(last.decode(errors="replace"))
         proc.wait()
     except BaseException:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
         raise
     finally:

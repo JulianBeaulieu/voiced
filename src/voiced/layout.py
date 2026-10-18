@@ -30,7 +30,6 @@ import hashlib
 import json
 import os
 import shlex
-import stat
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -207,16 +206,12 @@ MAX_MANIFEST_BYTES = 64 * 1024
 
 
 def _read_manifest_bytes(path: Path) -> bytes:
-    """A regular file of at most :data:`MAX_MANIFEST_BYTES`, opened without
-    blocking: the watchdog reads it on its event loop for every ``hello``,
-    so a FIFO or a huge file must not stall it."""
+    """At most :data:`MAX_MANIFEST_BYTES` (one more, so a longer file fails
+    to parse), opened without blocking: the watchdog reads it on its event
+    loop for every ``hello``, so a FIFO or a huge file must not stall it. A
+    FIFO without a writer reads empty, a directory fails to read."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ManifestError(f"{path}: not a regular file")
-        if info.st_size > MAX_MANIFEST_BYTES:
-            raise ManifestError(f"{path}: larger than {MAX_MANIFEST_BYTES} bytes")
         return os.read(fd, MAX_MANIFEST_BYTES + 1)
     finally:
         os.close(fd)

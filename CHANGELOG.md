@@ -11,9 +11,9 @@ uses [Semantic Versioning](https://semver.org/).
 - `voiced install --json-progress` (ADR 0018): one JSON event per line on
   stdout (`hello`, `step` start and done per install step, `log`, then
   `done` or `error`, with the exit code agreeing; SIGTERM ends it with
-  `error` and stops the running step); human output goes to stderr. `--dry-run --json-progress`
-  lists the steps. The watchdog's control-socket `hello` adds what
-  `install.json` records.
+  `error` and stops the running step and what it started); human output
+  goes to stderr. `--dry-run --json-progress` lists the steps. The
+  watchdog's control-socket `hello` adds what `install.json` records.
 - `[tts] espeak_library` and `espeak_data` config keys for the espeak-ng
   that Kokoro loads.
 - Homebrew formula (`packaging/homebrew/voiced.rb`, for the
@@ -182,8 +182,8 @@ uses [Semantic Versioning](https://semver.org/).
   paths and a custom `[server] log_dir` from the config file at start, and
   these must be absolute (or start with `~`). Every `voiced` command now
   sets `HF_HOME` and `VOICED_ESPEAK_*` from the config alone: values
-  exported in your shell are ignored, so the services, `doctor` and the
-  installer's model download agree. Re-run `voiced install` and its sudo
+  exported in your shell are ignored (with a notice for `VOICED_ESPEAK_*`),
+  so the services, `doctor` and the installer's model download agree. Re-run `voiced install` and its sudo
   script if you relied on the shell's.
 - `voiced install --source` runs uv with `UV_NO_CONFIG=1`, so a `uv.toml`
   of yours cannot change what is installed.

@@ -267,7 +267,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             Progress(sys.stdout).fail_before_start(message)
         return 2
     follow_log_dir(settings.server.log_dir)
-    apply_engine_environment(settings)  # before anything imports huggingface_hub
+    for notice in apply_engine_environment(settings):  # before huggingface_hub is imported
+        print(f"voiced: {notice}", file=sys.stderr)
     if args.command in LIFECYCLE:
         return run_lifecycle(args, settings)
     if args.command == "serve":

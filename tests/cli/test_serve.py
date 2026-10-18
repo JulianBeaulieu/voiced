@@ -82,7 +82,7 @@ def test_serve_exits_non_zero_before_loading_when_a_port_is_in_use(
 
 
 def test_main_sets_the_engine_environment_from_the_config_before_serving(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """huggingface_hub reads HF_HOME when it is imported, so main() sets the
     config's before any command runs, and clears what the shell exported:
@@ -103,3 +103,4 @@ def test_main_sets_the_engine_environment_from_the_config_before_serving(
     monkeypatch.setattr(cli, "bind_service_ports", bind)
     assert cli.main(["serve", "tts"]) == PORT_IN_USE_EXIT
     assert seen == [(str(tmp_path / "hf"), None)]
+    assert "voiced: ignoring VOICED_ESPEAK_LIBRARY" in capsys.readouterr().err

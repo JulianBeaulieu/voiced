@@ -85,7 +85,12 @@ def test_engine_environment_comes_from_the_file(
     }
     monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/terminal/lib.dylib")
     monkeypatch.setenv("VOICED_ESPEAK_DATA", "/terminal/data")
-    apply_engine_environment(settings)
+    monkeypatch.setenv("HF_HOME", "/elsewhere")  # often exported for other tools: no notice
+    assert apply_engine_environment(settings) == [
+        "ignoring VOICED_ESPEAK_LIBRARY from the environment; "
+        "set [tts] espeak_library in the config",
+        "ignoring VOICED_ESPEAK_DATA from the environment; set [tts] espeak_data in the config",
+    ]
     assert {k: os.environ.get(k) for k in ENGINE_ENV} == {
         "HF_HOME": str(Path.home() / "hf"),
         "VOICED_ESPEAK_LIBRARY": "/x/libespeak-ng.dylib",
@@ -113,3 +118,12 @@ def test_paths_the_services_and_installer_share_must_be_absolute(
         load_settings(cfg)
     cfg.write_text(f'[{section}]\n{key} = "~/dir"\n')
     assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"
+
+
+def test_no_notice_when_the_shell_agrees_with_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tts]\nespeak_library = "/x/libespeak-ng.dylib"\n')
+    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/x/libespeak-ng.dylib")
+    assert apply_engine_environment(load_settings(cfg)) == []

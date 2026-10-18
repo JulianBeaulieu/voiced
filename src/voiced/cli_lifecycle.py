@@ -242,23 +242,24 @@ def cmd_install(
             progress.log(line)
 
         run = functools.partial(runner, on_line=tee)
-    progress.hello()
-    if is_root():
-        refusal = (
-            "Run `voiced install` as the user the services should run as, not with sudo. "
-            "It prints the one step that needs root."
-        )
-        echo(refusal)
-        progress.error(refusal)
-        return 2
-    try:
-        with exit_on_sigterm(), progress.reporting():
-            plan = _install(args, settings, echo, run, progress)
-            _show_staged(plan, echo, dry_run=args.dry_run)
-    except InstallError as exc:
-        echo(f"install failed: {exc}")
-        return 1
-    progress.done(plan.staging_dir)  # last, so it cannot disagree with the exit code
+    with exit_on_sigterm():  # from the first line on, SIGTERM still ends with error
+        progress.hello()
+        try:
+            with progress.reporting():
+                if is_root():
+                    refusal = (
+                        "Run `voiced install` as the user the services should run as, not "
+                        "with sudo. It prints the one step that needs root."
+                    )
+                    echo(refusal)
+                    progress.error(refusal)
+                    return 2
+                plan = _install(args, settings, echo, run, progress)
+                _show_staged(plan, echo, dry_run=args.dry_run)
+                progress.done(plan.staging_dir)  # last, after the human output
+        except InstallError as exc:
+            echo(f"install failed: {exc}")
+            return 1
     return 0
 
 

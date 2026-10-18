@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -117,6 +118,28 @@ def test_run_streaming_kills_the_child_when_interrupted(tmp_path: Path) -> None:
     assert time.monotonic() - started < 10
     with pytest.raises(ProcessLookupError):
         os.kill(pids[0], 0)  # killed and reaped
+
+
+def test_run_streaming_kills_what_the_child_started(tmp_path: Path) -> None:
+    """uv runs build backends of its own; they go with it."""
+    pids: list[int] = []
+
+    def on_line(line: str) -> None:
+        pids.append(int(line))
+        raise KeyboardInterrupt
+
+    script = "sleep 30 & echo $!; wait"
+    with pytest.raises(KeyboardInterrupt):
+        control.run_streaming(["/bin/sh", "-c", script], on_line=on_line)
+    deadline = time.monotonic() + 5  # the orphan is reaped by launchd, not by us
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pids[0], 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(pids[0], signal.SIGKILL)
+    pytest.fail("the grandchild outlived the interrupted step")
 
 
 def test_run_streaming_missing_binary() -> None:
