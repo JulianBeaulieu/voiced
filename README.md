@@ -279,6 +279,22 @@ MIT. ffmpeg runs as a separate program installed with Homebrew; voiced needs
 one that can read input from a file descriptor (`voiced doctor` checks), as
 any current Homebrew build can.
 
+### Third-party software
+
+[NOTICE](NOTICE) lists every third-party component with its SPDX licence and
+a link to its source: the Python packages in `src/voiced/requirements.lock`,
+the CPython that installs use, uv, and the native code some wheels carry
+(espeak-ng in `espeakng-loader`, GPL-3.0-or-later; once it is locked, the
+ffmpeg build in `imageio-ffmpeg`, GPL-2.0-or-later). `scripts/notice.py`
+writes it from the lock and a test keeps the two in step. The menu bar app
+shows the same file under Settings > About.
+
+The menu bar app carries only voiced's own MIT code and uv (MIT or
+Apache-2.0). The GPL and LGPL components (phonemizer, espeak-ng, ffmpeg,
+soxr, zeroconf and the rest NOTICE names) are downloaded from PyPI by your
+own Mac when voiced is installed. voiced never distributes them: they are
+not in the app, the cask or any release asset (ADR 0018, "Licences").
+
 ### Using Soprano
 
 Soprano-80M is installed with the `tts` extra but is opt-in. To use it, set

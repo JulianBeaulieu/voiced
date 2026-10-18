@@ -7,27 +7,45 @@ struct VoicedMenuBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model: AppModel
     @State private var loginItem = LoginItem()
+    @State private var launch: LaunchChecks
+    @State private var whatsNew: WhatsNew
 
     init() {
         let model = AppModel()
         model.start()
         _model = State(initialValue: model)
-        Install.installer = InstallResources.inBundle().map {
-            Installer(configuration: InstallerConfiguration(resources: $0), runner: Install.runner, model: model)
+        let resources = InstallResources.inBundle()
+        let installSource = DevelopmentOverride.installSource()
+        Install.installer = resources.map {
+            var configuration = InstallerConfiguration(resources: $0)
+            configuration.installSource = installSource
+            return Installer(configuration: configuration, runner: Install.runner, model: model)
         }
+        let launch = LaunchChecks(model: model, manifest: resources?.manifest, installSource: installSource)
+        Task { await launch.refresh() }
+        _launch = State(initialValue: launch)
+        _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.version))
     }
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: model, canInstall: Install.installer != nil)
+            PopoverView(model: model, canInstall: Install.installer != nil, launch: launch)
         } label: {
-            MenuBarIcon(dashboard: model.dashboard)
+            MenuBarIcon(dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false)
                 .background(SettingsOpener { delegate.openSettings = $0 })
+                .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(model: model, loginItem: loginItem)
+            SettingsView(model: model, loginItem: loginItem, launch: launch, installer: Install.installer)
+        }
+        .windowResizability(.contentSize)
+
+        Window("What's New in voiced", id: WhatsNew.windowID) {
+            if let notes = whatsNew.notes {
+                WhatsNewView(notes: notes)
+            }
         }
         .windowResizability(.contentSize)
 
@@ -46,6 +64,25 @@ struct VoicedMenuBarApp: App {
 enum Install {
     static let runner = SystemInstallRunner()
     static var installer: Installer?
+}
+
+/// Opens "What's new" once the services run this app's pins after running others. It lives
+/// in the menu bar label, the one view that exists for the app's whole life.
+private struct WhatsNewOpener: View {
+    let launch: LaunchChecks
+    let whatsNew: WhatsNew
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .onChange(of: launch.installMatch, initial: true) { whatsNew.observe(launch.installMatch) }
+            .onChange(of: whatsNew.isPending, initial: true) {
+                guard whatsNew.isPending else { return }
+                whatsNew.shown()
+                NSApplication.shared.activate()
+                openWindow(id: WhatsNew.windowID)
+            }
+    }
 }
 
 /// Hands SwiftUI's `openSettings` action to the app delegate, which has no environment.

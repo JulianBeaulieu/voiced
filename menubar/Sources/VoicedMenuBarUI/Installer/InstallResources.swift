@@ -1,8 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// What the app pins for an install (ADR 0018): the Python patch version, the lock and the
-/// wheel it ships with their hashes, and the models with their revisions and sizes.
+/// What the app pins for an install (ADR 0018): the voiced version, the Python patch version,
+/// the lock and the wheel it ships with their hashes, and the models with their revisions and
+/// sizes. bundle.sh writes it with `scripts/app_manifest.py`.
 public struct InstallManifest: Codable, Sendable, Equatable {
     public struct Wheel: Codable, Sendable, Equatable {
         public var name: String
@@ -26,6 +27,8 @@ public struct InstallManifest: Codable, Sendable, Equatable {
         }
     }
 
+    /// The voiced version of the wheel, as `install.json` records it once installed.
+    public var version: String
     public var python: String
     public var lockSHA256: String
     public var wheel: Wheel
@@ -33,7 +36,10 @@ public struct InstallManifest: Codable, Sendable, Equatable {
     public var wheelsBytes: Int64
     public var models: [Model]
 
-    public init(python: String, lockSHA256: String, wheel: Wheel, wheelsBytes: Int64, models: [Model]) {
+    public init(
+        version: String, python: String, lockSHA256: String, wheel: Wheel, wheelsBytes: Int64, models: [Model]
+    ) {
+        self.version = version
         self.python = python
         self.lockSHA256 = lockSHA256
         self.wheel = wheel
@@ -42,7 +48,7 @@ public struct InstallManifest: Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case python, wheel, models
+        case version, python, wheel, models
         case lockSHA256 = "lock_sha256"
         case wheelsBytes = "wheels_bytes"
     }
@@ -71,20 +77,16 @@ public struct InstallResources: Sendable, Equatable {
         self.manifest = manifest
     }
 
-    /// The resources in `bundle`: `Contents/Helpers/uv`, and the manifest, the lock and the
-    /// wheel it names in `Contents/Resources`. Nil when any is missing, as in a bundle built
-    /// without them, which keeps pointing at the installation guide.
-    public static func inBundle(_ bundle: Bundle = .main) -> InstallResources? {
-        let contents = bundle.bundleURL.appendingPathComponent("Contents")
-        let resources = contents.appendingPathComponent("Resources")
-        guard let data = try? Data(contentsOf: resources.appendingPathComponent("install-manifest.json")),
+    /// The resources in the bundle: `Contents/Helpers/uv`, and the manifest, the lock and the
+    /// wheel it names in `Contents/Resources`. Nil when any is missing, as under `swift run`,
+    /// which keeps pointing at the installation guide.
+    public static func inBundle(_ paths: VoicedPaths = VoicedPaths()) -> InstallResources? {
+        guard let data = try? Data(contentsOf: paths.installManifest),
             let manifest = try? JSONDecoder().decode(InstallManifest.self, from: data)
         else { return nil }
         let found = InstallResources(
-            uv: contents.appendingPathComponent("Helpers/uv"),
-            lock: resources.appendingPathComponent("requirements.lock"),
-            wheel: resources.appendingPathComponent(manifest.wheel.name),
-            manifest: manifest)
+            uv: paths.uv, lock: paths.bundledLock,
+            wheel: paths.resources.appendingPathComponent(manifest.wheel.name), manifest: manifest)
         let files = [found.uv, found.lock, found.wheel]
         return files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } ? found : nil
     }

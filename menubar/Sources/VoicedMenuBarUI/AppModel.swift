@@ -18,6 +18,8 @@ public final class AppModel {
     }
     public private(set) var settings: SettingsPayload?
     public private(set) var engines: EnginesPayload?
+    /// What `install.json` records, from the watchdog's hello; nil while not connected.
+    public private(set) var installRecord: InstallRecord?
     /// Services whose settings changed and that have not restarted since.
     public private(set) var restartRequired: Set<ServiceKind> = []
     public private(set) var restarting: Set<ServiceKind> = []
@@ -104,6 +106,7 @@ public final class AppModel {
             guard !Task.isCancelled else { return }
             if self.client === client { self.client = nil }
             status = nil
+            installRecord = nil
             restarting = []
             lastHeard = .now
             if let reason {
@@ -119,6 +122,7 @@ public final class AppModel {
         do {
             let hello = try await client.connect()
             guard !Task.isCancelled else { return .disconnected }
+            installRecord = hello.install
             connection = .connected(version: hello.version)
             lastHeard = .now
         } catch ControlError.unsupportedProtocol(let server, let supported) {

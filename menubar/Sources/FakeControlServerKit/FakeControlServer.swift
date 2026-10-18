@@ -15,6 +15,8 @@ public final class FakeControlServer: @unchecked Sendable {
         /// Seconds between state changes in the `cycle` scenario.
         public var cycleInterval: TimeInterval = 6
         public var version = "0.0.1"
+        /// The hello's `install`: what `install.json` records, null for none.
+        public var install: JSONValue = .null
         /// Sent verbatim instead of `hello` when set, to test bad servers.
         public var firstLine: String?
         /// Requests with these ops are recorded but never answered, to test timeouts.
@@ -247,6 +249,7 @@ public final class FakeControlServer: @unchecked Sendable {
                         "data": [
                             "protocol": .number(Double(scenario.helloProtocol)),
                             "version": .string(options.version),
+                            "install": options.install,
                         ],
                     ], to: client)
             }

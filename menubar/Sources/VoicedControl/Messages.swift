@@ -5,10 +5,83 @@ public struct Hello: Codable, Sendable, Equatable {
     public var `protocol`: Int
     /// The voiced version; nil when the server leaves it out.
     public var version: String?
+    /// What the install's `install.json` records; nil without one, from an older watchdog,
+    /// or when it is not the expected shape (protocol 1 ignores what it cannot use).
+    public var install: InstallRecord?
 
-    public init(protocol: Int, version: String?) {
+    public init(protocol: Int, version: String?, install: InstallRecord? = nil) {
         self.protocol = `protocol`
         self.version = version
+        self.install = install
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case `protocol`, version, install
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.protocol = try container.decode(Int.self, forKey: .protocol)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
+        install = try? container.decodeIfPresent(InstallRecord.self, forKey: .install)
+    }
+}
+
+/// Who made an install (`install.json`'s `source`, ADR 0017). A record with any other value is
+/// not one this app understands and reads as no record.
+public enum InstallSource: String, Codable, Sendable {
+    case app, homebrew, cli
+}
+
+/// `~/.voiced/install.json` (ADR 0017): who installed voiced, which environment is active,
+/// and the voiced version, lock hash and Python in it. The watchdog's `hello` carries it, and
+/// without a watchdog the app reads the file. Fields the record lacks are nil.
+public struct InstallRecord: Codable, Sendable, Equatable {
+    public var source: InstallSource
+    public var environment: String?
+    public var version: String?
+    public var lockSHA256: String?
+    public var python: String?
+
+    public init(
+        source: InstallSource, environment: String? = nil, version: String? = nil, lockSHA256: String? = nil,
+        python: String? = nil
+    ) {
+        self.source = source
+        self.environment = environment
+        self.version = version
+        self.lockSHA256 = lockSHA256
+        self.python = python
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case source, environment, version, python
+        case lockSHA256 = "lock_sha256"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(InstallSource.self, forKey: .source)
+        func text(_ key: CodingKeys) -> String? {
+            // "" is what install.json holds before the first environment is linked.
+            guard let value = try? container.decodeIfPresent(String.self, forKey: key), !value.isEmpty else { return nil }
+            return value
+        }
+        environment = text(.environment)
+        version = text(.version)
+        lockSHA256 = text(.lockSHA256)
+        python = text(.python)
+    }
+
+    /// Reads `install.json` in `stateDirectory`: nil when it is missing, unreadable or not
+    /// voiced's. Opened without blocking and read up to 64 KiB, as the watchdog reads it
+    /// (`layout.read_manifest`): a FIFO or a huge file there must not hang the app.
+    public static func read(stateDirectory: URL) -> InstallRecord? {
+        let fd = open(stateDirectory.appendingPathComponent("install.json").path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard let data = try? handle.read(upToCount: 64 * 1024 + 1), data.count <= 64 * 1024 else { return nil }
+        return try? JSONDecoder().decode(InstallRecord.self, from: data)
     }
 }
 

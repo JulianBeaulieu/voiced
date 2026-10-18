@@ -35,10 +35,11 @@ final class InstallerTests: XCTestCase {
     private var models: [AppModel] = []
 
     private func makeInstaller(
-        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60)
+        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60), installSource: URL? = nil
     ) -> Installer {
         let probe = InstallProbe(launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
+        configuration.installSource = installSource
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
@@ -704,5 +705,93 @@ final class InstallerTests: XCTestCase {
         let key = Installer.randomKey()
         XCTAssertNotEqual(key, Installer.randomKey())
         XCTAssertNil(key.rangeOfCharacter(from: CharacterSet(charactersIn: "+/=")))
+    }
+
+    // MARK: - The development override
+
+    /// `unzip` as the fake runner plays it: the lock appears where it is asked to put it.
+    private func playOverride(lock: Bool = true) {
+        runner.respond = { command in
+            guard command.executable == "/usr/bin/unzip" else { return FakeInstallRunner.defaultResponse(command) }
+            let args = command.arguments
+            guard lock, let i = args.firstIndex(of: "-d") else {
+                return .init([.stderr("caution: filename not matched:  voiced/requirements.lock"), .exit(11)])
+            }
+            let target = URL(fileURLWithPath: args[i + 1]).appendingPathComponent("voiced")
+            try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try? Data("numpy==2.0.0 --hash=sha256:11\n".utf8).write(to: target.appendingPathComponent("requirements.lock"))
+            return .success
+        }
+    }
+
+    private func devWheel(_ name: String = "voiced-0.3.0.dev1-py3-none-any.whl") throws -> URL {
+        let wheel = home.appendingPathComponent("dist/\(name)")
+        try FileManager.default.createDirectory(at: wheel.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("dev wheel".utf8).write(to: wheel)
+        return wheel
+    }
+
+    func testAWheelOverrideIsInstalledWithTheLockItCarries() async throws {
+        let wheel = try devWheel()
+        // The bundled wheel no longer matching its manifest does not matter while overridden.
+        try Data("another wheel".utf8).write(to: resources.wheel)
+        playOverride()
+        let installer = makeInstaller(installSource: wheel)
+        installer.install()
+        await reachApproval(installer)
+
+        let work = home.appendingPathComponent("Library/Application Support/voiced/install-source")
+        XCTAssertEqual(
+            runner.commands(named: "unzip").map(\.arguments),
+            [["-o", "-q", wheel.path, "voiced/requirements.lock", "-d", work.path]])
+        let pip = runner.commands(named: "uv").filter { $0.arguments.first == "pip" }
+        XCTAssertEqual(pip.first?.arguments.last, work.appendingPathComponent("voiced/requirements.lock").path)
+        XCTAssertEqual(pip.last?.arguments.last, wheel.path)
+    }
+
+    func testAnOverrideThatIsNotAVoicedWheelIsRefused() async throws {
+        let checkout = home.appendingPathComponent("src/voiced")
+        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
+        let other = try devWheel("other-1.0-py3-none-any.whl")
+        for source in [checkout, home.appendingPathComponent("missing-0.1.0-py3-none-any.whl"), other] {
+            runner = FakeInstallRunner()
+            let installer = makeInstaller(installSource: source)
+            installer.install()
+            let failure = await failure(installer)
+            XCTAssertEqual(failure?.step, "Using the install source \(source.path)")
+            XCTAssertEqual(failure?.cause, "It is not a voiced wheel. Build one with `uv build --wheel` in the checkout.")
+            XCTAssertTrue(runner.commands.isEmpty)
+            installer.cancel()
+        }
+    }
+
+    func testAWheelWithoutALockIsRefused() async throws {
+        let wheel = try devWheel()
+        playOverride(lock: false)
+        let installer = makeInstaller(installSource: wheel)
+        installer.install()
+        let failure = await failure(installer)
+        XCTAssertEqual(failure?.cause, "caution: filename not matched:  voiced/requirements.lock")
+        XCTAssertTrue(runner.commands(named: "uv").isEmpty)
+        XCTAssertEqual(environmentNames(), [], "nothing built in ~/.voiced")
+    }
+
+    // MARK: - Busy
+
+    func testTheInstallerIsBusyWhileItWorks() async throws {
+        runner.respond = { $0.arguments.first == "python" ? .init([], hangs: true) : FakeInstallRunner.defaultResponse($0) }
+        let installer = makeInstaller()
+        XCTAssertFalse(installer.isWorking)
+        installer.install()
+        await reach(installer, "environment") { if case .environment = $0 { true } else { false } }
+        XCTAssertTrue(installer.isWorking)
+        installer.cancel()
+    }
+
+    func testWaitingOnTheUserIsNotBusy() async throws {
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertFalse(installer.isWorking)
     }
 }

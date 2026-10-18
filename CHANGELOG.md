@@ -8,6 +8,25 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The menu bar app's bundle carries what the installer needs (ADR 0018):
+  `bundle.sh` adds uv at a pinned version and checksum, the voiced wheel
+  built from the checkout with its lock, `install-manifest.json` (Python,
+  the wheel's and the lock's sha256, the wheels' download size and the
+  pinned models), uv's licence, the third-party `NOTICE` and this
+  version's release notes. Each launch checks whether the app runs
+  translocated, whether the services run the voiced it carries, and whether
+  they are switched off in Login Items. The menu bar icon has idle, busy and
+  error states; the menu ends with the app's version; a hidden Debug pane
+  lists paths and pins and copies diagnostics; "What's new" shows the notes
+  once after an update. A debug build can install a local wheel through the
+  `installSource` user default. `bundle.sh` installs the build backend and
+  `packaging` with hashes and refuses a checkout with uncommitted changes
+  unless given `--dirty`.
+- `NOTICE` lists the third-party software the app ships and an install
+  downloads, with SPDX licences, generated from
+  `src/voiced/requirements.lock` by `scripts/notice.py`; a test keeps the
+  two in step. The README gains a third-party section.
+
 - `voiced install --json-progress` (ADR 0018): one JSON event per line on
   stdout (`hello`, `step` start and done per install step, `log`, then
   `done` or `error`, with the exit code agreeing; SIGTERM ends it with

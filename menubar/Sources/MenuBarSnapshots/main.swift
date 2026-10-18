@@ -28,7 +28,16 @@ struct Shot {
     var pane = SettingsPane.general
     /// The bundle carries the installer, so "not installed" offers it.
     var canInstall = false
+    /// What a launch can find: a translocated app, services off in Login Items, and services
+    /// on another voiced than the app carries.
+    var launchCards = false
 }
+
+var olderInstall = FakeControlServer.Options()
+olderInstall.install = .object([
+    "source": "app", "environment": "/Users/someone/.voiced/envs/20261001T090000", "version": "0.1.0",
+    "lock_sha256": "0b9e2f41", "python": "3.12.15",
+])
 
 var overriding = FakeControlServer.Options()
 overriding.environmentOverrides = [.ttsVoice]
@@ -48,6 +57,8 @@ let shots = [
     Shot(name: "settings-stt", scenario: .running, window: .settings, pane: .speechToText),
     Shot(name: "settings-tts", scenario: .running, window: .settings, pane: .textToSpeech),
     Shot(name: "settings-about", scenario: .running, window: .settings, pane: .about),
+    Shot(name: "settings-debug", scenario: .running, window: .settings, options: olderInstall, pane: .debug, launchCards: true),
+    Shot(name: "launch-cards", scenario: .running, options: olderInstall, launchCards: true),
     Shot(name: "settings-not-connected", scenario: nil, window: .settings, pane: .textToSpeech),
     Shot(name: "lan-without-key", scenario: .running, edits: [.clearAPIKey, .bind(.lan)]),
     Shot(name: "lan-without-key-settings", scenario: .running, window: .settings, edits: [.clearAPIKey, .bind(.lan)], pane: .network),
@@ -129,12 +140,17 @@ func run() async {
         model.start()
         await settle(model)
         for edit in shot.edits { await model.apply(edit) }
+        let launch = shot.launchCards ? await launchChecks(model: model, in: scratch.appendingPathComponent(shot.name)) : nil
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
-            case .status: await render(PopoverView(model: model, canInstall: shot.canInstall), dark: dark, to: file)
+            case .status:
+                // With launch cards, Update is offered as it will be once Update exists.
+                let view = PopoverView(model: model, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
+                await render(view, dark: dark, to: file)
             case .settings:
-                await render(SettingsView(model: model, loginItem: LoginItem(), pane: shot.pane), dark: dark, to: file)
+                await render(
+                    SettingsView(model: model, loginItem: LoginItem(), launch: launch, pane: shot.pane), dark: dark, to: file)
             }
             print(file.path)
         }
@@ -146,10 +162,10 @@ func run() async {
 
     // The three menu bar icons side by side.
     let icons = HStack(spacing: 18) {
-        ForEach([OverallHealth.running, .attention, .off], id: \.symbolName) { health in
+        ForEach([MenuBarIconState.idle, .busy, .error], id: \.self) { state in
             VStack(spacing: 6) {
-                Image(systemName: health.symbolName).font(.system(size: 16))
-                Text(String(describing: health)).font(.caption).foregroundStyle(.secondary)
+                Image(nsImage: MenuBarIconImage.image(for: state))
+                Text(String(describing: state)).font(.caption).foregroundStyle(.secondary).fixedSize()
             }
         }
     }
@@ -159,6 +175,52 @@ func run() async {
         await render(icons, dark: dark, to: file)
         print(file.path)
     }
+
+    let notes = """
+        # What's new in voiced 0.2.0
+
+        ### Added
+
+        - Install from the menu bar app: it sets up Python, voiced and the models, then starts the
+          background services after one administrator prompt.
+        - `voiced install --json-progress` reports each step as one JSON line.
+
+        ### Fixed
+
+        - A failed text to speech stream keeps its error readable.
+        """
+    for dark in [false, true] {
+        let file = output.appendingPathComponent("whats-new-\(dark ? "dark" : "light").png")
+        await render(WhatsNewView(notes: notes), dark: dark, to: file)
+        print(file.path)
+    }
+}
+
+/// Launch checks that find everything at once: the app runs translocated, the services are
+/// off in Login Items, and the services run an older voiced than the app carries.
+@MainActor
+func launchChecks(model: AppModel, in directory: URL) async -> LaunchChecks {
+    let state = directory.appendingPathComponent(".voiced")
+    let daemons = directory.appendingPathComponent("LaunchDaemons")
+    try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+    try? FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
+    for label in BackgroundItems.labels {
+        try? writePlist(["Label": label], to: daemons.appendingPathComponent("\(label).plist"))
+    }
+    let manifest = InstallManifest(
+        version: "0.2.0", python: "3.12.15", lockSHA256: "64d1af59",
+        wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "a12bd9c2"), wheelsBytes: 190_060_576,
+        models: [
+            .init(repo: "mlx-community/parakeet-tdt-0.6b-v3", revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", bytes: 2_508_532_829),
+            .init(repo: "mlx-community/Kokoro-82M-bf16", revision: "a71e4d38b236d968966a2002c4c895dbd12b1c3c", bytes: 355_322_783),
+        ])
+    let checks = LaunchChecks(
+        model: model, manifest: manifest,
+        paths: VoicedPaths(home: directory, bundle: URL(fileURLWithPath: "/Applications/voiced.app")),
+        backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons, status: { _ in .requiresApproval }),
+        translocation: { _ in URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app") })
+    await checks.refresh()
+    return checks
 }
 
 // MARK: - Installer

@@ -116,7 +116,7 @@ public func installResources(in directory: URL) throws -> InstallResources {
     return InstallResources(
         uv: directory.appendingPathComponent("uv"), lock: lock, wheel: wheel,
         manifest: InstallManifest(
-            python: "3.12.15", lockSHA256: try sha256(lock),
+            version: "0.1.0", python: "3.12.15", lockSHA256: try sha256(lock),
             wheel: .init(name: wheel.lastPathComponent, sha256: try sha256(wheel)),
             wheelsBytes: 205_000_000,
             models: [
