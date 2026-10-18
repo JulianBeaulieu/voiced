@@ -108,7 +108,7 @@ mypy_path = "src"
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "mlx.*", "huggingface_hub.*", "scipy.*"]
+module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
