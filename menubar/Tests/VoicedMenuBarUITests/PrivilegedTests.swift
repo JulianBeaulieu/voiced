@@ -74,6 +74,22 @@ final class PrivilegedTests: XCTestCase {
         XCTAssertTrue(PrivilegedScript.text.hasSuffix("esac"))
     }
 
+    /// What the shell tests run is what the app compiles in.
+    func testTheExtractionHelperPrintsTheCompiledText() throws {
+        let helper = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Scripts/privileged-script.sh")
+        let process = Process()
+        process.executableURL = helper
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), PrivilegedScript.text + "\n")
+    }
+
     func testFailedLabelsNameTheirService() {
         XCTAssertEqual(Installer.failedService("failed io.github.julianbeaulieu.voiced.stt"), "speech to text")
         XCTAssertEqual(Installer.failedService("failed io.github.julianbeaulieu.voiced.watchdog"), "the watchdog")

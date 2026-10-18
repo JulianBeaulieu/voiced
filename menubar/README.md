@@ -110,8 +110,10 @@ progress protocol, and the fake control server for the services. Nothing in
 `swift test` prompts, starts a daemon or touches `/Library`.
 
 The script that runs as root is a string constant in the executable
-(`PrivilegedScript.swift`), never a file in the bundle. Its test mode runs as
-a normal user against a scratch directory; `Scripts/test-privileged.sh`
+(`PrivilegedScript.swift`), never a file in the bundle.
+`Scripts/privileged-script.sh` prints it, for every test that runs it. Its
+test mode runs as a normal user against a scratch directory;
+`Scripts/test-privileged.sh`
 compares what it renders with the plists `voiced install` stages and checks
 every refusal:
 

@@ -6,9 +6,9 @@ import Carbon
 /// by the user, and root must never run anything a user process wrote. Its only input is the
 /// user name; it renders the three plists itself from fixed values.
 ///
-/// `Scripts/test-privileged.sh` runs this text in its test mode (a scratch destination, no
-/// launchctl, no firewall); it reads it from between the delimiters below, so keep them on
-/// lines of their own.
+/// `Scripts/privileged-script.sh` prints this text from between the delimiters below, so
+/// keep them on lines of their own; `Scripts/test-privileged.sh` and the Python tests run what
+/// it prints in the script's test mode (a scratch destination, no launchctl, no firewall).
 enum PrivilegedScript {
     /// The fixed AppleScript that shows the prompt. The script text, the mode, the user name
     /// and the prompt reach it as handler parameters and are quoted by `quoted form of`, so
