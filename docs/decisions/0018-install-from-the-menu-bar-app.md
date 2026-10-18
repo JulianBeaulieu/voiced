@@ -32,8 +32,9 @@ are not part of the app.
 ## One layout for every install
 
 Homebrew, CLI and app installs share the layout that ADR 0017 specifies in
-its shared-layout section (`~/.voiced/bin/voiced`, `envs/<id>`,
-`install.json`, `~/.voiced/python/`); this record only adds the uv cache in
+[its install-layout section](0017-homebrew-packaging.md#the-install-layout)
+(`~/.voiced/bin/voiced`, `envs/<UTC timestamp>`, `install.json`,
+`~/.voiced/python/`); this record only adds the uv cache in
 `~/Library/Application Support/voiced/uv-cache/` (`UV_CACHE_DIR`).
 
 ## The privileged step
@@ -94,15 +95,17 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
 1. **The only input is the user name.** Root renders the plists itself from
    fixed values: the labels `io.github.julianbeaulieu.voiced.{stt,tts,watchdog}`,
    `ProgramArguments` `<home>/.voiced/bin/voiced` plus `watchdog` or
-   `serve <service>`, `UserName`, `RunAtLoad`, `KeepAlive` `true` (or, if
-   ADR 0017 adopts it, exactly `{PathState: {<home>/.voiced/bin/voiced:
-   true}}`), `ThrottleInterval` 10, `ProcessType Interactive`,
+   `serve <service>`, `UserName`, `RunAtLoad`, `KeepAlive` exactly
+   `{PathState: {<home>/.voiced/bin/voiced: true}}` (ADR 0017: launchd
+   follows the symlink and stops respawning while it dangles),
+   `ThrottleInterval` 10, `ProcessType Interactive`,
    `WorkingDirectory` the home, `AssociatedBundleIdentifiers` the app, and
    a fixed environment: `HOME`, `PATH` (`<home>/.voiced/bin` first),
    `VOICED_CONFIG` (`<home>/.config/voiced/config.toml`) and
    `PYTHONUNBUFFERED`. No plist the user wrote is parsed as root, so there is
    no allowlist to get wrong. These are the plists `voiced install` stages,
-   minus the log keys below: the test compares them.
+   minus the log keys below and with ADR 0017's `KeepAlive`: the test
+   compares them.
 2. **No `StandardOutPath` or `StandardErrorPath`.** launchd opens those
    files as root, and `~/Library/Logs/voiced` belongs to the user, so a
    symlink planted there would be a root write anywhere. The services open
@@ -113,14 +116,22 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    `VOICED_ESPEAK_*`) come from the config file, which the services read
    at start (`[install] hf_home`). A custom config path or `[launchd]
    label_prefix` is not supported by the app (see Lifecycle).
-4. The user must exist and have a uid of 500 or more. `root` is refused.
-   The home comes from `dscl -plist`, so spaces and quotes work, and is
-   converted to NFC (Directory Services may return it decomposed).
+4. The user must exist and be a regular account: a uid from 500 to
+   2147483647, which excludes `root`, system accounts and `nobody`
+   (4294967294). The name is replaced by the account's own spelling
+   (`id -un` of the uid), since Directory Services ignores case. The home
+   comes from `dscl -plist`, so spaces and quotes work, is converted to NFC
+   (Directory Services may return it decomposed), and must be owned by
+   that uid. Uninstall does not need the home at all.
 5. **One install per Mac**, compared by uid: if a
    `/Library/LaunchDaemons/<label>.plist` belongs to another account, both
    modes refuse, and the app says "voiced is already installed for <user>
-   on this Mac." A lock directory in `/var/run` stops two runs at once; a
-   lock whose process is gone is taken over.
+   on this Mac." An install whose `UserName` no longer resolves (the
+   account was deleted) is orphaned: install and uninstall take it over and
+   say so. Two runs at once are stopped by a kernel lock (`flock`, through
+   `/usr/bin/lockf` on a file descriptor) on `/var/run/voiced-privileged.lock`,
+   held until the script exits however it exits, so there is no stale lock
+   and no pid to be reused.
 6. Temporary files go to a root-owned 0700 directory under `/private/tmp`
    (never `$TMPDIR`) and are removed by a trap on any exit.
 7. Only after all three plists are rendered does it touch launchd: per
@@ -130,18 +141,26 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    to `/Library`; a launchd failure halfway can leave a label booted out,
    which is why the result is per label.
 8. When the application firewall is on, it allows the services' Python
-   (see Permissions). A failure there after a successful bootstrap is a
-   warning with its own exit code (4), not a refusal.
+   (see Permissions). After a successful bootstrap, a failure there is a
+   warning (exit 4), not a refusal, and a Python deliberately left alone
+   because it is outside the home is exit 5, so the app can say which.
 
 *Measured* with `menubar/Prototypes/PrivilegedInstall/test.sh`, run as a
 normal user against a scratch destination with launchctl and the firewall
 skipped (the override is ignored when the script runs as root): the
 rendered plists equal those staged by today's `voiced install` without the
-two log keys and with the bundle identifier; `check` reports them up to
-date and notices a changed one. Refused with nothing written: user `root`,
-a uid below 500, an unknown user, a malformed name, extra arguments, a
-held lock. Another account's install is neither replaced nor removed, and
-a stale lock is taken over. 17 of 17 cases pass.
+two log keys, with the bundle identifier and ADR 0017's `KeepAlive`;
+`check` reports them up to date and notices a changed one. Refused with
+nothing written: user `root`, a uid below 500, `nobody`, an unknown user,
+a malformed name, extra arguments, a home owned by another account, a held
+lock. Another account's install is neither replaced nor removed; an
+orphaned one is taken over and reported; a lock file nobody holds does not
+block; a user name in the wrong case installs under the account's
+spelling; uninstall works without the home; a home with spaces, quotes, a
+backslash and non-ASCII characters renders exactly. With a stand-in
+`socketfilterfw`, a Python under a home reached through a symlink is
+allowed, and one outside the home is left alone with exit 5. 26 of 26
+cases pass.
 
 The prompt says what it is for (`with prompt "voiced needs an
 administrator to install its background services."`). Cancelling it
@@ -185,7 +204,7 @@ The release job builds, from one commit:
 | Step | Command (bundled uv, `UV_NO_CONFIG=1`, `UV_LINK_MODE=clone`) |
 |---|---|
 | Python | `uv python install --no-bin 3.12.15` into `~/.voiced/python`. `--no-bin` because without it uv wrote `~/.local/bin/python3.12` onto the user's `PATH` (measured). The patch version, because the `3.12` minor link moves silently on the next install |
-| Environment | `uv venv --managed-python --python 3.12.15 ~/.voiced/envs/<id>.partial`, renamed to `envs/<id>` when the packages are in; `<id>` is the version and the lock hash |
+| Environment | `uv venv --managed-python --python 3.12.15 ~/.voiced/envs/<id>.partial`, renamed to `envs/<id>` when the packages are in; `<id>` is a UTC timestamp, as ADR 0017 names environments |
 | Packages | `uv pip install --require-hashes --no-deps -r requirements.lock`, then `uv pip install --no-deps <voiced wheel>` |
 
 *Measured* cold, with an empty uv cache, no Homebrew on `PATH`
@@ -534,7 +553,7 @@ and says why in one line. If it does not need something, it never asks.
 | Permission | Needed? | When and why | What the user sees |
 |---|---|---|---|
 | Administrator authorization | Yes | Approval, uninstall, and an update or repair whose plists changed: writing to `/Library/LaunchDaemons` needs root. | Before the system dialog: "To start voiced at boot, macOS needs an administrator to install three background services. They run as you, not as root." |
-| Application firewall exception | Only if the firewall is on | Same prompt as above, no second one. The services' Python is signed ad hoc, and nobody can answer the firewall's "accept incoming connections" prompt before login, so Home Assistant on the LAN would be silently blocked. If `socketfilterfw --getglobalstate` reports it on, the privileged step adds and unblocks the active environment's Python: resolved as the user through `~/.voiced/bin/voiced`, re-resolved by root right before it is added, and accepted only as a regular file (not a symlink) owned by the user inside the home, as it is for app and `--source` environments. In effect the exception says "this user's Python may accept connections"; signed programs already pass by default. It runs again on an update whenever the resolved path changes (a new Python version). A failure here is a warning, not a failed install. A Homebrew environment's Python is shared with every brewed Python program, so the app does not allow it and says so; that user can allow it in System Settings > Network > Firewall. | One line on the approval screen: "Your firewall is on; voiced will allow its services to accept connections." |
+| Application firewall exception | Only if the firewall is on | Same prompt as above, no second one. The services' Python is signed ad hoc, and nobody can answer the firewall's "accept incoming connections" prompt before login, so Home Assistant on the LAN would be silently blocked. If `socketfilterfw --getglobalstate` reports it on, the privileged step adds and unblocks the active environment's Python: resolved as the user through `~/.voiced/bin/voiced`, re-resolved by root right before it is added, and accepted only as a regular file (not a symlink) owned by the user inside the home (compared with the home's real path, so a home reached through a symlink works), as it is for app and `--source` environments. In effect the exception says "this user's Python may accept connections"; signed programs already pass by default. It runs again on an update whenever the resolved path changes (a new Python version). A failure here is a warning, not a failed install. A Homebrew environment's Python is shared with every brewed Python program, so the app does not allow it and says so; that user can allow it in System Settings > Network > Firewall. | One line on the approval screen: "Your firewall is on; voiced will allow its services to accept connections." |
 | Background items (System Settings > Login Items > Allow in the Background) | Not asked; macOS shows it | macOS 13+ lists every LaunchDaemon here and posts "Background Items Added". The plists name the app in `AssociatedBundleIdentifiers`, so the entry shows as voiced with its icon. If the user turns it off, launchd will not run the services. | After install: "voiced appears in Login Items as a background item; leave it on." If it is off, the menu says so and offers "Open Login Items" (`SMAppService.openSystemSettingsLoginItems()`). |
 | Open at login (`SMAppService.mainApp`) | Optional | Only the menu bar icon needs it. The services run without the app. | A checkbox on the Done screen, off by default, also in Settings > General. |
 | Notifications | No | Status is in the menu bar icon. If "notify me when voiced stops" is added later, the app asks then, from that toggle. | Nothing |

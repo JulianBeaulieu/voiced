@@ -36,8 +36,9 @@ if run install "$user" >/dev/null; then
         cp "$staging/$prefix.$svc.plist" "$want"
         plutil -remove StandardOutPath "$want"; plutil -remove StandardErrorPath "$want"
         plutil -insert AssociatedBundleIdentifiers -json "[\"$prefix.menubar\"]" "$want"
+        plutil -replace KeepAlive -json "{\"PathState\":{\"$HOME/.voiced/bin/voiced\":true}}" "$want"
         if [ "$(canon "$want")" = "$(canon "$dest/$prefix.$svc.plist")" ]; then
-            ok "$svc: rendered plist matches voiced install's, without log paths"
+            ok "$svc: rendered plist matches voiced install's, without log paths, KeepAlive PathState"
         else
             bad "$svc: rendered plist differs"; diff <(canon "$want") <(canon "$dest/$prefix.$svc.plist")
         fi
@@ -51,6 +52,7 @@ if run check "$user" >/dev/null; then bad "check missed a changed plist"; else o
 
 expect_refused "user root" run install root
 expect_refused "uid below 500" run install daemon
+expect_refused "nobody (uid 4294967294)" run install nobody
 expect_refused "no such user" run install no-such-user-voiced
 expect_refused "bad user name" run install '../etc'
 expect_refused "extra argument" run install "$user" extra
@@ -69,12 +71,71 @@ if run uninstall "$user" >/dev/null 2>&1 || [ ! -f "$dest/$prefix.stt.plist" ]; 
     bad "another user's install was removed"
 else ok "another user's install is kept (uninstall)"; fi
 
-# A run that holds the lock blocks a second one; a lock left by a dead process does not.
-clear_dest; mkdir "$dest/.lock"; echo $$ > "$dest/.lock/pid"
+# A run that holds the lock blocks a second one; a lock file nobody holds does not.
+clear_dest; lockf -k "$dest.lock" sleep 10 & holder=$!; sleep 1
 if run install "$user" >/dev/null 2>&1; then bad "ran while locked"; else ok "a held lock refuses"; fi
-echo 999999 > "$dest/.lock/pid"
-if run install "$user" >/dev/null 2>&1 && [ ! -e "$dest/.lock" ]; then ok "a stale lock is taken over"
-else bad "stale lock"; fi
+kill "$holder"; wait "$holder" 2>/dev/null
+if run install "$user" >/dev/null 2>&1; then ok "a lock file left behind does not block"
+else bad "leftover lock file blocked"; fi
+
+# The account's own spelling of the name is used, whatever case the caller passed.
+clear_dest
+upper="$(printf '%s' "$user" | tr '[:lower:]' '[:upper:]')"
+if run install "$upper" >/dev/null 2>&1 \
+    && [ "$(plutil -extract UserName raw -o - "$dest/$prefix.stt.plist")" = "$user" ]; then
+    ok "user name case: $upper installs as $user"
+else bad "user name case"; fi
+
+# An install whose account was deleted is orphaned: install and uninstall take it over.
+orphan() { clear_dest; cp "$staging/$prefix.stt.plist" "$dest/"; \
+    plutil -replace UserName -string voiced-deleted-account "$dest/$prefix.stt.plist"; }
+orphan
+if out="$(run install "$user" 2>&1)" && [[ "$out" == *orphaned* ]] \
+    && [ "$(plutil -extract UserName raw -o - "$dest/$prefix.stt.plist")" = "$user" ]; then
+    ok "an orphaned install is replaced, and said so"
+else bad "orphaned install (install): $out"; fi
+orphan
+if run uninstall "$user" >/dev/null 2>&1 && [ -z "$(ls -A "$dest")" ]; then
+    ok "an orphaned install is removed"
+else bad "orphaned install (uninstall)"; fi
+clear_dest; run install "$user" >/dev/null
+if VOICED_TEST_HOME=/nonexistent-voiced-home run uninstall "$user" >/dev/null 2>&1 \
+    && [ -z "$(ls -A "$dest")" ]; then ok "uninstall does not need the home"
+else bad "uninstall needed the home"; fi
+
+# A home with spaces, quotes, a backslash and non-ASCII renders exactly, KeepAlive included.
+odd="$scratch/Hömé dir \"q\" 'q' \\ \$x"; mkdir "$odd"
+clear_dest
+if VOICED_TEST_HOME="$odd" run install "$user" >/dev/null 2>&1 \
+    && python3 -c 'import plistlib, sys; p = plistlib.load(open(sys.argv[1], "rb")); h = sys.argv[2]
+assert p["WorkingDirectory"] == h and p["KeepAlive"] == {"PathState": {h + "/.voiced/bin/voiced": True}}' \
+        "$dest/$prefix.watchdog.plist" "$odd"; then
+    ok "odd home renders exactly"
+else bad "odd home"; fi
+
+# The home must belong to the account.
+expect_refused "home owned by someone else" env VOICED_TEST_HOME=/usr VOICED_TEST_DEST="$dest" "$script" install "$user"
+
+# Firewall, with a stand-in socketfilterfw that records what it is asked to do. The home is
+# reached through a symlink; the environment's python is inside its real path.
+fake="$scratch/fw"; fwlog="$scratch/fw.log"
+cat > "$fake" <<FW
+#!/bin/sh
+case "\$1" in --getglobalstate) echo "Firewall is enabled. (State = 1)" ;; *) echo "\$*" >> "$fwlog" ;; esac
+FW
+chmod +x "$fake"
+real="$scratch/realhome"; env_bin="$real/.voiced/envs/x/bin"
+mkdir -p "$env_bin" "$real/.voiced/bin"; : > "$env_bin/voiced"; : > "$env_bin/python"
+ln -s "$env_bin/voiced" "$real/.voiced/bin/voiced"; ln -s "$real" "$scratch/linkhome"
+fw_run() { VOICED_TEST_HOME="$scratch/linkhome" VOICED_TEST_FW="$fake" run install "$user"; }
+clear_dest; rm -f "$fwlog"
+if fw_run >/dev/null 2>&1 && grep -q -- "--add $(realpath "$env_bin/python")" "$fwlog"; then
+    ok "firewall: python under a symlinked home is allowed"
+else bad "firewall: symlinked home"; fi
+rm "$env_bin/python"; ln -s /usr/bin/true "$env_bin/python"
+clear_dest; rm -f "$fwlog"; fw_run >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 5 ] && [ ! -e "$fwlog" ]; then ok "firewall: python outside the home is left alone (exit 5)"
+else bad "firewall: outside home gave exit $rc"; fi
 
 # Uninstall of our own install removes the three plists.
 clear_dest
