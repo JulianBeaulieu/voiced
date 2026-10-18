@@ -38,9 +38,9 @@ normal user, with no GUI session, on this hardware and OS. Other GPU
 inference servers (Ollama, for one) ship as LaunchDaemons on macOS, which
 agrees with this result.
 
-The probe is kept in the package (`voiced doctor --metal-probe` stages the
-plist and prints a self-cleaning sudo script) so the check can be repeated on
-any machine. `voiced doctor` accepts the recorded result only if it was
+The probe is kept in the package (`voiced doctor --metal-probe` writes a
+self-cleaning script with the probe's plist inside it and prints the `sudo`
+command that runs it) so the check can be repeated on any machine. `voiced doctor` accepts the recorded result only if it was
 produced under launchd's system manager (`managername` `System`, parent pid
 1) on the macOS version that is running now; a probe run from a shell, or
 left over from before an OS upgrade, does not count.
@@ -77,12 +77,15 @@ is `<log_dir>/<service>.log`.
 ## Consequences
 
 - Installing and removing the plists needs root. The installer never runs
-  `sudo` itself; it writes the plists to a staging directory and prints a
-  script (`install-daemons.sh`) for the user to review and run.
+  `sudo` itself. One script does it for the CLI and the menu bar app alike
+  (ADR 0018): `voiced install` prints `sudo /bin/bash <environment>/.../
+  voiced/launchd/voiced-privileged.sh install <user>`, and the script
+  renders the plists as root from the user name alone. Nothing the user's
+  account writes is staged for root to copy.
 - With FileVault on, a reboot waits at the pre-boot unlock screen; the
   daemons start as soon as the disk is unlocked, no GUI login required.
   `voiced doctor` warns about this.
 - If a future macOS breaks Metal for daemons, the fallback is a LaunchAgent
   with the same plist content installed under `~/Library/LaunchAgents` and
-  `launchctl bootstrap gui/<uid>`. The renderer already takes every field
-  needed; only the install script and the target directory would change.
+  `launchctl bootstrap gui/<uid>`. Only the privileged script's
+  destination, its `UserName` key and the launchctl domain would change.

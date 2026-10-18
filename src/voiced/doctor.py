@@ -427,7 +427,7 @@ def check_daemon(service: str, label: str, runner: Runner, exists: Exists = Path
         return Check(name, "fail", f"{plist_path(label)} exists but is not loaded")
     if status.loaded:
         return Check(name, "warn", "loaded from somewhere other than /Library/LaunchDaemons")
-    return Check(name, "warn", "not installed; run voiced install and the printed sudo script")
+    return Check(name, "warn", "not installed; run voiced install and the sudo command it prints")
 
 
 def check_daemons(settings: Settings, runner: Runner, exists: Exists = Path.is_file) -> list[Check]:

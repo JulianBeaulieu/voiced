@@ -2,7 +2,8 @@
 
 Standard library only: the watchdog imports this too. Every verb has one
 ``*_argv(label)`` builder; the same argv is run through a :data:`Runner`,
-printed for the user with ``shlex.join``, or written into the sudo scripts.
+printed for the user with ``shlex.join``, or written into the Metal probe's
+script.
 Reading (``launchctl print``) and plain ``kickstart`` work without root on
 the system domain; ``bootstrap``, ``bootout`` and ``kickstart -k`` of a
 running job do not (ADR 0004).

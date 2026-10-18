@@ -144,7 +144,7 @@ public enum RecordedProgress {
         #"{"event": "error", "step": "\#(step)", "message": "\#(message)"}"#
     }
 
-    public static let done = #"{"event": "done", "staging_dir": "/Users/someone/.config/voiced/launchd"}"#
+    public static let done = #"{"event": "done"}"#
 
     private static let env = "/Users/someone/.voiced/envs/20261018T120000"
     /// Each step's `shown`, as the CLI words them.

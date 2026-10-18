@@ -1,17 +1,19 @@
 #!/bin/bash
-# Runs the privileged script the app compiles in (Sources/VoicedMenuBarUI/Installer/
-# voiced-privileged.sh) as the current user, in its test mode: a scratch destination, no
-# launchctl, no firewall. Checks that what root would install matches what `voiced install`
-# stages, plus the app's bundle id, and that bad input, another account's install and a
-# concurrent run are refused with nothing written.
-#   test-privileged.sh STAGING_DIR      # plists `voiced install` staged for the default ~/.voiced
+# Runs the privileged script (src/voiced/launchd/voiced-privileged.sh, which the app compiles
+# in through a symlink and `voiced install` prints) as the current user, in its test mode: a
+# scratch destination, no launchctl, no firewall. Checks what root would install, and that
+# bad input, another account's install and a concurrent run are refused with nothing
+# written. The pytest suite compares the plists with what the CLI expects, key by key.
+#   test-privileged.sh
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-staging="$1"
 user="$(id -un)"
+# The home the script reads, from Directory Services.
+home="$(dscl -plist . -read "/Users/$user" NFSHomeDirectory \
+    | plutil -extract "dsAttrTypeStandard:NFSHomeDirectory.0" raw -o - -)"
 prefix="io.github.julianbeaulieu.voiced"
 scratch="$(mktemp -d)"; dest="$scratch/dest"; mkdir "$dest"
-# The script the app compiles in.
+# The script the app compiles in: the symlink, so a broken link fails here too.
 script="$here/../Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh"
 failures=0
 
@@ -19,8 +21,7 @@ run() { VOICED_TEST_DEST="$dest" "$script" "$@"; }
 ok() { echo "ok    $1"; }
 bad() { echo "FAIL  $1"; failures=$((failures + 1)); }
 clear_dest() { find "$dest" -mindepth 1 -delete; }
-# A plist as sorted JSON, so two plists compare by content, not key order.
-canon() { python3 -c 'import json, plistlib, sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb")), sort_keys=True))' "$1"; }
+key() { plutil -extract "$2" raw -o - "$1" 2>/dev/null; }
 expect_refused() {
     local name="$1" out
     shift
@@ -30,17 +31,18 @@ expect_refused() {
     else ok "$name: ${out##*refused: }"; fi
 }
 
-# What root renders equals the staged plists plus the app's bundle id.
+# Root renders one plist per service for this user and their ~/.voiced.
 clear_dest
 if run install "$user" >/dev/null; then
     for svc in stt tts watchdog; do
-        want="$scratch/want.$svc.plist"
-        cp "$staging/$prefix.$svc.plist" "$want"
-        plutil -insert AssociatedBundleIdentifiers -json "[\"$prefix.menubar\"]" "$want"
-        if [ "$(canon "$want")" = "$(canon "$dest/$prefix.$svc.plist")" ]; then
-            ok "$svc: rendered plist matches voiced install's"
+        out="$dest/$prefix.$svc.plist"
+        if [ "$(key "$out" Label)" = "$prefix.$svc" ] && [ "$(key "$out" UserName)" = "$user" ] \
+            && [ "$(key "$out" ProgramArguments.0)" = "$home/.voiced/bin/voiced" ] \
+            && [ "$(key "$out" AssociatedBundleIdentifiers.0)" = "$prefix.menubar" ] \
+            && [ "$(stat -f %Lp "$out")" = 644 ]; then
+            ok "$svc: rendered for $user"
         else
-            bad "$svc: rendered plist differs"; diff <(canon "$want") <(canon "$dest/$prefix.$svc.plist")
+            bad "$svc: rendered plist"; plutil -p "$out"
         fi
     done
 else
@@ -59,7 +61,7 @@ expect_refused "extra argument" run install "$user" extra
 expect_refused "no mode" run "" "$user"
 
 # Another account's install is never replaced or removed.
-other() { clear_dest; cp "$staging/$prefix.stt.plist" "$dest/"; \
+other() { clear_dest; run install "$user" >/dev/null; \
     plutil -replace UserName -string root "$dest/$prefix.stt.plist"; }
 other
 if run install "$user" >/dev/null 2>&1 \
@@ -89,7 +91,7 @@ if run install "$upper" >/dev/null 2>&1 \
 else bad "user name case"; fi
 
 # An install whose account was deleted is orphaned: install and uninstall take it over.
-orphan() { clear_dest; cp "$staging/$prefix.stt.plist" "$dest/"; \
+orphan() { clear_dest; run install "$user" >/dev/null; \
     plutil -replace UserName -string voiced-deleted-account "$dest/$prefix.stt.plist"; }
 orphan
 if out="$(run install "$user" 2>&1)" && [[ "$out" == *orphaned* ]] \

@@ -7,7 +7,7 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the four service ports are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--staging-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`). Waits while another install or uninstall holds the state directory; changes nothing the daemons use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
+| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the four service ports are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and prints the one root step (below). Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`). Waits while another install or uninstall holds the state directory; changes nothing the daemons use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
 | `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
@@ -15,20 +15,40 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 | `voiced settings [get] [--json]`, `voiced settings set KEY=VALUE ...` | Shows or changes the common settings (see [Control channel](#control-channel)). `api_key=-` reads the key from stdin. |
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
 | `voiced doctor [--json]` | Checks the machine (see below). |
-| `voiced doctor --metal-probe` | Stages a one-shot LaunchDaemon that tests Metal from a real daemon context and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
-| `voiced uninstall` | Prints the root script that unloads and removes the daemons, then lists what it would delete. `--yes` deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. It refuses to delete anything while a daemon is still loaded. |
+| `voiced doctor --metal-probe` | Writes `~/.config/voiced/metal-probe.sh`, a script that installs a one-shot LaunchDaemon testing Metal from a real daemon context and removes it again, with its plist inside, and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
+| `voiced uninstall` | Prints the root step that unloads and removes the daemons, then lists what it would delete. `--yes` deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. It refuses to delete anything while a daemon is still loaded. |
 | `voiced watchdog [--once]` | Runs the watchdog in the foreground; `--once` polls once and prints its decisions. |
 | `voiced serve stt\|tts` | Runs one service in the foreground. For development and for trying an engine before installing. |
 | `voiced config` | Prints the effective configuration as JSON. |
 
 voiced never runs root steps itself. Anything that touches
-`/Library/LaunchDaemons` is printed as a short script or command for you to
-read and run with `sudo`. To apply a config change, re-run the install
-script; it unloads and reloads all three daemons:
+`/Library/LaunchDaemons` is printed as a command for you to run with `sudo`.
+The daemons are installed and removed by one script, the one the menu bar
+app runs too (ADR 0018), shipped in the voiced package:
 
 ```sh
-sudo bash ~/.config/voiced/launchd/install-daemons.sh
+sudo /bin/bash <environment>/lib/python3.12/site-packages/voiced/launchd/voiced-privileged.sh install <you>
+sudo /bin/bash <same path> uninstall <you>
 ```
+
+`voiced install` and `voiced uninstall` print the exact lines. Its only
+input is your user name: it renders the three plists itself from fixed
+values and your home directory, refuses system accounts and another
+account's install (one install per Mac), and allows one run at a time. It
+exits 0 when done, 1 when it refused (nothing written), 3 when launchd did
+not load a label, 4 when the firewall exception could not be added and 5
+when the firewall is on but the environment's Python is outside your home
+(Homebrew's) and was left alone; 4 and 5 come after a successful install.
+The file is in an environment your account can write, the same trust as
+any script you run with `sudo`; read it first if you like. Re-running it
+is safe.
+
+The plists name only `~/.voiced/bin/voiced`, `~/.config/voiced/config.toml`
+and the default labels, so the services take everything else from the
+config file when they start: a config change needs `voiced restart all`,
+not root. An install with another state directory, config path or
+`[launchd] label_prefix` gets no root step: `voiced install` says so, and
+such a layout runs with `voiced serve` instead.
 
 `voiced doctor` checks Apple Silicon, the macOS version, Python, the
 espeak-ng library Kokoro would load (the Homebrew keg or `[tts]
@@ -39,10 +59,14 @@ non-zero only on a failed check, not on a warning.
 
 ## launchd
 
-Three LaunchDaemons, labels `<prefix>.stt`, `<prefix>.tts` and
-`<prefix>.watchdog`. The default prefix is `io.github.julianbeaulieu.voiced`;
-change it with `[launchd] label_prefix` before installing if you need a
-different namespace.
+Three LaunchDaemons, labels `io.github.julianbeaulieu.voiced.stt`, `.tts`
+and `.watchdog`. `[launchd] label_prefix` changes only which labels
+`voiced status`, `start`, `stop`, `restart`, `doctor` and the watchdog
+address, for daemons installed some other way, such as by an earlier
+release; the root step installs the default labels. Daemons an earlier
+release installed under another prefix are removed by hand:
+`sudo /bin/launchctl bootout system/<label>`, then
+`sudo /bin/rm /Library/LaunchDaemons/<label>.plist`, for each of the three.
 
 Each plist sets:
 
@@ -61,7 +85,7 @@ may open those files as root, in a log directory the user owns, so a
 symlink planted there could make root create or append to any file. The
 process opens them as the user instead and refuses a symlink (ADR 0006).
 Plists from an older release still carry the two keys and keep working;
-re-run `voiced install` and its sudo script once to replace them.
+run the root step once to replace them.
 
 Daemons rather than LaunchAgents because agents only start once their user
 logs in to the GUI. Metal works from a daemon context on Apple Silicon: a
@@ -285,7 +309,7 @@ Homebrew is installing voiced or its Python, the watchdog neither polls
 nor restarts anything, and refuses `voiced restart` (it exits non-zero
 with the reason), for up to 30 minutes.
 `voiced restart all` does it at once. If the changelog says a release
-changes the plists, run `voiced install` and the printed sudo step as well.
+changes the plists, run the root step `voiced install` prints as well.
 
 ### Homebrew
 
@@ -318,7 +342,7 @@ exists) and `voiced doctor` reports the dangling link. Reinstall the formula
 to bring them back, or run the uninstall steps above. If a daemon stays
 loaded but not running after the link is back (`voiced doctor`: "loaded
 but not running"; launchd can leave such a job at `spawn scheduled`),
-re-run the sudo step `voiced install` printed: it boots the daemons out
+re-run the root step `voiced install` prints: it boots the daemons out
 and in again, which starts them.
 
 ### From a checkout

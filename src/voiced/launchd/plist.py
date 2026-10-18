@@ -1,9 +1,7 @@
 """Render LaunchDaemon plists.
 
-Labels come from ``settings.launchd.label(service)`` so the reverse-DNS prefix
-lives in exactly one place (``voiced.config.DEFAULT_LAUNCHD_LABEL_PREFIX``).
-The installer writes these to ``/Library/LaunchDaemons`` through a printed
-sudo script, never silently.
+Used for the Metal probe's plist. The daemons' plists are rendered as root
+by ``voiced/launchd/voiced-privileged.sh`` (ADR 0018), never from Python.
 """
 
 from __future__ import annotations

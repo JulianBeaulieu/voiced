@@ -26,10 +26,10 @@ characters; that warning was removed.
 |---|---|---|
 | venv | `~/.voiced` (`[install] venv_dir`, `--venv`) | short, user-owned, no sudo. `/usr/local/voiced` was rejected: it is root-owned on Apple Silicon Macs, so creating and upgrading it would need sudo, which the installer never runs. |
 | config | `~/.config/voiced/config.toml` | copied from the packaged `config.example.toml` on first install, never overwritten |
-| staged plists and scripts | `~/.config/voiced/launchd/` | `<label>.plist` x3, `install-daemons.sh`, `uninstall-daemons.sh`, `metal-probe.sh`; the sudo scripts reference these absolute paths |
+| Metal probe script | `~/.config/voiced/metal-probe.sh` | written by `voiced doctor --metal-probe`, its plist inside it. Nothing else is staged for root: the daemons' plists are rendered as root by the privileged script (ADR 0018), and `install` removes what earlier releases staged in `~/.config/voiced/launchd/` |
 | logs | `~/Library/Logs/voiced/` (`[server] log_dir`) | the macOS convention, visible in Console.app |
 | models | Hugging Face cache (`~/.cache/huggingface` or `[install] hf_home`) | not vendored; the services set `HF_HOME` from the config |
-| installed plists | `/Library/LaunchDaemons/<label>.plist`, root:wheel 0644 | written only by the printed sudo script |
+| installed plists | `/Library/LaunchDaemons/<label>.plist`, root:wheel 0644 | written only by the privileged script, run through the printed `sudo` line or by the menu bar app |
 
 The installer uses `uv` when it is on `PATH` (`uv venv --python 3.12`, then
 `uv pip install`; uv downloads a Python if needed) and falls back to
@@ -44,19 +44,20 @@ is not installed it falls back to `huggingface_hub.snapshot_download` for the
 configured model id. Running this in the venv matters because the installing
 interpreter (for example `uvx`) does not have MLX.
 
-`install --dry-run` prints the plan, every command, all three plists and the
-sudo script, and writes nothing. The real run writes the config (if absent),
-the log dir, the venv and the staging directory, then prints the sudo script
-and stops. The user runs `sudo bash ~/.config/voiced/launchd/install-daemons.sh`.
+`install --dry-run` prints the plan, every command and the root step, and
+writes nothing. The real run writes the config (if absent), the log dir and
+the environment, then prints the root step and stops: one line,
+`sudo /bin/bash <environment>/.../voiced/launchd/voiced-privileged.sh install
+<user>` (ADR 0018).
 
-`uninstall` prints the matching bootout-and-remove script first and refuses
+`uninstall` prints the matching `uninstall <user>` line first and refuses
 to delete anything while any label is still loaded (otherwise launchd would
 respawn a missing binary every 10 s). Deleting needs `--yes`; models, logs
 and config each need their own flag. Only two kinds of directory are deleted
 recursively: the venv (only if it contains `pyvenv.cfg`) and the models'
 Hugging Face cache entries. Everything else is deleted file by file, because
 the directories may be shared: `log_dir = "~/Library/Logs"` and
-`VOICED_CONFIG=~/config.toml` (staging dir `~/launchd`) are legal
+`VOICED_CONFIG=~/config.toml` (an earlier release's staging dir `~/launchd`) are legal
 configurations. `--remove-logs` removes the per-service log files, their
 rotations and the Metal probe result; `--remove-config` removes the config
 file, the staged plists and the generated scripts. A directory is removed
@@ -99,7 +100,7 @@ that descriptor is kept. A file that cannot be opened is reported on the
 original stderr (`/dev/null` under launchd) and logged as a warning in
 `<service>.log` once logging is configured; the daemon runs on without the
 redirect rather than crash-looping. Plists rendered before this change keep the two keys, and
-the old exposure, until `voiced install` and its sudo script replace them.
+the old exposure, until the root step replaces them.
 
 `HF_HOME` comes from `[install] hf_home`, not from the plists: every
 `voiced` command sets it, and the espeak-ng variables, from the config file
@@ -107,20 +108,19 @@ alone and clears what the shell exported (ADR 0018). The services and the
 installer's model download, its child, therefore see the same cache, so
 the daemons find the weights the installer fetched.
 
-Every path that ends up in a generated shell script is quoted with
-`shlex.quote`, and `[launchd] label_prefix` is validated to letters, digits,
-dots and dashes, because those scripts run as root. Re-running the install
-script boots the old instance out and waits for launchd to finish tearing it
-down before bootstrapping again; `bootout` is asynchronous and an immediate
-`bootstrap` fails.
+Every path that ends up in a generated shell script (the Metal probe's) is
+quoted with `shlex.quote`, and `[launchd] label_prefix` is validated to
+letters, digits, dots and dashes, because that script runs as root.
+Re-running the root step boots the old instance out and waits for launchd
+to finish tearing it down before bootstrapping again; `bootout` is
+asynchronous and an immediate `bootstrap` fails.
 
 ## Consequences
 
-- Upgrading is `voiced install` again: the venv is reused
-  (`uv venv --allow-existing`), the package upgraded, the plists re-staged, and
-  the printed script boots the daemons out and back in.
-- The venv path appears in the plists, so moving it means re-running
-  `install` and the sudo script.
+- Upgrading is `voiced install` again (ADR 0017: a new environment, the
+  link repointed); the plists do not change, so it needs no root step.
+- The plists name `~/.voiced/bin/voiced` only (ADR 0018), so a state
+  directory elsewhere gets no daemons.
 - `voiced doctor` reports the venv's Metal device using the venv's Python,
   not the interpreter running `doctor`.
 

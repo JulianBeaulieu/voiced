@@ -342,7 +342,8 @@ would live inside the keg, and the menu bar app would no longer find it at
 
 - First install from the formula is
   `brew install --HEAD julianbeaulieu/voiced/voiced` (until the first tag),
-  `voiced install`, and the printed sudo step.
+  `voiced install`, and the `sudo` line it prints, which runs the
+  privileged script of ADR 0018 from the keg's environment.
 - Upgrading is `brew upgrade --fetch-HEAD voiced` until v0.1.0 (a plain
   `brew upgrade` is a no-op for a HEAD install), then `brew upgrade voiced`.
   No root step, because the plists do not change; the watchdog moves both

@@ -157,9 +157,10 @@ in memory, for the status page.
 
 ## launchd and the watchdog
 
-`voiced install` renders three LaunchDaemon plists, `<prefix>.stt`,
-`<prefix>.tts` and `<prefix>.watchdog`, with the prefix from
-`[launchd] label_prefix`. launchd starts them at boot with no GUI login and
+Three LaunchDaemons, `io.github.julianbeaulieu.voiced.stt`, `.tts` and
+`.watchdog`, rendered as root from the user name alone by the one privileged
+script that `voiced install` prints and the menu bar app runs
+([ADR 0018](decisions/0018-install-from-the-menu-bar-app.md)). launchd starts them at boot with no GUI login and
 restarts a service that exits. The watchdog, a third daemon, polls `/health`
 and restarts a service that is alive but stuck: a hung load, a queue that
 stops draining, or a service that stays `degraded`. It runs as the

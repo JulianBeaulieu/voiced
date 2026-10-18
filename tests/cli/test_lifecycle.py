@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import pwd
+import shlex
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -134,16 +137,29 @@ def test_status_table(settings: Settings) -> None:
 def test_status_says_what_to_do_before_the_daemons_are_installed(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    """After `voiced install` in the default layout, the root step; before
+    it, or for a layout the root step does not install, `voiced install`."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("VOICED_CONFIG")
+    settings.install.venv_dir = home / ".voiced"
     out: list[str] = []
     assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 1
     assert out[-1].endswith("Run `voiced install` first.")
-    script = tmp_path / "launchd" / "install-daemons.sh"
-    script.parent.mkdir()
-    script.write_text("")
+    entry = home / ".voiced/bin/voiced"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("")
     out.clear()
     lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None)
-    assert out[-1] == f"The daemons are not installed. Review and run: sudo bash {script}"
+    lead, _, command = out[-1].partition(": ")
+    assert lead == "The daemons are not installed. Run"
+    script = Path(lc.__file__).parent / "launchd/voiced-privileged.sh"
+    user = pwd.getpwuid(os.getuid()).pw_name
+    assert shlex.split(command) == ["sudo", "/bin/bash", str(script), "install", user]
+    settings.launchd.label_prefix = "org.example.voiced"
+    out.clear()
+    lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None)
+    assert out[-1].endswith("Run `voiced install` first.")
 
 
 def test_logs_tail_and_missing(settings: Settings) -> None:
@@ -191,7 +207,21 @@ def test_uninstall_refuses_while_loaded(settings: Settings, tmp_path: Path) -> N
     assert lc.cmd_uninstall(_uninstall_args(yes=True), settings, fake, out.append) == 1
     assert settings.install.venv_dir.exists()
     assert any("still loaded: stt" in line for line in out)
-    assert any(f"launchctl bootout system/{stt}" in line for line in out)
+    user = pwd.getpwuid(os.getuid()).pw_name
+    lead, _, command = out[0].partition(": ")
+    assert lead == "Root step (stop and remove the daemons)"
+    script = Path(lc.__file__).parent / "launchd/voiced-privileged.sh"
+    assert shlex.split(command) == ["sudo", "/bin/bash", str(script), "uninstall", user]
+    assert not any("label_prefix" in line or "by hand" in line for line in out)
+
+
+def test_uninstall_names_daemons_under_another_prefix(settings: Settings, tmp_path: Path) -> None:
+    """The root step removes the default labels only; an install an earlier
+    release made under [launchd] label_prefix is pointed out."""
+    settings.launchd.label_prefix = "org.example.voiced"
+    out: list[str] = []
+    lc.cmd_uninstall(_uninstall_args(), settings, FakeLaunchctl({}), out.append)
+    assert "remove org.example.voiced.* by hand" in out[1]
 
 
 def test_uninstall_dry_then_real(
@@ -263,17 +293,16 @@ def test_settings_http_helpers_and_label_validation() -> None:
     )
 
 
-def test_doctor_metal_probe_stages_script(
+def test_doctor_metal_probe_writes_one_script(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "cfg" / "config.toml"))
     args = argparse.Namespace(json=False, metal_probe=True)
     out: list[str] = []
     assert lc.cmd_doctor(args, settings, FakeLaunchctl({}), out.append) == 0
-    staging = tmp_path / "cfg" / "launchd"
-    assert (staging / "metal-probe.sh").exists()
-    assert (staging / f"{settings.launchd.label('metalprobe')}.plist").exists()
-    assert any(line.startswith("Run:  sudo bash ") for line in out)
+    script = tmp_path / "cfg" / "metal-probe.sh"
+    assert sorted(x.name for x in script.parent.iterdir()) == ["metal-probe.sh"]
+    assert f"Review, then run:  sudo /bin/bash {script}" in out
 
 
 def test_uninstall_waits_for_an_install(

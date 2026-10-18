@@ -147,19 +147,20 @@ services are reached through the app's own `AppModel`, against the fake
 control server in tests. Nothing in `swift test` prompts, starts a daemon
 or touches `/Library`.
 
-The script that runs as root is
-`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`. Its bytes are
-compiled into the executable (`.embedInCode` in `Package.swift`); it is
-never a file in the bundle. The app runs it through `osascript` with an
-environment of `PATH` alone, so nothing of its own environment reaches the
-shells that run as root. Run as a normal user, the script has a test mode
-that writes to a scratch directory. `Scripts/test-privileged.sh` uses it to
-compare what the script renders with the plists `voiced install` stages, and
-checks every refusal. Stage the plists with the `voiced install` of the
-same commit first, as the comparison is exact:
+The script that runs as root is `src/voiced/launchd/voiced-privileged.sh`
+in the voiced package, the same file `voiced install` prints for `sudo`;
+`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh` is a symlink to
+it. Its bytes are compiled into the executable (`.embedInCode` in
+`Package.swift`); it is never a file in the bundle, and a test compares the
+compiled-in bytes with the packaged file. The app runs it through
+`osascript` with an environment of `PATH` alone, so nothing of its own
+environment reaches the shells that run as root. Run as a normal user, the
+script has a test mode that writes to a scratch directory.
+`Scripts/test-privileged.sh` uses it to check what the script renders and
+every refusal; it needs nothing staged:
 
 ```sh
-menubar/Scripts/test-privileged.sh ~/.config/voiced/launchd
+menubar/Scripts/test-privileged.sh
 ```
 
 The app offers the installer only when its bundle carries

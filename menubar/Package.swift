@@ -13,7 +13,8 @@ let package = Package(
         .target(name: "VoicedControl"),
         // SwiftUI views and the observable model that drives them.
         // The privileged script's bytes are compiled into the executable (ADR 0018), never a
-        // file in the bundle.
+        // file in the bundle. Installer/voiced-privileged.sh is a symlink to the one in the
+        // voiced package (src/voiced/launchd), which `voiced install` prints for sudo.
         .target(
             name: "VoicedMenuBarUI", dependencies: ["VoicedControl"],
             resources: [.embedInCode("Installer/voiced-privileged.sh")]

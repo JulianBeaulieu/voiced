@@ -22,7 +22,6 @@ import contextlib
 import json
 import signal
 from collections.abc import Iterator
-from pathlib import Path
 from types import FrameType
 from typing import Literal, TextIO
 
@@ -113,8 +112,8 @@ class Progress:
         self.emit("download", model=fields["repo"], bytes=counts[0], total=counts[1])
         return True
 
-    def done(self, staging_dir: Path) -> None:
-        self.emit("done", staging_dir=str(staging_dir))
+    def done(self) -> None:
+        self.emit("done")
 
     def error(self, message: str) -> None:
         """``step`` is None when no step was running. A models-step error

@@ -66,22 +66,24 @@ engines, from your checkout into `~/.voiced/envs/`, every package at the
 version and hash in the checkout's lock, on a Python 3.12 that uv
 downloads into `~/.voiced/python`. It then points `~/.voiced/bin/voiced`
 at that environment, downloads the models into the
-Hugging Face cache, writes the launchd plists to
-`~/.config/voiced/launchd/`, and prints the one command you run as root,
-followed by the script it runs. The models are about 2.7 GB; with the Python
+Hugging Face cache, and prints the one command you run as root. The models
+are about 2.7 GB; with the Python
 environment and uv's cache, plan for about 4.5 GB of disk and several minutes
 on the first install. A warning about `HF_TOKEN` along the way is harmless:
 the models are public and need no Hugging Face account. Run the printed
-command:
+command; it looks like this, with the path of the environment voiced runs
+from:
 
 ```sh
-sudo bash ~/.config/voiced/launchd/install-daemons.sh
+sudo /bin/bash ~/.voiced/envs/<id>/lib/python3.12/site-packages/voiced/launchd/voiced-privileged.sh install <you>
 ```
 
-The script unloads any running voiced daemons, copies the three plists into
-`/Library/LaunchDaemons` and loads them. It is short; read it first, and the
-three plists it copies next to it, which set the user the daemons run as
-(`UserName`, your user). voiced never runs anything as root itself. Then:
+That script is the one the menu bar app runs as root too. Given only your
+user name, it writes the three plists into `/Library/LaunchDaemons` from
+fixed values (the daemons run as your user, `UserName`, and run
+`~/.voiced/bin/voiced`), then loads them. It sits in an environment your
+account can write, like any script you choose to run with `sudo`, so read
+it first if you like. voiced never runs anything as root itself. Then:
 
 ```sh
 voiced status

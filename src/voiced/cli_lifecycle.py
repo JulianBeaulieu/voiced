@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from voiced import __version__
 from voiced.config import (
+    DEFAULT_LAUNCHD_LABEL_PREFIX,
     HTTP_SERVICES,
     SERVICES,
     DaemonName,
@@ -89,7 +90,7 @@ SERVICE_CHOICES = (*SERVICES, "all")
 
 def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     install = sub.add_parser(
-        "install", help="link the environment, download models, stage the plists"
+        "install", help="link the environment, download models, print the root step"
     )
     install.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
     install.add_argument(
@@ -107,7 +108,6 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         "(default: the environment this voiced runs from)",
     )
     install.add_argument("--python", help='Python version for a --source build, e.g. "3.12"')
-    install.add_argument("--staging-dir", type=Path, help="where plists and scripts are written")
     install.add_argument("--skip-models", action="store_true", help="do not download models")
     install.add_argument(
         "--origin",
@@ -159,7 +159,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     logs.add_argument("--stderr", action="store_true", help="also show launchd's stderr capture")
 
     uninstall = sub.add_parser(
-        "uninstall", help="print the sudo script and remove what voiced installed"
+        "uninstall", help="print the root step and remove what voiced installed"
     )
     uninstall.add_argument(
         "--state-dir",
@@ -170,7 +170,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     )
     uninstall.add_argument("--yes", action="store_true", help="actually delete files")
     uninstall.add_argument(
-        "--remove-config", action="store_true", help="also delete the config file and staging dir"
+        "--remove-config", action="store_true", help="also delete the config file"
     )
     uninstall.add_argument("--remove-logs", action="store_true", help="also delete the log dir")
     uninstall.add_argument(
@@ -182,7 +182,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     doc.add_argument(
         "--metal-probe",
         action="store_true",
-        help="stage a one-shot LaunchDaemon that tests Metal and print the sudo script",
+        help="write a script for a one-shot LaunchDaemon that tests Metal, print its sudo line",
     )
 
     wd = sub.add_parser("watchdog", help="run the health watchdog in the foreground")
@@ -257,31 +257,32 @@ def cmd_install(
                     progress.error(refusal)
                     return 2
                 plan = _install(args, settings, echo, run, progress)
-                _show_staged(plan, echo, dry_run=args.dry_run)
-                progress.done(plan.staging_dir)  # last, after the human output
+                _show_root_step(plan, echo, dry_run=args.dry_run)
+                progress.done()  # last, after the human output
         except InstallError as exc:
             echo(f"install failed: {exc}")
             return 1
     return 0
 
 
-def _show_staged(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
-    if dry_run:
-        for service in SERVICES:
-            echo("")
-            echo(f"--- {plan.staged_plist(service)} (would be written)")
-            echo(plan.render(service).decode().rstrip())
-        echo("")
-        echo(f"--- {plan.install_script_path} (would be written)")
-        echo(plan.sudo_install_script().rstrip())
+def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
+    echo("")
+    mismatches = plan.daemon_mismatches()
+    if mismatches:
+        echo(f"User-level install {'planned' if dry_run else 'done'}. No root step: the daemons")
+        echo("run ~/.voiced/bin/voiced with ~/.config/voiced/config.toml under the default")
+        echo(f"labels, and here {'; '.join(mismatches)}. Run `voiced serve` yourself instead.")
         return
+    if dry_run:
+        echo("A real run ends with the root step, the one command that needs root:")
+    else:
+        echo("User-level install done. The LaunchDaemons need root. Run:")
     echo("")
-    echo("User-level install done. The LaunchDaemons need root. Review and run:")
+    echo(f"  {plan.root_command('install')}")
     echo("")
-    echo(f"  sudo bash {shlex.quote(str(plan.install_script_path))}")
-    echo("")
-    echo(plan.sudo_install_script().rstrip())
-    echo("")
+    echo("That is voiced's own root script, the one the menu bar app runs; read it")
+    echo("first if you like. It renders the three plists from your user name alone.")
+    echo(f"To remove them later: {plan.root_command('uninstall')}")
     echo(f"Then: {plan.entry} status")
 
 
@@ -295,7 +296,6 @@ def _install(
         state_dir=args.state_dir,
         python=args.python,
         source=args.source,
-        staging_dir=args.staging_dir,
         origin=args.origin,
     )
     # Piped (the app, a log), the build's and our own lines stay in order.
@@ -653,11 +653,9 @@ def cmd_status(
 def _not_installed_hint(settings: Settings) -> str:
     from voiced.launchd.install import plan_install
 
-    script = plan_install(settings).install_script_path
-    if script.is_file():
-        return (
-            f"The daemons are not installed. Review and run: sudo bash {shlex.quote(str(script))}"
-        )
+    plan = plan_install(settings)
+    if plan.entry.exists() and not plan.daemon_mismatches():
+        return f"The daemons are not installed. Run: {plan.root_command('install')}"
     return "The daemons are not installed. Run `voiced install` first."
 
 
@@ -801,23 +799,18 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
     from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
 
     plan = plan_install(settings, state_dir=args.state_dir)
-    script = plan.sudo_uninstall_script()
-    try:
-        plan.staging_dir.mkdir(parents=True, exist_ok=True)
-        plan.uninstall_script_path.write_text(script)
+    echo(f"Root step (stop and remove the daemons): {plan.root_command('uninstall')}")
+    if settings.launchd.label_prefix != DEFAULT_LAUNCHD_LABEL_PREFIX:
+        # An install an earlier release made under another prefix.
         echo(
-            "Root step (stop and remove the daemons): "
-            f"sudo bash {shlex.quote(str(plan.uninstall_script_path))}"
+            f"It removes the {DEFAULT_LAUNCHD_LABEL_PREFIX}.* daemons only; remove "
+            f"{settings.launchd.label_prefix}.* by hand (docs/operations.md)."
         )
-    except OSError:
-        echo("Root step (stop and remove the daemons):")
-    echo("")
-    echo(script.rstrip())
     echo("")
 
     loaded = [s for s in SERVICES if print_service(settings.launchd.label(s), runner).loaded]
     if loaded:
-        echo(f"Daemons still loaded: {', '.join(loaded)}. Run the sudo script first, then")
+        echo(f"Daemons still loaded: {', '.join(loaded)}. Run the root step first, then")
         echo("re-run `voiced uninstall --yes` to remove the files.")
         return 1
 
@@ -874,10 +867,9 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
         plan = plan_install(settings)
         probe = plan.metal_probe(environment_python(plan.entry))
         probe.write()
-        echo(f"staged {probe.plist_path}")
-        echo(f"staged {probe.script_path}")
+        echo(f"wrote {probe.script_path}")
         echo("")
-        echo(f"Run:  sudo bash {shlex.quote(str(probe.script_path))}")
+        echo(f"Review, then run:  sudo /bin/bash {shlex.quote(str(probe.script_path))}")
         echo("")
         echo(probe.script.rstrip())
         echo("")
