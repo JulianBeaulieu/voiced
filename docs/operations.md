@@ -54,8 +54,14 @@ Each plist sets:
 | `ThrottleInterval` | 10 | Wait 10 s between restarts so a crash loop does not spin. |
 | `ProcessType` | Interactive | Full CPU and GPU scheduling priority. |
 | `WorkingDirectory` | the user's home | |
-| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, and `HF_HOME` when configured | The daemon reads the same config file and model cache as the CLI. |
-| `StandardOutPath`, `StandardErrorPath` | `~/Library/Logs/voiced/<service>.stdout.log`, `.stderr.log` | Catch output before logging is configured. |
+| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, and `HF_HOME` when configured | The daemon reads the same config file and model cache as the CLI. `VOICED_STDIO_LOG` (`~/Library/Logs/voiced/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them. |
+
+The plists do not set `StandardOutPath` or `StandardErrorPath`: launchd
+may open those files as root, in a log directory the user owns, so a
+symlink planted there could make root create or append to any file. The
+process opens them as the user instead and refuses a symlink (ADR 0006).
+Plists from an older release still carry the two keys and keep working;
+re-run `voiced install` and its sudo script once to replace them.
 
 Daemons rather than LaunchAgents because agents only start once their user
 logs in to the GUI. Metal works from a daemon context on Apple Silicon: a
@@ -193,8 +199,8 @@ set, on loopback too: any web page you open could otherwise reach it.
 |---|---|
 | `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
 | `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
-| `~/Library/Logs/voiced/<service>.stderr.log` | launchd's capture of stderr. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
-| `~/Library/Logs/voiced/<service>.stdout.log` | launchd's capture of stdout; normally empty. Not rotated. |
+| `~/Library/Logs/voiced/<service>.stderr.log` | The daemon's stderr, opened by the daemon itself. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
+| `~/Library/Logs/voiced/<service>.stdout.log` | The daemon's stdout; normally empty. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
 `voiced logs -f` follows all service logs; `tail -f

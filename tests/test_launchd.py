@@ -19,4 +19,9 @@ def test_render_plist(settings: Settings) -> None:
     assert plist["KeepAlive"] is True
     assert plist["RunAtLoad"] is True
     assert plist["ThrottleInterval"] == 10
-    assert plist["StandardErrorPath"].endswith("/tts.stderr.log")
+    # launchd must not open the log files as root (ADR 0006); the process does.
+    assert "StandardOutPath" not in plist
+    assert "StandardErrorPath" not in plist
+    assert plist["EnvironmentVariables"] == {
+        "VOICED_STDIO_LOG": "/Users/someone/Library/Logs/voiced/tts"
+    }

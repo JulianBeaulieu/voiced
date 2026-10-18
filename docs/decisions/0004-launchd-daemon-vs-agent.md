@@ -69,7 +69,9 @@ environment: `HOME`, `PATH` (venv first, then Homebrew, then system),
 `VOICED_CONFIG` (so the daemon reads the same file as the CLI regardless of
 how launchd resolves `~`), `PYTHONUNBUFFERED=1`, and `HF_HOME` when
 configured. Stdout and stderr go to `<log_dir>/<service>.stdout.log` and
-`.stderr.log`; the application log is `<log_dir>/<service>.log`.
+`.stderr.log`, opened by the process itself rather than through
+`StandardOutPath`/`StandardErrorPath` (ADR 0006, Logs); the application log
+is `<log_dir>/<service>.log`.
 
 ## Consequences
 
