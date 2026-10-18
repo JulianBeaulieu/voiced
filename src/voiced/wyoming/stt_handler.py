@@ -15,7 +15,7 @@ has ended. The task delivers the transcript on success.
 A failed session sends exactly one ``Error`` and never restarts on the same
 connection. Home Assistant writes every ``AudioChunk`` and the ``AudioStop``
 before it reads, so the connection stays open and the rest of the session's
-audio is read and dropped until ``AudioStop`` closes it, as for a refused TTS
+audio is read and dropped until ``AudioStop`` closes it, as for a failed TTS
 stream: closing at once would answer the client's next write with a reset,
 which can discard the Error before it is read. Dropping lasts at most
 ``server.session_idle_s`` after the failure, and a client that goes silent
@@ -41,8 +41,8 @@ from wyoming.event import Event
 from wyoming.info import Describe
 
 from voiced.audio import PCMConverter, UnsupportedAudioFormat
-from voiced.inference import ClientTimeout, UtteranceBudget, bounded, classify, inference
-from voiced.metrics import Operation, Outcome
+from voiced.inference import ClientTimeout, UtteranceBudget, bounded, inference
+from voiced.metrics import Operation
 from voiced.queue import QueueFull
 from voiced.wyoming.handlers import VoicedEventHandler, cancel_task, parse
 from voiced.wyoming.info import stt_info
@@ -59,9 +59,6 @@ class STTEventHandler(VoicedEventHandler):
     _language: str | None = None
     _queue: asyncio.Queue[AudioChunk | None] | None = None
     _task: asyncio.Task[bool] | None = None
-    _dropping_until: float | None = None
-    """Set when a session failed and reported: the loop time until which the
-    rest of its audio is read and dropped (see the module docstring)."""
 
     async def handle(self, event: Event) -> bool:
         if Describe.is_type(event.type):
@@ -74,7 +71,7 @@ class STTEventHandler(VoicedEventHandler):
         is_audio = any(t.is_type(event.type) for t in (AudioStart, AudioChunk, AudioStop))
         if is_audio and self._dropping_until is not None:
             # None of the failed session's events may reach or restart a session.
-            return await self._drop(event)
+            return await self.drop(AudioStop.is_type(event.type), self._task)
         if AudioStart.is_type(event.type):
             start = parse(AudioStart, event)
             await self._begin(start.rate, start.width, start.channels)
@@ -133,24 +130,11 @@ class STTEventHandler(VoicedEventHandler):
         self._task = self._queue = None
         return ok
 
-    async def _drop(self, event: Event) -> bool:
-        """An audio event after the session failed: dropped, or the close."""
-        assert self._dropping_until is not None
-        loop = asyncio.get_running_loop()
-        if not AudioStop.is_type(event.type) and loop.time() < self._dropping_until:
-            return True
-        if self._task is not None:
-            await self._task  # it may still be sending the Error
-        return False
-
     async def _fail(self, exc: Exception, queue: asyncio.Queue[AudioChunk | None]) -> bool:
         """Report a failed session once and drop the rest of it. Returns ``False``."""
-        self._dropping_until = asyncio.get_running_loop().time() + self._idle_timeout_s
         while not queue.empty():
             queue.get_nowait()  # frees a put the connection may be waiting on
-        await self.report(exc)
-        if classify(exc) is Outcome.DISCONNECT:
-            await self.stop()  # nobody is left to read an Error
+        await self.fail_and_drop(exc)
         return False
 
     async def _session(

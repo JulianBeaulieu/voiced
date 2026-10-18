@@ -87,8 +87,8 @@ stays open and the session's remaining audio events are read and dropped until
 `AudioStop` closes it, at most `session_idle_s` after the failure. Home
 Assistant writes the whole utterance before it reads; closing at once would
 answer its next write with a reset, which can discard the `Error` before it is
-read (the same reason a refused TTS stream is dropped until `SynthesizeStop`).
-A disconnect still closes at once.
+read. A TTS stream that fails is treated the same way (below). A disconnect
+still closes at once.
 
 ### TTS: streaming with per-sentence slots
 
@@ -110,8 +110,18 @@ is held then; only the slot-holding `AudioChunk` writes are. The cost is that
 `QueueFull` can in theory hit mid-stream (after audio has already started),
 which is reported as an `Error` like everywhere else. `max_input_chars` caps
 the request text (the whole message for `Synthesize`, the running total for a
-`SynthesizeChunk` stream); a stream that goes over gets one `Error` and is
-closed.
+`SynthesizeChunk` stream).
+
+A stream that fails gets one `Error`, whatever failed: a refused
+`SynthesizeStart`, text over `max_input_chars` (the synthesis task is
+cancelled, so nothing more is spoken), or the engine or the slot in the
+synthesis task. Home Assistant writes the whole stream, including the
+compatibility `Synthesize`, before it reads, so as for a failed STT session
+the connection stays open and the stream's remaining events are read and
+dropped until `SynthesizeStop` closes it, at most `session_idle_s` after the
+failure. Both handlers share this through `VoicedEventHandler.fail_and_drop`
+and `drop`. A failed stream never restarts on the same connection: a
+`SynthesizeStart` while dropping is dropped too.
 
 `AudioStart` is written exactly once per request through `_ensure_audio_start`
 and `_end_audio`, so the three code paths (plain, streaming, empty text) cannot
@@ -131,7 +141,8 @@ is cleaned up quietly with no `Error`; `failure` sends `Error(engine_error)`.
 The error text starts with the exception type. For the streaming paths the
 session or synthesis task is that one place, reporting immediately rather than
 waiting for the next client event (which a client blocked on a read never
-sends), and a broken stream always closes the connection. Requests that arrive
+sends), and a broken stream always ends: its remaining events are dropped and
+the connection closes at the stream's last event. Requests that arrive
 before the model has loaded get `server_busy` (`check_loaded()`); that includes
 the TTS `Describe`, whose voice list needs the loaded engine, so Home Assistant
 shows the entry as not ready until warm-up ends and then retries. Writes are bounded with

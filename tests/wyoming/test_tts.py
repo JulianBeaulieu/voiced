@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from collections.abc import AsyncIterator
 
@@ -9,7 +8,6 @@ import pytest
 from fastapi import FastAPI
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.error import Error
-from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.tts import (
     Synthesize,
@@ -128,7 +126,7 @@ async def test_text_over_max_input_chars_is_an_error(
     assert ctx.health.status == "ok"
 
 
-async def test_streaming_text_over_max_input_chars_errors_once_and_closes(
+async def test_streaming_text_over_max_input_chars_errors_once_and_closes_at_stop(
     tts_app: FastAPI, tts_listener: WyomingListener
 ) -> None:
     ctx = tts_listener.ctx
@@ -141,13 +139,11 @@ async def test_streaming_text_over_max_input_chars_errors_once_and_closes(
         assert event is not None and Error.is_type(event.type)
         error = Error.from_event(event)
         assert error.code == "invalid_request_error" and error.text.startswith("EngineError")
-        # Closed after that one error: more text and the stop get nothing back.
-        rest: list[Event] = []
-        with contextlib.suppress(ConnectionError):
-            await c.write_event(SynthesizeChunk(text="six seven").event())
-            await c.write_event(SynthesizeStop().event())
-            rest = await read_until(c)
-        assert rest == []
+        # That one error is all: more text and the stop get nothing back, and
+        # the stop closes.
+        await c.write_event(SynthesizeChunk(text="six seven").event())
+        await c.write_event(SynthesizeStop().event())
+        assert await read_until(c) == []
     assert ctx.health.status == "ok"
 
 
@@ -214,7 +210,8 @@ async def test_streaming_queue_full_is_an_error(tts_listener: WyomingListener) -
             await c.write_event(SynthesizeChunk(text="Hello. And").event())
             events = await read_until(c, "error")
             assert events and Error.from_event(events[-1]).code == "server_busy"
-            assert await c.read_event() is None
+            await c.write_event(SynthesizeStop().event())
+            assert await c.read_event() is None  # closed at the stop
     finally:
         gate.set()
         await asyncio.gather(*holders)
@@ -247,7 +244,8 @@ async def test_streaming_queue_full_mid_stream(
             events = await read_until(c, "error")
             assert events[-1].type == "error"
             assert Error.from_event(events[-1]).code == "server_busy"
-            assert await c.read_event() is None  # connection closed
+            await c.write_event(SynthesizeStop().event())
+            assert await c.read_event() is None  # closed at the stop
     finally:
         gate.set()
         if holders:

@@ -7,6 +7,14 @@ through :data:`_WIRE`, the Wyoming counterpart of the HTTP ``_HTTP`` table
 (ADR 0005). Writes made while holding the slot are bounded with
 :func:`voiced.inference.bounded` so a client that stops reading cannot pin the
 GPU.
+
+A streamed request (an STT session, a TTS stream) that fails sends one
+``Error`` and the connection stays open: the rest of its events are read and
+dropped until the event that ends it (``AudioStop``, ``SynthesizeStop``), at
+most ``server.session_idle_s`` after the failure (:meth:`fail_and_drop`,
+:meth:`drop`). Home Assistant writes the whole stream before it reads, and
+closing at once would answer its next write with a reset, which can discard
+the ``Error`` before it is read. A disconnect still closes at once.
 """
 
 from __future__ import annotations
@@ -108,6 +116,10 @@ def _length(header: dict[str, Any], key: str, limit: int) -> int:
 class VoicedEventHandler(AsyncEventHandler):
     """One client connection. Subclasses implement ``handle`` and ``cleanup``."""
 
+    _dropping_until: float | None = None
+    """Set when a streamed request failed and reported: the loop time until
+    which the rest of it is read and dropped (see the module docstring)."""
+
     def __init__(
         self, ctx: ServiceContext, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -207,6 +219,27 @@ class VoicedEventHandler(AsyncEventHandler):
         code, keep_open = _WIRE[outcome]
         await self.send_error(f"{type(exc).__name__}: {exc}", code)
         return keep_open
+
+    async def fail_and_drop(self, exc: Exception) -> None:
+        """Report a failed streamed request once and start dropping the rest
+        of it. The deadline is set before the first await, so the connection
+        drops every later event of the request."""
+        self._dropping_until = asyncio.get_running_loop().time() + self._idle_timeout_s
+        await self.report(exc)
+        if classify(exc) is Outcome.DISCONNECT:
+            await self.stop()  # nobody is left to read an Error
+
+    async def drop(self, end: bool, task: asyncio.Task[Any] | None) -> bool:
+        """An event of the failed request: dropped (``True``), or the close
+        once ``end`` (the request's last event) arrives or the deadline has
+        passed. ``task`` may still be sending the ``Error``; it is awaited
+        before the close."""
+        assert self._dropping_until is not None
+        if not end and asyncio.get_running_loop().time() < self._dropping_until:
+            return True
+        if task is not None:
+            await task
+        return False
 
     @abstractmethod
     async def handle(self, event: Event) -> bool: ...
