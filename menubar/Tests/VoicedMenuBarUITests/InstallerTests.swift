@@ -206,6 +206,8 @@ final class InstallerTests: XCTestCase {
         let envs = home.appendingPathComponent(".voiced/envs")
         try FileManager.default.createDirectory(at: envs.appendingPathComponent("20260101T000000.partial"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: envs.appendingPathComponent("20250101T000000"), withIntermediateDirectories: true)
+        // The interrupted run claimed the folder before it built anything.
+        try Data(#"{"source": "app", "environment": null}"#.utf8).write(to: manifest)
         let installer = makeInstaller()
         XCTAssertTrue(installer.welcome.resuming)
         installer.install()
@@ -291,6 +293,64 @@ final class InstallerTests: XCTestCase {
         let failure = await failure(installer)
         XCTAssertEqual(failure?.step, "Installing Python 3.12.15")
         XCTAssertTrue(failure?.cause.hasPrefix("Cannot run \(Self.resources.uv.path)") == true)
+    }
+
+    // MARK: - Claiming ~/.voiced
+
+    private var manifest: URL { home.appendingPathComponent(".voiced/install.json") }
+
+    func testAFreshStateDirectoryIsClaimedBeforeAnythingIsBuilt() async throws {
+        var claimedFirst: Bool?
+        runner.respond = { command in
+            if claimedFirst == nil { claimedFirst = FileManager.default.fileExists(atPath: self.manifest.path) }
+            return FakeInstallRunner.defaultResponse(command)
+        }
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertEqual(claimedFirst, true)
+        let claimed = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
+        XCTAssertEqual(claimed?["source"] as? String, "app")
+        XCTAssertTrue(claimed?["environment"] is NSNull)
+    }
+
+    func testAWatchdogsSocketAndFindersFileDoNotBlockTheClaim() async throws {
+        let state = home.appendingPathComponent(".voiced")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        for name in ["control.sock", ".DS_Store"] {
+            FileManager.default.createFile(atPath: state.appendingPathComponent(name).path, contents: Data())
+        }
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
+    }
+
+    func testAnExistingManifestIsLeftAsItIs() async throws {
+        let state = home.appendingPathComponent(".voiced")
+        try FileManager.default.createDirectory(at: state.appendingPathComponent("envs/20250101T000000"), withIntermediateDirectories: true)
+        let existing = Data(#"{"source": "homebrew", "environment": "/opt/homebrew/opt/voiced/libexec"}"#.utf8)
+        try existing.write(to: manifest)
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertEqual(try Data(contentsOf: manifest), existing)
+    }
+
+    func testSomeoneElsesFolderIsNotClaimed() async throws {
+        let state = home.appendingPathComponent(".voiced")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: state.appendingPathComponent("notes.txt").path, contents: Data())
+        let installer = makeInstaller()
+        installer.install()
+        let failure = await failure(installer)
+        XCTAssertEqual(failure?.stage, .environment)
+        XCTAssertEqual(
+            failure?.cause,
+            "\(state.path) is not voiced's folder: it has no install.json and holds notes.txt. Move those elsewhere, then try again.")
+        XCTAssertTrue(runner.commands.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("envs").path))
     }
 
     func testWaitsWhileAnotherInstallHoldsTheLock() async throws {

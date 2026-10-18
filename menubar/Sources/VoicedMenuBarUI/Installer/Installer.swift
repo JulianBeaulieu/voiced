@@ -377,17 +377,24 @@ public final class Installer {
         for url in Self.reachabilityChecks where !(await runner.isReachable(url)) {
             return fail(.environment, checking, "Can't reach the internet.")
         }
-        let preparing = "Preparing \(configuration.stateDirectory.path)"
+        let state = configuration.stateDirectory
+        let preparing = "Preparing \(state.path)"
         let fileManager = FileManager.default
         do {
-            try fileManager.createDirectory(at: configuration.environments, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: state, withIntermediateDirectories: true)
         } catch {
             return fail(.environment, preparing, error.localizedDescription)
         }
         guard let lock = await acquireLock() else {
-            return fail(.environment, preparing, "Cannot lock \(configuration.stateDirectory.path).")
+            return fail(.environment, preparing, "Cannot lock \(state.path).")
         }
         defer { lock.release() }
+        do {
+            try claimStateDirectory()
+            try fileManager.createDirectory(at: configuration.environments, withIntermediateDirectories: true)
+        } catch {
+            return fail(.environment, preparing, (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
         // A .partial is only ever this app's, left by a run that was stopped.
         let names = (try? fileManager.contentsOfDirectory(atPath: configuration.environments.path)) ?? []
         for name in names where name.hasSuffix(".partial") {
@@ -407,6 +414,35 @@ public final class Installer {
         environment = target
         lock.release()
         await runInstall(in: target)
+    }
+
+    /// Files a state directory may hold before anyone claimed it: what a watchdog run before
+    /// any install leaves, and Finder's (`layout.UNCLAIMED_OK`).
+    static let unclaimedOK: Set<String> = ["control.sock", ".DS_Store"]
+
+    struct NotVoicedsFolder: LocalizedError {
+        var path: String
+        var others: [String]
+
+        var errorDescription: String? {
+            let shown = others.prefix(5).joined(separator: ", ") + (others.count > 5 ? ", ..." : "")
+            return "\(path) is not voiced's folder: it has no install.json and holds \(shown). Move those elsewhere, then try again."
+        }
+    }
+
+    /// Claims the state directory for the app before anything is built in it, under the
+    /// install lock: writes `install.json` with no environment yet, which `voiced install`
+    /// adopts. Only a directory that is empty, holds only `unclaimedOK` files, or already has
+    /// an `install.json` (left as it is) can be claimed; anything else is someone else's.
+    func claimStateDirectory() throws {
+        let state = configuration.stateDirectory
+        let manifest = state.appendingPathComponent("install.json")
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: manifest.path) { return }
+        let others = try fileManager.contentsOfDirectory(atPath: state.path)
+            .filter { !Self.unclaimedOK.contains($0) }.sorted()
+        guard others.isEmpty else { throw NotVoicedsFolder(path: state.path, others: others) }
+        try Data(#"{"source": "app", "environment": null}"#.utf8 + [0x0A]).write(to: manifest, options: .atomic)
     }
 
     /// ADR 0018's environment table, with the bundled uv. `--relocatable` because the
