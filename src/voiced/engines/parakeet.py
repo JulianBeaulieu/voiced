@@ -19,6 +19,9 @@ docs/decisions/0008-stt-engine-parakeet.md:
   encoder only when :data:`MAX_BACKLOG_S` is behind) and feeds both from one
   consumer task.
 
+Every encoder call of a stream holds :func:`voiced.gpu.stt_turn`, so Kokoro
+synthesizing in the TTS service waits for it (ADR 0019).
+
 Every MLX call of an engine runs on the engine's :class:`ModelThread`. Entering
 the library's stream context switches the model to local attention globally;
 :meth:`ParakeetStreamSession.close` restores it. The engine refuses a second
@@ -51,6 +54,7 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
+from voiced.gpu import stt_turn
 from voiced.threads import ModelThread
 from voiced.vad import Endpointer, EndpointEvent
 
@@ -472,7 +476,8 @@ class _LibraryStream:
         base = len(self._starts) * self._frames - retained  # mel frame of the buffer start
         known = len(stream.finalized_tokens)
         t0 = time.perf_counter()
-        stream.add_audio(self._array(window))
+        with stt_turn():
+            stream.add_audio(self._array(window))
         if not self._frames:  # one window is shorter than the right context: untrimmed
             self._frames = int(stream.mel_buffer.shape[1])
         self._starts.append(start)

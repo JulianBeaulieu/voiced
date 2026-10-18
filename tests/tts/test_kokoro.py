@@ -311,6 +311,43 @@ def _pcm_seconds(chunks: list[Any]) -> float:
     return sum(c.duration_s for c in chunks)
 
 
+def test_yield_points_wait_then_submit_each_block() -> None:
+    """Each residual block calls the sentence's yielder before its graph goes to
+    the GPU, and the patch does not change what the block computes (ADR 0019)."""
+    pytest.importorskip("mlx_audio")
+    import mlx.core as mx
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    from voiced.engines import kokoro
+
+    kokoro._install_yield_points()
+    kokoro._install_yield_points()  # once per process, however often it is called
+    for name in kokoro.YIELD_POINT_BLOCKS:
+        assert getattr(istftnet, name)._voiced_yield_point
+    patched = istftnet.AdaINResBlock1.__call__
+    (original,) = patched.__defaults__
+    assert not getattr(original, "__defaults__", None)  # not wrapped twice
+
+    block = istftnet.AdaINResBlock1(channels=4, kernel_size=3, dilation=(1, 3, 5), style_dim=8)
+    x = mx.random.normal((1, 4, 32))
+    s = mx.random.normal((1, 8))
+    sentence = kokoro._Submissions()
+    calls: list[int] = []
+    sentence.yielder = lambda: calls.append(1)  # type: ignore[assignment]
+    token = kokoro._submissions.set(sentence)
+    try:
+        outs = [block(x, s) for _ in range(kokoro.BLOCKS_IN_FLIGHT + 2)]
+        expected = outs[-kokoro.BLOCKS_IN_FLIGHT :]
+        assert len(sentence.in_flight) == len(expected)
+        assert all(a is b for a, b in zip(sentence.in_flight, expected, strict=True))
+    finally:
+        kokoro._submissions.reset(token)
+    assert len(calls) == len(outs)
+    assert mx.allclose(outs[0], original(block, x, s)).item()
+    block(x, s)  # outside a sentence: plain block
+    assert len(calls) == len(outs)
+
+
 @pytest.mark.model
 async def test_synthesizes_plausible_duration(kokoro_engine: Any) -> None:
     text = "The quick brown fox jumps over the lazy dog."

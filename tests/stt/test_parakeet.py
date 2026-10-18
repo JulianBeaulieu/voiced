@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import os
 import statistics
 import threading
 import time
@@ -121,6 +122,47 @@ def test_pass_fits_the_right_context() -> None:
     # holds only while one window is shorter than the right context (80 ms frames).
     assert PASS_S < CONTEXT_SIZE[1] * 0.08
     assert parakeet.LIBRARY_MIN_SAMPLES < PASS
+
+
+def test_encoder_call_holds_the_gpu_lock(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kokoro in the TTS service waits while an encoder call runs (ADR 0019)."""
+    pytest.importorskip("parakeet_mlx")
+    from voiced import gpu
+
+    monkeypatch.setattr(gpu, "lock_path", lambda: tmp_path / gpu.LOCK_NAME)
+    monkeypatch.setattr(gpu, "_fds", {})
+    seen: list[bool] = []
+
+    class Stream:
+        mel_buffer: Any = None
+        finalized_tokens: list[Any] = []
+        draft_tokens: list[Any] = []
+        decoding_config = SimpleNamespace(sentence=None)
+
+        def __enter__(self) -> Stream:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def add_audio(self, audio: Any) -> None:
+            seen.append(gpu.stt_running())
+            self.mel_buffer = np.zeros((1, len(audio) // 160 + 1))
+
+    model = SimpleNamespace(
+        preprocessor_config=SimpleNamespace(hop_length=160),
+        encoder_config=SimpleNamespace(subsampling_factor=8),
+        transcribe_stream=lambda context_size: Stream(),
+    )
+    lib = parakeet._LibraryStream(model)
+    try:
+        lib.encode(np.zeros(PASS, dtype=np.float32), 0)
+        assert seen == [True]
+        assert not gpu.stt_running()
+    finally:
+        lib.close()
+        for fd in gpu._fds.values():
+            os.close(fd)
 
 
 def test_language_normalization() -> None:
