@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-import psutil
-
 import voiced
 from voiced.config import (
     ENV_HF_HOME,
@@ -43,6 +41,7 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.plist import log_paths, render_plist
+from voiced.launchd.ports import foreign_listeners
 from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
@@ -171,8 +170,10 @@ class InstallPlan:
     # HF_HOME and the espeak-ng overrides as the config sets them, which is
     # how the services get them (ADR 0018).
     engine_env: dict[str, str] = field(default_factory=dict)
-    # The four service ports, by their config key, for the ports step.
+    # The four service ports, by their config key, and the address the
+    # services bind them on, for the ports step.
     ports: dict[str, int] = field(default_factory=dict)
+    bind: str = "127.0.0.1"
 
     # Paths -------------------------------------------------------------
 
@@ -417,49 +418,6 @@ ENGINE_CHECK = (
 )
 
 
-def listener_pids(port: int, runner: Runner) -> list[int] | None:
-    """Pids listening on ``port`` via lsof; None if lsof is unavailable."""
-    result = runner(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"])
-    if result.returncode == 127:
-        return None
-    return [int(line) for line in result.stdout.split() if line.isdigit()]
-
-
-def process_of(pid: int) -> tuple[str, list[str]]:
-    """The name and the exact argument vector of ``pid`` (``ps -o args=``
-    joins it with spaces, so argv[1] cannot be told apart from later
-    arguments)."""
-    try:
-        proc = psutil.Process(pid)
-        return proc.name(), list(proc.cmdline())
-    except (psutil.Error, OSError):
-        return "unknown", []
-
-
-def runs_entry(argv: Sequence[str], entry: Path) -> bool:
-    """``argv`` is a voiced daemon started from ``entry``: the plists run
-    ``<entry> serve ...``, a console script, so the kernel runs it as
-    ``<interpreter> <entry> serve ...``."""
-    return len(argv) > 1 and argv[1] == str(entry)
-
-
-def port_conflicts(plan: InstallPlan, query: Runner, say: Say) -> list[str]:
-    """The configured ports some other program listens on, each with its
-    holder. voiced's own running services (a reinstall or an update) are not
-    a conflict; without lsof nothing can be checked, which is said."""
-    found: list[str] = []
-    for key, port in plan.ports.items():
-        pids = listener_pids(port, query)
-        if pids is None:
-            say("lsof not found; the ports were not checked")
-            return []
-        for pid in pids:
-            name, argv = process_of(pid)
-            if not runs_entry(argv, plan.entry):
-                found.append(f"port {port} ({key}) is in use by {name} (pid {pid})")
-    return found
-
-
 def new_environment_dir(state_dir: Path) -> Path:
     """A fresh ``envs/<id>``: a build never writes into an environment a
     daemon may be running."""
@@ -514,12 +472,8 @@ def plan_install(
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
         engine_env=settings.engine_environment(),
-        ports={
-            "[stt] http_port": settings.stt.http_port,
-            "[stt] wyoming_port": settings.stt.wyoming_port,
-            "[tts] http_port": settings.tts.http_port,
-            "[tts] wyoming_port": settings.tts.wyoming_port,
-        },
+        ports=settings.ports(),
+        bind=settings.server.bind,
     )
 
 
@@ -717,7 +671,9 @@ def install_steps(
     )
 
     def ports() -> None:
-        conflicts = port_conflicts(plan, query, say)
+        conflicts, notes = foreign_listeners(plan.ports, plan.bind, plan.entry, query)
+        for note in notes:
+            say(note)
         if conflicts:
             raise InstallError(
                 f"{'; '.join(conflicts)}. Stop it, or set another port in {plan.config_file}"

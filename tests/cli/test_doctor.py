@@ -324,6 +324,9 @@ def test_check_ports_uses_all_four(settings: Settings) -> None:
     stt, tts = settings.stt, settings.tts
     ports = [stt.http_port, stt.wyoming_port, tts.http_port, tts.wyoming_port]
     assert seen == [f"-iTCP:{port}" for port in ports]
+    assert [c.name for c in checks] == [
+        f"Port {port} ({key})" for key, port in settings.ports().items()
+    ]
 
 
 def test_filevault() -> None:

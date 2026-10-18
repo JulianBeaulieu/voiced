@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.config import Settings, apply_engine_environment, config_path, load_settings
+from voiced.launchd.ports import bind_port
 from voiced.launchd.progress import Progress
 from voiced.launchd.stdio import follow_log_dir, redirect_stdio_from_env
 
@@ -84,21 +85,6 @@ class PortInUse(OSError):
         )
 
 
-def _bind(bind: str, port: int) -> socket.socket:
-    """Bind ``bind:port`` the way uvicorn's own ``bind_socket`` would (same
-    family and ``SO_REUSEADDR``), so the answer matches what it would see."""
-    family = socket.AF_INET6 if ":" in bind else socket.AF_INET
-    sock = socket.socket(family, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        sock.bind((bind, port))
-    except OSError:
-        sock.close()
-        raise
-    sock.set_inheritable(True)
-    return sock
-
-
 def bind_service_ports(settings: Settings, service: str) -> socket.socket:
     """Claim the service's ports before anything is loaded.
 
@@ -112,11 +98,11 @@ def bind_service_ports(settings: Settings, service: str) -> socket.socket:
     section = settings.stt if service == "stt" else settings.tts
     bind = settings.server.bind
     try:
-        _bind(bind, section.wyoming_port).close()
+        bind_port(bind, section.wyoming_port).close()
     except OSError as exc:
         raise PortInUse("Wyoming", bind, section.wyoming_port) from exc
     try:
-        return _bind(bind, section.http_port)
+        return bind_port(bind, section.http_port)
     except OSError as exc:
         raise PortInUse("HTTP", bind, section.http_port) from exc
 

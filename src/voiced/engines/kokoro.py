@@ -206,7 +206,8 @@ class KokoroEngine(SentenceTTSEngine):
         patterns = self.download_patterns()
         # Both at the pinned revision, from the cache voiced install filled.
         # load_model takes the repo id: mlx-audio tells a Kokoro model by
-        # its name, which a snapshot directory does not always carry.
+        # its name, which a snapshot directory does not always carry. Its
+        # resolve of the same revision and patterns is a cache hit.
         root = snapshot(self.model_id, patterns)
         model = load_model(
             self.model_id, revision=pinned_revision(self.model_id), allow_patterns=patterns

@@ -8,9 +8,10 @@ either keeps protocol 1.
 
 The model download (``python -m voiced.models download --report``) tells
 the installer about itself on lines that start with :data:`DOWNLOAD_PREFIX`,
-never on a line that merely looks like an event: one naming the model,
-revision and cache it fetches, which a models-step ``error`` then carries,
-and its byte counts, which become ``download`` events.
+never on a line that merely looks like an event. Each line's ``kind``
+says what it is: ``model`` names the model, revision and cache it fetches,
+which a models-step ``error`` then carries, and ``bytes`` its byte counts,
+which become ``download`` events.
 
 Standard library only.
 """
@@ -101,9 +102,11 @@ class Progress:
             return False
         if not isinstance(fields, dict) or not isinstance(fields.get("repo"), str):
             return False
-        if "path" in fields:
+        if fields.get("kind") == "model":
             self.fetching = {k: fields.get(k) for k in ("repo", "revision", "path")}
             return True
+        if fields.get("kind") != "bytes":
+            return False
         counts = (fields.get("bytes"), fields.get("total"))
         if not all(isinstance(n, int) and not isinstance(n, bool) for n in counts):
             return False

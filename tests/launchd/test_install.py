@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import inspect
 import json
 import os
@@ -11,6 +12,7 @@ import pwd
 import re
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -26,6 +28,7 @@ import pytest
 from voiced.cli import main
 from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, SERVICES, Settings
 from voiced.launchd import install as install_module
+from voiced.launchd import ports as ports_module
 from voiced.launchd.control import CommandResult, run_streaming
 from voiced.launchd.install import (
     InstallError,
@@ -40,7 +43,8 @@ from voiced.launchd.install import (
     write_default_config,
     write_staging,
 )
-from voiced.launchd.install import listener_pids as real_listener_pids
+from voiced.launchd.ports import bind_error as real_bind_error
+from voiced.launchd.ports import listener_pids as real_listener_pids
 from voiced.layout import Manifest, install_lock, read_manifest, sha256_file, write_manifest
 
 GOLDEN = Path(__file__).parent / "golden"
@@ -1124,15 +1128,26 @@ def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Pa
 
 
 def _listening(
-    monkeypatch: pytest.MonkeyPatch, by_port: dict[int, list[int]] | None, argvs: dict[int, Any]
+    monkeypatch: pytest.MonkeyPatch,
+    by_port: dict[int, list[int]],
+    argvs: dict[int, Any],
+    lsof: bool = True,
+    bound: set[int] | None = None,
 ) -> None:
-    """lsof's answer per port (None: no lsof), and each pid's name and argv."""
+    """lsof's answer per port (``lsof``: whether lsof is there), each pid's
+    name and argv, and the ports bind() finds in use (``bound``, by default
+    those lsof lists)."""
+    in_use = OSError(errno.EADDRINUSE, "Address already in use")
+    taken = set(by_port) if bound is None else bound
     monkeypatch.setattr(
-        install_module,
-        "listener_pids",
-        lambda port, runner: None if by_port is None else by_port.get(port, []),
+        ports_module, "bind_error", lambda bind, port: in_use if port in taken else None
     )
-    monkeypatch.setattr(install_module, "process_of", lambda pid: argvs[pid])
+    monkeypatch.setattr(
+        ports_module,
+        "listener_pids",
+        lambda port, runner: by_port.get(port, []) if lsof else None,
+    )
+    monkeypatch.setattr(ports_module, "process_of", lambda pid: argvs[pid])
 
 
 def test_a_port_held_by_another_program_stops_the_install(
@@ -1181,14 +1196,88 @@ def test_voiceds_own_running_services_are_not_a_conflict(
     assert p.entry.is_symlink()
 
 
-def test_without_lsof_the_ports_are_not_checked_and_that_is_said(
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["/x/bin/python3.12", "/elsewhere/.voiced/bin/voiced", "serve", "stt"],
+        ["/x/bin/python3.12", "-m", "voiced", "serve", "stt"],
+        ["/x/bin/tail", "-f", "ENTRY"],  # this entry point, not run as the program
+        ["ENTRY"],
+        [],
+    ],
+)
+def test_only_a_listener_running_this_entry_point_is_voiceds_own(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str]
+) -> None:
+    """Another install's voiced, or one whose argv cannot be read, is a
+    conflict like any other program."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    argv = [str(p.entry) if a == "ENTRY" else a for a in argv]
+    _listening(monkeypatch, {settings.stt.http_port: [30]}, {30: ("Python", argv)})
+    with pytest.raises(InstallError, match=r"is in use by Python \(pid 30\)"):
+        _install(p)
+
+
+def test_a_listener_the_bind_does_not_collide_with_is_still_a_conflict(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A program on 127.0.0.1 does not stop a bind on 0.0.0.0, but local
+    clients would reach it instead of voiced."""
     _environment(tmp_path / "env")
-    _listening(monkeypatch, None, {})
+    settings.server.bind = "0.0.0.0"
+    p = _plan(settings, tmp_path)
+    port = settings.stt.http_port
+    _listening(monkeypatch, {port: [40]}, {40: ("nc", ["nc", "-l"])}, bound=set())
+    with pytest.raises(InstallError, match=rf"port {port} \(\[stt\] http_port\) is in use by nc"):
+        _install(p)
+
+
+def test_a_port_lsof_cannot_name_is_another_accounts(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bind() sees every account's sockets; lsof as the user only the
+    user's own processes."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    _listening(monkeypatch, {settings.tts.wyoming_port: []}, {})
+    with pytest.raises(InstallError) as info:
+        _install(p)
+    assert (
+        f"port {settings.tts.wyoming_port} ([tts] wyoming_port) is in use by another "
+        "account or the system" in str(info.value)
+    )
+
+
+def test_a_port_that_cannot_be_bound_otherwise_stops_the_install(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bind address this Mac does not have, say."""
+    _environment(tmp_path / "env")
+    settings.server.bind = "192.0.2.1"
+    p = _plan(settings, tmp_path)
+    error = OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+    monkeypatch.setattr(ports_module, "bind_error", lambda bind, port: error)
+    with pytest.raises(InstallError) as info:
+        _install(p)
+    assert (
+        f"port {settings.stt.http_port} ([stt] http_port) cannot be bound on 192.0.2.1: "
+        "Can't assign requested address" in str(info.value)
+    )
+
+
+def test_without_lsof_a_port_in_use_is_said_not_refused(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It cannot be told apart from voiced's own running service."""
+    _environment(tmp_path / "env")
+    _listening(monkeypatch, {settings.stt.http_port: []}, {}, lsof=False)
     said: list[str] = []
     _install(_plan(settings, tmp_path), said)
-    assert "lsof not found; the ports were not checked" in said
+    assert (
+        f"port {settings.stt.http_port} ([stt] http_port) is in use; lsof not found to "
+        "tell by whom" in said
+    )
 
 
 def test_the_ports_step_checks_the_four_configured_ports(
@@ -1197,12 +1286,23 @@ def test_the_ports_step_checks_the_four_configured_ports(
     settings.stt.http_port, settings.stt.wyoming_port = 1001, 1002
     settings.tts.http_port, settings.tts.wyoming_port = 1003, 1004
     _environment(tmp_path / "env")
-    asked: list[int] = []
-    monkeypatch.setattr(
-        install_module, "listener_pids", lambda port, runner: asked.append(port) or []
-    )
+    settings.server.bind = "::1"
+    asked: list[tuple[str, int]] = []
+    monkeypatch.setattr(ports_module, "bind_error", lambda bind, port: asked.append((bind, port)))
     _install(_plan(settings, tmp_path))
-    assert asked == [1001, 1002, 1003, 1004]
+    assert asked == [("::1", 1001), ("::1", 1002), ("::1", 1003), ("::1", 1004)]
+
+
+def test_bind_error_binds_as_the_services_do() -> None:
+    """The function itself, not the stub every test gets (tests/conftest.py):
+    a listening socket's port is in use, a closed one's is free again."""
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        error = real_bind_error("127.0.0.1", port)
+        assert error is not None and error.errno == errno.EADDRINUSE
+    assert real_bind_error("127.0.0.1", port) is None
 
 
 def test_listener_pids_reads_lsof() -> None:

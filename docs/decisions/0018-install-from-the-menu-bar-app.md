@@ -337,9 +337,10 @@ Done since (`voiced.models`):
   it (the fakes, a plugin, Soprano) downloads in its own `load()`.
 - The models step runs `python -P -m voiced.models download --config FILE`
   in the environment being installed, `--report` with `--json-progress`. It
-  writes its own lines with the prefix `@@voiced-download `: first the
-  model, revision and Hugging Face cache it fetches, then
-  `{"repo", "bytes", "total"}` at most four times a second. A dry run of
+  writes its own lines with the prefix `@@voiced-download `, each with a
+  `kind`: first `model` with the model, revision and Hugging Face cache it
+  fetches, then `bytes` with `{"repo", "bytes", "total"}` at most four
+  times a second. A dry run of
   `snapshot_download` first finds what is cached, so a resumed download
   starts at the bytes already there. The bytes counted are those of
   `snapshot_download`'s bar of bytes written to disk, through its
@@ -356,7 +357,7 @@ in the app, the cask or a release asset:
 |---|---|---|
 | phonemizer | GPL-3.0-or-later, imported into the TTS process | PyPI |
 | espeak-ng 1.52 | GPL-3.0-or-later; the wheel carries no licence text | `espeakng-loader` |
-| ffmpeg 7.1, GPL build with x264, LAME and Opus | GPL | `imageio-ffmpeg` |
+| ffmpeg 7.1, GPL build with x264, x265, LAME and Opus | GPL-2.0-or-later | `imageio-ffmpeg` |
 | soxr, zeroconf | LGPL-2.1-or-later | PyPI |
 
 The README gains a third-party section and the repository a `NOTICE` file
@@ -537,7 +538,8 @@ stderr (`voiced.launchd.progress`).
   or null for a refusal before any step (another account's state
   directory, root, a config file that does not parse). A `models` error
   also has `repo`, `revision` (null when not pinned) and `path`, the
-  Hugging Face cache directory, for the manual fallback and Show in Finder.
+  Hugging Face cache directory, when known (the download had named the
+  model it was on), for the manual fallback and Show in Finder.
   An unexpected
   exception still ends the stream with `error`, then exits non-zero with
   its traceback on stderr. SIGTERM (the app's Cancel) kills the running
@@ -766,9 +768,10 @@ and says why in one line. If it does not need something, it never asks.
   and `snapshot_download` progress; a port check before approval. (The
   espeak-ng clone and length check are done, ADR 0009.) All done. The
   `ports` step binds each of the four configured ports as the services
-  do (`bind()` sees every account's sockets), then names the holder of one
-  in use with `lsof`, and refuses with each port, its config key and its
-  holder ("port 10300 ([stt] wyoming_port) is in use by python3.12 (pid
+  do (`bind()` sees every account's sockets) and asks `lsof` who listens
+  (with `SO_REUSEADDR` a listener on 127.0.0.1 does not stop a bind on
+  0.0.0.0, yet would answer local clients in voiced's place). It refuses
+  with each port, its config key and its holder ("port 10300 ([stt] wyoming_port) is in use by python3.12 (pid
   812)"). A holder `lsof`, run as the user, cannot see is "another account
   or the system". A listener that runs the entry point (`<interpreter>
   ~/.voiced/bin/voiced serve ...`) is voiced's own and not a conflict;

@@ -286,8 +286,8 @@ ffmpeg on `PATH`, so every Mac runs the build voiced was tested with
 [NOTICE](NOTICE) lists every third-party component with its SPDX licence and
 a link to its source: the Python packages in `src/voiced/requirements.lock`,
 the CPython that installs use, uv, and the native code some wheels carry
-(espeak-ng in `espeakng-loader`, GPL-3.0-or-later; once it is locked, the
-ffmpeg build in `imageio-ffmpeg`, GPL-2.0-or-later). `scripts/notice.py`
+(espeak-ng in `espeakng-loader`, GPL-3.0-or-later; the ffmpeg build in
+`imageio-ffmpeg`, GPL-2.0-or-later). `scripts/notice.py`
 writes it from the lock and a test keeps the two in step. The menu bar app
 shows the same file under Settings > About.
 

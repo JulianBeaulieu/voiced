@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -230,6 +231,14 @@ def _child(**fields: object) -> str:
     return DOWNLOAD_PREFIX + json.dumps(fields)
 
 
+def _model(**fields: object) -> str:
+    return _child(kind="model", **fields)
+
+
+def _bytes(**fields: object) -> str:
+    return _child(kind="bytes", **fields)
+
+
 def test_the_downloads_byte_counts_become_download_events(
     run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -238,9 +247,9 @@ def test_the_downloads_byte_counts_become_download_events(
 
     def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
         assert argv[-1] == "--report"
-        on_line(_child(repo="org/m", revision="abc", path="/hf/hub"))
-        on_line(_child(repo="org/m", bytes=10, total=100))
-        on_line(_child(repo="org/m", bytes=100, total=100))
+        on_line(_model(repo="org/m", revision="abc", path="/hf/hub"))
+        on_line(_bytes(repo="org/m", bytes=10, total=100))
+        on_line(_bytes(repo="org/m", bytes=100, total=100))
         on_line('{"event": "download", "model": "org/m", "bytes": 1, "total": 1}')
         return CommandResult(0)
 
@@ -262,8 +271,8 @@ def test_a_failed_download_names_the_model_and_its_cache(
     """For the app's manual fallback and Show in Finder (ADR 0018)."""
 
     def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
-        on_line(_child(repo="org/a", revision="1" * 40, path="/hf/hub"))
-        on_line(_child(repo="org/b", revision=None, path="/hf/hub"))
+        on_line(_model(repo="org/a", revision="1" * 40, path="/hf/hub"))
+        on_line(_model(repo="org/b", revision=None, path="/hf/hub"))
         return CommandResult(1)
 
     assert run(models) == 1
@@ -277,11 +286,29 @@ def test_a_failed_download_names_the_model_and_its_cache(
     }
 
 
+def test_a_models_error_before_any_model_names_none(
+    run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The download can fail before it says which model it is on (a config
+    it cannot read, an engine that does not import)."""
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        on_line("Traceback (most recent call last):")
+        return CommandResult(1)
+
+    assert run(models) == 1
+    assert _events(capsys.readouterr().out)[-1] == {
+        "event": "error",
+        "step": "models",
+        "message": "model download failed (exit 1)",
+    }
+
+
 def test_only_a_models_error_names_the_model() -> None:
     out = io.StringIO()
     progress = Progress(out)
     progress.step("models", "start", "download")
-    assert progress.child_line(_child(repo="org/a", revision="r", path="/hf"))
+    assert progress.child_line(_model(repo="org/a", revision="r", path="/hf"))
     progress.step("models", "done", "download")
     progress.step("link", "start", "link")
     progress.error("boom")
@@ -294,10 +321,12 @@ def test_only_a_models_error_names_the_model() -> None:
         "plain output",
         DOWNLOAD_PREFIX + "not json",
         DOWNLOAD_PREFIX + "[1, 2]",
-        _child(bytes=1, total=2),  # no repo
-        _child(repo="org/m", bytes="1", total=2),
-        _child(repo="org/m", bytes=True, total=2),
-        _child(repo="org/m", bytes=1),
+        _bytes(bytes=1, total=2),  # no repo
+        _bytes(repo="org/m", bytes="1", total=2),
+        _bytes(repo="org/m", bytes=True, total=2),
+        _bytes(repo="org/m", bytes=1),
+        _child(repo="org/m", bytes=1, total=2),  # no kind
+        _child(kind="other", repo="org/m", revision="r", path="/hf"),
     ],
 )
 def test_lines_that_are_not_the_childs_are_output(line: str) -> None:
@@ -311,10 +340,12 @@ def test_a_port_in_use_fails_before_the_models(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from voiced.launchd import install
+    from voiced.launchd import ports
 
-    monkeypatch.setattr(install, "listener_pids", lambda port, runner: [4242])
-    monkeypatch.setattr(install, "process_of", lambda pid: ("nc", ["nc", "-l"]))
+    in_use = OSError(errno.EADDRINUSE, "Address already in use")
+    monkeypatch.setattr(ports, "bind_error", lambda bind, port: in_use)
+    monkeypatch.setattr(ports, "listener_pids", lambda port, runner: [4242])
+    monkeypatch.setattr(ports, "process_of", lambda pid: ("nc", ["nc", "-l"]))
 
     def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
         pytest.fail("the models step ran")

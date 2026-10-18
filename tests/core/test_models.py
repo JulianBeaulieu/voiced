@@ -78,23 +78,23 @@ def _lines(written: list[str]) -> list[dict[str, Any]]:
 def test_byte_reports_are_throttled_to_four_a_second() -> None:
     written: list[str] = []
     clock = Clock()
-    report = models.ByteReport("org/m", 100, 1000, written.append, clock)
+    report = models.ByteReport("org/m", 100, 1000, 1000, written.append, clock)
     report.add(0)  # the start, at what was cached
     for _ in range(10):
         clock.now += 0.0625
         report.add(10)
-    report.finish(1000)
+    report.finish()
     assert _lines(written) == [
-        {"repo": "org/m", "bytes": 100, "total": 1000},
-        {"repo": "org/m", "bytes": 140, "total": 1000},  # 0.25 s later
-        {"repo": "org/m", "bytes": 180, "total": 1000},
-        {"repo": "org/m", "bytes": 1000, "total": 1000},
+        {"kind": "bytes", "repo": "org/m", "bytes": 100, "total": 1000},
+        {"kind": "bytes", "repo": "org/m", "bytes": 140, "total": 1000},  # 0.25 s later
+        {"kind": "bytes", "repo": "org/m", "bytes": 180, "total": 1000},
+        {"kind": "bytes", "repo": "org/m", "bytes": 1000, "total": 1000},
     ]
 
 
 def test_only_the_bar_of_bytes_written_counts() -> None:
     pytest.importorskip("huggingface_hub")
-    report = models.ByteReport("org/m", 0, 10, lambda line: None)
+    report = models.ByteReport("org/m", 0, 10, 10, lambda line: None)
     counting = models._counting_tqdm(report)
     written = counting(name=models.BYTES_BAR, total=0, disable=True)
     transfer = counting(name="huggingface_hub.snapshot_download.transfer", disable=True)
@@ -159,10 +159,15 @@ def test_a_pinned_model_downloads_its_revision_with_byte_progress(
     assert {c["revision"] for c in fake.calls} == {pin.revision}
     assert {tuple(c["allow_patterns"]) for c in fake.calls} == {("config.json",)}
     lines = _lines(written)
-    assert lines[0] == {"repo": pin.repo, "revision": pin.revision, "path": "/hf/hub"}
+    assert lines[0] == {
+        "kind": "model",
+        "repo": pin.repo,
+        "revision": pin.revision,
+        "path": "/hf/hub",
+    }
     # Starts at what was cached; the total is the pin's; ends at what is there.
-    assert lines[1] == {"repo": pin.repo, "bytes": 30, "total": pin.bytes}
-    assert lines[-1] == {"repo": pin.repo, "bytes": 100, "total": pin.bytes}
+    assert lines[1] == {"kind": "bytes", "repo": pin.repo, "bytes": 30, "total": pin.bytes}
+    assert lines[-1] == {"kind": "bytes", "repo": pin.repo, "bytes": 100, "total": pin.bytes}
 
 
 def test_an_unpinned_model_loads_main_and_its_size_is_the_total(
@@ -173,8 +178,8 @@ def test_an_unpinned_model_loads_main_and_its_size_is_the_total(
     models.snapshot("org/m", None, write=written.append)
     assert {c["revision"] for c in fake.calls} == {None}
     assert _lines(written)[1:] == [
-        {"repo": "org/m", "bytes": 30, "total": 100},
-        {"repo": "org/m", "bytes": 100, "total": 100},
+        {"kind": "bytes", "repo": "org/m", "bytes": 30, "total": 100},
+        {"kind": "bytes", "repo": "org/m", "bytes": 100, "total": 100},
     ]
 
 
@@ -193,7 +198,7 @@ def test_offline_the_download_goes_to_the_cache_without_bytes(
     written: list[str] = []
     models.snapshot("org/m", None, write=written.append)
     assert [c.get("dry_run", False) for c in fake.calls] == [True, False]
-    assert [list(line) for line in _lines(written)] == [["repo", "revision", "path"]]
+    assert [list(line) for line in _lines(written)] == [["kind", "repo", "revision", "path"]]
 
 
 def test_the_models_step_fetches_what_each_engine_names_then_loads_it(
@@ -261,7 +266,7 @@ def test_a_real_download_reports_its_bytes(tmp_path: Path) -> None:
     from huggingface_hub import snapshot_download
 
     pin = models.PINS[1]
-    report = models.ByteReport(pin.repo, 0, pin.bytes, lambda line: None)
+    report = models.ByteReport(pin.repo, 0, pin.bytes, pin.bytes, lambda line: None)
     path = snapshot_download(
         pin.repo,
         revision=pin.revision,

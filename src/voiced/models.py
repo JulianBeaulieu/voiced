@@ -90,20 +90,21 @@ Write = Callable[[str], None]
 
 
 class ByteReport:
-    """Writes ``{"repo", "bytes", "total"}`` lines after
+    """Writes ``{"kind": "bytes", "repo", "bytes", "total"}`` lines after
     :data:`DOWNLOAD_PREFIX`, at most every :data:`REPORT_INTERVAL_S`.
-    ``done`` is what was cached before the download; the bar's updates come
-    from several download threads."""
+    ``done`` is what was cached before the download and ``size`` what it
+    adds up to; the bar's updates come from several download threads."""
 
     def __init__(
         self,
         repo: str,
         done: int,
+        size: int,
         total: int,
         write: Write,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.repo, self.bytes, self.total = repo, done, total
+        self.repo, self.bytes, self.size, self.total = repo, done, size, total
         self._write, self._clock = write, clock
         self._lock = threading.Lock()
         self._last: float | None = None
@@ -116,13 +117,14 @@ class ByteReport:
                 self._last = now
                 self._emit()
 
-    def finish(self, size: int) -> None:
+    def finish(self) -> None:
         with self._lock:
-            self.bytes = size
+            self.bytes = self.size
             self._emit()
 
     def _emit(self) -> None:
-        line = json.dumps({"repo": self.repo, "bytes": self.bytes, "total": self.total})
+        fields = {"kind": "bytes", "repo": self.repo, "bytes": self.bytes, "total": self.total}
+        line = json.dumps(fields)
         self._write(DOWNLOAD_PREFIX + line)
 
 
@@ -158,22 +160,32 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
     from huggingface_hub.errors import DryRunError
 
     pinned = pin(repo)
-    revision = pinned_revision(repo)
-    if write is None:
-        return Path(snapshot_download(repo, revision=revision, allow_patterns=patterns))
-    write(DOWNLOAD_PREFIX + json.dumps({"repo": repo, "revision": revision, "path": cache_dir()}))
-    try:
-        files = snapshot_download(repo, revision=revision, allow_patterns=patterns, dry_run=True)
-    except DryRunError:  # offline: the download finds the cache or says why it cannot
-        return Path(snapshot_download(repo, revision=revision, allow_patterns=patterns))
-    size = sum(f.file_size or 0 for f in files)
-    cached = sum(f.file_size or 0 for f in files if not f.will_download)
-    report = ByteReport(repo, cached, pinned.bytes if pinned is not None else size, write)
-    report.add(0)
+    revision = pinned.revision if pinned is not None else None
+    report = None
+    if write is not None:
+        start = {"kind": "model", "repo": repo, "revision": revision, "path": cache_dir()}
+        write(DOWNLOAD_PREFIX + json.dumps(start))
+        # What is cached already, so a resumed download starts at those bytes.
+        try:
+            files = snapshot_download(
+                repo, revision=revision, allow_patterns=patterns, dry_run=True
+            )
+        except DryRunError:  # offline: the download finds the cache or says why it cannot
+            files = None
+        if files is not None:
+            size = sum(f.file_size or 0 for f in files)
+            cached = sum(f.file_size or 0 for f in files if not f.will_download)
+            total = pinned.bytes if pinned is not None else size
+            report = ByteReport(repo, cached, size, total, write)
+            report.add(0)
     path = snapshot_download(
-        repo, revision=revision, allow_patterns=patterns, tqdm_class=_counting_tqdm(report)
+        repo,
+        revision=revision,
+        allow_patterns=patterns,
+        tqdm_class=_counting_tqdm(report) if report is not None else None,
     )
-    report.finish(size)
+    if report is not None:
+        report.finish()
     return Path(path)
 
 

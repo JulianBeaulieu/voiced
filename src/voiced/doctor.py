@@ -39,8 +39,9 @@ from voiced.engines.kokoro import (
 )
 from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import METAL_PROBE_FILE, listener_pids, process_of, runs_entry
+from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
+from voiced.launchd.ports import listener_pids, process_of, runs_entry
 from voiced.layout import (
     ManifestError,
     NotVoiceds,
@@ -382,14 +383,8 @@ def check_port(
 
 
 def check_ports(settings: Settings, runner: Runner) -> list[Check]:
-    ports = [
-        ("stt http", settings.stt.http_port),
-        ("stt wyoming", settings.stt.wyoming_port),
-        ("tts http", settings.tts.http_port),
-        ("tts wyoming", settings.tts.wyoming_port),
-    ]
     entry = entry_point(state_dir(settings))
-    return [check_port(name, port, runner, entry) for name, port in ports]
+    return [check_port(key, port, runner, entry) for key, port in settings.ports().items()]
 
 
 # Disk and launchd ---------------------------------------------------------

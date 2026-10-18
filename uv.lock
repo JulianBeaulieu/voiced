@@ -2024,6 +2024,7 @@ build = [
 ]
 dev = [
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "mypy" },
     { name = "openai" },
     { name = "pytest" },
@@ -2035,7 +2036,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=0.23" },
+    { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=1.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6,<0.7" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
     { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5.8,<0.5.10" },
@@ -2059,6 +2060,7 @@ provides-extras = ["stt", "tts"]
 build = [{ name = "hatchling", specifier = "==1.27.0" }]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "huggingface-hub", specifier = ">=1.1" },
     { name = "mypy", specifier = ">=1.11" },
     { name = "openai", specifier = ">=1.50" },
     { name = "pytest", specifier = ">=8.3" },

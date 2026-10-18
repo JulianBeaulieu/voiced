@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from voiced.config import (
+    CLEARED_HF_ENV,
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENGINE_ENV,
     Settings,
@@ -118,6 +119,20 @@ def test_paths_the_services_and_installer_share_must_be_absolute(
         load_settings(cfg)
     cfg.write_text(f'[{section}]\n{key} = "~/dir"\n')
     assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"
+
+
+@pytest.mark.parametrize("key", CLEARED_HF_ENV)
+def test_a_shell_hf_cache_or_mirror_is_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """Either would send the download somewhere the services do not read
+    (HF_HUB_CACHE overrides HF_HOME), or fetch it from another endpoint."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[install]\nhf_home = "/hf"\n')
+    monkeypatch.setenv(key, "/elsewhere")
+    assert apply_engine_environment(load_settings(cfg)) == []
+    assert key not in os.environ
+    assert os.environ["HF_HOME"] == "/hf"
 
 
 def test_no_notice_when_the_shell_agrees_with_the_config(
