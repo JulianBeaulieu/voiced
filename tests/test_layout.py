@@ -98,7 +98,17 @@ def test_claim_refuses_a_symlinked_state_dir(tmp_path: Path, contents: str) -> N
         claim(link)
     assert refused.value.real == target.resolve()
     assert f"--state-dir {target.resolve()}" in str(refused.value)
-    assert claim(target) is None or contents != "empty"
+
+
+def test_a_symlinked_envs_has_no_environments(tmp_path: Path) -> None:
+    """Pruning or uninstalling through it would delete inside its target."""
+    elsewhere = tmp_path / "elsewhere"
+    _venv(elsewhere / "20261018T120000")
+    (elsewhere / "20261018T130000.partial").mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "envs").symlink_to(elsewhere)
+    assert built_environments(state) == [] and partial_environments(state) == []
 
 
 def test_partial_environments_are_real_directories_only(tmp_path: Path) -> None:

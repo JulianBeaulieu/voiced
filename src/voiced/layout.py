@@ -130,12 +130,19 @@ def legacy_venv_paths(state_dir: Path) -> list[Path]:
     return [p for p in paths if p.exists() or p.is_symlink()]
 
 
+def environment_dirs(state_dir: Path) -> list[Path]:
+    """What is in ``envs/``; nothing if ``envs`` is a symlink, which leads
+    somewhere that is not voiced's to prune or uninstall."""
+    envs = state_dir / ENVS
+    return [] if envs.is_symlink() else sorted(envs.glob("*"))
+
+
 def built_environments(state_dir: Path) -> list[Path]:
     """The environments voiced built in ``envs/``: complete venvs, not a
     build still in progress."""
     return [
         env
-        for env in sorted((state_dir / ENVS).glob("*"))
+        for env in environment_dirs(state_dir)
         if (env / "pyvenv.cfg").is_file() and not env.name.endswith(PARTIAL_SUFFIX)
     ]
 
@@ -146,8 +153,8 @@ def partial_environments(state_dir: Path) -> list[Path]:
     uninstall removes them, holding the install lock the builder holds."""
     return [
         env
-        for env in sorted((state_dir / ENVS).glob(f"*{PARTIAL_SUFFIX}"))
-        if env.is_dir() and not env.is_symlink()
+        for env in environment_dirs(state_dir)
+        if env.name.endswith(PARTIAL_SUFFIX) and env.is_dir() and not env.is_symlink()
     ]
 
 
@@ -227,7 +234,7 @@ class SymlinkedStateDir(NotVoiceds):
     path to pass instead."""
 
     def __init__(self, link: Path) -> None:
-        self.real = Path(os.path.realpath(link))
+        self.real = link.resolve()
         super().__init__(
             f"it is a symlink to {self.real}; pass the real path instead: "
             f"--state-dir {shlex.quote(str(self.real))} (or [install] venv_dir in the config)"

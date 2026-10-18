@@ -943,6 +943,26 @@ def test_uninstall_removes_an_interrupted_build(settings: Settings, tmp_path: Pa
     assert not p.state_dir.exists()
 
 
+def test_uninstall_leaves_a_symlinked_envs_alone(settings: Settings, tmp_path: Path) -> None:
+    env = _app_build(tmp_path / "state")
+    _environment(env.with_name(env.name + ".partial"))
+    elsewhere = tmp_path / "elsewhere"
+    shutil.move(env.parent, elsewhere)
+    env.parent.symlink_to(elsewhere)
+    said: list[str] = []
+    p = _plan(settings, tmp_path)
+    remove_targets(
+        uninstall_targets(p, settings, logs=False, models=False, config=False), p, said.append
+    )
+    assert sorted(x.name for x in elsewhere.iterdir()) == [
+        "20261018T120000",
+        "20261018T120000.partial",
+    ]
+    assert (elsewhere / "20261018T120000" / "pyvenv.cfg").exists()
+    assert sorted(x.name for x in p.state_dir.iterdir()) == ["envs"]
+    assert any("kept" in line and "envs" in line for line in said)
+
+
 def test_uninstall_through_a_symlinked_state_dir_removes_nothing(
     settings: Settings, tmp_path: Path
 ) -> None:
