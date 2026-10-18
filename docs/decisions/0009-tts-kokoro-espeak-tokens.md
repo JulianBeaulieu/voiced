@@ -71,12 +71,42 @@ command if neither works:
 
 Each candidate is self-tested by phonemizing one word before it is accepted.
 The `kokoro-onnx` package also depends on the `espeakng-loader` wheel, which
-bundles its own espeak-ng; the engine does not use it. espeak-ng has a fixed
-size path buffer and silently falls back to its compiled-in data path when
-the data directory's path is long, which is what happens to the wheel copy
-inside a deeply nested virtual environment, while the Homebrew data lives at
-a short path. Because the engine never reads espeak-ng data from inside the
-virtual environment, the virtual environment's path length does not matter.
+bundles its own espeak-ng; the engine does not look for it, but it is used
+when `VOICED_ESPEAK_LIBRARY` names its library, and its data directory is
+what the tokenizer reads whenever `VOICED_ESPEAK_DATA` is not set.
+
+### The wheel's espeak-ng and long paths
+
+Added 2026-10-18. The wheel's espeak-ng keeps the data path in a 160-byte
+buffer. When the resolved path of `espeak-ng-data` is longer than 159 bytes
+it prints `Error processing file '/Users/runner/work/espeakng-loader/.../phontab'`
+and calls `exit(1)`: the whole TTS process dies and no Python handler sees
+it. A symlink to a short path does not help, because `phonemizer` resolves
+the path. Inside a virtual environment the path is about 75 bytes plus the
+user name at the default `~/.voiced`, but a custom `[install] venv_dir`, a
+long home directory, or side-by-side virtual environments exceed it.
+Homebrew's espeak-ng 1.52 has no such limit.
+
+So when no data directory is configured, `load()` clones the wheel's data
+with `cp -cR` (an APFS clone, no extra disk space) to
+`<per-user cache dir>/voiced/espeak-ng-data-<espeakng-loader version>`, where
+the cache directory is `confstr(_CS_DARWIN_USER_CACHE_DIR)`
+(`/private/var/folders/../C/`, about 75 bytes, derived from the uid so it
+works for daemons too). A complete copy (one with `phontab`) is reused and
+never replaced, because a running service reads the dictionaries again
+whenever it switches voice. A wheel upgrade gets a new directory, and a copy
+the system purged is made again. Each load clones into its own staging
+directory and renames it into place; when several load at once, the first
+rename wins and the others use that copy. Staging directories left by a
+crash are removed after an hour. Directories of older wheel versions are
+kept, since a service started before the upgrade may still read one.
+
+Before loading, every resolved data path is checked against 159 bytes
+(Homebrew's is about 45). A longer one fails `load()` with `EspeakNotFound`
+naming the path and the remedy (Homebrew's espeak-ng, or a
+`VOICED_ESPEAK_DATA` copy at a short path) instead of letting espeak-ng exit
+the process. A copy that cannot be made fails with `could not copy espeak-ng
+data to <path>`, not as a missing espeak-ng.
 
 Note that Homebrew's deprecated `espeak` formula conflicts with `espeak-ng`
 (both install an `espeak` binary); `brew unlink espeak` first if it is
