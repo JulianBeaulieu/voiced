@@ -21,8 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-import psutil
-
 from voiced.config import (
     HTTP_SERVICES,
     SERVICES,
@@ -39,8 +37,9 @@ from voiced.engines.kokoro import (
     KokoroEngine,
     espeak_candidates,
 )
+from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import METAL_PROBE_FILE
+from voiced.launchd.install import METAL_PROBE_FILE, listener_pids, process_of, runs_entry
 from voiced.launchd.metal_probe import macos_version as _macos_version
 from voiced.layout import (
     ManifestError,
@@ -265,28 +264,34 @@ def check_espeak(required: bool = True) -> Check:
     )
 
 
-def check_ffmpeg(which: Which = _which, runner: Runner = run_command) -> Check:
-    """ffmpeg is on ``PATH`` and reads input through its ``fd`` protocol, the
-    only one the upload decoder allows it (``voiced.api.ffmpeg.decode``)."""
-    found = which("ffmpeg")
-    if found:
-        result = runner([found, "-hide_banner", "-protocols"])
-        if not result.ok:
-            return Check("ffmpeg", "warn", f"{found}: could not list protocols")
-        inputs = result.stdout.partition("Input:")[2].partition("Output:")[0].split()
-        if "fd" not in inputs:
-            return Check(
-                "ffmpeg",
-                "fail",
-                f"{found} cannot read input from a file descriptor, which upload "
-                "decoding needs; install a current ffmpeg: brew upgrade ffmpeg",
-            )
-        return Check("ffmpeg", "pass", found)
-    return Check(
-        "ffmpeg",
-        "fail",
-        "not found; required to decode uploads and encode mp3/opus: brew install ffmpeg",
-    )
+def check_ffmpeg(
+    find: Callable[[], str | None] = ffmpeg_path, runner: Runner = run_command
+) -> Check:
+    """The ffmpeg the services run (``voiced.ffmpeg_exe``, the wheel's
+    first) and where it comes from. It must read input through its ``fd``
+    protocol, the only one the upload decoder allows it
+    (``voiced.api.ffmpeg.decode``)."""
+    found = find()
+    if found is None:
+        return Check(
+            "ffmpeg",
+            "fail",
+            "not found; required to decode uploads and encode mp3/opus. It comes with "
+            "voiced's imageio-ffmpeg dependency: reinstall voiced",
+        )
+    shown = f"{found} ({ffmpeg_origin(found)})"
+    result = runner([found, "-hide_banner", "-protocols"])
+    if not result.ok:
+        return Check("ffmpeg", "warn", f"{shown}: could not list protocols")
+    inputs = result.stdout.partition("Input:")[2].partition("Output:")[0].split()
+    if "fd" not in inputs:
+        return Check(
+            "ffmpeg",
+            "fail",
+            f"{shown} cannot read input from a file descriptor, which upload decoding "
+            "needs; reinstall voiced to get its imageio-ffmpeg build",
+        )
+    return Check("ffmpeg", "pass", shown)
 
 
 # Memory -------------------------------------------------------------------
@@ -324,25 +329,6 @@ def check_memory(runner: Runner) -> Check:
 # Ports --------------------------------------------------------------------
 
 
-def listener_pids(port: int, runner: Runner) -> list[int] | None:
-    """Pids listening on ``port`` via lsof; None if lsof is unavailable."""
-    result = runner(["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"])
-    if result.returncode == 127:
-        return None
-    return [int(line) for line in result.stdout.split() if line.isdigit()]
-
-
-def process_of(pid: int) -> tuple[str, list[str]]:
-    """The name and the exact argument vector of ``pid`` (``ps -o args=``
-    joins it with spaces, so argv[1] cannot be told apart from later
-    arguments)."""
-    try:
-        proc = psutil.Process(pid)
-        return proc.name(), list(proc.cmdline())
-    except (psutil.Error, OSError):
-        return "unknown", []
-
-
 def process_files(pid: int, runner: Runner) -> list[str]:
     """The files ``pid`` has open or mapped (``lsof``: psutil cannot list a
     macOS process's mapped files, which is where its extension modules are)."""
@@ -378,7 +364,7 @@ def check_port(
     for pid in pids:
         exe, argv = process(pid)
         commands.append(exe)
-        if entry is not None and len(argv) > 1 and argv[1] == str(entry):
+        if entry is not None and runs_entry(argv, entry):
             ours.append(pid)
     pid_text = ", ".join(str(p) for p in pids)
     if ours and entry is not None:

@@ -130,16 +130,18 @@ PROTOCOLS = "Supported file protocols:\nInput:\n  {inputs}\nOutput:\n  fd\n  fil
 
 
 def test_external_programs() -> None:
-    no_ffmpeg = doctor.check_ffmpeg(lambda n: None)
-    assert no_ffmpeg.result == "fail" and "brew install ffmpeg" in no_ffmpeg.detail
+    no_ffmpeg = doctor.check_ffmpeg(lambda: None)
+    assert no_ffmpeg.result == "fail" and "reinstall voiced" in no_ffmpeg.detail
+    assert "brew" not in no_ffmpeg.detail
 
     def protocols(inputs: str) -> Callable[[Sequence[str]], CommandResult]:
         return lambda argv: CommandResult(0, PROTOCOLS.format(inputs=inputs))
 
-    found = lambda n: "/usr/local/bin/ffmpeg"  # noqa: E731
-    assert doctor.check_ffmpeg(found, protocols("fd\n  file\n  pipe")).result == "pass"
+    found = lambda: "/usr/local/bin/ffmpeg"  # noqa: E731
+    ok = doctor.check_ffmpeg(found, protocols("fd\n  file\n  pipe"))
+    assert ok.result == "pass" and ok.detail == "/usr/local/bin/ffmpeg (PATH)"
     old = doctor.check_ffmpeg(found, protocols("file\n  pipe"))  # fd only as output
-    assert old.result == "fail" and "brew upgrade ffmpeg" in old.detail
+    assert old.result == "fail" and "imageio-ffmpeg" in old.detail and "brew" not in old.detail
 
 
 def _environment(tmp_path: Path) -> tuple[Path, Path]:

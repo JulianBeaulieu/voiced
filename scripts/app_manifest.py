@@ -5,7 +5,7 @@
 menubar/Scripts/bundle.sh runs it. The manifest names the voiced version, the
 CPython patch version (``menubar/app-python-version``), the wheel and the
 lock with their sha256, the download size of the locked wheels, and the
-pinned models from M (``menubar/Scripts/model-pins.json``).
+pinned models from M, what the wheel's ``python -I -m voiced.models`` printed.
 
 The download size is summed from uv.lock: for each lock entry installed on the
 app's target Mac (``lock_target``), the file uv would pick there, the most

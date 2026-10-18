@@ -7,7 +7,7 @@ but the engine interfaces are frozen and the conventions below are stable.
 
 Requirements: [uv](https://docs.astral.sh/uv/), Python 3.11 to 3.13 (uv
 installs 3.12 from `.python-version` if needed). The MLX engines need an
-Apple Silicon Mac plus `brew install espeak-ng ffmpeg`; everything else runs
+Apple Silicon Mac plus `brew install espeak-ng`; everything else runs
 anywhere.
 
 ```sh
@@ -48,9 +48,8 @@ uv run pytest
 ## Tests
 
 The default `pytest` run must pass on a machine with no model, no GPU and no
-MLX packages installed, because that is what CI is. Tests that need ffmpeg
-skip when it is absent; CI installs it, so install it locally too
-(`brew install ffmpeg`) to run them. Use `FakeSTTEngine` and
+MLX packages installed, because that is what CI is. ffmpeg comes with the
+`imageio-ffmpeg` core dependency, so the ffmpeg tests run everywhere. Use `FakeSTTEngine` and
 `FakeTTSEngine` from `voiced.testing` and the `lifespan_client` helper for
 HTTP tests.
 

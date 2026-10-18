@@ -39,6 +39,16 @@ def restore_engine_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(key)
 
 
+@pytest.fixture(autouse=True)
+def no_port_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``voiced install``'s ports step finds nothing listening: tests never
+    depend on what this machine runs (its own voiced, say). The ports
+    step's tests set their own."""
+    from voiced.launchd import install
+
+    monkeypatch.setattr(install, "listener_pids", lambda port, runner: [])
+
+
 def free_port() -> int:
     """An ephemeral TCP port that was free a moment ago."""
     with socket.socket() as s:

@@ -257,6 +257,18 @@ With it, decoding wav, mp3, m4a, ogg, flac, webm, caf and aiff works, and
 - `doctor` checks `ffmpeg_path()`, not `which("ffmpeg")`, and its hints
   stop saying `brew install ffmpeg`.
 
+Done since (`voiced.ffmpeg_exe`): `doctor` also names where the binary
+comes from (`imageio-ffmpeg 0.6.0`, `PATH`, or imageio-ffmpeg's own
+`IMAGEIO_FFMPEG_EXE` override). The licence of the binary is
+GPL-2.0-or-later (`ffmpeg -L`; configured with `--enable-gpl`, without
+`--enable-version3` or `--enable-nonfree`); the Python package is
+BSD-2-Clause. *Measured*: ffmpeg 7.1 probes raw PCM on a pipe before it
+encodes, so the first mp3 or opus bytes of a streamed reply came about
+1.2 s late (Homebrew's ffmpeg 9 does not probe raw input); with
+`-probesize 32` on the encoder's input both start within 30 ms. The
+disconnect test, which needs the first bytes before synthesis ends, caught
+it.
+
 ### espeak-ng: the wheel's copy, cloned to a short path
 
 `kokoro-onnx` already depends on `espeakng-loader`, so every voiced venv has
@@ -305,6 +317,33 @@ loaded once, unauthenticated, on this connection. Implementation items:
   `engine.load()` takes no progress hook; it then loads from the cache.
 - An interrupted download resumes from the `.incomplete` files on the next
   run.
+
+Done since (`voiced.models`):
+
+- `voiced.models.PINS` is the one place a default model's commit and size
+  are set. The engines load that revision too (Parakeet from the pinned
+  snapshot directory, Kokoro through `mlx-audio`'s `revision=`), from the
+  cache without a network call once it is filled. A model that is not
+  pinned, one the config names, loads `main` as before.
+  `python -m voiced.models` prints `{"models": [{"repo", "revision",
+  "bytes"}]}` with the standard library alone, for the bundle script's
+  `install-manifest.json`; `bytes` is the size of what
+  `download_patterns()` names at that revision (Parakeet `config.json` and
+  `model.safetensors`, 2,508,532,829 bytes; Kokoro `config.json` and every
+  `*.safetensors`, the 54 voices included, 355,322,783 bytes), checked
+  against the hub by a `model` test.
+- `download_patterns()` is an optional classmethod, like
+  `catalogue_voices`, not part of the frozen interface: an engine without
+  it (the fakes, a plugin, Soprano) downloads in its own `load()`.
+- The models step runs `python -P -m voiced.models download --config FILE`
+  in the environment being installed, `--report` with `--json-progress`. It
+  writes its own lines with the prefix `@@voiced-download `: first the
+  model, revision and Hugging Face cache it fetches, then
+  `{"repo", "bytes", "total"}` at most four times a second. A dry run of
+  `snapshot_download` first finds what is cached, so a resumed download
+  starts at the bytes already there. The bytes counted are those of
+  `snapshot_download`'s bar of bytes written to disk, through its
+  `tqdm_class`.
 
 ### Licences
 
@@ -486,8 +525,9 @@ stderr (`voiced.launchd.progress`).
   the total from the manifest, throttled to four a second. It arrives with
   the model download that reports bytes (`snapshot_download` with pinned
   revisions); until then the app shows the models step without a byte
-  count. The child will report on a line with an explicit prefix of its
-  own, not one that merely looks like this event.
+  count. The child reports on lines with an explicit prefix of its own
+  (`@@voiced-download `), not one that merely looks like this event; those
+  lines are not logged.
 - `{"event": "log", "line": "..."}`: each line the steps' child processes
   print (uv, the model download), as it comes; of a progress bar's `\r`
   redraws, only the last state of the line.
@@ -495,7 +535,10 @@ stderr (`voiced.launchd.progress`).
   `{"event": "error", "step": "...", "message": "..."}`, and the exit code
   agrees with it (0 only with `done`). `step` is the step that was running,
   or null for a refusal before any step (another account's state
-  directory, root, a config file that does not parse). An unexpected
+  directory, root, a config file that does not parse). A `models` error
+  also has `repo`, `revision` (null when not pinned) and `path`, the
+  Hugging Face cache directory, for the manual fallback and Show in Finder.
+  An unexpected
   exception still ends the stream with `error`, then exits non-zero with
   its traceback on stderr. SIGTERM (the app's Cancel) kills the running
   step's child process, ends the stream with `error` ("terminated
@@ -721,9 +764,24 @@ and says why in one line. If it does not need something, it never asks.
 - The ffmpeg and model items above, each with tests: `imageio-ffmpeg` in
   core dependencies and preferred; `download_patterns()`, pinned revisions
   and `snapshot_download` progress; a port check before approval. (The
-  espeak-ng clone and length check are done, ADR 0009.)
-- The sudo script printed by the CLI stays for terminal users. It should
-  gain the firewall step and the same checks; that is a follow-up.
+  espeak-ng clone and length check are done, ADR 0009.) All done. The
+  `ports` step checks the four configured ports with `lsof` and refuses
+  with each port, its config key and its holder ("port 10300 ([stt]
+  wyoming_port) is in use by python3.12 (pid 812)"); a listener that runs
+  the entry point (`<interpreter> ~/.voiced/bin/voiced serve ...`) is
+  voiced's own and not a conflict. Without `lsof` it says so and goes on.
+- The sudo script printed by the CLI stays for terminal users. It now has
+  the same checks as the privileged script: root, a regular account (uid
+  500 to 2147483647, so not `nobody`), a home that account owns, the same
+  kernel lock on `/var/run/voiced-privileged.lock` (so a CLI install and
+  the app's never overlap), one install per Mac with orphans taken over,
+  and the firewall step, whose failure or a Python outside the home is a
+  warning, not a failed install. It does not run the privileged script
+  itself: that one renders fixed plists from the user name alone, while
+  the CLI's follow the config (a label prefix, a state directory, a config
+  path) and are the files the user reviewed in the staging directory; and
+  it is compiled into the app, not in the wheel. One pytest module runs
+  both scripts through the same refusals, lock and firewall cases.
 
 ### App side
 

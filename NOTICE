@@ -18,6 +18,10 @@ Programs and data
     GPL-3.0-or-later
     inside the espeakng-loader wheel
     https://github.com/espeak-ng/espeak-ng
+  ffmpeg (static GPL build with x264, x265, LAME, Opus and others)
+    GPL-2.0-or-later
+    inside the imageio-ffmpeg wheel (the Python package itself is BSD-2-Clause)
+    https://ffmpeg.org/download.html
 
 Python packages (src/voiced/requirements.lock)
 
@@ -45,6 +49,7 @@ Python packages (src/voiced/requirements.lock)
   huggingface-hub==2.2.0  Apache-2.0  https://pypi.org/project/huggingface-hub/2.2.0/
   idna==3.20  BSD-3-Clause  https://pypi.org/project/idna/3.20/
   ifaddr==0.2.0  MIT  https://pypi.org/project/ifaddr/0.2.0/
+  imageio-ffmpeg==0.6.0  BSD-2-Clause  https://pypi.org/project/imageio-ffmpeg/0.6.0/
   joblib==1.6.0  BSD-3-Clause  https://pypi.org/project/joblib/1.6.0/
   kokoro-onnx==0.6.1  MIT  https://pypi.org/project/kokoro-onnx/0.6.1/
   lazy-loader==0.6  BSD-3-Clause  https://pypi.org/project/lazy-loader/0.6/

@@ -2,7 +2,8 @@
 {"event": "step", "step": "config", "state": "planned", "shown": "create <tmp>/missing.toml from config.example.toml"}
 {"event": "step", "step": "claim", "state": "planned", "shown": "create the configured log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
 {"event": "step", "step": "check", "state": "planned", "shown": "<tmp>/env/bin/python -P -c <engine check>"}
-{"event": "step", "step": "models", "state": "planned", "shown": "<tmp>/env/bin/python -c <model download>"}
+{"event": "step", "step": "ports", "state": "planned", "shown": "check that ports <ports> are free"}
+{"event": "step", "step": "models", "state": "planned", "shown": "<tmp>/env/bin/python -P -m voiced.models download --config <tmp>/missing.toml --report"}
 {"event": "step", "step": "link", "state": "planned", "shown": "link <tmp>/state/bin/voiced -> <tmp>/env/bin/voiced"}
 {"event": "step", "step": "manifest", "state": "planned", "shown": "write <tmp>/state/install.json"}
 {"event": "step", "step": "prune", "state": "planned", "shown": "remove environments in <tmp>/state/envs other than the new and the previous one"}

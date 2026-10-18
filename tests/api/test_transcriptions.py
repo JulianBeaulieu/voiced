@@ -217,7 +217,7 @@ async def test_missing_ffmpeg_is_500(
     )
     assert r.status_code == 500
     assert r.json()["error"]["type"] == "ffmpeg_missing"
-    assert "brew install ffmpeg" in r.json()["error"]["message"]
+    assert "reinstall voiced" in r.json()["error"]["message"]
 
 
 async def test_malformed_multipart_is_400_in_the_envelope(stt_client: AsyncClient) -> None:

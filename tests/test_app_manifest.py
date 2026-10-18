@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -164,3 +166,25 @@ def test_the_command_line(
     args += ["--models", str(files["pins"]), "--uv-lock", str(files["uv_lock"])]
     assert app_manifest.main(args) == 0
     assert json.loads(capsys.readouterr().out)["wheels_bytes"] == 345
+
+
+def test_the_pins_bundle_sh_reads_are_voiced_models(
+    app_manifest: ModuleType, tmp_path: Path
+) -> None:
+    """bundle.sh writes the pins with ``python -I -m voiced.models`` from the
+    installed wheel; the manifest takes exactly what it prints."""
+    from voiced import models
+
+    out = subprocess.run(
+        [sys.executable, "-I", "-m", "voiced.models"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pins = tmp_path / "model-pins.json"
+    pins.write_text(out.stdout)
+    assert app_manifest.models(pins) == models.manifest()["models"]
+    assert [(m["repo"], m["revision"], m["bytes"]) for m in app_manifest.models(pins)] == [
+        (p.repo, p.revision, p.bytes) for p in models.PINS
+    ]

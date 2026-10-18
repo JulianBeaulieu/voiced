@@ -110,8 +110,13 @@ lock="$work/wheel/voiced/requirements.lock"
 # installed with hashes from the build lock into an environment of its own.
 "$uv" venv --quiet --python "$python_version" "$work/tools"
 "$uv" pip install --quiet --python "$work/tools/bin/python" --require-hashes --no-deps -r "$build_lock"
+# The model pins are the ones this wheel's engines load: what its voiced.models (standard
+# library only) prints. The wheel goes into the tools environment without its dependencies,
+# so `-I` keeps the checkout, the working directory and the user's site out of the import.
+"$uv" pip install --quiet --python "$work/tools/bin/python" --no-deps "$wheel"
+"$work/tools/bin/python" -I -m voiced.models > "$work/model-pins.json"
 "$work/tools/bin/python" -E -s "$repo_dir/scripts/app_manifest.py" --wheel "$wheel" --lock "$lock" \
-    --models "$package_dir/Scripts/model-pins.json" --uv-lock "$repo_dir/uv.lock" > "$work/install-manifest.json"
+    --models "$work/model-pins.json" --uv-lock "$repo_dir/uv.lock" > "$work/install-manifest.json"
 
 # What's new: the CHANGELOG section for this version, else the Unreleased one.
 section() {

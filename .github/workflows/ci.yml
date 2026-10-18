@@ -34,9 +34,6 @@ jobs:
           enable-cache: true
       - name: Install
         run: uv sync --group dev
-      - name: Install ffmpeg
-        # The API decode and mp3/opus tests need it; they skip if it is absent.
-        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
       - name: Lint
         run: uv run ruff check . && uv run ruff format --check .
       - name: Type check
@@ -83,7 +80,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install system dependencies
-        run: brew install espeak-ng ffmpeg
+        run: brew install espeak-ng
       - name: Install with engines
         run: uv sync --group dev --extra stt --extra tts
       - name: Cache Hugging Face models

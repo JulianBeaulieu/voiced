@@ -40,6 +40,7 @@ from voiced.launchd.install import (
     write_default_config,
     write_staging,
 )
+from voiced.launchd.install import listener_pids as real_listener_pids
 from voiced.layout import Manifest, install_lock, read_manifest, sha256_file, write_manifest
 
 GOLDEN = Path(__file__).parent / "golden"
@@ -186,11 +187,6 @@ def test_reinstall_waits_for_bootout() -> None:
     assert lines.index(next(line for line in lines if "bootstrap" in line)) > 1
 
 
-def _download_env(p: InstallPlan) -> dict[str, str]:
-    env: dict[str, str] = json.loads(p.model_download_command()[-1])
-    return env
-
-
 def test_engine_variables_come_from_the_config_not_the_plists(
     settings: Settings, tmp_path: Path
 ) -> None:
@@ -202,7 +198,7 @@ def test_engine_variables_come_from_the_config_not_the_plists(
     settings.tts.espeak_library = tmp_path / "lib/libespeak-ng.dylib"
     settings.tts.espeak_data = tmp_path / "data"
     p = plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-    assert _download_env(p) == {"VOICED_CONFIG": str(p.config_file)}
+    assert p.model_download_command()[-2:] == ["--config", str(p.config_file)]
     for service in SERVICES:
         env = plistlib.loads(p.render(service))["EnvironmentVariables"]
         assert set(env) == {"HOME", "PATH", "VOICED_CONFIG", "PYTHONUNBUFFERED", "VOICED_STDIO_LOG"}
@@ -211,21 +207,18 @@ def test_engine_variables_come_from_the_config_not_the_plists(
     assert f"VOICED_ESPEAK_DATA {tmp_path / 'data'}" in summary
 
 
-def test_model_download_names_the_cache_it_uses(settings: Settings, tmp_path: Path) -> None:
-    p = dataclasses.replace(
-        plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None),
-        environment=Path(sys.prefix),
-    )
-    script = p.model_download_command()[2].split("from voiced.config")[0]
+def test_model_download_names_the_cache_it_uses(tmp_path: Path) -> None:
+    """The cache the services read: HF_HOME as voiced set it from the config."""
+    pytest.importorskip("huggingface_hub")
+    argv = [sys.executable, "-c", "from voiced.models import cache_dir; print(cache_dir())"]
+    base = {k: v for k, v in os.environ.items() if not k.startswith("HF_")}
 
     def cache(**env: str) -> str:
-        argv = [sys.executable, "-c", script, p.model_download_command()[3]]
-        base = {k: v for k, v in os.environ.items() if k != "HF_HOME"}
         out = subprocess.run(argv, env={**base, **env}, capture_output=True, text=True, check=True)
         return out.stdout.strip()
 
-    assert cache() == "Hugging Face cache: the default"
-    assert cache(HF_HOME="/x/hf") == "Hugging Face cache: /x/hf"
+    assert cache(HOME=str(tmp_path)) == str(tmp_path / ".cache/huggingface/hub")
+    assert cache(HF_HOME="/x/hf") == "/x/hf/hub"
 
 
 def test_build_commands_use_the_locks_and_a_managed_python(
@@ -302,13 +295,20 @@ def test_plists_are_the_same_for_every_environment(settings: Settings, tmp_path:
 
 
 def test_model_download_runs_in_the_new_environment(plan: InstallPlan) -> None:
-    """The environment travels as JSON, so a state path with ``=`` in it is
-    not taken for an assignment the way ``/usr/bin/env`` would."""
+    """voiced.models from the new environment's own voiced, which reports its
+    bytes only for --json-progress (the plain install streams to a terminal)."""
     plan = dataclasses.replace(plan, environment=Path("/tmp/a=b/env"))
     cmd = plan.model_download_command()
-    assert cmd[0] == "/tmp/a=b/env/bin/python"
-    assert "engine.load()" in cmd[2]
-    assert json.loads(cmd[3])["VOICED_CONFIG"] == str(plan.config_file)
+    assert cmd == [
+        "/tmp/a=b/env/bin/python",
+        "-P",
+        "-m",
+        "voiced.models",
+        "download",
+        "--config",
+        str(plan.config_file),
+    ]
+    assert plan.model_download_command(report=True) == [*cmd, "--report"]
 
 
 def test_shipped_lock_matches_uv_lock() -> None:
@@ -496,7 +496,7 @@ def test_install_links_the_running_environment(settings: Settings, tmp_path: Pat
     calls = _install(p)
     assert [c[0] for c in calls] == [str(env / "bin/python")] * 2  # check, then models
     assert "import mlx.core" in calls[0][-1]
-    assert "engine.load()" in calls[1][2]
+    assert calls[1][2:5] == ["-m", "voiced.models", "download"]
     assert p.entry.is_symlink() and os.readlink(p.entry) == str(env / "bin" / "voiced")
     manifest = read_manifest(p.state_dir)
     assert manifest is not None
@@ -802,7 +802,7 @@ def test_a_failed_model_download_changes_nothing(settings: Settings, tmp_path: P
     def runner(argv: Sequence[str]) -> CommandResult:
         if argv[-1:] == [str(p.environment)]:
             _environment(p.environment)
-        return CommandResult(1, "", "no network") if "-c" in argv else CommandResult(0)
+        return CommandResult(1, "", "no network") if "voiced.models" in argv else CommandResult(0)
 
     with pytest.raises(InstallError, match="model download"):
         run_install(p, runner=runner, query=_check_ok, say=lambda _: None)
@@ -1118,3 +1118,104 @@ def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Pa
     broken = install()
     assert broken.returncode == 1 and "another voiced" not in broken.stderr
     assert f"cannot open {lock}" in broken.stderr
+
+
+# The ports step (ADR 0018) ---------------------------------------------------
+
+
+def _listening(
+    monkeypatch: pytest.MonkeyPatch, by_port: dict[int, list[int]] | None, argvs: dict[int, Any]
+) -> None:
+    """lsof's answer per port (None: no lsof), and each pid's name and argv."""
+    monkeypatch.setattr(
+        install_module,
+        "listener_pids",
+        lambda port, runner: None if by_port is None else by_port.get(port, []),
+    )
+    monkeypatch.setattr(install_module, "process_of", lambda pid: argvs[pid])
+
+
+def test_a_port_held_by_another_program_stops_the_install(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Named by port, config key and holder, before the models and before
+    anything the running install uses changes."""
+    _environment(tmp_path / "env")
+    settings.stt.wyoming_port, settings.tts.http_port = 10300, 8880
+    p = _plan(settings, tmp_path)
+    _listening(
+        monkeypatch,
+        {10300: [11], 8880: [12]},
+        {11: ("python3.12", ["python3", "-m", "wyoming_faster_whisper"]), 12: ("nginx", ["nginx"])},
+    )
+    calls: list[list[str]] = []
+    with pytest.raises(InstallError) as info:
+        run_install(
+            p,
+            runner=lambda argv: calls.append(list(argv)) or CommandResult(0),
+            query=_check_ok,
+            say=lambda _: None,
+        )
+    message = str(info.value)
+    assert "port 10300 ([stt] wyoming_port) is in use by python3.12 (pid 11)" in message
+    assert "port 8880 ([tts] http_port) is in use by nginx (pid 12)" in message
+    assert str(p.config_file) in message
+    assert calls == [], "no model download"
+    assert not p.entry.exists()
+
+
+def test_voiceds_own_running_services_are_not_a_conflict(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reinstall or an update runs while the services listen."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    ports = list(p.ports.values())
+    serve = ("Python", ["/x/bin/python3.12", str(p.entry), "serve", "stt"])
+    _listening(
+        monkeypatch,
+        {port: [20 + i] for i, port in enumerate(ports)},
+        dict.fromkeys(range(20, 24), serve),
+    )
+    _install(p)
+    assert p.entry.is_symlink()
+
+
+def test_without_lsof_the_ports_are_not_checked_and_that_is_said(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _environment(tmp_path / "env")
+    _listening(monkeypatch, None, {})
+    said: list[str] = []
+    _install(_plan(settings, tmp_path), said)
+    assert "lsof not found; the ports were not checked" in said
+
+
+def test_the_ports_step_checks_the_four_configured_ports(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings.stt.http_port, settings.stt.wyoming_port = 1001, 1002
+    settings.tts.http_port, settings.tts.wyoming_port = 1003, 1004
+    _environment(tmp_path / "env")
+    asked: list[int] = []
+    monkeypatch.setattr(
+        install_module, "listener_pids", lambda port, runner: asked.append(port) or []
+    )
+    _install(_plan(settings, tmp_path))
+    assert asked == [1001, 1002, 1003, 1004]
+
+
+def test_listener_pids_reads_lsof() -> None:
+    """The function itself, not the stub every test gets (tests/conftest.py)."""
+    seen: list[list[str]] = []
+
+    def lsof(argv: Sequence[str]) -> CommandResult:
+        seen.append(list(argv))
+        return CommandResult(
+            1 if argv[3] == "-iTCP:2" else 0, "12\n34\n" if argv[3] == "-iTCP:1" else ""
+        )
+
+    assert real_listener_pids(1, lsof) == [12, 34]
+    assert seen == [["lsof", "-nP", "-t", "-iTCP:1", "-sTCP:LISTEN"]]
+    assert real_listener_pids(2, lsof) == []  # lsof exits 1 when nothing listens
+    assert real_listener_pids(3, lambda argv: CommandResult(127)) is None

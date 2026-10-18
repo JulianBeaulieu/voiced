@@ -1,4 +1,0 @@
-{"models": [
-  {"repo": "mlx-community/parakeet-tdt-0.6b-v3", "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", "bytes": 2508532829},
-  {"repo": "mlx-community/Kokoro-82M-bf16", "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c", "bytes": 355322783}
-]}
