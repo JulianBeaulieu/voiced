@@ -765,23 +765,20 @@ and says why in one line. If it does not need something, it never asks.
   core dependencies and preferred; `download_patterns()`, pinned revisions
   and `snapshot_download` progress; a port check before approval. (The
   espeak-ng clone and length check are done, ADR 0009.) All done. The
-  `ports` step checks the four configured ports with `lsof` and refuses
-  with each port, its config key and its holder ("port 10300 ([stt]
-  wyoming_port) is in use by python3.12 (pid 812)"); a listener that runs
-  the entry point (`<interpreter> ~/.voiced/bin/voiced serve ...`) is
-  voiced's own and not a conflict. Without `lsof` it says so and goes on.
-- The sudo script printed by the CLI stays for terminal users. It now has
-  the same checks as the privileged script: root, a regular account (uid
-  500 to 2147483647, so not `nobody`), a home that account owns, the same
-  kernel lock on `/var/run/voiced-privileged.lock` (so a CLI install and
-  the app's never overlap), one install per Mac with orphans taken over,
-  and the firewall step, whose failure or a Python outside the home is a
-  warning, not a failed install. It does not run the privileged script
-  itself: that one renders fixed plists from the user name alone, while
-  the CLI's follow the config (a label prefix, a state directory, a config
-  path) and are the files the user reviewed in the staging directory; and
-  it is compiled into the app, not in the wheel. One pytest module runs
-  both scripts through the same refusals, lock and firewall cases.
+  `ports` step binds each of the four configured ports as the services
+  do (`bind()` sees every account's sockets), then names the holder of one
+  in use with `lsof`, and refuses with each port, its config key and its
+  holder ("port 10300 ([stt] wyoming_port) is in use by python3.12 (pid
+  812)"). A holder `lsof`, run as the user, cannot see is "another account
+  or the system". A listener that runs the entry point (`<interpreter>
+  ~/.voiced/bin/voiced serve ...`) is voiced's own and not a conflict;
+  without `lsof` a port in use is said, not refused. Minutes pass between
+  the check and the services starting, so it catches the common case, not
+  a race.
+- The sudo script printed by the CLI stays for terminal users. Rather than
+  a second hand-written root script with the firewall step and the same
+  checks, the CLI will run the app's privileged script (`install|uninstall
+  USER`), which renders the plists as root; that is a separate change.
 
 ### App side
 
