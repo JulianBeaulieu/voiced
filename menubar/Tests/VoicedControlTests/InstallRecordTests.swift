@@ -36,7 +36,7 @@ final class InstallRecordTests: XCTestCase {
         XCTAssertEqual(
             hello.install,
             InstallRecord(
-                source: "app", environment: "/Users/someone/.voiced/envs/20261018T120000", version: "0.1.0",
+                source: .app, environment: "/Users/someone/.voiced/envs/20261018T120000", version: "0.1.0",
                 lockSHA256: "ABC", python: "3.12.15"))
     }
 
@@ -69,14 +69,14 @@ final class InstallRecordTests: XCTestCase {
         XCTAssertEqual(
             InstallRecord.read(stateDirectory: state),
             InstallRecord(
-                source: "homebrew", environment: "/opt/homebrew/opt/voiced/libexec", version: "0.2.0", lockSHA256: "abc",
+                source: .homebrew, environment: "/opt/homebrew/opt/voiced/libexec", version: "0.2.0", lockSHA256: "abc",
                 python: "3.12.15"))
     }
 
     /// What the app writes when it claims the folder, before any environment is linked.
     func testAClaimHasNoEnvironment() throws {
         try Data(#"{"source": "app", "environment": null, "version": "", "lock_sha256": ""}"#.utf8).write(to: manifest)
-        XCTAssertEqual(InstallRecord.read(stateDirectory: state), InstallRecord(source: "app"))
+        XCTAssertEqual(InstallRecord.read(stateDirectory: state), InstallRecord(source: .app))
     }
 
     func testNoFileNoRecord() {
@@ -84,7 +84,7 @@ final class InstallRecordTests: XCTestCase {
     }
 
     func testWhatIsNotAManifestIsNoRecord() throws {
-        for text in ["not json", "[]", #"{"environment": "/x"}"#, ""] {
+        for text in ["not json", "[]", #"{"environment": "/x"}"#, "", #"{"source": "pipx"}"#] {
             try Data(text.utf8).write(to: manifest)
             XCTAssertNil(InstallRecord.read(stateDirectory: state), text)
         }
@@ -112,7 +112,7 @@ final class InstallRecordTests: XCTestCase {
     func testIconStates() {
         func state(_ connection: ConnectionState, _ status: StatusPayload? = nil, installing: Bool = false) -> MenuBarIconState {
             let dashboard = DashboardReducer.reduce(connection: connection, status: status, socketPath: "/s")
-            return MenuBarIconState(dashboard: dashboard, installing: installing)
+            return MenuBarIconStatus(dashboard: dashboard, installing: installing).state
         }
         let connected = ConnectionState.connected(version: "0.1.0")
         XCTAssertEqual(state(connected, FakeScenario.running.initialState.status), .idle)
@@ -126,5 +126,12 @@ final class InstallRecordTests: XCTestCase {
         XCTAssertEqual(state(.incompatible(message: "")), .error)
         XCTAssertEqual(state(.unreachable(installed: false, reason: .cannotConnect(.noSocket)), installing: true), .busy)
         XCTAssertEqual(state(connected, FakeScenario.running.initialState.status, installing: true), .busy)
+    }
+
+    func testIconLabels() {
+        let running = DashboardReducer.reduce(
+            connection: .connected(version: "0.1.0"), status: FakeScenario.running.initialState.status, socketPath: "/s")
+        XCTAssertEqual(MenuBarIconStatus(dashboard: running, installing: false).accessibilityLabel, "voiced: Running")
+        XCTAssertEqual(MenuBarIconStatus(dashboard: running, installing: true).accessibilityLabel, "voiced: Installing")
     }
 }

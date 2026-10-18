@@ -11,8 +11,8 @@ Programs and data
     in the app bundle (Contents/Helpers/uv)
     https://github.com/astral-sh/uv
   CPython (python-build-standalone)
-    PSF-2.0, with the licences of the libraries it links (listed in its distribution)
-    installed by uv into ~/.voiced/python
+    PSF-2.0
+    installed by uv into ~/.voiced/python; the libraries it links list their own licences
     https://github.com/astral-sh/python-build-standalone
   espeak-ng (library and data)
     GPL-3.0-or-later
@@ -36,7 +36,7 @@ Python packages (src/voiced/requirements.lock)
   espeakng-loader==0.2.4  MIT  https://pypi.org/project/espeakng-loader/0.2.4/
   fastapi==0.143.0  MIT  https://pypi.org/project/fastapi/0.143.0/
   filelock==4.1.1  MIT  https://pypi.org/project/filelock/4.1.1/
-  flatbuffers==25.12.19  Apache 2.0  https://pypi.org/project/flatbuffers/25.12.19/
+  flatbuffers==25.12.19  Apache-2.0  https://pypi.org/project/flatbuffers/25.12.19/
   fsspec==2026.9.0  BSD-3-Clause  https://pypi.org/project/fsspec/2026.9.0/
   h11==0.16.0  MIT  https://pypi.org/project/h11/0.16.0/
   hf-xet==1.7.0  Apache-2.0  https://pypi.org/project/hf-xet/1.7.0/
@@ -50,24 +50,24 @@ Python packages (src/voiced/requirements.lock)
   lazy-loader==0.6  BSD-3-Clause  https://pypi.org/project/lazy-loader/0.6/
   librosa==1.0.0  ISC  https://pypi.org/project/librosa/1.0.0/
   llvmlite==0.50.0  BSD-2-Clause AND Apache-2.0 WITH LLVM-exception  https://pypi.org/project/llvmlite/0.50.0/
-  markdown-it-py==4.2.0  MIT License  https://pypi.org/project/markdown-it-py/4.2.0/
-  mdurl==0.1.2  MIT License  https://pypi.org/project/mdurl/0.1.2/
+  markdown-it-py==4.2.0  MIT  https://pypi.org/project/markdown-it-py/4.2.0/
+  mdurl==0.1.2  MIT  https://pypi.org/project/mdurl/0.1.2/
   miniaudio==1.71  MIT  https://pypi.org/project/miniaudio/1.71/
   mlx==0.32.3  MIT  https://pypi.org/project/mlx/0.32.3/
   mlx-audio==0.5.9  MIT  https://pypi.org/project/mlx-audio/0.5.9/
   mlx-metal==0.32.3  MIT  https://pypi.org/project/mlx-metal/0.32.3/
   msgpack==1.2.3  Apache-2.0  https://pypi.org/project/msgpack/1.2.3/
   narwhals==2.27.1  MIT  https://pypi.org/project/narwhals/2.27.1/
-  numba==0.68.0  BSD  https://pypi.org/project/numba/0.68.0/
+  numba==0.68.0  BSD-2-Clause  https://pypi.org/project/numba/0.68.0/
   numpy==2.5.4  BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0  https://pypi.org/project/numpy/2.5.4/
-  onnxruntime==1.31.0  MIT License  https://pypi.org/project/onnxruntime/1.31.0/
+  onnxruntime==1.31.0  MIT  https://pypi.org/project/onnxruntime/1.31.0/
   opentelemetry-api==1.45.1  Apache-2.0  https://pypi.org/project/opentelemetry-api/1.45.1/
   packaging==26.3  Apache-2.0 OR BSD-2-Clause  https://pypi.org/project/packaging/26.3/
   parakeet-mlx==0.5.3  Apache-2.0  https://pypi.org/project/parakeet-mlx/0.5.3/
-  phonemizer==3.4.0  GNU General Public License v3 or later (GPLv3+)  https://pypi.org/project/phonemizer/3.4.0/
+  phonemizer==3.4.0  GPL-3.0-or-later  https://pypi.org/project/phonemizer/3.4.0/
   platformdirs==4.13.0  MIT  https://pypi.org/project/platformdirs/4.13.0/
   pooch==1.9.0  BSD-3-Clause  https://pypi.org/project/pooch/1.9.0/
-  protobuf==7.36.2  3-Clause BSD License  https://pypi.org/project/protobuf/7.36.2/
+  protobuf==7.36.2  BSD-3-Clause  https://pypi.org/project/protobuf/7.36.2/
   psutil==7.2.2  BSD-3-Clause  https://pypi.org/project/psutil/7.2.2/
   pycparser==3.11  BSD-3-Clause  https://pypi.org/project/pycparser/3.11/
   pydantic==2.14.1  MIT  https://pypi.org/project/pydantic/2.14.1/
@@ -81,19 +81,19 @@ Python packages (src/voiced/requirements.lock)
   regex==2026.9.29  Apache-2.0 AND CNRI-Python  https://pypi.org/project/regex/2026.9.29/
   requests==2.34.2  Apache-2.0  https://pypi.org/project/requests/2.34.2/
   rich==15.0.0  MIT  https://pypi.org/project/rich/15.0.0/
-  safetensors==0.8.0  Apache Software License  https://pypi.org/project/safetensors/0.8.0/
+  safetensors==0.8.0  Apache-2.0  https://pypi.org/project/safetensors/0.8.0/
   scikit-learn==1.9.1  BSD-3-Clause  https://pypi.org/project/scikit-learn/1.9.1/
-  scipy==1.18.1  BSD License  https://pypi.org/project/scipy/1.18.1/
-  shellingham==1.5.4  ISC License  https://pypi.org/project/shellingham/1.5.4/
+  scipy==1.18.1  BSD-3-Clause  https://pypi.org/project/scipy/1.18.1/
+  shellingham==1.5.4  ISC  https://pypi.org/project/shellingham/1.5.4/
   sounddevice==0.5.6  MIT  https://pypi.org/project/sounddevice/0.5.6/
-  soundfile==0.14.0  BSD 3-Clause License  https://pypi.org/project/soundfile/0.14.0/
+  soundfile==0.14.0  BSD-3-Clause  https://pypi.org/project/soundfile/0.14.0/
   soxr==1.1.0  LGPL-2.1-or-later  https://pypi.org/project/soxr/1.1.0/
   starlette==1.8.0  BSD-3-Clause  https://pypi.org/project/starlette/1.8.0/
   threadpoolctl==3.7.0  BSD-3-Clause  https://pypi.org/project/threadpoolctl/3.7.0/
-  tokenizers==0.23.3  Apache Software License  https://pypi.org/project/tokenizers/0.23.3/
+  tokenizers==0.23.3  Apache-2.0  https://pypi.org/project/tokenizers/0.23.3/
   tomlkit==0.15.1  MIT  https://pypi.org/project/tomlkit/0.15.1/
   tqdm==4.70.1  MPL-2.0 AND MIT  https://pypi.org/project/tqdm/4.70.1/
-  transformers==5.19.0  Apache 2.0 License  https://pypi.org/project/transformers/5.19.0/
+  transformers==5.19.0  Apache-2.0  https://pypi.org/project/transformers/5.19.0/
   truststore==0.10.5  MIT  https://pypi.org/project/truststore/0.10.5/
   typer==0.27.3  MIT  https://pypi.org/project/typer/0.27.3/
   typing-extensions==4.16.0  PSF-2.0  https://pypi.org/project/typing-extensions/4.16.0/

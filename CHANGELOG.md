@@ -18,11 +18,14 @@ uses [Semantic Versioning](https://semver.org/).
   they are switched off in Login Items. The menu bar icon has idle, busy and
   error states; the menu ends with the app's version; a hidden Debug pane
   lists paths and pins and copies diagnostics; "What's new" shows the notes
-  once after an update. A development build can install a local wheel or
-  checkout through the `installSource` user default.
+  once after an update. A debug build can install a local wheel through the
+  `installSource` user default. `bundle.sh` installs the build backend and
+  `packaging` with hashes and refuses a checkout with uncommitted changes
+  unless given `--dirty`.
 - `NOTICE` lists the third-party software the app ships and an install
-  downloads, generated from `src/voiced/requirements.lock` by
-  `scripts/notice.py`; a test keeps the two in step.
+  downloads, with SPDX licences, generated from
+  `src/voiced/requirements.lock` by `scripts/notice.py`; a test keeps the
+  two in step. The README gains a third-party section.
 
 - `voiced install --json-progress` (ADR 0018): one JSON event per line on
   stdout (`hello`, `step` start and done per install step, `log`, then

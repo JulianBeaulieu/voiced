@@ -36,13 +36,7 @@ public struct InstallerConfiguration: Sendable {
         self.installProbe = installProbe
     }
 
-    var stateDirectory: URL { home.appendingPathComponent(".voiced", isDirectory: true) }
-    var environments: URL { stateDirectory.appendingPathComponent("envs", isDirectory: true) }
-    var manifest: URL { stateDirectory.appendingPathComponent("install.json") }
-    /// Where the override's wheel is built and its lock unpacked.
-    var developmentWork: URL {
-        home.appendingPathComponent("Library/Application Support/voiced/install-source", isDirectory: true)
-    }
+    public var paths: VoicedPaths { VoicedPaths(home: home) }
 }
 
 /// This Mac as Home Assistant on the network sees it.

@@ -27,19 +27,24 @@ public struct Hello: Codable, Sendable, Equatable {
     }
 }
 
+/// Who made an install (`install.json`'s `source`, ADR 0017). A record with any other value is
+/// not one this app understands and reads as no record.
+public enum InstallSource: String, Codable, Sendable {
+    case app, homebrew, cli
+}
+
 /// `~/.voiced/install.json` (ADR 0017): who installed voiced, which environment is active,
 /// and the voiced version, lock hash and Python in it. The watchdog's `hello` carries it, and
 /// without a watchdog the app reads the file. Fields the record lacks are nil.
 public struct InstallRecord: Codable, Sendable, Equatable {
-    /// `app`, `homebrew` or `cli`.
-    public var source: String
+    public var source: InstallSource
     public var environment: String?
     public var version: String?
     public var lockSHA256: String?
     public var python: String?
 
     public init(
-        source: String, environment: String? = nil, version: String? = nil, lockSHA256: String? = nil,
+        source: InstallSource, environment: String? = nil, version: String? = nil, lockSHA256: String? = nil,
         python: String? = nil
     ) {
         self.source = source
@@ -56,7 +61,7 @@ public struct InstallRecord: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        source = try container.decode(String.self, forKey: .source)
+        source = try container.decode(InstallSource.self, forKey: .source)
         func text(_ key: CodingKeys) -> String? {
             // "" is what install.json holds before the first environment is linked.
             guard let value = try? container.decodeIfPresent(String.self, forKey: key), !value.isEmpty else { return nil }

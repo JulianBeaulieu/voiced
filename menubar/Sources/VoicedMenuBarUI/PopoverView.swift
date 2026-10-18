@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import VoicedControl
 
@@ -14,8 +15,9 @@ public struct MenuBarIcon: View {
     }
 
     public var body: some View {
-        Image(nsImage: MenuBarIconImage.image(for: MenuBarIconState(dashboard: dashboard, installing: installing)))
-            .accessibilityLabel("voiced: \(installing ? "Installing" : dashboard.headline)")
+        let status = MenuBarIconStatus(dashboard: dashboard, installing: installing)
+        Image(nsImage: MenuBarIconImage.image(for: status.state))
+            .accessibilityLabel(status.accessibilityLabel)
     }
 }
 
@@ -81,13 +83,16 @@ public struct PopoverView: View {
     let canInstall: Bool
     /// What this launch found; nil where nothing is checked, as in some snapshots.
     let launch: LaunchChecks?
+    /// "Update voiced" on the version card of an install the app manages; nil hides it.
+    let update: (() -> Void)?
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
-    public init(model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil) {
+    public init(model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil, update: (() -> Void)? = nil) {
         self.model = model
         self.canInstall = canInstall
         self.launch = launch
+        self.update = update
     }
 
     public var body: some View {
@@ -98,7 +103,7 @@ public struct PopoverView: View {
                 .padding(.vertical, 12)
             Divider()
             if let launch {
-                LaunchCards(launch: launch)
+                LaunchCards(launch: launch, update: update)
             }
             if dashboard.showsInstallHelp {
                 InstallHelpView(openInstaller: installAction)
@@ -141,7 +146,8 @@ public struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 340)
-        .onAppear { launch?.refresh() }
+        // While the window is open: the Login Items card clears soon after the switch is on.
+        .task { await launch?.watch() }
     }
 
     private func showSettings() {
@@ -150,7 +156,7 @@ public struct PopoverView: View {
 
     private var installAction: (() -> Void)? {
         // A translocated app asks to be moved first (its card says so).
-        guard canInstall, launch?.translocatedFrom == nil else { return nil }
+        guard canInstall, launch?.allowsInstall ?? true else { return nil }
         return openInstaller
     }
 
@@ -557,7 +563,7 @@ struct FooterView: View {
     var body: some View {
         HStack {
             // The app's version, as a menu's last, disabled line; the services' is in About.
-            Text("voiced \(AppInfo.version)")
+            Text("voiced \(VoicedPaths.appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -574,9 +580,10 @@ struct FooterView: View {
 /// another voiced than this app carries.
 struct LaunchCards: View {
     let launch: LaunchChecks
+    var update: (() -> Void)?
 
     var body: some View {
-        let mismatch = launch.installMatch?.notice
+        let mismatch = launch.installMatch.flatMap(Self.notice)
         if launch.translocatedFrom != nil || launch.backgroundItemsOff || mismatch != nil {
             VStack(spacing: 8) {
                 if let original = launch.translocatedFrom {
@@ -591,17 +598,39 @@ struct LaunchCards: View {
                     Notice(
                         symbol: "exclamationmark.triangle.fill", tint: .orange,
                         text: "voiced can't start at boot while it is off in Login Items.",
-                        actionTitle: "Open Login Items", action: launch.openLoginItems)
+                        actionTitle: "Open Login Items"
+                    ) { SMAppService.openSystemSettingsLoginItems() }
                 }
                 if let mismatch {
                     VStack(alignment: .leading, spacing: 6) {
-                        Notice(symbol: "arrow.triangle.2.circlepath", tint: .accentColor, text: mismatch.text)
+                        let offersUpdate = mismatch.managed && update != nil
+                        Notice(
+                            symbol: "arrow.triangle.2.circlepath", tint: .accentColor, text: mismatch.text,
+                            actionTitle: offersUpdate ? "Update voiced" : nil
+                        ) { update?() }
                         if let command = mismatch.command { CommandBlock(command: command) }
                     }
                 }
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
+        }
+    }
+
+    /// What the card says for a mismatch, a command that resolves it when another tool
+    /// manages the install, and whether the app manages it (and so offers to update it).
+    nonisolated static func notice(_ match: InstallMatch) -> (text: String, command: String?, managed: Bool)? {
+        guard case .differs(let installed, let bundled, let source, let sameVersion) = match else { return nil }
+        let running = sameVersion
+            ? "The services run voiced \(installed) with other dependencies than this app carries."
+            : "The services run voiced \(installed); this app carries \(bundled)."
+        switch source {
+        case .app:
+            return (running, nil, true)
+        case .homebrew:
+            return ("\(running) Homebrew manages this install; update it with:", "brew upgrade voiced", false)
+        case .cli:
+            return ("\(running) This install was made from the command line, which also updates it.", nil, false)
         }
     }
 }

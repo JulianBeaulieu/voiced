@@ -55,6 +55,7 @@ public struct SettingsView: View {
     let model: AppModel
     let loginItem: LoginItem
     let launch: LaunchChecks?
+    let installer: Installer?
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -62,10 +63,14 @@ public struct SettingsView: View {
     @State private var newKey = ""
     @State private var confirmingRemoval = false
 
-    public init(model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, pane: SettingsPane? = nil) {
+    public init(
+        model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, installer: Installer? = nil,
+        pane: SettingsPane? = nil
+    ) {
         self.model = model
         self.loginItem = loginItem
         self.launch = launch
+        self.installer = installer
         self.fixedPane = pane
     }
 
@@ -324,7 +329,7 @@ public struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent("Menu bar app", value: AppInfo.version)
+            LabeledContent("Menu bar app", value: VoicedPaths.appVersion)
             LabeledContent("voiced", value: voicedVersion)
             LabeledContent("Control protocol", value: "\(ControlClient.supportedProtocol)")
             LabeledContent("Control socket") {
@@ -341,9 +346,9 @@ public struct SettingsView: View {
                 }
             }
             LabeledContent("License", value: "MIT")
-            if let notice = AppInfo.notice {
+            if FileManager.default.fileExists(atPath: paths.notice.path) {
                 LabeledContent("Third-party software") {
-                    Button("Show Notices") { NSWorkspace.shared.open(notice) }
+                    Button("Show Notices") { NSWorkspace.shared.open(paths.notice) }
                 }
             }
         }
@@ -360,12 +365,14 @@ public struct SettingsView: View {
 
     private var diagnostics: Diagnostics {
         Diagnostics(
-            appVersion: AppInfo.version, bundlePath: (launch?.bundleURL ?? Bundle.main.bundleURL).path,
-            translocatedFrom: launch?.translocatedFrom?.path, manifest: launch?.manifest,
-            installSource: launch?.installSource?.path, record: launch?.installRecord ?? model.installRecord,
-            connection: model.dashboard.headline, serverVersion: model.serverVersion, socketPath: model.socketPath,
-            home: launch?.home ?? FileManager.default.homeDirectoryForCurrentUser)
+            appVersion: VoicedPaths.appVersion, paths: paths, translocatedFrom: launch?.translocatedFrom,
+            manifest: launch?.manifest, installSource: launch?.installSource,
+            record: launch?.installRecord ?? model.installRecord, backgroundItems: launch?.backgroundItems ?? [:],
+            installer: installer.map { String(describing: $0.phase) }, connection: model.dashboard.headline,
+            serverVersion: model.serverVersion, socketPath: model.socketPath)
     }
+
+    private var paths: VoicedPaths { launch?.paths ?? VoicedPaths() }
 
     @ViewBuilder
     private var debug: some View {
@@ -395,6 +402,7 @@ public struct SettingsView: View {
             }
         }
         Section {
+            Button("Refresh") { Task { await launch?.refresh() } }
             Button("Copy Diagnostics") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(diagnostics.report, forType: .string)

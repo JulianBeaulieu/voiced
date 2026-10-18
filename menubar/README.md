@@ -10,8 +10,9 @@ from the status page), Network (listen on this Mac or the local network,
 Home Assistant discovery, the API key), Speech to Text (engine), Text to
 Speech (engine and voice), About (versions, the control socket, the
 config file and logs, the third-party notices) and, once "Show Debug pane"
-in General turns it on, Debug (the app, its pins, the installed environment
-and every path, with "Copy Diagnostics"). The window ends with the app's
+in General turns it on, Debug (the app, its pins, the installed environment,
+the installer's state, each service's Login Items status and every path,
+with "Copy Diagnostics"). The window ends with the app's
 version. When voiced is not installed the window offers the
 installer (see below), or points to the installation guide when the app was
 built without what the installer needs; when it cannot reach voiced it says
@@ -56,17 +57,23 @@ installer needs (ADR 0018, "What the app ships and pins"):
 | `Contents/Helpers/uv` | uv at the version and sha256 pinned in `bundle.sh` |
 | `Contents/Resources/voiced-*.whl` | The voiced wheel, built from this checkout with that uv |
 | `Contents/Resources/requirements.lock` | The lock the wheel carries |
-| `Contents/Resources/install-manifest.json` | The CPython patch version, the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`, by `Scripts/manifest.py`), and each default model's repository, revision and size |
+| `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), and each default model's repository, revision and size; written by `scripts/app_manifest.py` |
 | `Contents/Resources/uv-LICENSE` | uv's licence text, fetched at the same tag and checked |
 | `Contents/Resources/NOTICE` | The repository's third-party notice (`scripts/notice.py` writes it from the lock) |
 | `Contents/Resources/WhatsNew.md` | This version's section of `CHANGELOG.md`, else the Unreleased one |
 
-The model pins are the Python side's: `bundle.sh` runs `python -m
-voiced.models` from the wheel it built. A wheel from before that module falls
-back to `Scripts/model-pins.json`, in the same shape. The first run needs the
+The model pins are in `Scripts/model-pins.json`, the shape `python -m
+voiced.models` prints, which will replace it. Everything fetched is pinned by
+hash: uv and its licence in `bundle.sh`, and the build backend and
+`packaging` (which `app_manifest.py` uses to read the lock's markers and wheel
+tags) by `src/voiced/build-requirements.lock`. The first run needs the
 network; downloads are cached in `build/downloads` and checked against their
-sha256 each time. Building the wheel and the manifest uses the pinned uv, so
-no uv needs to be installed. The bundle is about 30 MB, most of it uv.
+sha256 each time. Building uses the pinned uv, so no uv needs to be
+installed. The bundle is about 30 MB, most of it uv.
+
+`bundle.sh` refuses a checkout with uncommitted changes, since the bundle
+would not match any commit; `--dirty` builds one anyway. `--debug` builds the
+app in debug configuration, for the development override below.
 
 The bundle is ad-hoc signed, uv first and then the app, which has no
 identity and is not notarized; [Scripts/SIGNING.md](Scripts/SIGNING.md)
@@ -162,19 +169,21 @@ The app offers the installer only when its bundle carries
 
 ### Installing a development voiced
 
-A development build of the app can install another voiced than the one it
-carries, such as an unpushed checkout:
+A debug build of the app can install another voiced than the one it carries,
+such as an unpushed checkout, built into a wheel first:
 
 ```sh
-defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced
+(cd ~/src/voiced && uv build --wheel)
+menubar/Scripts/bundle.sh --dirty --debug
+defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.2.0-py3-none-any.whl
 defaults delete io.github.julianbeaulieu.voiced.menubar installSource   # back to the bundled wheel
 ```
 
-`installSource` is a voiced wheel, or a checkout the installer builds into one
-with the bundled uv. Either way the lock installed is the one the wheel
-carries, and the models are the bundle's pins. A release build, one signed
-with a Developer ID (a team identifier), ignores it; ad hoc and unsigned
-builds use it. The Debug pane shows it while it is in effect.
+The lock installed is the one that wheel carries, and the models are the
+bundle's pins. The override exists only in debug builds: a release build
+(the default for `bundle.sh` and the release) compiles it out, so no process
+can steer what a shipped app installs by writing a default. While it is in
+effect the Debug pane shows it and the version card stays away.
 
 ## On every launch
 
@@ -190,7 +199,9 @@ root (ADR 0018, "On every launch"):
   Homebrew install with `brew upgrade voiced`.
 - **Login Items.** When the services are switched off in System Settings >
   General > Login Items, a card says voiced can't start at boot and opens
-  Login Items; the app asks again every 2 s until they are on.
+  Login Items. The app asks `SMAppService` off the main thread, at launch
+  and every 2 s while the menu bar window is open; the Debug pane shows each
+  service's raw status.
 
 When the services first run this app's pins after running another version,
 a "What's new" window shows the bundled notes, once. A first install shows

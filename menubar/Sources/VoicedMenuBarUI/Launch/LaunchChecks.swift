@@ -12,45 +12,46 @@ public final class LaunchChecks {
     /// Where the app really is when macOS runs it from a translocated copy, which is
     /// read-only and at a random path; nil when it is not translocated.
     public private(set) var translocatedFrom: URL?
-    /// The services are switched off in System Settings > Login Items, so launchd will not
-    /// start them at boot.
-    public private(set) var backgroundItemsOff = false
+    /// The Login Items status of each installed service's plist, by label; empty until first
+    /// asked, and for services that are not installed.
+    public private(set) var backgroundItems: [String: SMAppService.Status] = [:]
 
     /// What the app pins, from its bundle; nil in a build without the installer's resources.
     public let manifest: InstallManifest?
-    /// The development override in effect (`installSource`), nil in release builds.
+    /// The development override in effect (`installSource`); nil outside debug builds.
     public let installSource: URL?
-    public let bundleURL: URL
-    /// The home whose `~/.voiced` is checked.
-    public let home: URL
+    public let paths: VoicedPaths
 
     private let model: AppModel
-    private let stateDirectory: URL
-    private let backgroundItems: BackgroundItems
+    private let backgroundItemsSource: BackgroundItems
     private let pollInterval: Duration
     /// `install.json` as last read from disk, for when no watchdog answers.
     private var recordOnDisk: InstallRecord?
-    private var polling: Task<Void, Never>?
 
     public init(
-        model: AppModel, manifest: InstallManifest?, installSource: URL? = nil,
-        bundleURL: URL = Bundle.main.bundleURL,
-        stateDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".voiced"),
+        model: AppModel, manifest: InstallManifest?, installSource: URL? = nil, paths: VoicedPaths = VoicedPaths(),
         backgroundItems: BackgroundItems = BackgroundItems(),
-        translocation: (URL) -> URL? = Translocation.originalURL,
+        translocation: (URL) -> URL? = { Translocation.originalURL(of: $0) },
         pollInterval: Duration = .seconds(2)
     ) {
         self.model = model
         self.manifest = manifest
         self.installSource = installSource
-        self.bundleURL = bundleURL
-        home = stateDirectory.deletingLastPathComponent()
-        self.stateDirectory = stateDirectory
-        self.backgroundItems = backgroundItems
+        self.paths = paths
+        backgroundItemsSource = backgroundItems
         self.pollInterval = pollInterval
-        translocatedFrom = translocation(bundleURL)
-        refresh()
+        translocatedFrom = translocation(paths.bundle)
+        recordOnDisk = InstallRecord.read(stateDirectory: paths.stateDirectory)
     }
+
+    /// The services are switched off in System Settings > Login Items, so launchd will not
+    /// start them at boot. That macOS reports a switched-off daemon as `requiresApproval` is
+    /// still to be confirmed on a real install (ADR 0018, "Open items"); the Debug pane shows
+    /// the raw statuses meanwhile.
+    public var backgroundItemsOff: Bool { backgroundItems.values.contains(.requiresApproval) }
+
+    /// The installer is offered only from a copy of the app that is not translocated.
+    public var allowsInstall: Bool { translocatedFrom == nil }
 
     /// What `install.json` records: the watchdog's word while it answers, else the file.
     public var installRecord: InstallRecord? {
@@ -58,37 +59,29 @@ public final class LaunchChecks {
         return recordOnDisk
     }
 
-    /// How the installed voiced compares with the one this app carries.
+    /// How the installed voiced compares with the one this app carries. Nil with nothing
+    /// installed, without pins, or while the development override installs another wheel.
     public var installMatch: InstallMatch? {
-        guard let manifest else { return nil }
+        guard let manifest, installSource == nil else { return nil }
         return InstallMatch.compare(installRecord, with: manifest)
     }
 
-    /// Reads the file and asks for the background items' state again. Called at launch and
-    /// whenever a window opens; while the services are off it keeps asking until they are on.
-    public func refresh() {
-        recordOnDisk = InstallRecord.read(stateDirectory: stateDirectory)
-        backgroundItemsOff = backgroundItems.areOff()
-        if backgroundItemsOff, polling == nil {
-            polling = Task { [weak self, pollInterval] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: pollInterval)
-                    guard let self else { return }
-                    backgroundItemsOff = backgroundItems.areOff()
-                    if !backgroundItemsOff { break }
-                }
-                self?.polling = nil
-            }
+    /// Reads `install.json` again and asks for the Login Items statuses, off the main actor:
+    /// `SMAppService` answers over XPC.
+    public func refresh() async {
+        recordOnDisk = InstallRecord.read(stateDirectory: paths.stateDirectory)
+        let source = backgroundItemsSource
+        let statuses = await Task.detached { source.statuses() }.value
+        if statuses != backgroundItems { backgroundItems = statuses }
+    }
+
+    /// Refreshes until cancelled: run by the menu bar window while it is open, so the Login
+    /// Items card goes away soon after the user turns the services back on.
+    public func watch() async {
+        while !Task.isCancelled {
+            await refresh()
+            try? await Task.sleep(for: pollInterval)
         }
-    }
-
-    public func stop() {
-        polling?.cancel()
-        polling = nil
-    }
-
-    public func openLoginItems() {
-        SMAppService.openSystemSettingsLoginItems()
     }
 }
 
@@ -96,42 +89,17 @@ public final class LaunchChecks {
 /// (ADR 0018, "Updates, with rollback"). Any difference, in either direction, is a mismatch.
 public enum InstallMatch: Sendable, Equatable {
     case matches
-    case differs(installed: String, bundled: String, source: String, sameVersion: Bool)
+    case differs(installed: String, bundled: String, source: InstallSource, sameVersion: Bool)
 
     /// Nil when nothing is installed yet: no record, or one with no environment linked.
     public static func compare(_ record: InstallRecord?, with manifest: InstallManifest) -> InstallMatch? {
         guard let record, record.environment != nil else { return nil }
-        let installed = record.version ?? "unknown"
-        let bundled = manifest.wheel.version ?? "unknown"
-        let sameVersion = record.version != nil && installed == bundled
+        let sameVersion = record.version == manifest.version
         let sameLock = record.lockSHA256?.lowercased() == manifest.lockSHA256.lowercased()
         if sameVersion && sameLock { return .matches }
-        return .differs(installed: installed, bundled: bundled, source: record.source, sameVersion: sameVersion)
-    }
-
-    /// What the menu shows for a mismatch, and a command that resolves it when the app does
-    /// not manage the install.
-    public var notice: (text: String, command: String?)? {
-        guard case .differs(let installed, let bundled, let source, let sameVersion) = self else { return nil }
-        let running = sameVersion
-            ? "The services run voiced \(installed) with other dependencies than this app carries."
-            : "The services run voiced \(installed); this app carries \(bundled)."
-        switch source {
-        case "app":
-            return (running, nil)
-        case "homebrew":
-            return ("\(running) Homebrew manages this install; update it with:", "brew upgrade voiced")
-        default:
-            return ("\(running) This install was made from the command line, which also updates it.", nil)
-        }
-    }
-}
-
-extension InstallManifest.Wheel {
-    /// "0.1.0" from "voiced-0.1.0-py3-none-any.whl".
-    public var version: String? {
-        let parts = name.split(separator: "-")
-        return parts.count > 2 ? String(parts[1]) : nil
+        return .differs(
+            installed: record.version ?? "unknown", bundled: manifest.version, source: record.source,
+            sameVersion: sameVersion)
     }
 }
 
@@ -152,12 +120,27 @@ public struct BackgroundItems: Sendable {
         self.status = status
     }
 
-    /// True when any installed service waits for approval. Plists that are not there are not
-    /// asked about: an install that is not there is the installer's business.
-    public func areOff() -> Bool {
-        Self.labels.contains { label in
+    /// The status of each installed service, by label. Plists that are not there are not
+    /// asked about: an install that is not there is the installer's business. Blocks on XPC.
+    public func statuses() -> [String: SMAppService.Status] {
+        var found: [String: SMAppService.Status] = [:]
+        for label in Self.labels {
             let plist = launchDaemonsDirectory.appendingPathComponent("\(label).plist")
-            return FileManager.default.fileExists(atPath: plist.path) && status(plist) == .requiresApproval
+            if FileManager.default.fileExists(atPath: plist.path) { found[label] = status(plist) }
+        }
+        return found
+    }
+}
+
+extension SMAppService.Status {
+    /// The case's name, for the Debug pane.
+    public var name: String {
+        switch self {
+        case .notRegistered: "notRegistered"
+        case .enabled: "enabled"
+        case .requiresApproval: "requiresApproval"
+        case .notFound: "notFound"
+        @unknown default: "status \(rawValue)"
         }
     }
 }
@@ -173,18 +156,33 @@ public enum Translocation {
         CFURL, UnsafeMutablePointer<Unmanaged<CFError>?>?
     ) -> Unmanaged<CFURL>?
 
-    /// Where `bundle` really is when it runs translocated, or nil when it does not. A
-    /// translocated bundle whose original cannot be found answers with itself.
+    /// Where `bundle` really is when it runs translocated, or nil when it does not.
     public static func originalURL(of bundle: URL) -> URL? {
-        guard let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY),
-            let isSymbol = dlsym(security, "SecTranslocateIsTranslocatedURL")
-        else { return bundle.path.contains("/AppTranslocation/") ? bundle : nil }
-        var translocated = false
-        let isTranslocated = unsafeBitCast(isSymbol, to: IsTranslocated.self)
-        guard isTranslocated(bundle as CFURL, &translocated, nil), translocated else { return nil }
-        guard let originalSymbol = dlsym(security, "SecTranslocateCreateOriginalPathForURL"),
-            let original = unsafeBitCast(originalSymbol, to: OriginalPath.self)(bundle as CFURL, nil)
-        else { return bundle }
-        return original.takeRetainedValue() as URL
+        let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY)
+        let isSymbol = security.flatMap { dlsym($0, "SecTranslocateIsTranslocatedURL") }
+        let originalSymbol = security.flatMap { dlsym($0, "SecTranslocateCreateOriginalPathForURL") }
+        let isTranslocated: ((URL) -> Bool)? = isSymbol.map { symbol in
+            { url in
+                var translocated = false
+                let call = unsafeBitCast(symbol, to: IsTranslocated.self)
+                return call(url as CFURL, &translocated, nil) && translocated
+            }
+        }
+        let original: ((URL) -> URL?)? = originalSymbol.map { symbol in
+            { url in
+                let call = unsafeBitCast(symbol, to: OriginalPath.self)
+                return call(url as CFURL, nil).map { $0.takeRetainedValue() as URL }
+            }
+        }
+        return originalURL(of: bundle, isTranslocated: isTranslocated, original: original)
+    }
+
+    /// The decision, with the two lookups passed in. Without the first, the path's shape
+    /// decides; a translocated bundle whose original cannot be found answers with itself, so
+    /// the app still asks to be moved.
+    static func originalURL(of bundle: URL, isTranslocated: ((URL) -> Bool)?, original: ((URL) -> URL?)?) -> URL? {
+        let translocated = isTranslocated?(bundle) ?? bundle.path.contains("/AppTranslocation/")
+        guard translocated else { return nil }
+        return original?(bundle) ?? bundle
     }
 }

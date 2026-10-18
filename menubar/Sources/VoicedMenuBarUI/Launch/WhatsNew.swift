@@ -28,10 +28,9 @@ public final class WhatsNew {
         self.defaults = defaults
     }
 
-    /// The notes in `bundle`, nil when it has none.
-    public static func notes(in bundle: Bundle = .main) -> String? {
-        let url = bundle.bundleURL.appendingPathComponent("Contents/Resources/WhatsNew.md")
-        guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else { return nil }
+    /// The notes in the bundle, nil when it has none.
+    public static func notes(in paths: VoicedPaths = VoicedPaths()) -> String? {
+        guard let text = try? String(contentsOf: paths.whatsNew, encoding: .utf8), !text.isEmpty else { return nil }
         return text
     }
 

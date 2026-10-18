@@ -140,12 +140,14 @@ func run() async {
         model.start()
         await settle(model)
         for edit in shot.edits { await model.apply(edit) }
-        let launch = shot.launchCards ? launchChecks(model: model, in: scratch.appendingPathComponent(shot.name)) : nil
+        let launch = shot.launchCards ? await launchChecks(model: model, in: scratch.appendingPathComponent(shot.name)) : nil
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
             case .status:
-                await render(PopoverView(model: model, canInstall: shot.canInstall, launch: launch), dark: dark, to: file)
+                // With launch cards, Update is offered as it will be once Update exists.
+                let view = PopoverView(model: model, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
+                await render(view, dark: dark, to: file)
             case .settings:
                 await render(
                     SettingsView(model: model, loginItem: LoginItem(), launch: launch, pane: shot.pane), dark: dark, to: file)
@@ -197,7 +199,7 @@ func run() async {
 /// Launch checks that find everything at once: the app runs translocated, the services are
 /// off in Login Items, and the services run an older voiced than the app carries.
 @MainActor
-func launchChecks(model: AppModel, in directory: URL) -> LaunchChecks {
+func launchChecks(model: AppModel, in directory: URL) async -> LaunchChecks {
     let state = directory.appendingPathComponent(".voiced")
     let daemons = directory.appendingPathComponent("LaunchDaemons")
     try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
@@ -206,17 +208,18 @@ func launchChecks(model: AppModel, in directory: URL) -> LaunchChecks {
         try? writePlist(["Label": label], to: daemons.appendingPathComponent("\(label).plist"))
     }
     let manifest = InstallManifest(
-        python: "3.12.15", lockSHA256: "64d1af59",
+        version: "0.2.0", python: "3.12.15", lockSHA256: "64d1af59",
         wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "a12bd9c2"), wheelsBytes: 190_060_576,
         models: [
             .init(repo: "mlx-community/parakeet-tdt-0.6b-v3", revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", bytes: 2_508_532_829),
             .init(repo: "mlx-community/Kokoro-82M-bf16", revision: "a71e4d38b236d968966a2002c4c895dbd12b1c3c", bytes: 355_322_783),
         ])
     let checks = LaunchChecks(
-        model: model, manifest: manifest, bundleURL: URL(fileURLWithPath: "/Applications/voiced.app"), stateDirectory: state,
+        model: model, manifest: manifest,
+        paths: VoicedPaths(home: directory, bundle: URL(fileURLWithPath: "/Applications/voiced.app")),
         backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons, status: { _ in .requiresApproval }),
         translocation: { _ in URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app") })
-    checks.stop()
+    await checks.refresh()
     return checks
 }
 

@@ -709,33 +709,30 @@ final class InstallerTests: XCTestCase {
 
     // MARK: - The development override
 
-    /// `unzip` and `uv build` as the fake runner plays them: the lock appears where unzip
-    /// puts it, and a build writes `wheel` into its --out-dir.
-    private func playOverride(wheel: String? = "voiced-0.3.0.dev1-py3-none-any.whl", lock: Bool = true) {
+    /// `unzip` as the fake runner plays it: the lock appears where it is asked to put it.
+    private func playOverride(lock: Bool = true) {
         runner.respond = { command in
+            guard command.executable == "/usr/bin/unzip" else { return FakeInstallRunner.defaultResponse(command) }
             let args = command.arguments
-            if command.executable == "/usr/bin/unzip" {
-                guard lock, let i = args.firstIndex(of: "-d") else {
-                    return .init([.stderr("caution: filename not matched:  voiced/requirements.lock"), .exit(11)])
-                }
-                let target = URL(fileURLWithPath: args[i + 1]).appendingPathComponent("voiced")
-                try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
-                try? Data("numpy==2.0.0 --hash=sha256:11\n".utf8).write(to: target.appendingPathComponent("requirements.lock"))
-                return .success
+            guard lock, let i = args.firstIndex(of: "-d") else {
+                return .init([.stderr("caution: filename not matched:  voiced/requirements.lock"), .exit(11)])
             }
-            if args.first == "build", let i = args.firstIndex(of: "--out-dir") {
-                guard let wheel else { return .init([.stderr("error: Failed to build `/src/voiced`"), .exit(2)]) }
-                FileManager.default.createFile(atPath: args[i + 1] + "/" + wheel, contents: Data("built".utf8))
-                return .success
-            }
-            return FakeInstallRunner.defaultResponse(command)
+            let target = URL(fileURLWithPath: args[i + 1]).appendingPathComponent("voiced")
+            try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+            try? Data("numpy==2.0.0 --hash=sha256:11\n".utf8).write(to: target.appendingPathComponent("requirements.lock"))
+            return .success
         }
     }
 
-    func testAWheelOverrideIsInstalledWithTheLockItCarries() async throws {
-        let wheel = home.appendingPathComponent("dist/voiced-0.3.0.dev1-py3-none-any.whl")
+    private func devWheel(_ name: String = "voiced-0.3.0.dev1-py3-none-any.whl") throws -> URL {
+        let wheel = home.appendingPathComponent("dist/\(name)")
         try FileManager.default.createDirectory(at: wheel.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("dev wheel".utf8).write(to: wheel)
+        return wheel
+    }
+
+    func testAWheelOverrideIsInstalledWithTheLockItCarries() async throws {
+        let wheel = try devWheel()
         // The bundled wheel no longer matching its manifest does not matter while overridden.
         try Data("another wheel".utf8).write(to: resources.wheel)
         playOverride()
@@ -747,66 +744,36 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(
             runner.commands(named: "unzip").map(\.arguments),
             [["-o", "-q", wheel.path, "voiced/requirements.lock", "-d", work.path]])
-        XCTAssertTrue(runner.commands(named: "uv").allSatisfy { $0.arguments.first != "build" })
         let pip = runner.commands(named: "uv").filter { $0.arguments.first == "pip" }
         XCTAssertEqual(pip.first?.arguments.last, work.appendingPathComponent("voiced/requirements.lock").path)
         XCTAssertEqual(pip.last?.arguments.last, wheel.path)
     }
 
-    func testACheckoutOverrideIsBuiltIntoAWheelFirst() async throws {
+    func testAnOverrideThatIsNotAVoicedWheelIsRefused() async throws {
         let checkout = home.appendingPathComponent("src/voiced")
         try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
-        try Data("[project]\n".utf8).write(to: checkout.appendingPathComponent("pyproject.toml"))
-        playOverride()
-        let installer = makeInstaller(installSource: checkout)
-        installer.install()
-        await reachApproval(installer)
-
-        let work = home.appendingPathComponent("Library/Application Support/voiced/install-source")
-        let build = try XCTUnwrap(runner.commands(named: "uv").first)
-        XCTAssertEqual(build.arguments, ["build", "--wheel", "--out-dir", work.path, checkout.path])
-        XCTAssertEqual(build.environment["UV_NO_CONFIG"], "1")
-        let built = work.appendingPathComponent("voiced-0.3.0.dev1-py3-none-any.whl").path
-        XCTAssertEqual(runner.commands(named: "unzip").first?.arguments[2], built)
-        XCTAssertEqual(runner.commands(named: "uv").last?.arguments.last, built)
-    }
-
-    func testAnOverrideThatIsNeitherIsRefused() async throws {
-        for source in [home.appendingPathComponent("nothing-here"), home.appendingPathComponent("missing.whl"), home!] {
+        let other = try devWheel("other-1.0-py3-none-any.whl")
+        for source in [checkout, home.appendingPathComponent("missing-0.1.0-py3-none-any.whl"), other] {
             runner = FakeInstallRunner()
             let installer = makeInstaller(installSource: source)
             installer.install()
             let failure = await failure(installer)
             XCTAssertEqual(failure?.step, "Using the install source \(source.path)")
-            XCTAssertEqual(failure?.cause, "It is neither a voiced wheel nor a checkout with a pyproject.toml.")
+            XCTAssertEqual(failure?.cause, "It is not a voiced wheel. Build one with `uv build --wheel` in the checkout.")
             XCTAssertTrue(runner.commands.isEmpty)
             installer.cancel()
         }
     }
 
-    func testACheckoutThatDoesNotBuildShowsUVsError() async throws {
-        let checkout = home.appendingPathComponent("src/voiced")
-        try FileManager.default.createDirectory(at: checkout, withIntermediateDirectories: true)
-        try Data("[project]\n".utf8).write(to: checkout.appendingPathComponent("pyproject.toml"))
-        playOverride(wheel: nil)
-        let installer = makeInstaller(installSource: checkout)
-        installer.install()
-        let failure = await failure(installer)
-        XCTAssertEqual(failure?.stage, .environment)
-        XCTAssertEqual(failure?.cause, "error: Failed to build `/src/voiced`")
-        XCTAssertTrue(runner.commands(named: "unzip").isEmpty)
-        XCTAssertEqual(environmentNames(), [], "nothing built in ~/.voiced")
-    }
-
     func testAWheelWithoutALockIsRefused() async throws {
-        let wheel = home.appendingPathComponent("voiced-0.3.0-py3-none-any.whl")
-        try Data("dev wheel".utf8).write(to: wheel)
+        let wheel = try devWheel()
         playOverride(lock: false)
         let installer = makeInstaller(installSource: wheel)
         installer.install()
         let failure = await failure(installer)
         XCTAssertEqual(failure?.cause, "caution: filename not matched:  voiced/requirements.lock")
         XCTAssertTrue(runner.commands(named: "uv").isEmpty)
+        XCTAssertEqual(environmentNames(), [], "nothing built in ~/.voiced")
     }
 
     // MARK: - Busy

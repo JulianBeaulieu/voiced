@@ -34,7 +34,6 @@ final class LaunchTests: XCTestCase {
     private var home: URL!
     private var daemons: URL!
     private var models: [AppModel] = []
-    private var checks: [LaunchChecks] = []
     private var servers: [FakeControlServer] = []
 
     override func setUp() async throws {
@@ -43,8 +42,9 @@ final class LaunchTests: XCTestCase {
         daemons = try launchDaemonsDirectory()
     }
 
+    private var paths: VoicedPaths { VoicedPaths(home: home, bundle: URL(fileURLWithPath: "/Applications/voiced.app")) }
+
     override func tearDown() async throws {
-        checks.forEach { $0.stop() }
         models.forEach { $0.stop() }
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
@@ -52,27 +52,25 @@ final class LaunchTests: XCTestCase {
     }
 
     private let manifest = InstallManifest(
-        python: "3.12.15", lockSHA256: "ab12",
+        version: "0.2.0", python: "3.12.15", lockSHA256: "ab12",
         wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"), wheelsBytes: 1, models: [])
 
-    private func record(_ source: String = "app", version: String? = "0.2.0", lock: String? = "AB12") -> InstallRecord {
+    private func record(_ source: InstallSource = .app, version: String? = "0.2.0", lock: String? = "AB12") -> InstallRecord {
         InstallRecord(source: source, environment: "/env", version: version, lockSHA256: lock, python: "3.12.15")
     }
 
     private func makeChecks(
         socket: String = temporarySocketPath(), status: StatusBox = StatusBox(.enabled),
-        translocation: (URL) -> URL? = { _ in nil }
+        translocation: (URL) -> URL? = { _ in nil }, installSource: URL? = nil
     ) -> (LaunchChecks, AppModel) {
         let model = AppModel(
             socketPath: socket, installProbe: InstallProbe(launchDaemonsDirectory: daemons),
             backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)), opener: { _ in true })
         models.append(model)
         let launch = LaunchChecks(
-            model: model, manifest: manifest, bundleURL: URL(fileURLWithPath: "/Applications/voiced.app"),
-            stateDirectory: home.appendingPathComponent(".voiced"),
+            model: model, manifest: manifest, installSource: installSource, paths: paths,
             backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons, status: status.status),
             translocation: translocation, pollInterval: .milliseconds(20))
-        checks.append(launch)
         return (launch, model)
     }
 
@@ -90,57 +88,60 @@ final class LaunchTests: XCTestCase {
 
     func testComparesVersionAndLock() {
         XCTAssertNil(InstallMatch.compare(nil, with: manifest), "nothing installed")
-        XCTAssertNil(InstallMatch.compare(InstallRecord(source: "app"), with: manifest), "claimed, nothing linked yet")
+        XCTAssertNil(InstallMatch.compare(InstallRecord(source: .app), with: manifest), "claimed, nothing linked yet")
         XCTAssertEqual(InstallMatch.compare(record(), with: manifest), .matches, "the lock hash ignores case")
         XCTAssertEqual(
             InstallMatch.compare(record(version: "0.1.0"), with: manifest),
-            .differs(installed: "0.1.0", bundled: "0.2.0", source: "app", sameVersion: false))
+            .differs(installed: "0.1.0", bundled: "0.2.0", source: .app, sameVersion: false))
         XCTAssertEqual(
             InstallMatch.compare(record(version: "0.3.0"), with: manifest),
-            .differs(installed: "0.3.0", bundled: "0.2.0", source: "app", sameVersion: false), "newer counts too")
+            .differs(installed: "0.3.0", bundled: "0.2.0", source: .app, sameVersion: false), "newer counts too")
         XCTAssertEqual(
             InstallMatch.compare(record(lock: "ffff"), with: manifest),
-            .differs(installed: "0.2.0", bundled: "0.2.0", source: "app", sameVersion: true))
+            .differs(installed: "0.2.0", bundled: "0.2.0", source: .app, sameVersion: true))
         XCTAssertEqual(
             InstallMatch.compare(record(version: nil, lock: nil), with: manifest),
-            .differs(installed: "unknown", bundled: "0.2.0", source: "app", sameVersion: false))
+            .differs(installed: "unknown", bundled: "0.2.0", source: .app, sameVersion: false))
     }
 
-    func testTheNoticeDependsOnWhoManagesTheInstall() {
-        XCTAssertNil(InstallMatch.matches.notice)
-        let app = InstallMatch.differs(installed: "0.1.0", bundled: "0.2.0", source: "app", sameVersion: false).notice
+    func testTheCardDependsOnWhoManagesTheInstall() {
+        XCTAssertNil(LaunchCards.notice(.matches))
+        let app = LaunchCards.notice(.differs(installed: "0.1.0", bundled: "0.2.0", source: .app, sameVersion: false))
         XCTAssertEqual(app?.text, "The services run voiced 0.1.0; this app carries 0.2.0.")
         XCTAssertNil(app?.command)
-        let brew = InstallMatch.differs(installed: "0.3.0", bundled: "0.2.0", source: "homebrew", sameVersion: false).notice
+        XCTAssertEqual(app?.managed, true, "the app offers to update its own install")
+        let brew = LaunchCards.notice(.differs(installed: "0.3.0", bundled: "0.2.0", source: .homebrew, sameVersion: false))
         XCTAssertEqual(brew?.command, "brew upgrade voiced")
+        XCTAssertEqual(brew?.managed, false)
         XCTAssertTrue(brew?.text.contains("Homebrew manages this install") == true)
-        let cli = InstallMatch.differs(installed: "0.2.0", bundled: "0.2.0", source: "cli", sameVersion: true).notice
+        let cli = LaunchCards.notice(.differs(installed: "0.2.0", bundled: "0.2.0", source: .cli, sameVersion: true))
         XCTAssertEqual(
             cli?.text,
             "The services run voiced 0.2.0 with other dependencies than this app carries. "
                 + "This install was made from the command line, which also updates it.")
         XCTAssertNil(cli?.command)
+        XCTAssertEqual(cli?.managed, false)
     }
 
-    func testTheWheelNamesItsVersion() {
-        XCTAssertEqual(InstallManifest.Wheel(name: "voiced-0.1.0rc1-py3-none-any.whl", sha256: "").version, "0.1.0rc1")
-        XCTAssertEqual(InstallManifest.Wheel(name: "voiced-1.2.3+dev-py3-none-any.whl", sha256: "").version, "1.2.3+dev")
-        XCTAssertNil(InstallManifest.Wheel(name: "voiced.whl", sha256: "").version)
-    }
-
-    func testWithoutAWatchdogTheFileIsRead() throws {
+    func testWithoutAWatchdogTheFileIsRead() async throws {
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.1.0", "lock_sha256": "ab12"}"#)
         let (launch, _) = makeChecks()
-        XCTAssertEqual(launch.installMatch, .differs(installed: "0.1.0", bundled: "0.2.0", source: "app", sameVersion: false))
+        XCTAssertEqual(launch.installMatch, .differs(installed: "0.1.0", bundled: "0.2.0", source: .app, sameVersion: false))
 
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.2.0", "lock_sha256": "ab12"}"#)
         XCTAssertNotEqual(launch.installMatch, .matches, "read once per refresh, not per look")
-        launch.refresh()
+        await launch.refresh()
         XCTAssertEqual(launch.installMatch, .matches)
 
         try FileManager.default.removeItem(at: home.appendingPathComponent(".voiced/install.json"))
-        launch.refresh()
+        await launch.refresh()
         XCTAssertNil(launch.installMatch)
+    }
+
+    /// A source this app does not know reads as no record, not as a mismatch.
+    func testAnUnknownSourceIsNoRecord() throws {
+        try writeInstallJSON(#"{"source": "pipx", "environment": "/env", "version": "0.1.0"}"#)
+        XCTAssertNil(makeChecks().0.installRecord)
     }
 
     /// While the watchdog answers, its hello is what counts, not the file.
@@ -156,81 +157,120 @@ final class LaunchTests: XCTestCase {
         model.start()
         let connected = await eventually { model.installRecord != nil }
         XCTAssertTrue(connected)
-        XCTAssertEqual(launch.installMatch, .differs(installed: "0.3.0", bundled: "0.2.0", source: "homebrew", sameVersion: false))
+        XCTAssertEqual(launch.installMatch, .differs(installed: "0.3.0", bundled: "0.2.0", source: .homebrew, sameVersion: false))
 
         // The watchdog goes away: the file speaks again.
         server.stop()
         let gone = await eventually { model.installRecord == nil }
         XCTAssertTrue(gone)
-        XCTAssertEqual(launch.installMatch, .differs(installed: "0.0.9", bundled: "0.2.0", source: "app", sameVersion: false))
+        XCTAssertEqual(launch.installMatch, .differs(installed: "0.0.9", bundled: "0.2.0", source: .app, sameVersion: false))
     }
 
     func testABuildWithoutPinsComparesNothing() throws {
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.1.0"}"#)
         let model = AppModel(socketPath: temporarySocketPath(), opener: { _ in true })
         let launch = LaunchChecks(
-            model: model, manifest: nil, stateDirectory: home.appendingPathComponent(".voiced"),
-            backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons), translocation: { _ in nil })
+            model: model, manifest: nil, paths: paths, backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons),
+            translocation: { _ in nil })
+        XCTAssertNil(launch.installMatch)
+        XCTAssertNotNil(launch.installRecord)
+    }
+
+    /// With the development override set, the installed voiced is not the bundle's on purpose.
+    func testTheOverrideSkipsTheComparison() throws {
+        try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.3.0.dev1"}"#)
+        let (launch, _) = makeChecks(installSource: URL(fileURLWithPath: "/src/voiced-0.3.0.dev1-py3-none-any.whl"))
         XCTAssertNil(launch.installMatch)
         XCTAssertNotNil(launch.installRecord)
     }
 
     // MARK: - Login Items
 
-    func testServicesSwitchedOffInLoginItemsShowTheCardUntilTurnedOn() async throws {
+    func testNothingIsAskedUntilRefreshed() throws {
         try installPlists()
         let status = StatusBox(.requiresApproval)
         let (launch, _) = makeChecks(status: status)
-        XCTAssertTrue(launch.backgroundItemsOff)
-        status.set(.enabled)
-        let cleared = await eventually { !launch.backgroundItemsOff }
-        XCTAssertTrue(cleared, "polled while the card is shown")
+        XCTAssertTrue(status.asked.isEmpty, "not at init, which runs on the main actor")
+        XCTAssertFalse(launch.backgroundItemsOff)
     }
 
-    func testPollingStopsOnceOnAndStartsAgainOnRefresh() async throws {
+    func testServicesSwitchedOffInLoginItemsShowTheCardWhileWatchedUntilTurnedOn() async throws {
+        try installPlists()
+        let status = StatusBox(.requiresApproval)
+        let (launch, _) = makeChecks(status: status)
+        let watching = Task { await launch.watch() }
+        defer { watching.cancel() }
+        let off = await eventually { launch.backgroundItemsOff }
+        XCTAssertTrue(off)
+        status.set(.enabled)
+        let cleared = await eventually { !launch.backgroundItemsOff }
+        XCTAssertTrue(cleared, "polled while watched")
+        XCTAssertEqual(launch.backgroundItems.count, 3)
+    }
+
+    func testWatchingStopsWhenCancelled() async throws {
         try installPlists()
         let status = StatusBox(.enabled)
         let (launch, _) = makeChecks(status: status)
-        XCTAssertFalse(launch.backgroundItemsOff)
-        let asked = status.asked.count
+        let watching = Task { await launch.watch() }
+        let asked = await eventually { status.asked.count >= 6 }
+        XCTAssertTrue(asked)
+        watching.cancel()
+        await watching.value
+        let count = status.asked.count
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(status.asked.count, asked, "no polling while on")
-
-        status.set(.requiresApproval)
-        launch.refresh()
-        XCTAssertTrue(launch.backgroundItemsOff)
-        status.set(.enabled)
-        let cleared = await eventually { !launch.backgroundItemsOff }
-        XCTAssertTrue(cleared)
+        XCTAssertEqual(status.asked.count, count, "no polling once the window closes")
     }
 
     func testOnlyInstalledServicesAreAskedAbout() throws {
         let status = StatusBox(.requiresApproval)
-        XCTAssertFalse(BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).areOff(), "nothing installed")
+        XCTAssertEqual(BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).statuses(), [:])
         XCTAssertTrue(status.asked.isEmpty)
 
         try writePlist(["Label": "x"], to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.tts.plist"))
-        XCTAssertTrue(BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).areOff())
+        XCTAssertEqual(
+            BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).statuses(),
+            ["io.github.julianbeaulieu.voiced.tts": .requiresApproval])
         XCTAssertEqual(status.asked, ["io.github.julianbeaulieu.voiced.tts.plist"])
+    }
 
+    func testOnlyRequiresApprovalCountsAsOff() async throws {
+        try installPlists()
         for other in [SMAppService.Status.enabled, .notRegistered, .notFound] {
-            status.set(other)
-            XCTAssertFalse(BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).areOff(), "\(other)")
+            let (launch, _) = makeChecks(status: StatusBox(other))
+            await launch.refresh()
+            XCTAssertFalse(launch.backgroundItemsOff, "\(other)")
         }
     }
 
     // MARK: - Translocation
 
-    func testATranslocatedAppNamesWhereItReallyIs() {
+    func testATranslocatedAppNamesWhereItReallyIsAndOffersNoInstaller() {
         let original = URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app")
         let (launch, _) = makeChecks(translocation: { _ in original })
         XCTAssertEqual(launch.translocatedFrom, original)
-        XCTAssertNil(makeChecks().0.translocatedFrom)
+        XCTAssertFalse(launch.allowsInstall)
+        let (normal, _) = makeChecks()
+        XCTAssertNil(normal.translocatedFrom)
+        XCTAssertTrue(normal.allowsInstall)
     }
 
     func testAnAppThatIsNotTranslocated() {
         XCTAssertNil(Translocation.originalURL(of: Bundle.main.bundleURL))
         XCTAssertNil(Translocation.originalURL(of: URL(fileURLWithPath: "/Applications/voiced.app")))
+    }
+
+    func testTranslocationDecisions() {
+        let bundle = URL(fileURLWithPath: "/private/var/folders/x/AppTranslocation/ABCD/d/voiced.app")
+        let original = URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app")
+        XCTAssertEqual(Translocation.originalURL(of: bundle, isTranslocated: { _ in true }, original: { _ in original }), original)
+        XCTAssertEqual(
+            Translocation.originalURL(of: bundle, isTranslocated: { _ in true }, original: { _ in nil }), bundle,
+            "an original that cannot be found still asks to be moved")
+        XCTAssertEqual(Translocation.originalURL(of: bundle, isTranslocated: { _ in true }, original: nil), bundle)
+        XCTAssertNil(Translocation.originalURL(of: bundle, isTranslocated: { _ in false }, original: { _ in original }))
+        XCTAssertEqual(Translocation.originalURL(of: bundle, isTranslocated: nil, original: nil), bundle, "by the path's shape")
+        XCTAssertNil(Translocation.originalURL(of: original, isTranslocated: nil, original: nil))
     }
 
     // MARK: - What's new
@@ -255,7 +295,7 @@ final class LaunchTests: XCTestCase {
 
         // The next app version, before and after the services were updated.
         let next = whatsNew(defaults)
-        next.observe(.differs(installed: "0.1.0", bundled: "0.2.0", source: "app", sameVersion: false))
+        next.observe(.differs(installed: "0.1.0", bundled: "0.2.0", source: .app, sameVersion: false))
         next.observe(nil)
         XCTAssertFalse(next.isPending)
         next.observe(.matches)
@@ -309,40 +349,49 @@ final class LaunchTests: XCTestCase {
     }
 
     func testTheBundlesNotesAreFound() throws {
-        let bundle = home.appendingPathComponent("voiced.app")
-        let resources = bundle.appendingPathComponent("Contents/Resources")
-        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-        XCTAssertNil(WhatsNew.notes(in: Bundle(url: bundle)!))
-        try Data("# Notes\n".utf8).write(to: resources.appendingPathComponent("WhatsNew.md"))
-        XCTAssertEqual(WhatsNew.notes(in: Bundle(url: bundle)!), "# Notes\n")
+        let bundle = VoicedPaths(home: home, bundle: home.appendingPathComponent("voiced.app"))
+        try FileManager.default.createDirectory(at: bundle.resources, withIntermediateDirectories: true)
+        XCTAssertNil(WhatsNew.notes(in: bundle))
+        try Data("# Notes\n".utf8).write(to: bundle.whatsNew)
+        XCTAssertEqual(WhatsNew.notes(in: bundle), "# Notes\n")
     }
 
     // MARK: - Diagnostics
 
     func testDiagnosticsNameTheAppThePinsAndTheInstall() {
         let pinned = InstallManifest(
-            python: "3.12.15", lockSHA256: "ab12", wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"),
+            version: "0.2.0", python: "3.12.15", lockSHA256: "ab12",
+            wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"),
             wheelsBytes: 1, models: [.init(repo: "mlx-community/Kokoro-82M-bf16", revision: "a71e", bytes: 1)])
+        let someone = VoicedPaths(home: URL(fileURLWithPath: "/Users/someone"), bundle: URL(fileURLWithPath: "/Applications/voiced.app"))
         let diagnostics = Diagnostics(
-            appVersion: "0.2.0", bundlePath: "/Applications/voiced.app", translocatedFrom: nil, manifest: pinned,
-            installSource: "/src/voiced", record: record(), connection: "Running", serverVersion: "0.2.0",
-            socketPath: "/Users/someone/.voiced/control.sock", home: URL(fileURLWithPath: "/Users/someone"))
+            appVersion: "0.2.0", paths: someone, translocatedFrom: nil, manifest: pinned,
+            installSource: URL(fileURLWithPath: "/src/voiced-0.2.0-py3-none-any.whl"), record: record(),
+            backgroundItems: ["io.github.julianbeaulieu.voiced.watchdog": .requiresApproval], installer: "welcome",
+            connection: "Running", serverVersion: "0.2.0", socketPath: "/Users/someone/.voiced/control.sock")
         let report = diagnostics.report
         for expected in [
-            "Menu bar app\n  Version: 0.2.0\n  Location: /Applications/voiced.app\n  Install source override: /src/voiced",
-            "  Wheel sha256: cd34", "  mlx-community/Kokoro-82M-bf16: revision a71e",
+            "Menu bar app\n  Version: 0.2.0\n  Location: /Applications/voiced.app\n"
+                + "  Install source override: /src/voiced-0.2.0-py3-none-any.whl\n  Installer: welcome",
+            "  voiced: 0.2.0\n  Wheel: voiced-0.2.0-py3-none-any.whl\n  Wheel sha256: cd34",
+            "  mlx-community/Kokoro-82M-bf16: revision a71e",
             "Installed environment\n  Source: app\n  Environment: /env\n  voiced: 0.2.0\n  Lock sha256: AB12",
-            "  State: Running", "  Logs: /Users/someone/Library/Logs/voiced",
+            "  State: Running",
+            "  io.github.julianbeaulieu.voiced.stt: Not installed",
+            "  io.github.julianbeaulieu.voiced.watchdog: Login Items: requiresApproval",
+            "  Logs: /Users/someone/Library/Logs/voiced",
             "  Config file: /Users/someone/.config/voiced/config.toml",
+            "  uv cache: /Users/someone/Library/Application Support/voiced/uv-cache",
         ] {
             XCTAssertTrue(report.contains(expected), "\(expected) not in\n\(report)")
         }
         XCTAssertFalse(report.contains("Translocated"))
 
         let bare = Diagnostics(
-            appVersion: "Development build", bundlePath: "/x", translocatedFrom: "/Users/someone/Downloads/voiced.app",
-            manifest: nil, installSource: nil, record: nil, connection: "Not installed", serverVersion: nil,
-            socketPath: "/s", home: URL(fileURLWithPath: "/Users/someone")).report
+            appVersion: "Development build", paths: someone,
+            translocatedFrom: URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app"), manifest: nil,
+            installSource: nil, record: nil, backgroundItems: [:], installer: nil, connection: "Not installed",
+            serverVersion: nil, socketPath: "/s").report
         for expected in [
             "  Translocated from: /Users/someone/Downloads/voiced.app",
             "  Pins: None: this build has no installer resources", "  install.json: Not found",
@@ -350,6 +399,13 @@ final class LaunchTests: XCTestCase {
         ] {
             XCTAssertTrue(bare.contains(expected), "\(expected) not in\n\(bare)")
         }
+        XCTAssertFalse(bare.contains("Installer:"))
+    }
+
+    func testLoginItemsStatusesHaveNames() {
+        XCTAssertEqual(
+            [SMAppService.Status.notRegistered, .enabled, .requiresApproval, .notFound].map(\.name),
+            ["notRegistered", "enabled", "requiresApproval", "notFound"])
     }
 
     // MARK: - Settings panes
@@ -361,20 +417,26 @@ final class LaunchTests: XCTestCase {
 
     // MARK: - The development override
 
-    func testTheOverrideIsIgnoredInReleaseBuilds() {
+    /// The tests are a debug build, where the override exists; release builds compile it out.
+    func testTheOverrideInADebugBuild() {
         let defaults = scratchDefaults()
-        XCTAssertNil(DevelopmentOverride.installSource(defaults: defaults, isRelease: false), "unset")
+        XCTAssertNil(DevelopmentOverride.installSource(defaults: defaults), "unset")
         defaults.set("  ", forKey: DevelopmentOverride.key)
-        XCTAssertNil(DevelopmentOverride.installSource(defaults: defaults, isRelease: false), "blank")
-        defaults.set("~/src/voiced/", forKey: DevelopmentOverride.key)
+        XCTAssertNil(DevelopmentOverride.installSource(defaults: defaults), "blank")
+        defaults.set("~/src/voiced/dist/voiced-0.2.0-py3-none-any.whl", forKey: DevelopmentOverride.key)
         XCTAssertEqual(
-            DevelopmentOverride.installSource(defaults: defaults, isRelease: false)?.path,
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("src/voiced").path)
-        XCTAssertNil(DevelopmentOverride.installSource(defaults: defaults, isRelease: true))
+            DevelopmentOverride.installSource(defaults: defaults)?.path,
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("src/voiced/dist/voiced-0.2.0-py3-none-any.whl").path)
     }
 
-    /// The tests run unsigned or ad hoc signed, as development builds are.
-    func testThisBuildIsNotARelease() {
-        XCTAssertFalse(DevelopmentOverride.isReleaseBuild())
+    // MARK: - The icon
+
+    func testTheIconsImagesAreTemplates() {
+        for state in [MenuBarIconState.idle, .busy, .error] {
+            let image = MenuBarIconImage.image(for: state)
+            XCTAssertTrue(image.isTemplate, "\(state)")
+            XCTAssertGreaterThan(image.size.width, 0)
+        }
+        XCTAssertGreaterThan(MenuBarIconImage.image(for: .busy).size.width, MenuBarIconImage.image(for: .idle).size.width)
     }
 }

@@ -3,13 +3,14 @@
     uv run python scripts/notice.py            # rewrite NOTICE (asks PyPI for licences)
     uv run python scripts/notice.py --check    # exit 1 if NOTICE does not list the lock
 
-The package list is ``src/voiced/requirements.lock`` as uv installs it on an
-Apple Silicon Mac with the app's CPython (ADR 0018), so NOTICE cannot drift
-from the lock: ``tests/test_notice.py`` runs the check. Licences come from
-each release's PyPI metadata (``license_expression``, else a short
-``license``, else the licence classifiers); a package with none of these is
-named in ``LICENCE_OVERRIDES`` after reading its source, and the script
-refuses to write NOTICE until it is.
+The package list is ``src/voiced/requirements.lock`` as uv installs it on the
+Mac the app targets (``lock_target``), so NOTICE cannot drift from the lock:
+``tests/test_notice.py`` runs the check. Licences are SPDX expressions, from
+each release's PyPI metadata: ``license_expression``, else a short
+``license`` or the licence classifiers mapped through ``SPDX_NAMES``. A
+package whose metadata is missing or ambiguous ("BSD") is named in
+``LICENCE_OVERRIDES`` after reading its source, and the script refuses to
+write NOTICE until it is.
 """
 
 from __future__ import annotations
@@ -20,33 +21,40 @@ import re
 import sys
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
-from packaging.markers import Marker
-from packaging.utils import canonicalize_name
+from lock_target import ROOT, installed
 
-ROOT = Path(__file__).resolve().parent.parent
-LOCK = ROOT / "src" / "voiced" / "requirements.lock"
 NOTICE = ROOT / "NOTICE"
 
-# The Mac the app installs on: CPython 3.12 (the manifest's patch version) on
-# Apple Silicon. Only the lock entries whose markers hold here get installed.
-TARGET = {
-    "implementation_name": "cpython",
-    "platform_machine": "arm64",
-    "platform_python_implementation": "CPython",
-    "platform_system": "Darwin",
-    "python_full_version": "3.12.15",
-    "python_version": "3.12",
-    "sys_platform": "darwin",
-    "os_name": "posix",
-}
-
-# Packages whose PyPI metadata names no licence, from their source repositories.
+# From each package's source repository: PyPI names no licence, or an ambiguous one.
 LICENCE_OVERRIDES = {
     "espeakng-loader": "MIT",
     "kokoro-onnx": "MIT",
+    "numba": "BSD-2-Clause",
+    "safetensors": "Apache-2.0",
+    "scipy": "BSD-3-Clause",
+    "tokenizers": "Apache-2.0",
 }
+
+# Free-text licences and classifiers that name exactly one SPDX licence.
+SPDX_NAMES = {
+    "3-Clause BSD License": "BSD-3-Clause",
+    "Apache 2.0": "Apache-2.0",
+    "Apache 2.0 License": "Apache-2.0",
+    "BSD 3-Clause License": "BSD-3-Clause",
+    "GNU General Public License v3 or later (GPLv3+)": "GPL-3.0-or-later",
+    "ISC License": "ISC",
+    "ISC License (ISCL)": "ISC",
+    "MIT License": "MIT",
+}
+
+# The SPDX identifiers NOTICE may use. A new one is added here after checking it
+# against https://spdx.org/licenses/.
+SPDX_IDS = {
+    "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "CNRI-Python",
+    "GPL-2.0-or-later", "GPL-3.0-or-later", "ISC", "LGPL-2.1-or-later", "LLVM-exception",
+    "MIT", "MIT-0", "MPL-2.0", "PSF-2.0", "Zlib",
+}  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -71,9 +79,9 @@ COMPONENTS = [
     ),
     Component(
         "CPython (python-build-standalone)",
-        "PSF-2.0, with the licences of the libraries it links (listed in its distribution)",
+        "PSF-2.0",
         "https://github.com/astral-sh/python-build-standalone",
-        "installed by uv into ~/.voiced/python",
+        "installed by uv into ~/.voiced/python; the libraries it links list their own licences",
     ),
     Component(
         "espeak-ng (library and data)",
@@ -99,21 +107,13 @@ releases by your own Mac when voiced is installed; it is not part of voiced
 and voiced does not distribute it. Each entry links to its source.
 """
 
-_REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)\s*(?:;\s*([^\\]+?))?\s*\\?$")
 _PACKAGE_LINE = re.compile(r"^  (\S+)==(\S+)  ")
 
 
-def installed(lock: Path = LOCK) -> list[tuple[str, str]]:
-    """``(name, version)`` for every lock entry installed on the target Mac, by name."""
-    found = []
-    for line in lock.read_text().splitlines():
-        match = _REQUIREMENT.match(line)
-        if match is None:
-            continue
-        name, version, marker = match.groups()
-        if marker is None or Marker(marker).evaluate(dict(TARGET)):
-            found.append((canonicalize_name(name), version))
-    return sorted(found)
+def is_spdx(expression: str) -> bool:
+    tokens = [t for t in re.split(r"\s+|[()]", expression) if t]
+    ids = [t for t in tokens if t not in {"AND", "OR", "WITH"}]
+    return bool(ids) and all(t in SPDX_IDS for t in ids)
 
 
 def components(packages: list[tuple[str, str]]) -> list[Component]:
@@ -127,19 +127,24 @@ def licence(name: str, version: str) -> str:
     url = f"https://pypi.org/pypi/{name}/{version}/json"
     with urllib.request.urlopen(url, timeout=30) as response:
         info = json.load(response)["info"]
-    expression = (info.get("license_expression") or "").strip()
-    if expression:
-        return str(expression)
+    found = (info.get("license_expression") or "").strip()
     text = (info.get("license") or "").strip()
-    if text and "\n" not in text and len(text) <= 60:
-        return text
-    prefix = "License :: OSI Approved :: "
-    classifiers = [
-        c.removeprefix(prefix) for c in info.get("classifiers", []) if c.startswith(prefix)
-    ]
-    if classifiers:
-        return " / ".join(classifiers)
-    raise SystemExit(f"{name} {version}: no licence on PyPI; add it to LICENCE_OVERRIDES")
+    if not found and text and "\n" not in text and len(text) <= 60:
+        found = SPDX_NAMES.get(text, text)
+    if not found:
+        prefix = "License :: OSI Approved :: "
+        classifiers = [
+            SPDX_NAMES.get(c.removeprefix(prefix), c.removeprefix(prefix))
+            for c in info.get("classifiers", [])
+            if c.startswith(prefix)
+        ]
+        found = " OR ".join(classifiers)
+    if not is_spdx(found):
+        raise SystemExit(
+            f"{name} {version}: licence {found or 'missing'!r} is not a known SPDX expression; "
+            "check its source and add it to LICENCE_OVERRIDES (or the identifier to SPDX_IDS)"
+        )
+    return found
 
 
 def render(packages: list[tuple[str, str]], licences: dict[str, str]) -> str:

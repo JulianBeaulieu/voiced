@@ -424,9 +424,9 @@ launch of an installed app re-checks, without root:
   `AssociatedBundleIdentifiers` entry, polled while the card is shown): if
   it is off, a card says "voiced can't start at boot while it is off in
   Login Items" with "Open Login Items". The app asks with
-  `SMAppService.statusForLegacyPlist(at:)` for each installed plist and
-  takes `requiresApproval` as off; that this is what macOS reports for a
-  switched-off item needs the real-install check below;
+  `SMAppService.statusForLegacyPlist(at:)` for each installed plist, off
+  the main thread, and takes `requiresApproval` as off; that this is what
+  macOS reports for a switched-off item is an open item below;
 - the plists, with `voiced-privileged check`: a difference offers Repair;
 - the `hello` version and lock hash: a mismatch offers "Update voiced" (for
   `source = app`) or shows it (other sources).
@@ -838,8 +838,11 @@ Needs the owner at the keyboard during implementation:
 - Agree on the development override: a user default (`installSource`)
   pointing at a local wheel or checkout, so an unpushed development build
   of the app can install the matching voiced; release builds ignore it.
-  Built as proposed: a checkout is built into a wheel with the bundled uv,
-  the lock is the one that wheel carries, and a release is told apart by
-  its signature (a team identifier, which only the Developer ID release
-  has), not by a compile flag, since `bundle.sh` builds in release
-  configuration too.
+  Built as a debug-only override (`#if DEBUG`; `bundle.sh --debug` makes a
+  bundle with it): it takes a wheel, and installs the lock that wheel
+  carries. Release builds compile it out, so a default written by another
+  process cannot change what a shipped app installs.
+- Login Items: confirm that a voiced daemon switched off under Allow in
+  the Background reads as `requiresApproval` from
+  `SMAppService.statusForLegacyPlist(at:)`, which the app takes as off.
+  The Debug pane shows the raw status of each service.

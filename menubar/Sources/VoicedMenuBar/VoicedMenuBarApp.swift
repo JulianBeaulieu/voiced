@@ -21,8 +21,10 @@ struct VoicedMenuBarApp: App {
             configuration.installSource = installSource
             return Installer(configuration: configuration, runner: Install.runner, model: model)
         }
-        _launch = State(initialValue: LaunchChecks(model: model, manifest: resources?.manifest, installSource: installSource))
-        _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.wheel.version))
+        let launch = LaunchChecks(model: model, manifest: resources?.manifest, installSource: installSource)
+        Task { await launch.refresh() }
+        _launch = State(initialValue: launch)
+        _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.version))
     }
 
     var body: some Scene {
@@ -36,7 +38,7 @@ struct VoicedMenuBarApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(model: model, loginItem: loginItem, launch: launch)
+            SettingsView(model: model, loginItem: loginItem, launch: launch, installer: Install.installer)
         }
         .windowResizability(.contentSize)
 

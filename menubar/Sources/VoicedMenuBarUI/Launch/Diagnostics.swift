@@ -1,9 +1,10 @@
 import Foundation
+import ServiceManagement
 import VoicedControl
 
 /// What the Debug pane shows and "Copy Diagnostics" copies: the app, what it pins, the
-/// install it found, and where everything lives. No settings values and no API key; the
-/// config file is named, not read.
+/// install it found, the services' Login Items statuses, the installer, and where everything
+/// lives. No settings values and no API key; the config file is named, not read.
 public struct Diagnostics: Sendable, Equatable {
     public struct Entry: Sendable, Equatable, Identifiable {
         public var label: String
@@ -22,24 +23,22 @@ public struct Diagnostics: Sendable, Equatable {
     public var sections: [Section]
 
     public init(
-        appVersion: String, bundlePath: String, translocatedFrom: String?, manifest: InstallManifest?,
-        installSource: String?, record: InstallRecord?, connection: String, serverVersion: String?,
-        socketPath: String, home: URL
+        appVersion: String, paths: VoicedPaths, translocatedFrom: URL?, manifest: InstallManifest?,
+        installSource: URL?, record: InstallRecord?, backgroundItems: [String: SMAppService.Status],
+        installer: String?, connection: String, serverVersion: String?, socketPath: String
     ) {
-        func entry(_ label: String, _ value: String?, path: String? = nil) -> Entry {
-            Entry(label: label, value: value ?? "None", path: path)
+        func entry(_ label: String, _ value: String?, path: URL? = nil) -> Entry {
+            Entry(label: label, value: value ?? "None", path: path?.path)
         }
-        let state = home.appendingPathComponent(".voiced").path
-        var app = [
-            entry("Version", appVersion),
-            entry("Location", bundlePath, path: bundlePath),
-        ]
-        if let translocatedFrom { app.append(entry("Translocated from", translocatedFrom)) }
-        if let installSource { app.append(entry("Install source override", installSource, path: installSource)) }
-        var pins = [entry("Pins", manifest == nil ? "None: this build has no installer resources" : nil)]
+        var app = [entry("Version", appVersion), entry("Location", paths.bundle.path, path: paths.bundle)]
+        if let translocatedFrom { app.append(entry("Translocated from", translocatedFrom.path)) }
+        if let installSource { app.append(entry("Install source override", installSource.path, path: installSource)) }
+        if let installer { app.append(entry("Installer", installer)) }
+        var pins = [entry("Pins", "None: this build has no installer resources")]
         if let manifest {
             pins = [
-                entry("voiced wheel", manifest.wheel.name),
+                entry("voiced", manifest.version),
+                entry("Wheel", manifest.wheel.name),
                 entry("Wheel sha256", manifest.wheel.sha256),
                 entry("Lock sha256", manifest.lockSHA256),
                 entry("Python", manifest.python),
@@ -47,30 +46,31 @@ public struct Diagnostics: Sendable, Equatable {
         }
         let install = record.map { record in
             [
-                entry("Source", record.source),
-                entry("Environment", record.environment, path: record.environment),
+                entry("Source", record.source.rawValue),
+                entry("Environment", record.environment, path: record.environment.map { URL(fileURLWithPath: $0) }),
                 entry("voiced", record.version),
                 entry("Lock sha256", record.lockSHA256),
                 entry("Python", record.python),
             ]
         } ?? [entry("install.json", "Not found")]
+        let loginItems = BackgroundItems.labels.map { label in
+            entry(label, backgroundItems[label].map { "Login Items: \($0.name)" } ?? "Not installed")
+        }
         sections = [
             Section(title: "Menu bar app", entries: app),
             Section(title: "Bundled pins", entries: pins),
             Section(title: "Installed environment", entries: install),
             Section(
                 title: "Services",
-                entries: [entry("State", connection), entry("Watchdog reports voiced", serverVersion)]),
+                entries: [entry("State", connection), entry("Watchdog reports voiced", serverVersion)] + loginItems),
             Section(
                 title: "Paths",
                 entries: [
-                    entry("State directory", state, path: state),
+                    entry("State directory", paths.stateDirectory.path, path: paths.stateDirectory),
                     entry("Control socket", socketPath),
-                    entry("Config file", home.appendingPathComponent(".config/voiced/config.toml").path,
-                          path: home.appendingPathComponent(".config/voiced").path),
-                    entry("Logs", home.appendingPathComponent("Library/Logs/voiced").path,
-                          path: home.appendingPathComponent("Library/Logs/voiced").path),
-                    entry("uv cache", home.appendingPathComponent("Library/Application Support/voiced/uv-cache").path),
+                    entry("Config file", paths.configFile.path, path: paths.configFile.deletingLastPathComponent()),
+                    entry("Logs", paths.logs.path, path: paths.logs),
+                    entry("uv cache", paths.uvCache.path),
                 ]),
         ]
     }

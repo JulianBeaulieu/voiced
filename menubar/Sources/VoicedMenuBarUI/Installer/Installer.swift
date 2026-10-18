@@ -65,9 +65,9 @@ public final class Installer {
 
     private func refreshWelcome() {
         let fileManager = FileManager.default
-        let environments = (try? fileManager.contentsOfDirectory(atPath: configuration.environments.path)) ?? []
+        let environments = (try? fileManager.contentsOfDirectory(atPath: configuration.paths.environments.path)) ?? []
         welcome.availableBytes = configuration.availableCapacity(configuration.home)
-        welcome.resuming = isInstalled || !environments.isEmpty || fileManager.fileExists(atPath: configuration.manifest.path)
+        welcome.resuming = isInstalled || !environments.isEmpty || fileManager.fileExists(atPath: configuration.paths.installRecord.path)
     }
 
     // MARK: - Actions

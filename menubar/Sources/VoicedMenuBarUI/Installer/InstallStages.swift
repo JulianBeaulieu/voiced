@@ -28,27 +28,24 @@ struct InstallStages {
     /// `bin/voiced` leads to, else the newest complete one in `envs/`. `voiced install` runs
     /// again there instead of building another.
     func resumableEnvironment() -> URL? {
-        let entry = configuration.stateDirectory.appendingPathComponent("bin/voiced")
+        let entry = configuration.paths.entryPoint
         var candidates: [URL] = []
         if let linked = try? FileManager.default.destinationOfSymbolicLink(atPath: entry.path) {
             candidates.append(URL(fileURLWithPath: linked).deletingLastPathComponent().deletingLastPathComponent())
         }
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: configuration.environments.path)) ?? []
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: configuration.paths.environments.path)) ?? []
         candidates += names.filter { !$0.hasSuffix(".partial") }.sorted().reversed()
-            .map { configuration.environments.appendingPathComponent($0, isDirectory: true) }
+            .map { configuration.paths.environments.appendingPathComponent($0, isDirectory: true) }
         return candidates.first(where: hasThisAppsVoiced)
     }
 
     /// Inside `envs/`, with a `bin/voiced` and this app's wheel's version installed.
     private func hasThisAppsVoiced(_ environment: URL) -> Bool {
         let environment = environment.standardizedFileURL
-        guard environment.deletingLastPathComponent().path == configuration.environments.standardizedFileURL.path,
+        guard environment.deletingLastPathComponent().path == configuration.paths.environments.standardizedFileURL.path,
             FileManager.default.isExecutableFile(atPath: environment.appendingPathComponent("bin/voiced").path)
         else { return false }
-        // voiced-0.1.0-py3-none-any.whl installs voiced-0.1.0.dist-info.
-        let wheel = configuration.resources.manifest.wheel.name.split(separator: "-")
-        guard wheel.count > 2 else { return false }
-        let info = "voiced-\(wheel[1]).dist-info"
+        let info = "voiced-\(configuration.resources.manifest.version).dist-info"
         let lib = environment.appendingPathComponent("lib")
         let pythons = (try? FileManager.default.contentsOfDirectory(atPath: lib.path)) ?? []
         return pythons.contains {
@@ -59,7 +56,7 @@ struct InstallStages {
     /// Claims `~/.voiced`, then builds `envs/<id>.partial` with the bundled uv and renames it
     /// once its packages are in, holding the install lock until then.
     func buildEnvironment(progress: (String) -> Void) async -> Result<URL, InstallFailure> {
-        let state = configuration.stateDirectory
+        let state = configuration.paths.stateDirectory
         let preparing = "Preparing \(state.path)"
         func failure(_ cause: String) -> Result<URL, InstallFailure> {
             .failure(InstallFailure(stage: .environment, step: preparing, cause: cause))
@@ -80,14 +77,14 @@ struct InstallStages {
         defer { lock.release() }
         do {
             try StateDirectory.claim(state)
-            try fileManager.createDirectory(at: configuration.environments, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: configuration.paths.environments, withIntermediateDirectories: true)
         } catch {
             return failure(error.localizedDescription)
         }
         // A .partial is only ever this app's, left by a run that was stopped.
-        let names = (try? fileManager.contentsOfDirectory(atPath: configuration.environments.path)) ?? []
+        let names = (try? fileManager.contentsOfDirectory(atPath: configuration.paths.environments.path)) ?? []
         for name in names where name.hasSuffix(".partial") {
-            try? fileManager.removeItem(at: configuration.environments.appendingPathComponent(name))
+            try? fileManager.removeItem(at: configuration.paths.environments.appendingPathComponent(name))
         }
         let target = newEnvironmentDirectory()
         let partial = target.appendingPathExtension("partial")
@@ -104,58 +101,50 @@ struct InstallStages {
     }
 
     /// The wheel and lock to install: the app's own, checked against its manifest, or in a
-    /// development build those of the `installSource` override (ADR 0018, "Open items"): a
-    /// wheel as it is, a checkout built into one with the bundled uv. The lock is always the
-    /// one the wheel carries, so the two cannot disagree.
+    /// debug build the wheel the `installSource` override names (ADR 0018, "Open items"),
+    /// with the lock it carries, so the two cannot disagree. Release builds never look at
+    /// the override.
     func installResources() async -> Result<InstallResources, InstallFailure> {
         let bundled = configuration.resources
-        guard let source = configuration.installSource else {
-            if let mismatch = bundled.mismatch() {
-                return .failure(InstallFailure(stage: .environment, step: "Checking the app", cause: mismatch))
-            }
-            return .success(bundled)
+        #if DEBUG
+            if let source = configuration.installSource { return await developmentResources(source) }
+        #endif
+        if let mismatch = bundled.mismatch() {
+            return .failure(InstallFailure(stage: .environment, step: "Checking the app", cause: mismatch))
         }
-        let step = "Using the install source \(source.path)"
-        func failure(_ cause: String) -> Result<InstallResources, InstallFailure> {
-            .failure(InstallFailure(stage: .environment, step: step, cause: cause))
-        }
-        let fileManager = FileManager.default
-        let work = configuration.developmentWork
-        try? fileManager.removeItem(at: work)
-        do {
-            try fileManager.createDirectory(at: work, withIntermediateDirectories: true)
-        } catch {
-            return failure(error.localizedDescription)
-        }
-        var isDirectory: ObjCBool = false
-        let wheel: URL
-        if source.pathExtension == "whl", fileManager.fileExists(atPath: source.path) {
-            wheel = source
-        } else if fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory), isDirectory.boolValue,
-            fileManager.fileExists(atPath: source.appendingPathComponent("pyproject.toml").path)
-        {
-            let build = InstallCommand(
-                bundled.uv.path, ["build", "--wheel", "--out-dir", work.path, source.path],
-                environment: uvEnvironment)
-            if case .failure(let failure) = await execute(build, step: step) { return .failure(failure) }
-            let built = ((try? fileManager.contentsOfDirectory(atPath: work.path)) ?? [])
-                .filter { $0.hasPrefix("voiced-") && $0.hasSuffix(".whl") }
-            guard built.count == 1 else { return failure("Building \(source.path) made no single voiced wheel.") }
-            wheel = work.appendingPathComponent(built[0])
-        } else {
-            return failure("It is neither a voiced wheel nor a checkout with a pyproject.toml.")
-        }
-        let unzip = InstallCommand("/usr/bin/unzip", ["-o", "-q", wheel.path, "voiced/requirements.lock", "-d", work.path])
-        if case .failure(let failure) = await execute(unzip, step: step) { return .failure(failure) }
-        let lock = work.appendingPathComponent("voiced/requirements.lock")
-        guard let lockDigest = InstallResources.sha256(of: lock), let wheelDigest = InstallResources.sha256(of: wheel) else {
-            return failure("\(wheel.lastPathComponent) carries no voiced/requirements.lock.")
-        }
-        var manifest = bundled.manifest
-        manifest.wheel = .init(name: wheel.lastPathComponent, sha256: wheelDigest)
-        manifest.lockSHA256 = lockDigest
-        return .success(InstallResources(uv: bundled.uv, lock: lock, wheel: wheel, manifest: manifest))
+        return .success(bundled)
     }
+
+    #if DEBUG
+        private func developmentResources(_ wheel: URL) async -> Result<InstallResources, InstallFailure> {
+            let step = "Using the install source \(wheel.path)"
+            func failure(_ cause: String) -> Result<InstallResources, InstallFailure> {
+                .failure(InstallFailure(stage: .environment, step: step, cause: cause))
+            }
+            // voiced-0.3.0.dev1-py3-none-any.whl
+            let parts = wheel.lastPathComponent.split(separator: "-")
+            guard wheel.pathExtension == "whl", parts.count == 5, parts[0] == "voiced",
+                FileManager.default.fileExists(atPath: wheel.path)
+            else { return failure("It is not a voiced wheel. Build one with `uv build --wheel` in the checkout.") }
+            let work = configuration.paths.installSourceWork
+            try? FileManager.default.removeItem(at: work)
+            do {
+                try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            } catch {
+                return failure(error.localizedDescription)
+            }
+            let unzip = InstallCommand("/usr/bin/unzip", ["-o", "-q", wheel.path, "voiced/requirements.lock", "-d", work.path])
+            if case .failure(let failure) = await execute(unzip, step: step) { return .failure(failure) }
+            let lock = work.appendingPathComponent("voiced/requirements.lock")
+            guard let lockDigest = InstallResources.sha256(of: lock), let wheelDigest = InstallResources.sha256(of: wheel)
+            else { return failure("\(wheel.lastPathComponent) carries no voiced/requirements.lock.") }
+            var manifest = configuration.resources.manifest
+            manifest.version = String(parts[1])
+            manifest.wheel = .init(name: wheel.lastPathComponent, sha256: wheelDigest)
+            manifest.lockSHA256 = lockDigest
+            return .success(InstallResources(uv: configuration.resources.uv, lock: lock, wheel: wheel, manifest: manifest))
+        }
+    #endif
 
     /// What every uv command gets: no user configuration, clones from the app's own cache,
     /// Pythons under the state directory.
@@ -163,8 +152,8 @@ struct InstallStages {
         [
             "UV_NO_CONFIG": "1",
             "UV_LINK_MODE": "clone",
-            "UV_CACHE_DIR": configuration.home.appendingPathComponent("Library/Application Support/voiced/uv-cache").path,
-            "UV_PYTHON_INSTALL_DIR": configuration.stateDirectory.appendingPathComponent("python").path,
+            "UV_CACHE_DIR": configuration.paths.uvCache.path,
+            "UV_PYTHON_INSTALL_DIR": configuration.paths.pythons.path,
         ]
     }
 
@@ -200,19 +189,19 @@ struct InstallStages {
         var name = base
         var n = 1
         let fileManager = FileManager.default
-        while fileManager.fileExists(atPath: configuration.environments.appendingPathComponent(name).path)
-            || fileManager.fileExists(atPath: configuration.environments.appendingPathComponent(name + ".partial").path)
+        while fileManager.fileExists(atPath: configuration.paths.environments.appendingPathComponent(name).path)
+            || fileManager.fileExists(atPath: configuration.paths.environments.appendingPathComponent(name + ".partial").path)
         {
             n += 1
             name = "\(base)-\(n)"
         }
-        return configuration.environments.appendingPathComponent(name, isDirectory: true)
+        return configuration.paths.environments.appendingPathComponent(name, isDirectory: true)
     }
 
     /// Waits while another install holds the lock.
     private func acquireLock(progress: (String) -> Void) async -> InstallLock? {
         while !Task.isCancelled {
-            switch InstallLock.tryAcquire(configuration.stateDirectory) {
+            switch InstallLock.tryAcquire(configuration.paths.stateDirectory) {
             case .acquired(let lock): return lock
             case .busy:
                 progress("Waiting for another voiced install to finish")

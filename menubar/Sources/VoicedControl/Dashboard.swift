@@ -42,13 +42,20 @@ public enum OverallHealth: Sendable, Equatable {
 /// needs a look (degraded, stopped, not running, not installed, an incompatible version).
 public enum MenuBarIconState: Sendable, Hashable {
     case idle, busy, error
+}
+
+/// The icon's state and what VoiceOver says for it.
+public struct MenuBarIconStatus: Sendable, Equatable {
+    public var state: MenuBarIconState
+    public var accessibilityLabel: String
 
     public init(dashboard: Dashboard, installing: Bool) {
         if installing || dashboard.isBusy {
-            self = .busy
+            state = .busy
         } else {
-            self = dashboard.health == .running ? .idle : .error
+            state = dashboard.health == .running ? .idle : .error
         }
+        accessibilityLabel = "voiced: \(installing ? "Installing" : dashboard.headline)"
     }
 }
 
@@ -203,16 +210,18 @@ public enum DashboardReducer {
             return Dashboard(health: .off, headline: "Stopped", rows: rows)
         }
         let headline: String
+        var isBusy = false
         if services.contains(where: { $0.1.state == .degraded }) {
             headline = "Degraded"
         } else if services.contains(where: { $0.1.state == .starting || ($0.1.state == .running && !$0.1.warm) }) {
             headline = "Starting"
+            isBusy = true
         } else if let off = stopped.first {
             headline = "\(off.0.shortTitle) stopped"
         } else {
             headline = "Unknown state"
         }
-        return Dashboard(health: .attention, headline: headline, rows: rows, isBusy: headline == "Starting")
+        return Dashboard(health: .attention, headline: headline, rows: rows, isBusy: isBusy)
     }
 
     static func row(kind: ServiceKind, status: ServiceStatus) -> ServiceRowState {
