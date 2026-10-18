@@ -20,10 +20,6 @@
 	<false/>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
-	<key>StandardOutPath</key>
-	<string>/Users/someone/Library/Logs/voiced/metalprobe.stdout.log</string>
-	<key>StandardErrorPath</key>
-	<string>/Users/someone/Library/Logs/voiced/metalprobe.stderr.log</string>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>WorkingDirectory</key>
@@ -38,6 +34,8 @@
 		<string>/Users/someone/.config/voiced/config.toml</string>
 		<key>PYTHONUNBUFFERED</key>
 		<string>1</string>
+		<key>VOICED_STDIO_LOG</key>
+		<string>/Users/someone/Library/Logs/voiced/metalprobe</string>
 	</dict>
 </dict>
 </plist>

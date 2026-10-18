@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.config import Settings, config_path, load_settings
+from voiced.launchd.stdio import redirect_stdio_from_env
 
 if TYPE_CHECKING:
     import uvicorn
@@ -201,6 +202,8 @@ def cmd_config(settings: Settings) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # A no-op after voiced.entry; covers a console script from before it.
+    redirect_stdio_from_env()
     args = build_parser().parse_args(argv)
     try:
         settings = load_settings()

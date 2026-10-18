@@ -67,7 +67,7 @@ Repository = "https://github.com/JulianBeaulieu/voiced"
 Issues = "https://github.com/JulianBeaulieu/voiced/issues"
 
 [project.scripts]
-voiced = "voiced.cli:main"
+voiced = "voiced.entry:main"
 
 # Engine plugins. Third-party packages add their own engines by declaring
 # entry points in these two groups; see docs/decisions/0002-engine-interfaces.md.

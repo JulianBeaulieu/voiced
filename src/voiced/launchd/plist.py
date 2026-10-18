@@ -12,6 +12,10 @@ import plistlib
 from dataclasses import dataclass
 from pathlib import Path
 
+ENV_STDIO_LOG = "VOICED_STDIO_LOG"
+"""``<log_dir>/<service>``, the prefix of the two files ``voiced.launchd.stdio``
+points stdout and stderr at."""
+
 # The rotating application log, shared by voiced.logging and the stdlib-only
 # watchdog so both rotate the same way.
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -24,8 +28,8 @@ class LogPaths:
     """Where one service's output ends up under ``log_dir``."""
 
     app: Path  # written by voiced.logging (rotating)
-    stdout: Path  # launchd's capture of the process stdout
-    stderr: Path  # launchd's capture of the process stderr
+    stdout: Path  # the process stdout (voiced.launchd.stdio)
+    stderr: Path  # the process stderr (voiced.launchd.stdio)
 
 
 def log_paths(log_dir: Path, service: str) -> LogPaths:
@@ -50,8 +54,12 @@ def render_plist(
     """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``.
 
     ``keep_alive=False`` gives a one-shot job (used for the Metal probe).
+
+    There is no ``StandardOutPath``/``StandardErrorPath``: launchd may open
+    them as root in a directory the user owns. ``VOICED_STDIO_LOG`` tells the
+    process to open them itself (``voiced.launchd.stdio``, ADR 0006).
     """
-    logs = log_paths(log_dir, label.rsplit(".", 1)[-1])
+    service = label.rsplit(".", 1)[-1]
     plist: dict[str, object] = {
         "Label": label,
         "ProgramArguments": program_arguments,
@@ -59,12 +67,12 @@ def render_plist(
         "RunAtLoad": True,
         "KeepAlive": keep_alive,
         "ThrottleInterval": throttle_interval_s,
-        "StandardOutPath": str(logs.stdout),
-        "StandardErrorPath": str(logs.stderr),
         "ProcessType": "Interactive",
     }
     if working_directory is not None:
         plist["WorkingDirectory"] = str(working_directory)
-    if environment:
-        plist["EnvironmentVariables"] = dict(environment)
+    plist["EnvironmentVariables"] = {
+        **(environment or {}),
+        ENV_STDIO_LOG: str(log_dir / service),
+    }
     return plistlib.dumps(plist, sort_keys=False)
