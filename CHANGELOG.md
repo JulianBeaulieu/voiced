@@ -98,6 +98,12 @@ uses [Semantic Versioning](https://semver.org/).
   with three satellites at once the third still fails on utterances over
   about 31 s. ADR 0008 documents the capacity (one stream within the
   finalize target, the rest queue).
+- Under launchd the services were slower on short bursts of work than the
+  same code started from a terminal: push-to-talk finalize was 145 ms median
+  on an M1 Max against 114 ms. A launchd job is not in a terminal app's
+  coalition, and macOS runs its first burst of work after an idle gap far
+  below full speed. `voiced serve` now sets its own task role to foreground
+  application at start, which brings it to 122 ms (ADR 0015).
 - `voiced restart all` restarted stt and tts but not the watchdog, which
   kept running the old code after an upgrade until it was killed by hand.
   It now restarts the watchdog last (SIGTERM, then `launchctl kickstart`)

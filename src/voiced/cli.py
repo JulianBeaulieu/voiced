@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import resource
 import socket
 import sys
@@ -147,6 +148,7 @@ def cmd_serve(settings: Settings, service: str) -> int:
     with http_socket:
         app = build_service_app(settings, service)
         raise_open_file_limit()  # after logging is configured, before any connection
+        request_foreground_role()
         uvicorn.Server(uvicorn_config(app, settings)).run(sockets=[http_socket])
     return 0
 
@@ -178,6 +180,56 @@ def raise_open_file_limit(target: int = OPEN_FILES) -> None:
         log.info("open file limit raised from %d to %d, the hard limit", soft, want)
     else:
         log.info("open file limit raised from %d to %d", soft, want)
+
+
+PRIO_DARWIN_ROLE = 6
+"""``getpriority`` selector for the task role (XNU ``sys/resource.h``; not in
+the public SDK header). It reads the role back; ``setpriority`` with it is
+refused inside a launchd job (``ENOTSUP``), so the role is set with
+``task_policy_set``."""
+
+TASK_CATEGORY_POLICY = 1
+TASK_FOREGROUND_APPLICATION = 1
+TASK_CATEGORY_POLICY_COUNT = 1  # natural_t words in task_category_policy_data_t
+
+
+def request_foreground_role() -> None:
+    """Ask macOS to schedule this process as a foreground application.
+
+    Under launchd the first burst of work after an idle gap ran much slower
+    than from a terminal; this role recovers most of it (ADR 0015, Under
+    launchd). A task may set it on itself without privileges. Any failure is
+    logged and serving goes on.
+    """
+    if sys.platform != "darwin":
+        return
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL(None)
+        libc.mach_task_self.restype = ctypes.c_uint  # task_t
+        libc.task_policy_set.argtypes = [
+            ctypes.c_uint,  # task_t
+            ctypes.c_uint,  # task_policy_flavor_t
+            ctypes.c_void_p,  # task_policy_t
+            ctypes.c_uint,  # mach_msg_type_number_t
+        ]
+    except (OSError, AttributeError) as exc:  # libSystem or a symbol missing
+        log.warning("could not set the foreground task role: %s", exc)
+        return
+    role = ctypes.c_int(TASK_FOREGROUND_APPLICATION)
+    kr = libc.task_policy_set(
+        libc.mach_task_self(), TASK_CATEGORY_POLICY, ctypes.byref(role), TASK_CATEGORY_POLICY_COUNT
+    )
+    if kr != 0:
+        log.warning("could not set the foreground task role: kern_return %d", kr)
+        return
+    try:
+        read_back = os.getpriority(PRIO_DARWIN_ROLE, 0)
+    except OSError as exc:
+        log.info("task role set to foreground application; read back failed: %s", exc)
+        return
+    log.info("task role set to foreground application (darwin role read back: %d)", read_back)
 
 
 def build_service_app(settings: Settings, service: str) -> FastAPI:

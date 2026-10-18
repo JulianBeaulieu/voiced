@@ -67,6 +67,8 @@ def render_plist(
         "RunAtLoad": True,
         "KeepAlive": keep_alive,
         "ThrottleInterval": throttle_interval_s,
+        # Interactive: no resource limits (launchd.plist(5)); the task role
+        # is set in-process (cli.cmd_serve).
         "ProcessType": "Interactive",
     }
     if working_directory is not None:
