@@ -120,8 +120,10 @@ async def test_seekable_containers_still_decode(tmp_path: Path) -> None:
     src = tmp_path / "in.wav"
     src.write_bytes(sine_wav(seconds=1.0))
     out = tmp_path / "out.m4a"
+    exe = ffmpeg.ffmpeg_path()  # the one voiced runs, not whatever is on PATH
+    assert exe is not None
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", str(src), "-c:a", "aac", str(out)
+        exe, "-loglevel", "error", "-i", str(src), "-c:a", "aac", str(out)
     )
     assert await proc.wait() == 0
     samples = await ffmpeg.decode(out.read_bytes())
