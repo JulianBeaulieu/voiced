@@ -89,16 +89,24 @@ Homebrew's espeak-ng 1.52 has no such limit.
 
 So when no data directory is configured, `load()` clones the wheel's data
 with `cp -cR` (an APFS clone, no extra disk space) to
-`<per-user cache dir>/voiced/espeak-ng-data`, where the cache directory is
-`confstr(_CS_DARWIN_USER_CACHE_DIR)` (`/private/var/folders/../C/`, about
-75 bytes). It clones again on every load, since the system may purge that
-directory and the wheel may have been upgraded, and replaces the previous
-copy by rename. Before loading, the resolved data path is checked against
-159 bytes whenever the wheel's library (also through
-`PHONEMIZER_ESPEAK_LIBRARY`) or the wheel's data is in use, and a longer path
-fails `load()` with `EspeakNotFound` naming the path instead of letting
-espeak-ng exit the process. An explicit `VOICED_ESPEAK_DATA` for another
-library, such as Homebrew's, is used as given.
+`<per-user cache dir>/voiced/espeak-ng-data-<espeakng-loader version>`, where
+the cache directory is `confstr(_CS_DARWIN_USER_CACHE_DIR)`
+(`/private/var/folders/../C/`, about 75 bytes, derived from the uid so it
+works for daemons too). A complete copy (one with `phontab`) is reused and
+never replaced, because a running service reads the dictionaries again
+whenever it switches voice. A wheel upgrade gets a new directory, and a copy
+the system purged is made again. Each load clones into its own staging
+directory and renames it into place; when several load at once, the first
+rename wins and the others use that copy. Staging directories left by a
+crash are removed after an hour. Directories of older wheel versions are
+kept, since a service started before the upgrade may still read one.
+
+Before loading, every resolved data path is checked against 159 bytes
+(Homebrew's is about 45). A longer one fails `load()` with `EspeakNotFound`
+naming the path and the remedy (Homebrew's espeak-ng, or a
+`VOICED_ESPEAK_DATA` copy at a short path) instead of letting espeak-ng exit
+the process. A copy that cannot be made fails with `could not copy espeak-ng
+data to <path>`, not as a missing espeak-ng.
 
 Note that Homebrew's deprecated `espeak` formula conflicts with `espeak-ng`
 (both install an `espeak` binary); `brew unlink espeak` first if it is

@@ -21,6 +21,7 @@ without the ``tts`` extra.
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import os
 import shutil
@@ -63,6 +64,7 @@ call ``exit(1)``, which takes the whole process down. Homebrew's build has no
 such limit."""
 _CS_DARWIN_USER_CACHE_DIR = 65538
 """``confstr`` name for the per-user cache directory under ``/var/folders``."""
+_STALE_STAGING_SECONDS = 3600
 MAX_PHONEMES = 510
 """Kokoro's context is 512 tokens including the two padding tokens."""
 
@@ -269,13 +271,17 @@ class KokoroEngine(SentenceTTSEngine):
 
 
 def _bundled_espeak() -> tuple[str, str] | None:
-    """``(library, data)`` of the espeak-ng in the ``espeakng-loader`` wheel,
+    """``(data, version)`` of the espeak-ng in the ``espeakng-loader`` wheel,
     or ``None`` when it is not installed."""
     try:
         import espeakng_loader
     except ImportError:
         return None
-    return str(espeakng_loader.get_library_path()), str(espeakng_loader.get_data_path())
+    try:
+        version = importlib.metadata.version("espeakng-loader")
+    except importlib.metadata.PackageNotFoundError:
+        version = "unknown"
+    return str(espeakng_loader.get_data_path()), version
 
 
 def _user_cache_dir() -> Path | None:
@@ -288,71 +294,88 @@ def _user_cache_dir() -> Path | None:
     return Path(os.path.realpath(cache)) if cache else None
 
 
-def _short_espeak_copy(source: str) -> str:
+def _short_espeak_copy(source: str, version: str) -> str:
     """Clone the espeak-ng data directory ``source`` to
-    ``<user cache dir>/voiced/espeak-ng-data`` and return that path.
+    ``<user cache dir>/voiced/espeak-ng-data-<version>`` and return that path.
 
     ``cp -c`` makes an APFS clone, so the copy takes no extra disk space; a
-    plain copy is the fallback on other file systems. The copy is made again
-    on every load, because the system may purge the cache directory and the
-    wheel may have been upgraded, and it replaces the previous one by rename.
-    Returns ``source`` unchanged when there is no user cache directory.
+    plain copy is the fallback on other file systems. A complete copy (it has
+    ``phontab``) is reused and never replaced, so a running service never sees
+    its data change under it; a wheel upgrade gets a new directory, and one
+    the system purged is made again. Concurrent loads each clone into their
+    own staging directory and the first rename wins. Returns ``source``
+    unchanged when there is no user cache directory.
     """
     cache = _user_cache_dir()
     if cache is None:
         return source
     root = cache / "voiced"
-    target = root / "espeak-ng-data"
-    root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".espeak-ng-data.", dir=root))
+    target = root / f"espeak-ng-data-{version}"
+    if (target / "phontab").is_file():
+        return str(target)
     try:
-        copy = staging / "espeak-ng-data"
-        # cp -R copies a symlink as a symlink, so hand it the real directory.
-        real = os.path.realpath(source)
-        cloned = subprocess.run(["/bin/cp", "-cR", real, str(copy)], capture_output=True)
-        if cloned.returncode != 0:
-            shutil.rmtree(copy, ignore_errors=True)
-            shutil.copytree(real, copy)
-        if target.exists():
-            target.rename(staging / "previous")
+        root.mkdir(parents=True, exist_ok=True)
+        _remove_stale_staging(root)
+        staging = Path(tempfile.mkdtemp(prefix=".espeak-ng-data.", dir=root))
         try:
-            copy.rename(target)
-        except OSError:
-            # Another process put its copy in place in between; use that one.
-            if not target.is_dir():
-                raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+            copy = staging / "data"
+            # cp -R copies a symlink as a symlink, so hand it the real directory.
+            real = os.path.realpath(source)
+            cloned = subprocess.run(["/bin/cp", "-cR", real, str(copy)], capture_output=True)
+            if cloned.returncode != 0:
+                shutil.rmtree(copy, ignore_errors=True)
+                shutil.copytree(real, copy)
+            if target.is_dir() and not (target / "phontab").is_file():
+                # Left incomplete by a purge: move it aside so the rename can land.
+                target.rename(staging / "incomplete")
+            try:
+                copy.rename(target)
+            except OSError:
+                # Another load put its copy in place first; use that one.
+                if not (target / "phontab").is_file():
+                    raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    except OSError as exc:
+        raise EspeakNotFound(f"could not copy espeak-ng data to {target}: {exc}") from exc
     return str(target)
 
 
-def _espeak_data(library: str, data: str | None) -> str | None:
-    """The data directory to load ``library`` with.
+def _remove_stale_staging(root: Path) -> None:
+    """Best effort: remove staging directories a crashed load left behind."""
+    cutoff = time.time() - _STALE_STAGING_SECONDS
+    for entry in root.glob(".espeak-ng-data.*"):
+        try:
+            if entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _espeak_data(data: str | None) -> str | None:
+    """The data directory to load espeak-ng with.
 
     An explicit ``data`` is used as given. Without one the tokenizer would
     read the wheel's data from inside the virtual environment, whose path can
     be longer than the wheel's espeak-ng accepts, so a clone at a short path
-    is used instead. Whenever the wheel's library or data is in play the
-    resolved path (``phonemizer`` resolves symlinks, so a short symlink does
-    not help) must fit :data:`MAX_ESPEAK_DATA_PATH`, else this raises rather
-    than let espeak-ng exit the process.
+    is used instead. The resolved path (``phonemizer`` resolves symlinks, so a
+    short symlink does not help) must fit :data:`MAX_ESPEAK_DATA_PATH`, else
+    this raises rather than let espeak-ng exit the process. The check applies
+    to every data path: Homebrew's is about 45 bytes.
     """
-    bundled = _bundled_espeak()
-    if bundled is None:
-        return data
-    bundled_library, bundled_data = bundled
-    # kokoro_onnx's Tokenizer silently prefers PHONEMIZER_ESPEAK_LIBRARY.
-    in_use = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY") or library
     if data is None:
-        data = _short_espeak_copy(bundled_data)
-    elif os.path.realpath(in_use) != os.path.realpath(bundled_library):
-        return data
+        bundled = _bundled_espeak()
+        if bundled is None:
+            return None
+        data = _short_espeak_copy(*bundled)
     resolved = os.path.realpath(data)
     size = len(resolved.encode())
     if size > MAX_ESPEAK_DATA_PATH:
         raise EspeakNotFound(
-            f"espeak-ng data path {resolved} is {size} bytes; the espeak-ng from "
-            f"espeakng-loader accepts at most {MAX_ESPEAK_DATA_PATH}"
+            f"espeak-ng data path {resolved} is {size} bytes, longer than the "
+            f"{MAX_ESPEAK_DATA_PATH} the espeak-ng from espeakng-loader accepts. Use "
+            f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set {ENV_ESPEAK_DATA} "
+            f"to a copy at a path of {MAX_ESPEAK_DATA_PATH} bytes or less."
         )
     return data
 
@@ -363,8 +386,10 @@ def _load_espeak() -> Any:
 
     errors: list[str] = []
     for library, configured in espeak_candidates():
+        # Raises on its own: a data path that is too long or cannot be copied
+        # is not a missing espeak-ng.
+        data = _espeak_data(configured)
         try:
-            data = _espeak_data(library, configured)
             tokenizer = Tokenizer(EspeakConfig(lib_path=library, data_path=data))
             probe = tokenizer.phonemize("hello", "en-us")
         except (RuntimeError, OSError) as exc:  # how the tokenizer reports a bad library
