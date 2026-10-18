@@ -346,11 +346,31 @@ Speech to Text and Text to Speech panes.
    download size and disk space from the manifest, and whether the disk has
    room. If an install already exists, this screen says so instead (see
    Lifecycle). One button: "Install".
-2. **Environment** (no prompt): the steps in the table above, holding ADR
-   0017's install lock (an exclusive `flock` on `~/.voiced`; installs never
-   prune an `envs/<id>.partial`) until the environment is renamed, then
-   releasing it for step 3, which takes it itself. A CLI install that gets
-   the lock in that moment could prune the renamed environment; step 3
+2. **Environment** (no prompt): holding ADR 0017's install lock (an
+   exclusive `flock` on `~/.voiced`; installs never prune an
+   `envs/<id>.partial`), the app first claims `~/.voiced`, the way
+   `voiced install` does, before it builds anything there:
+
+   - missing, empty, or holding only `control.sock` or `.DS_Store`: create
+     it if needed, write exactly
+
+     ```json
+     {"source": "app", "environment": null}
+     ```
+
+     to `~/.voiced/.install.json.tmp` and rename that to
+     `~/.voiced/install.json` (the other manifest fields default to
+     empty);
+   - `install.json` exists, or the directory is a legacy venv as ADR 0017
+     defines it (`pyvenv.cfg`, and a voiced `.dist-info` without
+     `"editable": true`), which `voiced install` adopts and replaces: leave
+     it as it is;
+   - a symlink, or anything else: refuse (naming the link's target or the
+     entries), as `voiced install` would, and build nothing.
+
+   Then the steps in the table above, until the environment is renamed,
+   then releasing it for step 3, which takes it itself. A CLI install that
+   gets the lock in that moment could prune the renamed environment; step 3
    then fails its engine check and "Try again" builds it again. uv has no
    machine-readable progress, so this step shows an indeterminate spinner
    with the current step's name, not an invented bar. It takes about 27 s.

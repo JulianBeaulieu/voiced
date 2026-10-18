@@ -75,32 +75,11 @@ and would be adopted, but only if named explicitly. Anything else, a user's
 own venv included, is refused, naming the files, before the config or
 anything else is written, and uninstall leaves it alone. A fresh directory
 is claimed by writing the manifest first, with `environment: null`, so an
-interrupted install is still recognised.
-
-The app (ADR 0018) builds Python and the environment before it runs
-`voiced install`, so a first app install finds a directory with no
-`install.json`. Without a manifest, a directory whose every entry is one
-voiced makes is voiced's too, with nothing installed: `control.sock`,
-`.DS_Store`, and
-
-- `envs/`, a real directory holding at least one entry, each named by a UTC
-  timestamp `<id>` (`20261018T120000`, or `-<n>` after it) and a real
-  directory: `envs/<id>` a venv with voiced installed in it, not editable
-  (the rule above), or `envs/<id>.partial`, a build in progress;
-- `python/`, a real directory that uv manages: it has uv's two markers,
-  a `.lock` file and a `.gitignore` of exactly `*`, which `uv python
-  install` writes into every install directory; besides them only `.temp`
-  and `.cache`, and installations, `cpython-3.<minor>[.<patch>]-macos-<arch>-none`
-  directories with `bin/python3`, or a minor-version link of that name to
-  one of them in the same directory.
-
-uv's markers and its naming scheme, not the presence of some Python, are
-the test, because uninstall removes the whole of `python/`: an empty
-directory, a symlink, a stray file, a Python at another path, or any other
-name refuses the directory as before. The same goes for `envs/`: empty,
-symlinked, a file in it, a venv without voiced (or with an editable one) or
-a name voiced does not use. Uninstall of such a directory removes the
-environments and `python/` and keeps an `envs/<id>.partial`.
+interrupted install is still recognised. The app (ADR 0018) does the same
+before it builds `python/` and `envs/` there, so the directory it hands to
+`voiced install` is already claimed. voiced never recognises an unclaimed
+directory by what is in it. A state directory that is itself a symlink is
+refused, whatever it points at: uninstall would delete inside the target.
 
 **One install at a time.** `voiced install` (all of it) and `voiced
 uninstall --yes` hold an exclusive `flock` on the state directory itself
@@ -109,7 +88,9 @@ says it is waiting and waits. The app takes the same lock. Without it, the
 app and the CLI could prune each other's new environment, leaving
 `bin/voiced` dangling and every job stopped by `PathState`, or build into
 the same `envs/<timestamp>`. Environments still being built
-(`envs/<id>.partial`, ADR 0018) are never pruned or uninstalled.
+(`envs/<id>.partial`, ADR 0018) are never pruned; uninstall, which holds
+the lock the builder holds, removes them, so an interrupted build does not
+keep `~/.voiced` forever.
 
 **One install mode.** Without `--source`, the environment is `sys.prefix`
 of the running `voiced`, and `voiced install` links `bin/voiced` to its

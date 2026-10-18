@@ -5,29 +5,25 @@ from __future__ import annotations
 
 import fcntl
 import os
-import re
 import shutil
 import threading
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from voiced.launchd.install import new_environment_dir
 from voiced.layout import (
-    ENV_ID,
     Manifest,
     NotVoiceds,
     RunningEnvironment,
     built_environments,
     claim,
-    foreign_entries,
     homebrew_busy,
     homebrew_lock,
     install_lock,
     is_legacy_venv,
     legacy_venv_paths,
     link_entry_point,
+    partial_environments,
     read_link,
     write_manifest,
 )
@@ -85,150 +81,32 @@ def test_claim_is_one_rule(tmp_path: Path) -> None:
     assert claimed is not None and claimed.source == "app"
 
 
-def _uv_python(path: Path) -> Path:
-    """A Python install directory as `uv python install` leaves it."""
-    installation = path / "cpython-3.12.15-macos-aarch64-none"
-    (installation / "bin").mkdir(parents=True)
-    (installation / "bin" / "python3").write_text("")
-    (path / ".temp").mkdir()
-    (path / ".lock").write_text("")
-    (path / ".gitignore").write_text("*")
-    return path
+@pytest.mark.parametrize("contents", ["empty", "manifest", "legacy"])
+def test_claim_refuses_a_symlinked_state_dir(tmp_path: Path, contents: str) -> None:
+    """Uninstall would delete inside whatever the link points at."""
+    target = tmp_path / "target"
+    if contents == "legacy":
+        _venv(target)
+    else:
+        target.mkdir()
+    if contents == "manifest":
+        write_manifest(target, Manifest(source="app", environment=None))
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(NotVoiceds, match="symlink"):
+        claim(link)
+    assert claim(target) is None or contents != "empty"
 
 
-def _app_build(state: Path) -> Path:
-    """What the app has built when it runs `voiced install` (ADR 0018)."""
-    _uv_python(state / "python")
-    _venv(state / "envs" / "20261018T120000")
-    (state / "control.sock").write_text("")
-    return state
-
-
-def test_claim_accepts_what_the_app_builds_before_install(tmp_path: Path) -> None:
-    state = _app_build(tmp_path / "state")
-    assert claim(state) is None  # voiced's, nothing installed yet
-    (state / "envs" / "20261018T130000-2.partial").mkdir()  # a second build, unfinished
-    python = state / "python"
-    (python / "cpython-3.12-macos-aarch64-none").symlink_to(
-        python / "cpython-3.12.15-macos-aarch64-none"
-    )
-    (python / ".cache").mkdir()
-    assert claim(state) is None
-    only_python = _uv_python(tmp_path / "step1" / "python").parent  # the venv step failed
-    assert claim(only_python) is None
-
-
-def _user_venv(state: Path) -> None:
-    _venv(state / "envs" / "20261018T130000", voiced=False)
-
-
-def _checkout_venv(state: Path) -> None:
-    venv = _venv(state / "envs" / "20261018T130000")
-    info = next(venv.glob("lib/python3*/site-packages/voiced-*.dist-info"))
-    (info / "direct_url.json").write_text('{"url": "file:///x", "dir_info": {"editable": true}}')
-
-
-def _symlink_into_envs(state: Path) -> None:
-    _venv(state.parent / "elsewhere")
-    (state / "envs" / "20261018T130000").symlink_to(state.parent / "elsewhere")
-
-
-def _symlinked(name: str) -> Callable[[Path], None]:
-    def make(state: Path) -> None:
-        shutil.move(state / name, state.parent / name)
-        (state / name).symlink_to(state.parent / name)
-
-    return make
-
-
-def _python_link_outside(state: Path) -> None:
-    other = _uv_python(state.parent / "other")
-    (state / "python" / "cpython-3.12-macos-aarch64-none").symlink_to(
-        other / "cpython-3.12.15-macos-aarch64-none"
-    )
-
-
-def _empty_envs(state: Path) -> None:
-    shutil.rmtree(state / "envs" / "20261018T120000")
-
-
-def _unmarked_python(state: Path) -> None:
-    (state / "python" / ".gitignore").unlink()
-
-
-@pytest.mark.parametrize(
-    ("make", "named"),
-    [
-        (lambda s: (s / "envs" / "notes.txt").write_text("mine"), "envs/notes.txt"),
-        (_user_venv, "envs/20261018T130000"),
-        (_checkout_venv, "envs/20261018T130000"),
-        (lambda s: _venv(s / "envs" / "myenv"), "envs/myenv"),
-        (
-            lambda s: (s / "envs" / "20261018T130000.partial").write_text(""),
-            "envs/20261018T130000.partial",
-        ),
-        (_symlink_into_envs, "envs/20261018T130000"),
-        (lambda s: (s / "python" / "notes.txt").write_text("mine"), "python/notes.txt"),
-        (lambda s: (s / "envs" / "control.sock").write_text(""), "envs/control.sock"),
-        (lambda s: (s / "python" / "pypy-3.10").mkdir(), "python/pypy-3.10"),
-        (
-            lambda s: (s / "python" / "cpython-3.13.1-macos-aarch64-none").mkdir(),
-            "python/cpython-3.13.1",
-        ),
-        (_python_link_outside, "python/cpython-3.12-macos"),
-        (_unmarked_python, "python (not uv's)"),
-        (lambda s: (s / "python" / ".gitignore").write_text("*.pyc"), "python (not uv's)"),
-        (_symlinked("envs"), "envs"),
-        (_symlinked("python"), "python"),
-        (_empty_envs, "envs (empty)"),
-        (lambda s: (s / "precious.txt").write_text("mine"), "precious.txt"),
-        (lambda s: (s / "bin").mkdir(), "bin"),
-    ],
-    ids=[
-        "foreign-file-in-envs",
-        "user-venv-without-voiced",
-        "editable-checkout-venv",
-        "env-not-named-by-voiced",
-        "partial-that-is-a-file",
-        "symlink-in-envs",
-        "foreign-file-in-python",
-        "socket-in-envs",
-        "foreign-dir-in-python",
-        "python-installation-without-interpreter",
-        "python-link-outside",
-        "python-without-uv-lock-marker",
-        "python-with-another-gitignore",
-        "symlinked-envs",
-        "symlinked-python",
-        "empty-envs",
-        "foreign-file-beside-them",
-        "bin-without-manifest",
-    ],
-)
-def test_claim_refuses_anything_else_without_a_manifest(
-    tmp_path: Path, make: Callable[[Path], object], named: str
-) -> None:
-    """Uninstall would delete what claim accepts here, and once deleted a
-    user's venv adopted by mistake: any entry voiced did not make refuses
-    the whole directory."""
-    state = _app_build(tmp_path / "state")
-    make(state)
-    with pytest.raises(NotVoiceds, match=re.escape(named)):
-        claim(state)
-    assert any(entry.startswith(named) for entry in foreign_entries(state))
-
-
-def test_an_empty_python_dir_is_not_uvs(tmp_path: Path) -> None:
-    (tmp_path / "state" / "python").mkdir(parents=True)
-    with pytest.raises(NotVoiceds, match=re.escape("python (not uv's)")):
-        claim(tmp_path / "state")
-
-
-def test_new_environments_are_named_as_claim_expects(tmp_path: Path) -> None:
-    first = new_environment_dir(tmp_path)
-    _venv(first)
-    second = new_environment_dir(tmp_path)
-    assert ENV_ID.fullmatch(first.name) and ENV_ID.fullmatch(second.name)
+def test_partial_environments_are_real_directories_only(tmp_path: Path) -> None:
+    envs = tmp_path / "envs"
+    unfinished = envs / "20261018T120000.partial"
+    unfinished.mkdir(parents=True)
+    _venv(envs / "20261018T110000")
+    (tmp_path / "elsewhere").mkdir()
+    (envs / "20261018T130000.partial").symlink_to(tmp_path / "elsewhere")
+    (envs / "20261018T140000.partial").write_text("")
+    assert partial_environments(tmp_path) == [unfinished]
 
 
 def test_legacy_venv_paths_never_include_the_entry_point(tmp_path: Path) -> None:

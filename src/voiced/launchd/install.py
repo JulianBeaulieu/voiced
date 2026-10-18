@@ -51,6 +51,7 @@ from voiced.layout import (
     is_legacy_venv,
     legacy_venv_paths,
     link_entry_point,
+    partial_environments,
     same_path,
     sha256_file,
     stable_environment,
@@ -854,7 +855,7 @@ class UninstallTargets:
 def state_targets(state_dir: Path) -> UninstallTargets:
     """What of the state directory voiced owns (:func:`voiced.layout.claim`,
     the same rule install applies): the layout's entries, the environments
-    it built, and a legacy venv's files. Nothing else in it, and nothing
+    it built or began to build, and a legacy venv's files. Nothing else in it, and nothing
     outside it (Homebrew's keg is Homebrew's)."""
     try:
         manifest = claim(state_dir)
@@ -864,9 +865,11 @@ def state_targets(state_dir: Path) -> UninstallTargets:
         return UninstallTargets([], [], [], refused=str(exc))
     entry = entry_point(state_dir)
     files = [entry, state_dir / "control.sock", state_dir / MANIFEST]
-    # Without a manifest, claim has checked every environment and the Python
-    # directory are voiced's (what the app builds before `voiced install`).
-    trees = [*built_environments(state_dir), state_dir / PYTHONS]
+    if manifest is None:  # nothing installed; at most a stray socket
+        return UninstallTargets([], files, [state_dir])
+    # Unfinished builds too: uninstall holds the lock the builder holds.
+    trees = [*built_environments(state_dir), *partial_environments(state_dir)]
+    trees.append(state_dir / PYTHONS)
     if is_legacy_venv(state_dir):
         legacy = legacy_venv_paths(state_dir)
         trees += [p for p in legacy if p.is_dir() and not p.is_symlink()]
