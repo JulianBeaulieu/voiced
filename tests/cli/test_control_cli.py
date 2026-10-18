@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -16,6 +17,7 @@ import tomllib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -352,9 +354,14 @@ class Served:
 @pytest.fixture
 def served(settings: Settings, cfg: Path) -> Iterator[Served]:
     """A control server on a background loop, at the settings' socket path."""
+    with serving(settings, cfg, FakeSupervisor()) as it:
+        yield it
+
+
+@contextlib.contextmanager
+def serving(settings: Settings, cfg: Path, supervisor: Any) -> Iterator[Served]:
     short = Path(tempfile.mkdtemp(prefix="vc", dir="/tmp"))
     settings.install.venv_dir = short / "state"
-    supervisor = FakeSupervisor()
     loop = asyncio.new_event_loop()
     ops = Operations(supervisor, cfg, engines=engines_list)
     server = ControlServer(socket_path(settings), ops, version="t")
@@ -400,6 +407,33 @@ def test_restart_through_socket(served: Served, monkeypatch: pytest.MonkeyPatch)
     out.clear()
     assert lc.cmd_restart("stt", served.settings, job.runner, out.append) == 1
     assert out == ["restart failed: stt: stt has no launchd plist"]
+
+
+def test_restart_refused_while_homebrew_holds_the_environment(
+    settings: Settings, cfg: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`voiced restart` says why and exits non-zero; it does not print
+    "restarting" for a restart the watchdog will not do."""
+    from voiced.control.supervisor import WatchdogSupervisor
+    from voiced.layout import RunningEnvironment
+    from voiced.watchdog import RestartResult, Watchdog
+
+    monkeypatch.setattr(RunningEnvironment, "busy", lambda self: "voiced")
+    dog = Watchdog(
+        services=lc.watchdog_specs(settings),
+        policy=settings.watchdog,
+        restart=lambda spec: RestartResult(True, "ok"),
+        environment=RunningEnvironment.of((), tmp_path / "voiced"),
+    )
+    loaded = lambda argv: CommandResult(0, "state = running\npid = 7\n")  # noqa: E731
+    sup = WatchdogSupervisor(dog, runner=loaded, installed=lambda label: True)
+    with serving(settings, cfg, sup) as it:
+        out: list[str] = []
+        job = FakeWatchdogJob(it.settings, monkeypatch)
+        assert lc.cmd_restart("stt", it.settings, job.runner, out.append) == 1
+        assert out == [
+            "restart failed: stt: Homebrew is installing voiced; try again when it is done"
+        ]
 
 
 def test_status_through_socket(served: Served) -> None:

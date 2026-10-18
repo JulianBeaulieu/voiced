@@ -278,6 +278,30 @@ def test_engines_in_subprocess_ignores_modules_in_the_working_directory(
     assert "kokoro" in {e["name"] for e in result["tts"]}
 
 
+def test_engines_in_subprocess_runs_the_entry_points_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watchdog's own interpreter may be in a deleted keg; the
+    catalogue runs the interpreter next to what bin/voiced resolves to."""
+    import subprocess
+
+    env_bin = tmp_path / "env" / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / "voiced").write_text("")
+    entry = tmp_path / "state" / "bin" / "voiced"
+    entry.parent.mkdir(parents=True)
+    entry.symlink_to(env_bin / "voiced")
+    seen: list[str] = []
+
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.append(argv[0])
+        return subprocess.CompletedProcess(argv, 0, '{"stt": [], "tts": []}', "")
+
+    monkeypatch.setattr(ops_module.subprocess, "run", run)
+    assert engines_in_subprocess(entry=entry) == {"stt": [], "tts": []}
+    assert seen == [str(env_bin / "python")]
+
+
 def test_engines_in_subprocess_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 

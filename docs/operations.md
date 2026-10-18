@@ -7,7 +7,7 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Creates the service environment at `~/.voiced` with the `stt` and `tts` extras, copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Flags: `--dry-run` (show everything, write nothing), `--source` (a path or pip requirement to install instead of the release), `--venv`, `--python`, `--staging-dir`, `--skip-models`, `--no-uv`. |
+| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, downloads the configured models, writes the plists and scripts to `~/.config/voiced/launchd/`, and prints the one root step. Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--staging-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`). Waits while another install or uninstall holds the state directory; changes nothing the daemons use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
 | `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
 | `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
@@ -16,7 +16,7 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
 | `voiced doctor [--json]` | Checks the machine (see below). |
 | `voiced doctor --metal-probe` | Stages a one-shot LaunchDaemon that tests Metal from a real daemon context and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
-| `voiced uninstall` | Prints the root script that unloads and removes the daemons, then lists what it would delete. `--yes` deletes the service environment; `--remove-config`, `--remove-logs` and `--remove-models` add those. It refuses to delete anything while a daemon is still loaded. |
+| `voiced uninstall` | Prints the root script that unloads and removes the daemons, then lists what it would delete. `--yes` deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. It refuses to delete anything while a daemon is still loaded. |
 | `voiced watchdog [--once]` | Runs the watchdog in the foreground; `--once` polls once and prints its decisions. |
 | `voiced serve stt\|tts` | Runs one service in the foreground. For development and for trying an engine before installing. |
 | `voiced config` | Prints the effective configuration as JSON. |
@@ -131,7 +131,7 @@ now. The design is in [ADR 0012](decisions/0012-watchdog.md).
 ## Control channel
 
 The watchdog also serves a Unix socket, `~/.voiced/control.sock` (in the
-`[install] venv_dir` directory, so it moves with the venv), for local
+`[install] venv_dir` state directory, so it moves with it), for local
 clients such as a menu bar app, and for the CLI. It speaks newline-delimited
 JSON, accepts only processes of the same user (mode 0600 in a 0700
 directory, and the kernel's peer uid is checked), and listens on no network
@@ -273,67 +273,100 @@ They are the usual steps for a Mac that runs as a server:
 
 ## Updating
 
+The plists run `~/.voiced/bin/voiced`, a link to the active environment,
+and are the same for every way of installing, so an update that only
+changes the environment needs no root step. The watchdog restarts both
+services onto the new environment and then itself, within one poll
+(`[watchdog] interval_s`) of either of two things: a file it runs from
+was deleted or replaced (the old Homebrew keg or Python removed, a keg
+rebuilt by `brew reinstall`, an old `envs/<id>` pruned), or
+`~/.voiced/bin/voiced` was repointed (`voiced install`, the app). While
+Homebrew is installing voiced or its Python, the watchdog neither polls
+nor restarts anything, and refuses `voiced restart` (it exits non-zero
+with the reason), for up to 30 minutes.
+`voiced restart all` does it at once. If the changelog says a release
+changes the plists, run `voiced install` and the printed sudo step as well.
+
 ### Homebrew
 
-With the formula ([ADR 0017](decisions/0017-homebrew-packaging.md)),
-`~/.voiced/bin` holds two launchers that run voiced from
-`$(brew --prefix)/opt/voiced/libexec`, which Homebrew repoints at the new
-version on every upgrade. The plists do not change, so there is no root
-step:
-
 ```sh
-brew upgrade voiced              # brew upgrade --fetch-HEAD voiced for a --HEAD install
+brew upgrade --fetch-HEAD voiced   # until v0.1.0; then brew upgrade voiced
 voiced restart all
 voiced status
 ```
 
-Until they restart, the running daemons keep the old version's files open;
-Homebrew deletes the old version afterwards, and a daemon that exits for
-any reason comes back on the new one. `voiced restart all` makes that
-immediate. If the changelog says a release changes the plists, run
-`voiced install` and the printed sudo step as well.
+A plain `brew upgrade voiced` does nothing for a `--HEAD` install. The link
+goes through `$(brew --prefix)/opt/voiced`, which Homebrew repoints at the
+new version, so `voiced install` is not needed again. The same applies to
+an upgrade of `python@3.12`. The watchdog moves the services once
+Homebrew deletes the old version, at the end of `brew upgrade`, and after
+`brew reinstall voiced` once it has returned. With
+`HOMEBREW_NO_INSTALL_CLEANUP` set, `brew upgrade` deletes nothing and the
+services stay on the old version (which keeps working) until the next
+`brew cleanup` or `voiced restart all`. Run `voiced restart all` only
+after `brew upgrade` has returned: Homebrew repoints `opt/voiced` before
+it has finished the new version, and a voiced started in between can
+leave some of its files unloadable (macOS kills, or hangs, every later
+process that loads them). `brew reinstall voiced` writes them anew.
 
 To remove voiced, run `voiced uninstall`, its sudo step and
-`voiced uninstall --yes` first, then `brew uninstall voiced`. Uninstalling
-the formula first leaves launchd restarting a launcher with nothing behind
-it every 10 s.
-
-To switch an existing source install to Homebrew: stop the daemons
-(`voiced stop all` and the `sudo` line it prints), `rm -rf ~/.voiced` (the
-models, config and logs live elsewhere), then `voiced install` from the
-Homebrew `voiced`; the plists are the same, so the sudo step that follows is
-the usual one.
+`voiced uninstall --yes` first, then `brew uninstall voiced`. Homebrew does
+not show the caveats at uninstall. Uninstalling the formula first leaves
+the daemons loaded with `~/.voiced/bin/voiced` pointing nowhere; launchd
+then stops restarting them (their `KeepAlive` holds only while that path
+exists) and `voiced doctor` reports the dangling link. Reinstall the formula
+to bring them back, or run the uninstall steps above. If a daemon stays
+loaded but not running after the link is back (`voiced doctor`: "loaded
+but not running"; launchd can leave such a job at `spawn scheduled`),
+re-run the sudo step `voiced install` printed: it boots the daemons out
+and in again, which starts them.
 
 ### From a checkout
-
-Re-running `voiced install` upgrades in place: it reuses the service
-environment, upgrades the package, re-stages the plists and prints the
-install script, which unloads and reloads the daemons. Models and the
-config file are kept.
-
-From the checkout in `~/voiced`, before the first release:
 
 ```sh
 cd ~/voiced
 git pull
 uv tool install --reinstall --python 3.12 ~/voiced
 voiced install --source ~/voiced
-sudo bash ~/.config/voiced/launchd/install-daemons.sh
+voiced restart all
 ```
 
-Use `--reinstall`: `--force` does not rebuild a version uv already has, so
-the command would keep the old code while the service environment updates.
+Each `voiced install --source` builds a fresh environment in
+`~/.voiced/envs/` from `src/voiced/requirements.lock` (every package with
+its hash, then voiced itself), checks that it imports the engines, and
+repoints the link; the daemons keep running the previous environment until
+they restart. It keeps the new environment and the previous one and removes
+older ones. Models and the config file are kept. Every run builds a new
+environment, even from an unchanged checkout, and the watchdog then
+restarts the services onto it; to change only the config or the plists,
+run `voiced install` from the active environment
+(`~/.voiced/bin/voiced install`), which builds nothing and keeps the
+environments. Use `--reinstall`:
+`--force` does not rebuild a version uv already has, so the `voiced` command
+would keep the old code.
 
-The sudo script is only needed when the plists change (a new label, log
-directory, service environment or user); `diff` the staged ones in
-`~/.config/voiced/launchd/` against `/Library/LaunchDaemons/` to check. A
-code-only upgrade needs no root:
+### Switching between Homebrew and a checkout
+
+Run `voiced install` from the one you are switching to, then
+`voiced restart all`. No root step, nothing to delete by hand:
 
 ```sh
-uv tool install --reinstall --python 3.12 ~/voiced
+# to Homebrew
+brew install --HEAD julianbeaulieu/voiced/voiced
+$(brew --prefix)/bin/voiced install
+voiced restart all
+
+# to a checkout
 voiced install --source ~/voiced
 voiced restart all
 ```
+
+A `~/.voiced` from before ADR 0017 is a venv itself. The first switch away
+from it removes that venv's files (`lib`, `include`, `pyvenv.cfg`, the rest
+of `bin`) once the new environment is verified and the models are in;
+there is no going back to it, only forward to a new
+`voiced install --source`. Run `voiced restart all` straight after: the
+running daemons still use the removed venv's files.
 
 `voiced restart all` restarts stt and tts, then the watchdog, and reports
 once the new watchdog answers on the control socket. `voiced restart stt`

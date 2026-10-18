@@ -21,8 +21,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import psutil
+
 from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings, config_path
-from voiced.control import NOT_SERVED, socket_path
+from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
     ENV_ESPEAK_LIBRARY,
@@ -32,8 +34,20 @@ from voiced.engines.kokoro import (
     espeak_candidates,
 )
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
-from voiced.launchd.install import DEFAULT_PYTHON_VERSION, METAL_PROBE_FILE, homebrew_environment
+from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
+from voiced.layout import (
+    ManifestError,
+    NotVoiceds,
+    claim,
+    entry_point,
+    environment_python,
+    environment_version,
+    linked_environment,
+    read_link,
+    same_path,
+    sha256_file,
+)
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
 
@@ -110,27 +124,30 @@ def check_python(version: tuple[int, int, int] | None = None) -> Check:
     return Check("Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
 
 
-def check_service_python(
-    venv_python: Path, runner: Runner = run_command, python_spec: str = ""
-) -> Check:
-    """The interpreter the daemons run, which is not necessarily the one
-    running ``doctor`` (``uv tool install`` gives the CLI its own).
-    ``python_spec`` is ``[install] python``."""
-    wanted = python_spec or DEFAULT_PYTHON_VERSION
+def check_service_python(entry: Path, runner: Runner = run_command) -> Check:
+    """The interpreter the daemons run (that of the environment ``entry``,
+    the state directory's ``bin/voiced``, points at), which is not
+    necessarily the one running ``doctor``."""
+    if entry.is_symlink() and not entry.exists():
+        # `brew uninstall voiced`, or an environment deleted by hand: launchd
+        # stops respawning the daemons (KeepAlive PathState, ADR 0017).
+        return Check(
+            "Service Python",
+            "fail",
+            f"{entry} points at {read_link(entry)}, which no longer exists; "
+            "run `voiced install` from the voiced the services should run",
+        )
+    if not entry.exists():
+        return Check("Service Python", "warn", f"{entry} does not exist yet; run `voiced install`")
+    venv_python = environment_python(entry)
     if venv_python.is_symlink() and not venv_python.exists():
         # uv links the venv's python into its own Python installations;
         # `uv python uninstall` leaves the link dangling and the services down.
         return Check(
             "Service Python",
             "fail",
-            f"{venv_python} is a broken link to {os.readlink(venv_python)}; "
-            "re-run `voiced install --source <your checkout>`",
-        )
-    if not venv_python.exists():
-        return Check(
-            "Service Python",
-            "warn",
-            f"{venv_python} does not exist yet; `voiced install` creates it with Python {wanted}",
+            f"{venv_python} is a broken link to {read_link(venv_python)}; "
+            "run `voiced install` again",
         )
     result = runner(
         [
@@ -148,6 +165,44 @@ def check_service_python(
     if (3, 11) <= version[:2] <= (3, 13):
         return Check("Service Python", "pass", f"{text} ({venv_python})")
     return Check("Service Python", "fail", f"{text}; voiced needs Python 3.11 to 3.13")
+
+
+def check_install(state: Path) -> Check:
+    """What ``install.json`` says, and whether it still holds: the link
+    points at its environment, and that environment ships the lock it was
+    installed with.
+
+    Homebrew's environment (``opt/voiced``) changes under the manifest by
+    design: ``brew upgrade`` needs no ``voiced install``. Its version is
+    read from the environment, and a lock that differs from the manifest's
+    is shown, not warned about.
+    """
+    name = "Install"
+    try:
+        manifest = claim(state)
+    except (NotVoiceds, ManifestError) as exc:
+        return Check(name, "warn", f"{state}: {exc}")
+    if manifest is None or manifest.environment is None:
+        return Check(name, "warn", f"nothing installed in {state}; run `voiced install`")
+    env = manifest.environment
+    upgraded_in_place = manifest.source == "homebrew"
+    version = environment_version(env) if upgraded_in_place else manifest.version
+    detail = f"{manifest.source}, {env}, voiced {version or '?'}"
+    linked = linked_environment(entry_point(state))
+    if not same_path(linked, env):
+        return Check(
+            name, "warn", f"{detail}; but {entry_point(state)} runs {linked}: run `voiced install`"
+        )
+    locks = sorted(env.glob("lib/python3*/site-packages/voiced/requirements.lock"))
+    if manifest.lock_sha256 and locks and sha256_file(locks[0]) != manifest.lock_sha256:
+        if upgraded_in_place:
+            return Check(name, "pass", f"{detail} (upgraded in place since `voiced install`)")
+        return Check(
+            name,
+            "warn",
+            f"{detail}; its lock no longer matches install.json: run `voiced install` again",
+        )
+    return Check(name, "pass", detail)
 
 
 def check_config_file(path: Path) -> Check:
@@ -271,13 +326,40 @@ def listener_pids(port: int, runner: Runner) -> list[int] | None:
     return [int(line) for line in result.stdout.split() if line.isdigit()]
 
 
-def check_port(name: str, port: int, runner: Runner, voiced_dirs: Sequence[Path] = ()) -> Check:
+def process_of(pid: int) -> tuple[str, list[str]]:
+    """The name and the exact argument vector of ``pid`` (``ps -o args=``
+    joins it with spaces, so argv[1] cannot be told apart from later
+    arguments)."""
+    try:
+        proc = psutil.Process(pid)
+        return proc.name(), list(proc.cmdline())
+    except (psutil.Error, OSError):
+        return "unknown", []
+
+
+def process_files(pid: int, runner: Runner) -> list[str]:
+    """The files ``pid`` has open or mapped (``lsof``: psutil cannot list a
+    macOS process's mapped files, which is where its extension modules are)."""
+    out = runner(["lsof", "-p", str(pid), "-Fn"]).stdout
+    return [line[1:] for line in out.splitlines() if line.startswith("n/")]
+
+
+def check_port(
+    name: str,
+    port: int,
+    runner: Runner,
+    entry: Path | None = None,
+    process: Callable[[int], tuple[str, list[str]]] = process_of,
+) -> Check:
     """Who listens on ``port``? Uses ``lsof``; absence of lsof is reported, not fatal.
 
-    A listener is voiced's when its command line runs something in one of
-    ``voiced_dirs``. The command line, not the executable: Homebrew's Python
-    is a framework build whose executable is inside ``Python.app``, wherever
-    the venv is.
+    A listener is voiced's daemon when argv[1] is the entry point: the plist
+    runs ``<entry> serve ...``, a console script, so the kernel runs it as
+    ``<interpreter> <entry> serve ...``. The interpreter varies (for
+    Homebrew's framework Python the executable is inside ``Python.app``,
+    wherever the venv is). A daemon of voiced's that runs from another
+    environment than ``entry`` links (one not restarted after a switch) is
+    a warning.
     """
     label = f"Port {port} ({name})"
     pids = listener_pids(port, runner)
@@ -286,15 +368,23 @@ def check_port(name: str, port: int, runner: Runner, voiced_dirs: Sequence[Path]
     if not pids:
         return Check(label, "pass", "free")
     commands: list[str] = []
-    ours = False
+    ours: list[int] = []
     for pid in pids:
-        exe = runner(["ps", "-o", "comm=", "-p", str(pid)]).stdout.strip() or "unknown"
+        exe, argv = process(pid)
         commands.append(exe)
-        args = runner(["ps", "-o", "args=", "-p", str(pid)]).stdout
-        if any(f"{d}/" in f"{exe} {args}" for d in voiced_dirs):
-            ours = True
+        if entry is not None and len(argv) > 1 and argv[1] == str(entry):
+            ours.append(pid)
     pid_text = ", ".join(str(p) for p in pids)
-    if ours:
+    if ours and entry is not None:
+        env = f"{linked_environment(entry)}/"
+        stale = [p for p in ours if not any(f.startswith(env) for f in process_files(p, runner))]
+        if stale and entry.exists():
+            return Check(
+                label,
+                "warn",
+                f"voiced (pid {pid_text}) runs another environment than {entry} links "
+                f"({env.rstrip('/')}): run `voiced restart all`",
+            )
         return Check(label, "pass", f"in use by voiced (pid {pid_text})")
     return Check(label, "warn", f"in use by {', '.join(commands)} (pid {pid_text})")
 
@@ -306,10 +396,8 @@ def check_ports(settings: Settings, runner: Runner) -> list[Check]:
         ("tts http", settings.tts.http_port),
         ("tts wyoming", settings.tts.wyoming_port),
     ]
-    dirs = [settings.install.venv_dir]
-    if (homebrew := homebrew_environment()) is not None:
-        dirs.append(homebrew)
-    return [check_port(name, port, runner, dirs) for name, port in ports]
+    entry = entry_point(state_dir(settings))
+    return [check_port(name, port, runner, entry) for name, port in ports]
 
 
 # Disk and launchd ---------------------------------------------------------
@@ -337,6 +425,16 @@ def check_daemon(service: str, label: str, runner: Runner, exists: Exists = Path
         detail = status.summary + (f", pid {status.pid}" if status.pid else "")
         if status.last_exit_code and status.last_exit_code not in ("0", "(never exited)"):
             detail += f", last exit {status.last_exit_code}"
+        if not status.running:
+            # KeepAlive should have started it. After bin/voiced dangled and
+            # came back, launchd can leave a job at "spawn scheduled" for
+            # good; booting it out and in again (the sudo step) recovers it.
+            return Check(
+                name,
+                "warn",
+                f"{detail}: loaded but not running; re-run the sudo step "
+                "`voiced install` printed, which reloads it",
+            )
         return Check(name, "pass", detail)
     if installed:
         return Check(name, "fail", f"{plist_path(label)} exists but is not loaded")
@@ -361,7 +459,7 @@ def check_metal_shell(runner: Runner, python: Path | None) -> Check:
     """Can MLX see the GPU from this shell, using the install venv's Python?"""
     name = "Metal (shell)"
     if python is None:
-        return Check(name, "warn", "install venv not found; run voiced install")
+        return Check(name, "warn", "nothing installed yet; run voiced install")
     result = runner([str(python), "-P", "-c", _METAL_SNIPPET])
     if result.ok and "gpu" in result.stdout.lower():
         return Check(name, "pass", result.stdout.strip())
@@ -519,12 +617,14 @@ def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
 
 
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
-    venv_python = settings.install.venv_dir / "bin" / "python"
+    entry = entry_point(state_dir(settings))
+    venv_python = environment_python(entry) if entry.exists() else None
     return [
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
-        check_service_python(venv_python, runner, settings.install.python),
+        check_service_python(entry, runner),
+        check_install(state_dir(settings)),
         check_config_file(config_path()),
         check_espeak(required=settings.tts.engine == KokoroEngine.name),
         check_ffmpeg(runner=runner),
@@ -536,7 +636,7 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
             socket_path(settings),
             watchdog_pid=print_service(settings.launchd.label("watchdog"), runner).pid,
         ),
-        check_metal_shell(runner, venv_python if venv_python.exists() else None),
+        check_metal_shell(runner, venv_python),
         check_metal_daemon(
             settings.server.log_dir / METAL_PROBE_FILE,
             daemon_evidence(settings, runner),

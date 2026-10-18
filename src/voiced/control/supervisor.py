@@ -136,6 +136,11 @@ class WatchdogSupervisor:
                 f"{spec.label} has no launchd plist; "
                 "run `voiced install` and the sudo script it prints"
             )
+        formula = self.dog.held_by_homebrew()
+        if formula is not None:
+            # Refused here, before the op answers, not later in the
+            # background: the caller must hear it (ADR 0017).
+            raise ServiceUnavailable(f"Homebrew is installing {formula}; try again when it is done")
         loaded, _pid = launchd_view(spec.label, self.runner)
         if loaded is False:
             raise ServiceUnavailable(

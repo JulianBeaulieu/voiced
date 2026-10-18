@@ -11,8 +11,9 @@ class Voiced < Formula
   head "https://github.com/JulianBeaulieu/voiced.git", branch: "main"
 
   # FIRST RELEASE: there is no tagged release yet, so only `brew install --HEAD`
-  # works. When v0.1.0 is tagged, uncomment these two lines and fill in the
-  # checksum (`curl -sL <url> | shasum -a 256`):
+  # works. When v0.1.0 is tagged (with `version = "0.1.0"` in pyproject.toml),
+  # uncomment these two lines and fill in the checksum
+  # (`curl -sL <url> | shasum -a 256`):
   #
   #   url "https://github.com/JulianBeaulieu/voiced/archive/refs/tags/v0.1.0.tar.gz"
   #   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
@@ -29,24 +30,23 @@ class Voiced < Formula
   end
 
   def install
-    # The daemons run this environment (through ~/.voiced, see caveats), so
-    # it is isolated from the brewed Python's own site-packages.
+    # The daemons run this environment (through ~/.voiced/bin/voiced, see
+    # caveats), so it is isolated from the brewed Python's own site-packages.
     venv = virtualenv_create(libexec, python3, system_site_packages: false)
+    python = venv.root/"bin/python"
 
-    # Bytecode is compiled here so the services never write into the keg.
-    # Every dependency at the version and hash recorded in uv.lock, as wheels
-    # from PyPI. MLX and friends ship binary wheels only for Apple Silicon;
-    # building them from source resources is not practical (ADR 0017).
-    ENV["UV_CACHE_DIR"] = buildpath/".uv-cache"
+    # The same lock as every other install path (ADR 0017): each dependency
+    # at the version and hash in uv.lock, as wheels from PyPI. MLX and friends
+    # ship binary wheels only for Apple Silicon; building them from source
+    # resources is not practical. Then voiced itself, built with the locked
+    # (hashed) build backend. Bytecode is compiled here so the services never
+    # write into the keg.
+    ENV["UV_CACHE_DIR"] = HOMEBREW_CACHE/"uv"
     ENV["UV_PYTHON_DOWNLOADS"] = "never"
-    requirements = buildpath/"requirements.txt"
-    system "uv", "export", "--frozen", "--no-dev", "--extra", "stt", "--extra", "tts",
-           "--no-emit-project", "--no-header", "--python", venv.root/"bin/python",
-           "--output-file", requirements
-    system "uv", "pip", "install", "--python", venv.root/"bin/python",
-           "--require-hashes", "--no-deps", "--compile-bytecode", "-r", requirements
-    system "uv", "pip", "install", "--python", venv.root/"bin/python",
-           "--no-deps", "--compile-bytecode", buildpath
+    system "uv", "pip", "install", "--python", python, "--no-deps", "--compile-bytecode",
+           "--require-hashes", "-r", buildpath/"src/voiced/requirements.lock"
+    system "uv", "pip", "install", "--python", python, "--no-deps", "--compile-bytecode",
+           "--build-constraints", buildpath/"src/voiced/build-requirements.lock", buildpath
 
     bin.install_symlink libexec/"bin/voiced"
   end
@@ -59,12 +59,18 @@ class Voiced < Formula
         voiced install
         sudo bash ~/.config/voiced/launchd/install-daemons.sh
 
-      The first command downloads the models (about 2.7 GB) and stages the
-      plists; the second is the only step that needs root. Then `voiced status`.
+      The first command links ~/.voiced/bin/voiced to this formula, downloads
+      the models (about 2.7 GB) and stages the plists; the second is the only
+      step that needs root. Then `voiced status`.
 
-      After `brew upgrade voiced`, run `voiced restart all` to load the new
-      version. Before `brew uninstall voiced`, run `voiced uninstall` and the
-      sudo step it prints.
+      Upgrade with `brew upgrade --fetch-HEAD voiced` (until the first tagged
+      release); once it has removed the old version, the watchdog moves the
+      services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set, run
+      `voiced restart all` after the upgrade instead.
+
+      Before `brew uninstall voiced`, run `voiced uninstall` and the sudo step
+      it prints; otherwise launchd stops the daemons, since their program is
+      gone, but keeps them loaded.
     EOS
   end
 

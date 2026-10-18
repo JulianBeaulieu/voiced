@@ -17,58 +17,29 @@ one machine. Expect breaking changes.
 
 ## Quickstart
 
-Requirements: an Apple Silicon Mac, macOS 14 or newer and
-[Homebrew](https://brew.sh).
+Requirements: an Apple Silicon Mac, macOS 14 or newer,
+[Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
 
-### With Homebrew
+There will be three ways to install, and all three set up the same
+`~/.voiced` and the same launchd plists
+([ADR 0017](docs/decisions/0017-homebrew-packaging.md)):
 
-<!-- TODO(release): drop the "not yet" note and the local-tap steps once Formula/voiced.rb is in JulianBeaulieu/homebrew-voiced -->
-This is the recommended path once the formula is in the
-[tap](https://github.com/JulianBeaulieu/homebrew-voiced), which it is not
-yet. It will be:
-
-```sh
-brew install --HEAD julianbeaulieu/voiced/voiced   # --HEAD until the first release
-voiced install
-sudo bash ~/.config/voiced/launchd/install-daemons.sh
-voiced status
-```
-
-`brew install` builds the `voiced` command and its Python environment
-(about 830 MB, under a minute) and pulls in espeak-ng, ffmpeg and Python
-3.12. `voiced install` downloads the models (about 2.7 GB) into the Hugging
-Face cache and stages the launchd plists; the `sudo` line is the one step
-that needs root (see below). Upgrading is `brew upgrade voiced` followed by
-`voiced restart all`, with no root step.
-
-What works today, from a checkout, is the same formula through a local tap
-(Homebrew installs formulae only from a tap):
-
-```sh
-git clone https://github.com/JulianBeaulieu/voiced ~/voiced
-brew tap-new --no-git "$USER/voiced-local"
-cp ~/voiced/packaging/homebrew/voiced.rb "$(brew --repository "$USER/voiced-local")/Formula/"
-brew install --HEAD "$USER/voiced-local/voiced"
-```
-
-then `voiced install` and the `sudo` line as above. If `~/.voiced` already
-holds a source install from the steps below, `voiced install` stops and
-explains how to switch.
-
-A menu bar app that installs the daemons itself, distributed as a Homebrew
-cask, is planned once it can be signed; the formula stays for headless Macs
-and terminal use ([ADR 0017](docs/decisions/0017-homebrew-packaging.md)).
-
-### From a checkout, with uv
-
-You also need [uv](https://docs.astral.sh/uv/):
+- **The menu bar app, from a Homebrew cask**, for most people: the app
+  installs the services itself. It needs a signed release (a Developer ID
+  and v0.1.0), so it does not exist yet.
+- **The Homebrew formula**, for headless Macs and terminal use:
+  `brew install julianbeaulieu/voiced/voiced`, then `voiced install`. It
+  needs the formula in the [tap](https://github.com/JulianBeaulieu/homebrew-voiced),
+  which it is not in yet, and `--HEAD` until v0.1.0. To try it now from a
+  local tap, see [packaging/homebrew/README.md](packaging/homebrew/README.md).
+- **From a checkout**, which is what works today:
 
 ```sh
 brew install espeak-ng ffmpeg
 brew install uv    # skip if `uv --version` already works
 ```
 
-Then install from a checkout:
+Then:
 
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced ~/voiced
@@ -89,10 +60,12 @@ the default zsh). Open a new terminal, then:
 voiced install --source ~/voiced
 ```
 
-`--source` is needed until voiced is published: `uv tool install` copies the
-package, so the installer cannot find your checkout by itself. `voiced
-install` builds the service environment in `~/.voiced` with the engines
-(Python 3.12, which uv downloads if needed), downloads the models into the
+`uv tool install` gives you the `voiced` command but not the engines;
+`--source` makes `voiced install` build the service environment, with the
+engines, from your checkout into `~/.voiced/envs/`, every package at the
+version and hash in the checkout's lock, on a Python 3.12 that uv
+downloads into `~/.voiced/python`. It then points `~/.voiced/bin/voiced`
+at that environment, downloads the models into the
 Hugging Face cache, writes the launchd plists to
 `~/.config/voiced/launchd/`, and prints the one command you run as root,
 followed by the script it runs. The models are about 2.7 GB; with the Python
@@ -128,7 +101,8 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 ```
 
 `voiced install --source ~/voiced --dry-run` shows everything it would do
-without writing anything.
+without writing anything. To remove voiced again, see `voiced uninstall` in
+[docs/operations.md](docs/operations.md#commands).
 
 For a menu bar icon that shows whether both services are up, restarts them,
 opens the logs and changes the common settings, build the menu bar app from
@@ -317,9 +291,8 @@ model = "mlx-community/Soprano-80M-bf16"
 default_voice = "default"
 ```
 
-Then run `voiced install --source ~/voiced` again (the path of your
-checkout), which downloads the model, and re-run the install script, which
-restarts the daemons. Know its limits before you
+Then run `~/.voiced/bin/voiced install`, which downloads the model (from
+the service environment, so nothing is rebuilt), and `voiced restart all`. Know its limits before you
 switch. Its first audio takes about 150 to
 220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
 accepted and ignored. It has one voice, `default`. It sometimes runs on past
@@ -413,7 +386,8 @@ daemons and Metal access, including from a real daemon context with
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
-| Both services down after `uv python uninstall` or deleting `~/.local/share/uv` | The service environment's `python` links into uv's Python installations. `voiced doctor` reports the broken link; run `voiced install --source ~/voiced` again. |
+| Both services down after `uv python uninstall` or deleting `~/.local/share/uv` | Only an environment built before ADR 0017: its `python` links into uv's Python installations (newer ones use `~/.voiced/python`). `voiced doctor` reports the broken link; run `voiced install --source ~/voiced` again. |
+| Services stopped after `brew uninstall voiced` | `~/.voiced/bin/voiced` points at the removed formula, so launchd no longer starts them. Reinstall it, or finish removing voiced: [docs/operations.md](docs/operations.md#homebrew). |
 | A service restarts every 10 s after a reboot, log shows `LocalEntryNotFoundError` | The models are not in the Hugging Face cache and there is no network. It recovers by itself once the download can happen. With the models cached, a service starts without network. |
 
 Logs live under `~/Library/Logs/voiced/`. More in

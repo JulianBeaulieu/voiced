@@ -21,7 +21,13 @@ from voiced.control.server import ControlServer
 from voiced.control.supervisor import WatchdogSupervisor, service_state
 from voiced.engines.catalogue import engines_list
 from voiced.launchd.control import CommandResult
-from voiced.watchdog import Observation, RestartResult, ServiceSpec, Watchdog
+from voiced.layout import RunningEnvironment
+from voiced.watchdog import (
+    Observation,
+    RestartResult,
+    ServiceSpec,
+    Watchdog,
+)
 
 POLICY = WatchdogConfig(startup_grace_s=100)
 HEALTH = {
@@ -309,6 +315,68 @@ async def test_run_async_survives_observer_bug(caplog: pytest.LogCaptureFixture)
     assert "tick failed" in caplog.text
 
 
+async def test_run_async_restarts_everything_onto_a_replaced_environment(
+    tmp_path: Path,
+) -> None:
+    """Services first, then the watchdog returns so launchd's KeepAlive
+    starts it from the new environment."""
+    restarted: list[str] = []
+    observed: list[str] = []
+
+    def restart(spec: ServiceSpec) -> RestartResult:
+        restarted.append(spec.name)
+        return RestartResult(True, "ok")
+
+    def observe(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
+        observed.append(spec.name)
+        return Observation("ok")
+
+    entry = tmp_path / "voiced"
+    running = RunningEnvironment.of((tmp_path / "deleted keg",), entry)
+    dog = Watchdog(
+        services=[ServiceSpec("stt", "x", ""), ServiceSpec("tts", "y", "")],
+        policy=WatchdogConfig(interval_s=3600),
+        observe=observe,
+        restart=restart,
+        environment=running,
+    )
+    reason = await asyncio.wait_for(dog.run_async(asyncio.Event()), 5)
+    assert reason is not None and "deleted keg" in reason
+    assert restarted == ["stt", "tts"]
+    assert observed == []  # no tick against a deleted environment
+
+
+async def test_run_async_waits_while_homebrew_finishes_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``brew reinstall`` replaces the keg in place, under its lock: no
+    service restart (not even for health) until Homebrew lets go."""
+    restarted: list[str] = []
+    observed: list[str] = []
+    busy = ["voiced", "voiced", None]
+
+    def restart(spec: ServiceSpec) -> RestartResult:
+        restarted.append(spec.name)
+        return RestartResult(True, "ok")
+
+    def observe(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
+        observed.append(spec.name)
+        return Observation("unreachable")
+
+    running = RunningEnvironment.of((tmp_path / "keg being rebuilt",), tmp_path / "voiced")
+    monkeypatch.setattr(RunningEnvironment, "busy", lambda self: busy.pop(0))
+    dog = Watchdog(
+        services=[ServiceSpec("stt", "x", "")],
+        policy=WatchdogConfig(interval_s=0.01),
+        observe=observe,
+        restart=restart,
+        environment=running,
+    )
+    reason = await asyncio.wait_for(dog.run_async(asyncio.Event()), 5)
+    assert reason is not None and busy == []
+    assert observed == [] and restarted == ["stt"]
+
+
 async def test_status_events_keep_their_cadence_with_hung_services(
     settings: Settings, config_file: Path, short_dir: Path
 ) -> None:
@@ -335,3 +403,122 @@ async def test_status_events_keep_their_cadence_with_hung_services(
         writer.close()
     gaps = [b - a for a, b in itertools.pairwise(seen)]
     assert max(gaps) <= push_max_s + 0.25, gaps
+
+
+def _held_dog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, busy: list[str | None], now: list[float]
+) -> tuple[Watchdog, list[str], list[str]]:
+    restarted: list[str] = []
+    observed: list[str] = []
+
+    def restart(spec: ServiceSpec) -> RestartResult:
+        restarted.append(spec.name)
+        return RestartResult(True, "ok")
+
+    def observe(spec: ServiceSpec, policy: WatchdogConfig) -> Observation:
+        observed.append(spec.name)
+        return Observation("unreachable")
+
+    monkeypatch.setattr(RunningEnvironment, "busy", lambda self: busy[0])
+    dog = Watchdog(
+        services=[ServiceSpec("stt", "x", "")],
+        policy=WatchdogConfig(interval_s=0.01),
+        observe=observe,
+        restart=restart,
+        clock=lambda: now[0],
+        environment=RunningEnvironment.of((), tmp_path / "voiced"),
+    )
+    return dog, restarted, observed
+
+
+async def test_no_ticks_while_homebrew_holds_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """During `brew upgrade` the old keg is still there, so nothing says
+    "replaced"; health checks and restarts pause anyway, because Homebrew
+    may be re-signing the new keg's modules right now."""
+    busy: list[str | None] = ["voiced"]
+    dog, restarted, observed = _held_dog(tmp_path, monkeypatch, busy, [0.0])
+    stop = asyncio.Event()
+    task = asyncio.create_task(dog.run_async(stop))
+    await asyncio.sleep(0.1)
+    assert observed == [] and restarted == []
+    busy[0] = None
+    for _ in range(100):
+        if observed:
+            break
+        await asyncio.sleep(0.01)
+    stop.set()
+    await asyncio.wait_for(task, 5)
+    assert observed, "ticks resume once Homebrew lets go"
+
+
+def test_requested_restart_is_refused_while_homebrew_holds_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    busy: list[str | None] = ["voiced"]
+    dog, restarted, _ = _held_dog(tmp_path, monkeypatch, busy, [0.0])
+    result = dog.restart_now("stt")
+    assert not result.done and "Homebrew is installing voiced" in result.detail
+    assert restarted == []
+    busy[0] = None
+    assert dog.restart_now("stt").done and restarted == ["stt"]
+
+
+def test_a_hung_homebrew_holds_restarts_back_for_half_an_hour_at_most(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from voiced.watchdog import HOMEBREW_HOLD_MAX_S
+
+    now = [0.0]
+    dog, _, _ = _held_dog(tmp_path, monkeypatch, ["voiced"], now)
+    with caplog.at_level("INFO"):
+        assert dog.held_by_homebrew() == "voiced"
+        now[0] = 600.0
+        assert dog.held_by_homebrew() == "voiced"
+        now[0] = HOMEBREW_HOLD_MAX_S + 1
+        assert dog.held_by_homebrew() is None
+        assert dog.held_by_homebrew() is None
+    text = caplog.text
+    assert "no restarts until it is done" in text and "still waiting" in text
+    assert text.count("restarting as usual again") == 1
+
+
+def _held_supervisor(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[WatchdogSupervisor, list[str]]:
+    restarted: list[str] = []
+    monkeypatch.setattr(RunningEnvironment, "busy", lambda self: "voiced")
+    dog = Watchdog(
+        services=watchdog_specs(settings),
+        policy=POLICY,
+        restart=lambda spec: restarted.append(spec.name) or RestartResult(True, "ok"),
+        environment=RunningEnvironment.of((), tmp_path / "voiced"),
+    )
+    runner = lambda argv: CommandResult(0, "state = running\npid = 7\n")  # noqa: E731
+    return WatchdogSupervisor(dog, runner=runner, installed=lambda label: True), restarted
+
+
+def test_check_restart_refuses_while_homebrew_holds_the_environment(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sup, _ = _held_supervisor(settings, monkeypatch, tmp_path)
+    with pytest.raises(ServiceUnavailable, match="Homebrew is installing voiced"):
+        sup.check_restart("stt")
+
+
+async def test_restart_op_answers_with_the_homebrew_refusal(
+    settings: Settings, config_file: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The op says no at once; it does not answer "restarting" and fail in
+    the background."""
+    from voiced.control.protocol import SERVICE_UNAVAILABLE, OpError
+
+    sup, restarted = _held_supervisor(settings, monkeypatch, tmp_path)
+    ops = Operations(sup, config_file, engines=engines_list)
+    with pytest.raises(OpError) as raised:
+        await ops.op_service_restart({"service": "all"})
+    assert raised.value.code == SERVICE_UNAVAILABLE
+    assert "Homebrew is installing voiced" in raised.value.message
+    await ops.wait_restarts()
+    assert restarted == []

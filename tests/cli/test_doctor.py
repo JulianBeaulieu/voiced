@@ -142,16 +142,42 @@ def test_external_programs() -> None:
     assert old.result == "fail" and "brew upgrade ffmpeg" in old.detail
 
 
-def test_service_python_is_the_venv_interpreter(tmp_path: Path) -> None:
-    venv_python = tmp_path / "bin" / "python"
-    missing = doctor.check_service_python(venv_python, python_spec="3.13")
-    assert missing.result == "warn" and "Python 3.13" in missing.detail
-    venv_python.parent.mkdir()
-    venv_python.write_text("")
-    ok = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.12.15\n"))
-    assert ok.result == "pass" and "3.12.15" in ok.detail and str(venv_python) in ok.detail
-    old = doctor.check_service_python(venv_python, lambda argv: CommandResult(0, "3.10.18\n"))
+def _environment(tmp_path: Path) -> tuple[Path, Path]:
+    """A state dir whose bin/voiced links into an environment, as installed."""
+    env_bin = tmp_path / "env" / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / "voiced").write_text("#!/bin/sh\n")
+    entry = tmp_path / "state" / "bin" / "voiced"
+    entry.parent.mkdir(parents=True)
+    entry.symlink_to(env_bin / "voiced")
+    return entry, env_bin / "python"
+
+
+def test_service_python_is_the_environment_interpreter(tmp_path: Path) -> None:
+    missing = doctor.check_service_python(tmp_path / "state" / "bin" / "voiced")
+    assert missing.result == "warn" and "voiced install" in missing.detail
+    entry, python = _environment(tmp_path)
+    python.write_text("")
+    seen: list[str] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        seen.append(argv[0])
+        return CommandResult(0, "3.12.15\n")
+
+    ok = doctor.check_service_python(entry, runner)
+    assert ok.result == "pass" and "3.12.15" in ok.detail and str(python) in ok.detail
+    assert seen == [str(python)]  # next to the resolved console script, not resolved
+    old = doctor.check_service_python(entry, lambda argv: CommandResult(0, "3.10.18\n"))
     assert old.result == "fail"
+
+
+def test_service_python_reports_a_dangling_entry_point(tmp_path: Path) -> None:
+    """`brew uninstall voiced` with the daemons installed leaves the entry
+    point pointing nowhere: a failure, not "not installed yet"."""
+    entry, _ = _environment(tmp_path)
+    (tmp_path / "env" / "bin" / "voiced").unlink()
+    check = doctor.check_service_python(entry)
+    assert check.result == "fail" and "no longer exists" in check.detail
 
 
 VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
@@ -189,36 +215,98 @@ FRAMEWORK_PYTHON = (
 def test_ports() -> None:
     free = make_runner({"lsof": CommandResult(1, "")})
     assert doctor.check_port("tts http", 8880, free).result == "pass"
-    busy = make_runner(
-        {
-            "lsof -nP -t -iTCP:8880": CommandResult(0, "123\n"),
-            "ps -o comm= -p 123": CommandResult(0, "/usr/local/bin/node\n"),
-        }
-    )
-    check = doctor.check_port("tts http", 8880, busy, [Path("/Users/u/.voiced")])
-    assert check.result == "warn" and "node" in check.detail and "pid 123" in check.detail
-    ours = make_runner(
-        {
-            "lsof -nP -t -iTCP:8880": CommandResult(0, "99\n"),
-            "ps -o comm= -p 99": CommandResult(0, "/Users/u/.voiced/bin/python3.12\n"),
-        }
-    )
-    assert doctor.check_port("tts http", 8880, ours, [Path("/Users/u/.voiced")]).result == "pass"
-    # Homebrew's Python is a framework build: the executable is in Python.app,
-    # only the command line names the environment.
-    brewed = make_runner(
-        {
-            "lsof -nP -t -iTCP:8880": CommandResult(0, "77\n"),
-            "ps -o comm= -p 77": CommandResult(0, f"{FRAMEWORK_PYTHON}\n"),
-            "ps -o args= -p 77": CommandResult(
-                0, f"{FRAMEWORK_PYTHON} /opt/homebrew/opt/voiced/libexec/bin/voiced serve tts\n"
-            ),
-        }
-    )
-    dirs = [Path("/Users/u/.voiced"), Path("/opt/homebrew/opt/voiced/libexec")]
-    assert doctor.check_port("tts http", 8880, brewed, dirs).result == "pass"
-    assert doctor.check_port("tts http", 8880, brewed, dirs[:1]).result == "warn"
+    entry = Path("/Users/u/.voiced/bin/voiced")
+
+    def check(*argv: str) -> doctor.Check:
+        runner = make_runner({"lsof -nP -t -iTCP:8880": CommandResult(0, "77\n")})
+        name = Path(argv[0]).name
+        return doctor.check_port("tts http", 8880, runner, entry, lambda pid: (name, list(argv)))
+
+    busy = check("/usr/local/bin/node", "server.js")
+    assert busy.result == "warn" and "node" in busy.detail and "pid 77" in busy.detail
+    # A source build: argv[0] is the environment's python, argv[1] the entry point.
+    assert check("/Users/u/.voiced/envs/x/bin/python", str(entry), "serve").result == "pass"
+    # Homebrew's Python is a framework build: the executable is in Python.app.
+    assert check(FRAMEWORK_PYTHON, str(entry), "serve", "tts").result == "pass"
+    # The entry point anywhere but argv[1] is not voiced's daemon.
+    assert check("/usr/bin/python3", "tool.py", str(entry), "serve").result == "warn"
+    assert check("/usr/bin/python3", f"/tmp{entry}", "serve").result == "warn"
     assert doctor.check_port("x", 1, make_runner({})).result == "warn"  # no lsof
+
+
+def test_port_listener_on_another_environment(tmp_path: Path) -> None:
+    """A daemon not restarted after a switch still runs the old
+    environment's files: doctor says so."""
+    new, old = tmp_path / "envs" / "new", tmp_path / "envs" / "old"
+    (new / "bin").mkdir(parents=True)
+    (new / "bin" / "voiced").write_text("")
+    entry = tmp_path / "bin" / "voiced"
+    entry.parent.mkdir()
+    entry.symlink_to(new / "bin" / "voiced")
+    argv = ["/x/Python", str(entry), "serve", "tts"]
+
+    def check(mapped: Path) -> doctor.Check:
+        site = mapped.resolve() / "lib/python3.12/site-packages/x.so"
+        runner = make_runner(
+            {
+                "lsof -nP -t -iTCP:8880": CommandResult(0, "77\n"),
+                "lsof -p 77 -Fn": CommandResult(0, f"p77\nfcwd\nn/\nftxt\nn{site}\n"),
+            }
+        )
+        return doctor.check_port("tts http", 8880, runner, entry, lambda pid: ("Python", argv))
+
+    assert check(new).result == "pass"
+    stale = check(old)
+    assert stale.result == "warn" and "voiced restart all" in stale.detail
+
+
+def test_install_row(tmp_path: Path) -> None:
+    from voiced.layout import Manifest, link_entry_point, sha256_file, write_manifest
+
+    state = tmp_path / "state"
+    assert doctor.check_install(state).result == "warn"  # nothing installed
+    env = tmp_path / "env"
+    lock = env / "lib/python3.12/site-packages/voiced/requirements.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("a==1\n")
+    (env / "bin").mkdir()
+    (env / "bin" / "voiced").write_text("")
+    link_entry_point(state, env)
+    manifest = Manifest("app", env, "0.1.0", sha256_file(lock))
+    write_manifest(state, manifest)
+    check = doctor.check_install(state)
+    assert check.result == "pass" and "app" in check.detail and "0.1.0" in check.detail
+    lock.write_text("a==2\n")
+    assert "no longer matches" in doctor.check_install(state).detail
+    link_entry_point(state, tmp_path / "other")
+    assert "runs" in doctor.check_install(state).detail
+
+
+def test_install_row_for_homebrew(tmp_path: Path) -> None:
+    """Homebrew's opt/voiced: `brew upgrade` changes the lock and the version
+    under the manifest by design, which needs no `voiced install`."""
+    from voiced.layout import Manifest, link_entry_point, write_manifest
+
+    tmp_path = tmp_path.resolve()
+    keg = tmp_path / "Cellar" / "voiced" / "0.2.0" / "libexec"
+    lock = keg / "lib/python3.12/site-packages/voiced/requirements.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("a==2\n")
+    (keg / "lib/python3.12/site-packages/voiced-0.2.0.dist-info").mkdir()
+    (keg / "bin").mkdir()
+    (keg / "bin" / "voiced").write_text("")
+    (tmp_path / "opt").mkdir()
+    (tmp_path / "opt" / "voiced").symlink_to(keg.parent)
+    env = tmp_path / "opt" / "voiced" / "libexec"
+    state = tmp_path / "state"
+    link_entry_point(state, env)
+    write_manifest(state, Manifest("homebrew", env, "0.1.0", "0" * 64))
+    check = doctor.check_install(state)
+    assert check.result == "pass"
+    assert "voiced 0.2.0" in check.detail and "upgraded in place" in check.detail
+    # The same environment from a source install: a changed lock is news.
+    write_manifest(state, Manifest("cli", env, "0.1.0", "0" * 64))
+    assert doctor.check_install(state).result == "warn"
 
 
 def test_check_ports_uses_all_four(settings: Settings) -> None:
@@ -263,7 +351,8 @@ def test_daemon_states(settings: Settings) -> None:
         }
     )
     check = doctor.check_daemon("stt", label, crashed, lambda p: True)
-    assert check.result == "pass" and "last exit 1" in check.detail
+    assert check.result == "warn" and "last exit 1" in check.detail
+    assert "not running" in check.detail and "sudo step" in check.detail
     assert [c.name for c in doctor.check_daemons(settings, not_loaded, lambda p: False)] == [
         "Daemon stt",
         "Daemon tts",
@@ -365,10 +454,9 @@ def test_render_and_worst() -> None:
 def test_service_python_reports_a_broken_link(tmp_path: Path) -> None:
     """`uv python uninstall` leaves the venv's python pointing nowhere and the
     services down: a failure, not "not installed yet"."""
-    venv_python = tmp_path / "bin" / "python"
-    venv_python.parent.mkdir()
-    venv_python.symlink_to(tmp_path / "gone" / "python3.12")
-    check = doctor.check_service_python(venv_python)
+    entry, python = _environment(tmp_path)
+    python.symlink_to(tmp_path / "gone" / "python3.12")
+    check = doctor.check_service_python(entry)
     assert check.result == "fail" and "broken link" in check.detail
 
 

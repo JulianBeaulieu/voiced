@@ -113,11 +113,13 @@ probe = false
 probe_timeout_s = 20
 
 [install]
-# Where `voiced install` creates the virtual environment.
+# The state directory: bin/voiced (the program the daemons run, a link to
+# the active environment), the environments `voiced install --source` builds,
+# install.json and the control socket. The name is historical; it is not
+# necessarily a virtual environment (ADR 0017).
 venv_dir = "~/.voiced"
-# Python for the venv: a version like "3.12" (uv downloads it if needed) or a
-# path to an interpreter. Empty picks 3.12 with uv, or the running interpreter
-# with pip.
+# Python version for environments `voiced install --source` builds, like
+# "3.12"; uv downloads it into <venv_dir>/python. Empty means 3.12.
 python = ""
 # Hugging Face cache directory for model downloads. Leave unset to use the
 # Hugging Face default (~/.cache/huggingface). Passed to the daemons as HF_HOME.
