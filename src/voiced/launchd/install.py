@@ -12,6 +12,7 @@ directory (``voiced.layout``).
 from __future__ import annotations
 
 import contextlib
+import errno
 import grp
 import os
 import pwd
@@ -156,9 +157,9 @@ def q(path: Path | str) -> str:
 
 def privileged_script(environment: Path) -> Path:
     """:data:`PRIVILEGED_SCRIPT` as installed in ``environment``, so the
-    printed path is that environment's (Homebrew's ``opt`` path survives
-    ``brew upgrade``); this package's own copy when there is no single one
-    there (an editable checkout, or an environment not built yet)."""
+    printed path is that environment's; this package's own copy when there
+    is no single one there (an editable checkout, or an environment not
+    built yet)."""
     pattern = f"lib/python3*/site-packages/voiced/launchd/{PRIVILEGED_SCRIPT}"
     found = sorted(environment.glob(pattern))
     if len(found) == 1:
@@ -173,53 +174,111 @@ def _account(uid: int) -> str:
         return f"uid {uid}"
 
 
-def regular_account(name: str) -> bool:
-    """A uid from 500 to 2147483647, as the root script requires; a name
-    that does not resolve counts too. System accounts such as
-    ``_mbsetupuser``, in every Mac's ``admin`` group, do not log in."""
-    try:
-        uid = pwd.getpwnam(name).pw_uid
-    except KeyError:
-        return True
-    return 500 <= uid < 2**31
+# Not a person: macOS's setup assistant account, a member of `admin` on every
+# Mac, so of the group that owns Homebrew's directories. On a stock Mac it is
+# the only account below uid 500 in wheel, staff or admin besides root.
+SETUP_ACCOUNT = "_mbsetupuser"
 
 
 def group_members(gid: int) -> set[str]:
-    """The regular accounts in group ``gid``: its listed members and the
-    accounts whose primary group it is."""
+    """The accounts in group ``gid`` but the setup account: its listed
+    members and the accounts whose primary group it is."""
     try:
         members = set(grp.getgrgid(gid).gr_mem)
     except KeyError:
         members = set()
     members |= {entry.pw_name for entry in pwd.getpwall() if entry.pw_gid == gid}
-    return {name for name in members if regular_account(name)}
+    return members - {SETUP_ACCOUNT}
+
+
+# acl_perm_t names that let a holder change a file or a directory's entries.
+ACL_WRITES = frozenset(
+    (
+        "write add_file append add_subdirectory delete delete_child writeattr "
+        "writeextattr writesecurity chown"
+    ).split()
+)
+ACL_TYPE_EXTENDED = 0x00000100
+
+
+def acl_entries(path: Path) -> list[str]:
+    """``path``'s extended ACL as ``acl_to_text`` lines
+    (``tag:uuid:name:id:allow|deny:perms``); empty without one."""
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.acl_get_file.restype = ctypes.c_void_p
+    libc.acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    libc.acl_to_text.restype = ctypes.c_void_p
+    libc.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    libc.acl_free.argtypes = [ctypes.c_void_p]
+    acl = libc.acl_get_file(os.fsencode(path), ACL_TYPE_EXTENDED)
+    if not acl:
+        if ctypes.get_errno() == errno.ENOENT:  # no ACL
+            return []
+        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+    try:
+        text = libc.acl_to_text(acl, None)
+        if not text:
+            raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
+        try:
+            lines = ctypes.string_at(text).decode().splitlines()
+        finally:
+            libc.acl_free(text)
+    finally:
+        libc.acl_free(acl)
+    return [line for line in lines if line and not line.startswith("!#acl")]
+
+
+def acl_writer(path: Path, uid: int) -> str | None:
+    """An ACL entry on ``path`` that allows anyone but ``uid`` and root to
+    change it, as ``ls -le`` would name it, or None."""
+    for entry in acl_entries(path):
+        fields = entry.split(":")
+        if len(fields) < 6:
+            return f"an ACL entry it cannot read ({entry})"
+        tag, _, name, ident, kind, perms = fields[:6]
+        if kind != "allow" or not ACL_WRITES & set(perms.split(",")):
+            continue
+        if tag == "user" and ident in (str(uid), "0"):
+            continue
+        return f"{tag} {name} {perms}"
+    return None
 
 
 def foreign_writer(path: Path, uid: int | None = None) -> str | None:
     """Why an account other than ``uid`` (default: this one) and root could
     change what ``path`` holds, or None. The user runs the root script with
-    sudo, so it, and every directory on the way to it (the path as given and
-    resolved, Homebrew's ``opt`` link included), must belong to them or root
-    and be writable by no one else. A sticky directory lets nobody replace
-    an entry they do not own."""
+    sudo, so it, and every directory on the way to it, must belong to them
+    or root, with no mode bit and no ACL entry letting anyone else write.
+    A sticky directory lets nobody replace an entry they do not own.
+
+    The path is checked resolved, and the sudo line names the resolved path
+    (:meth:`InstallPlan.root_command`): what root runs then has no link in
+    it to swap, however many hops led there. A volume mounted with
+    ownership ignored shows every file as the user's and cannot be judged."""
     uid = os.getuid() if uid is None else uid
     me = _account(uid)
-    for start in dict.fromkeys((path.absolute(), path.resolve())):
-        for part in (start, *start.parents):
-            try:
-                st = os.lstat(part)
-            except OSError as exc:
-                return f"{part} cannot be checked ({exc.strerror})"
-            if st.st_uid not in (0, uid):
-                return f"{part} belongs to {_account(st.st_uid)}"
-            if stat.S_ISLNK(st.st_mode) or (stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX):
-                continue
-            if st.st_mode & stat.S_IWOTH:
-                return f"{part} is writable by every account"
-            if st.st_mode & stat.S_IWGRP:
-                others = sorted(group_members(st.st_gid) - {me, "root"})
-                if others:
-                    return f"{part} is writable by its group, which has {', '.join(others)}"
+    resolved = path.resolve()
+    for part in (resolved, *resolved.parents):
+        try:
+            st = os.lstat(part)
+            acl = acl_writer(part, uid) if sys.platform == "darwin" else None
+        except OSError as exc:
+            return f"{part} cannot be checked ({exc.strerror})"
+        if st.st_uid not in (0, uid):
+            return f"{part} belongs to {_account(st.st_uid)}"
+        if acl is not None:
+            return f"{part} has an ACL that lets others write: {acl}"
+        if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
+            continue
+        if st.st_mode & stat.S_IWOTH:
+            return f"{part} is writable by every account"
+        if st.st_mode & stat.S_IWGRP:
+            others = sorted(group_members(st.st_gid) - {me, "root"})
+            if others:
+                return f"{part} is writable by its group, which has {', '.join(others)}"
     return None
 
 
@@ -293,7 +352,9 @@ class InstallPlan:
 
     @property
     def privileged_script(self) -> Path:
-        return privileged_script(self.environment)
+        """Resolved: the sudo line names the file :func:`foreign_writer`
+        checked, with no link on the way."""
+        return privileged_script(self.environment).resolve()
 
     def root_command(self, mode: Literal["install", "uninstall"]) -> str:
         return root_command(self.privileged_script, mode, self.user)

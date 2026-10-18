@@ -244,7 +244,7 @@ def test_foreign_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     link = tmp_path / "opt"
     link.symlink_to(d)
     assert foreign_writer(link / PRIVILEGED_SCRIPT) is None
-    d.chmod(0o777)  # reached through a link: the resolved path is checked too
+    d.chmod(0o777)  # reached through a link: the resolved path is what is checked
     assert foreign_writer(link / PRIVILEGED_SCRIPT) == f"{d} is writable by every account"
     d.chmod(0o755)
     assert foreign_writer(tmp_path / "missing").startswith(
@@ -252,16 +252,79 @@ def test_foreign_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     )
 
 
-def test_group_members_are_regular_accounts() -> None:
-    """``admin`` holds _mbsetupuser (uid 248) on every Mac; it is no one who
-    could edit a Homebrew keg, so it must not refuse a single-user one."""
-    from voiced.launchd.install import group_members, regular_account
+def _chmod_acl(path: Path, *args: str) -> None:
+    subprocess.run(["/bin/chmod", *args, str(path)], check=True)
 
-    assert not regular_account("root") and not regular_account("daemon")
-    assert not regular_account("nobody")
-    assert regular_account(pwd.getpwuid(os.getuid()).pw_name)
-    assert regular_account("no-such-account-voiced")
-    assert all(regular_account(name) for name in group_members(80))
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ACLs")
+def test_foreign_writer_refuses_an_acl_that_lets_others_write(tmp_path: Path) -> None:
+    """Mode bits are not the whole story: an allow entry for anyone but this
+    account or root that grants a write, add or delete refuses."""
+    from voiced.launchd.install import foreign_writer
+
+    d = tmp_path / "env"
+    d.mkdir()
+    script = d / PRIVILEGED_SCRIPT
+    script.write_text("#!/bin/bash\n")
+    me = pwd.getpwuid(os.getuid()).pw_name
+    _chmod_acl(d, "+a", f"user:{me} allow add_file,delete_child")  # this account: fine
+    _chmod_acl(d, "+a", "everyone deny add_file")  # a deny takes nothing away from us
+    _chmod_acl(d, "+a", "everyone allow read")  # reading changes nothing
+    assert foreign_writer(script) is None
+    _chmod_acl(d, "+a", "everyone allow add_file,delete_child")
+    found = foreign_writer(script)
+    assert found is not None
+    assert found.startswith(f"{d} has an ACL that lets others write: group everyone ")
+    assert "delete_child" in found
+    _chmod_acl(d, "-N")
+    _chmod_acl(script, "+a", "staff allow write")  # on the script itself
+    assert (
+        foreign_writer(script) == f"{script} has an ACL that lets others write: group staff write"
+    )
+    _chmod_acl(script, "-N")
+    d.chmod(0o1777)  # sticky does not excuse an ACL
+    _chmod_acl(d, "+a", "everyone allow delete_child")
+    assert foreign_writer(script) is not None
+
+
+def test_root_command_names_the_resolved_script(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """a/env -> b/link -> c/real with b open to everyone: the check walks the
+    resolved path, and the sudo line names that path, so no link in the
+    chain is run through."""
+    from voiced.launchd.install import foreign_writer
+
+    real = tmp_path / "c" / "real"
+    copy = real / "lib/python3.12/site-packages/voiced/launchd" / PRIVILEGED_SCRIPT
+    copy.parent.mkdir(parents=True)
+    copy.write_text("#!/bin/bash\n")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "link").symlink_to(real)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "env").symlink_to(tmp_path / "b" / "link")
+    (tmp_path / "b").chmod(0o777)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "a" / "env"))
+    p = plan_install(settings, home=tmp_path, uv=None)
+    assert p.environment == tmp_path / "a" / "env"
+    assert p.privileged_script == copy
+    assert foreign_writer(p.privileged_script) is None
+    assert shlex.split(p.root_command("install"))[2] == str(copy)
+    (tmp_path / "b").chmod(0o755)
+
+
+def test_group_members_leave_out_the_setup_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``admin`` holds _mbsetupuser on every Mac; it is no one who could edit
+    a Homebrew keg, so it must not refuse a single-user one. Every other
+    member counts, system accounts included."""
+    import grp
+
+    from voiced.launchd.install import SETUP_ACCOUNT, group_members
+
+    fake = grp.struct_group(("admin", "*", 80, ["root", SETUP_ACCOUNT, "_www", "alice"]))
+    monkeypatch.setattr(grp, "getgrgid", lambda gid: fake)
+    monkeypatch.setattr(pwd, "getpwall", lambda: [])
+    assert group_members(80) == {"root", "_www", "alice"}
 
 
 def test_install_prints_no_root_step_for_a_script_others_can_change(

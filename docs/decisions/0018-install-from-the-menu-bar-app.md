@@ -205,23 +205,31 @@ sudo /bin/bash <active environment>/lib/python3.12/site-packages/voiced/launchd/
 
 and `voiced uninstall` the same with `uninstall`; the dry run shows the
 line too. The path is the copy in the environment `~/.voiced/bin/voiced`
-points at (Homebrew's `opt` path, which survives `brew upgrade`), or the
-running package's when that environment has none of its own (an editable
-checkout). Everything above holds for the CLI: root renders the plists from
+points at, or the running package's when that environment has none of its
+own (an editable checkout), fully resolved: for Homebrew it names the
+versioned keg, so it is for running now, and `voiced uninstall` prints a
+fresh one later. Everything above holds for the CLI: root renders the plists from
 the user name, refuses system accounts and another account's install,
 takes the lock, and runs every tool by path; sudo resets the environment
 before bash starts. The file itself sits in an environment the user's
 account can write. That is the trust of any script a user chooses to run
 with `sudo`, and the same as the generated script before it; the docs say
 so and invite reading it first. No other account may share it: the CLI
-prints the line only when the script and every directory on its path, as
-given and resolved (Homebrew's `opt` link included), belong to the user or
-root and are writable by nobody else (a group-writable directory passes
-only if its group holds no other regular account, uid 500 and up, as
-Homebrew's `admin` group does on a single-user Mac, where its other member
-is the system account `_mbsetupuser`; a sticky directory passes). Otherwise, for example a
-Homebrew that another admin owns, it prints why and points to `voiced
-install --source`, which builds an environment of the user's own. What
+prints the line only when the script and every directory on its resolved
+path belong to the user or root and nobody else may write them, by mode
+bits or by an ACL allow entry granting a write, add or delete to anyone but
+the user or root. A group-writable directory passes only if its group holds
+no other account; `_mbsetupuser`, the setup assistant's account, is left
+out, because it is in `admin`, the group of Homebrew's directories, on
+every Mac, and on a stock Mac it is the only account other than root below
+uid 500 in `wheel`, `staff` or `admin`. A sticky directory passes on its
+mode bits. Checking the resolved path and printing it, rather than walking
+each link of a chain such as Homebrew's `opt`, is the simpler of the two
+and complete: the line root runs has no link left to swap. Otherwise, for
+example a Homebrew that another admin owns, it prints why and points to
+`voiced install --source`, which builds an environment of the user's own.
+A volume mounted with ownership ignored shows every file as the user's, so
+the check cannot judge an environment on one. What
 changes is that nothing else the user's account wrote is read as root. The
 Metal probe of ADR 0004 follows the same rule: its plist is inside the
 script `voiced doctor --metal-probe` writes, its label uses the fixed

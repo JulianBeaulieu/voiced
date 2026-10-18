@@ -267,9 +267,10 @@ uses [Semantic Versioning](https://semver.org/).
   another account's daemons. Both are replaced by the menu bar app's
   privileged script, which renders the plists as root from the user name
   alone, refuses system accounts and another account's install, takes a
-  lock and calls every tool by path. The CLI prints its line only when no
-  account but the user's and root can change the script or a directory on
-  its path (not, for example, from a Homebrew another admin owns). The
+  lock and calls every tool by path. The CLI prints its line, with the
+  path resolved, only when no account but the user's and root can change
+  the script or a directory on its path, by mode bits or ACL (not, for
+  example, from a Homebrew another admin owns). The
   Metal probe's script carries its plist, uses the fixed label prefix, and
   touches its result file only as the user.
 - The LaunchDaemon plists no longer set `StandardOutPath` or

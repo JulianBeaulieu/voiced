@@ -41,11 +41,13 @@ when the firewall is on but the environment's Python is outside your home
 (Homebrew's) and was left alone; 4 and 5 come after a successful install.
 The file is in the environment voiced runs from, which your account can
 write: the same trust as any script you run with `sudo`. `voiced install`
-prints the line only if the file and every directory on the way to it
-belong to you or root and no other account can write them; a Homebrew
-owned by another admin, or a group-writable directory with other members,
-gets no root step and a pointer to `voiced install --source`. Read it first
-if you like. Re-running it is safe.
+prints the line, with the path fully resolved, only if the file and every
+directory on the way to it belong to you or root and no other account can
+write them, by mode bits or by an ACL; a Homebrew owned by another admin,
+or a group-writable directory with other members, gets no root step and a
+pointer to `voiced install --source`. An environment on a volume mounted
+with ownership ignored cannot be checked this way: every file there looks
+like yours. Read it first if you like. Re-running it is safe.
 
 The plists name only `~/.voiced/bin/voiced`, `~/.config/voiced/config.toml`
 and the default labels, so the services take everything else from the
