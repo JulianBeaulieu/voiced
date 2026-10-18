@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from voiced.cli import main
-from voiced.config import SERVICES, Settings
+from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, SERVICES, Settings
 from voiced.launchd import install as install_module
 from voiced.launchd.control import CommandResult, run_streaming
 from voiced.launchd.install import (
@@ -191,58 +191,41 @@ def _download_env(p: InstallPlan) -> dict[str, str]:
     return env
 
 
-def test_hf_home_resolved_once_for_plist_and_download(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_engine_variables_come_from_the_config_not_the_plists(
+    settings: Settings, tmp_path: Path
 ) -> None:
-    def make() -> InstallPlan:
-        return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-
-    monkeypatch.delenv("HF_HOME", raising=False)
-    p = make()
-    assert "HF_HOME" not in p.environment_variables()
-    assert "HF_HOME" not in _download_env(p)
-
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "from-env"))
-    p = make()  # the shell's HF_HOME reaches the daemons and the download alike
-    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "from-env")
-    assert _download_env(p)["HF_HOME"] == str(tmp_path / "from-env")
-
-    settings.install.hf_home = tmp_path / "from-config"
-    p = make()  # the config key wins over the environment
-    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "from-config")
-    assert _download_env(p)["HF_HOME"] == str(tmp_path / "from-config")
-
-    settings.install.hf_home = None
-    monkeypatch.setenv("HF_HOME", "relative/cache")
-    monkeypatch.chdir(tmp_path)
-    p = make()  # a relative HF_HOME is made absolute: the daemon's cwd differs
-    assert p.environment_variables()["HF_HOME"] == str(tmp_path / "relative/cache")
-
-
-def test_espeak_override_reaches_daemons_and_download(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The override `voiced doctor` suggests must be in the daemons' environment too."""
-
-    def make() -> InstallPlan:
-        return plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
-
-    p = make()
-    assert not {"VOICED_ESPEAK_LIBRARY", "VOICED_ESPEAK_DATA"} & set(p.environment_variables())
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "lib/libespeak-ng.dylib")
-    monkeypatch.setenv("VOICED_ESPEAK_DATA", str(tmp_path / "data"))
-    p = make()
-    expected = {
-        "VOICED_ESPEAK_LIBRARY": str(tmp_path / "lib/libespeak-ng.dylib"),  # made absolute
-        "VOICED_ESPEAK_DATA": str(tmp_path / "data"),
-    }
-    for service in ("stt", "tts", "watchdog"):
+    """The plists carry only the fixed environment the privileged script
+    renders (ADR 0018). The services, and the download as a child of a
+    voiced that set them (apply_engine_environment), get the rest from the
+    config; the download's own argument is only the config path."""
+    settings.install.hf_home = tmp_path / "hf"
+    settings.tts.espeak_library = tmp_path / "lib/libespeak-ng.dylib"
+    settings.tts.espeak_data = tmp_path / "data"
+    p = plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None)
+    assert _download_env(p) == {"VOICED_CONFIG": str(p.config_file)}
+    for service in SERVICES:
         env = plistlib.loads(p.render(service))["EnvironmentVariables"]
-        assert {k: env[k] for k in expected} == expected
-    assert {k: _download_env(p)[k] for k in expected} == expected
-    assert f"VOICED_ESPEAK_LIBRARY {expected['VOICED_ESPEAK_LIBRARY']}" in plan_summary(p)
+        assert set(env) == {"HOME", "PATH", "VOICED_CONFIG", "PYTHONUNBUFFERED", "VOICED_STDIO_LOG"}
+    summary = plan_summary(p)
+    assert f"hf_home        {tmp_path / 'hf'}" in summary
+    assert f"VOICED_ESPEAK_DATA {tmp_path / 'data'}" in summary
+
+
+def test_model_download_names_the_cache_it_uses(settings: Settings, tmp_path: Path) -> None:
+    p = dataclasses.replace(
+        plan_install(settings, home=tmp_path, staging_dir=tmp_path, uv=None),
+        environment=Path(sys.prefix),
+    )
+    script = p.model_download_command()[2].split("from voiced.config")[0]
+
+    def cache(**env: str) -> str:
+        argv = [sys.executable, "-c", script, p.model_download_command()[3]]
+        base = {k: v for k, v in os.environ.items() if k != "HF_HOME"}
+        out = subprocess.run(argv, env={**base, **env}, capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    assert cache() == "Hugging Face cache: the default"
+    assert cache(HF_HOME="/x/hf") == "Hugging Face cache: /x/hf"
 
 
 def test_build_commands_use_the_locks_and_a_managed_python(
@@ -250,7 +233,8 @@ def test_build_commands_use_the_locks_and_a_managed_python(
 ) -> None:
     """--source: a fresh environment under envs/ on a uv-managed Python in the
     state dir, every dependency with its hash from the lock, then voiced
-    without dependencies and with a hashed build backend."""
+    without dependencies and with a hashed build backend; no uv.toml of the
+    user's in any of it (UV_NO_CONFIG)."""
     checkout = tmp_path / "checkout"
     p = plan_install(
         settings, state_dir=tmp_path / "state", home=tmp_path, source=checkout, uv="/fake/uv"
@@ -261,6 +245,7 @@ def test_build_commands_use_the_locks_and_a_managed_python(
     assert p.build_commands() == [
         [
             "/usr/bin/env",
+            "UV_NO_CONFIG=1",
             f"UV_PYTHON_INSTALL_DIR={tmp_path / 'state' / 'python'}",
             "/fake/uv",
             "venv",
@@ -270,10 +255,12 @@ def test_build_commands_use_the_locks_and_a_managed_python(
             str(p.environment),
         ],
         [
+            *("/usr/bin/env", "UV_NO_CONFIG=1"),
             *("/fake/uv", "pip", "install", "--python", python, "--no-deps"),
             *("--require-hashes", "-r", str(checkout / "src/voiced/requirements.lock")),
         ],
         [
+            *("/usr/bin/env", "UV_NO_CONFIG=1"),
             *("/fake/uv", "pip", "install", "--python", python, "--no-deps"),
             *("--build-constraints", str(checkout / "src/voiced/build-requirements.lock")),
             str(checkout),
@@ -523,7 +510,7 @@ def test_install_links_the_running_environment(settings: Settings, tmp_path: Pat
 def test_install_builds_a_source_environment(settings: Settings, tmp_path: Path) -> None:
     p = _plan(settings, tmp_path, source=tmp_path / "checkout")
     calls = _install(p)
-    assert [c[3] if c[0] == "/usr/bin/env" else c[1] for c in calls[:3]] == [
+    assert [c[c.index("/fake/uv") + 1] for c in calls[:3]] == [
         "venv",
         "pip",
         "pip",
@@ -1058,3 +1045,73 @@ def test_cli_uninstall_names_homebrew_from_the_manifest(
     out = capsys.readouterr().out
     assert f"voiced itself ({keg}) is Homebrew's" in out
     assert not state.exists()
+
+
+PRIVILEGED = Path(__file__).parents[2] / "menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
+def test_plists_equal_what_the_privileged_script_renders(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The app's root step renders the plists from the user name alone (ADR
+    0018). Run as a normal user it is a test harness; what it writes must be
+    what `voiced install` stages plus the app's bundle id, whatever this
+    config says about the log dir or the Hugging Face cache."""
+    home = tmp_path / "home"
+    home.mkdir()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    settings.server.log_dir = tmp_path / "custom-logs"
+    settings.install.hf_home = tmp_path / "hf"
+    settings.tts.espeak_data = tmp_path / "espeak-ng-data"
+    plan = plan_install(
+        settings,
+        state_dir=home / ".voiced",
+        home=home,
+        config_file=home / ".config/voiced/config.toml",
+        uv=None,
+    )
+    user = pwd.getpwuid(os.getuid()).pw_name
+    env = {"PATH": "/usr/bin:/bin", "VOICED_TEST_DEST": str(dest), "VOICED_TEST_HOME": str(home)}
+    result = subprocess.run(
+        ["/bin/bash", str(PRIVILEGED), "install", user], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    for service in SERVICES:
+        rendered = plistlib.loads((dest / f"{plan.labels[service]}.plist").read_bytes())
+        ours = plistlib.loads(plan.render(service))
+        app = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.menubar"
+        assert rendered == {**ours, "AssociatedBundleIdentifiers": [app]}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
+def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Path) -> None:
+    """A kernel lock on every macOS the app supports (14 has no lockf): held,
+    the run says so; a lock it cannot take at all is not reported as held."""
+    import fcntl
+
+    home, dest = tmp_path / "home", tmp_path / "dest"
+    home.mkdir()
+    dest.mkdir()
+    user = pwd.getpwuid(os.getuid()).pw_name
+    env = {"PATH": "/usr/bin:/bin", "VOICED_TEST_DEST": str(dest), "VOICED_TEST_HOME": str(home)}
+
+    def install() -> subprocess.CompletedProcess[str]:
+        argv = ["/bin/bash", str(PRIVILEGED), "install", user]
+        return subprocess.run(argv, env=env, capture_output=True, text=True)
+
+    lock = tmp_path / "dest.lock"
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        refused = install()
+    assert refused.returncode == 1
+    assert "another voiced install or uninstall is running" in refused.stderr
+    assert list(dest.iterdir()) == []
+    assert install().returncode == 0, "a lock file nobody holds does not block"
+
+    lock.unlink()
+    lock.mkdir()  # cannot be opened for writing
+    broken = install()
+    assert broken.returncode == 1 and "another voiced" not in broken.stderr
+    assert f"cannot open {lock}" in broken.stderr

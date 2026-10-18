@@ -86,7 +86,7 @@ def test_espeak_missing_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
     check = doctor.check_espeak()
     assert check.result == "fail"
-    assert "brew install espeak-ng" in check.detail and ENV_ESPEAK_LIBRARY in check.detail
+    assert "brew install espeak-ng" in check.detail and "[tts] espeak_library" in check.detail
     assert doctor.check_espeak(required=False).result == "warn"
 
 
@@ -95,7 +95,7 @@ def test_espeak_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     lib.write_bytes(b"")
     monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
     check = doctor.check_espeak()
-    assert check == doctor.Check("espeak-ng", "pass", f"found {lib} ({ENV_ESPEAK_LIBRARY})")
+    assert check == doctor.Check("espeak-ng", "pass", f"found {lib} ([tts] espeak_library)")
 
 
 def test_espeak_stale_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

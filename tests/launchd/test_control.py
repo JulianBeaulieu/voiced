@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import subprocess
-from typing import Any
+import os
+import signal
+import time
+from pathlib import Path
 
 import pytest
 
@@ -72,20 +74,72 @@ def test_run_command_times_out() -> None:
     assert result.returncode == 124
 
 
-def test_run_streaming_has_no_timeout_and_no_capture(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, Any] = {}
+_BOTH_STREAMS = "echo out; echo err >&2; printf 'last'; exit 3"
 
-    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        seen["argv"] = argv
-        seen["kwargs"] = kwargs
-        return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(control.subprocess, "run", fake_run)
-    assert control.run_streaming(["pip", "install", "x"]).ok
-    assert seen["argv"] == ["pip", "install", "x"]
-    assert "timeout" not in seen["kwargs"] or seen["kwargs"]["timeout"] is None
-    assert not seen["kwargs"].get("capture_output")
-    assert "stdout" not in seen["kwargs"]
+def test_run_streaming_inherits_the_terminal(capfd: pytest.CaptureFixture[str]) -> None:
+    """No capture: the step's output reaches the terminal as it comes."""
+    result = control.run_streaming(["/bin/sh", "-c", _BOTH_STREAMS])
+    assert result.returncode == 3 and result.output == ""
+    out, err = capfd.readouterr()
+    assert (out, err) == ("out\nlast", "err\n")
+
+
+def test_run_streaming_hands_lines_to_on_line(capfd: pytest.CaptureFixture[str]) -> None:
+    """--json-progress: stdout and stderr together, line by line, and none
+    of it on this process's stdout, which carries the events."""
+    lines: list[str] = []
+    result = control.run_streaming(["/bin/sh", "-c", _BOTH_STREAMS], on_line=lines.append)
+    assert result.returncode == 3
+    assert lines == ["out", "err", "last"]
+    assert capfd.readouterr() == ("", "")
+
+
+def test_run_streaming_keeps_the_last_state_of_a_progress_bar() -> None:
+    """A bar redraws one line with \\r; each redraw is not a line of its own."""
+    lines: list[str] = []
+    script = "printf ' 10%%\\r 50%%\\r100%%\\n'; printf 'done\\r\\n'"
+    assert control.run_streaming(["/bin/sh", "-c", script], on_line=lines.append).ok
+    assert lines == ["100%", "done"]
+
+
+def test_run_streaming_kills_the_child_when_interrupted(tmp_path: Path) -> None:
+    """The app's Cancel is SIGTERM, raised in this process as an exception
+    while a step runs: the step's child must not keep installing."""
+    pids: list[int] = []
+
+    def on_line(line: str) -> None:
+        pids.append(int(line))
+        raise KeyboardInterrupt  # stands in for SIGTERM's SystemExit
+
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        control.run_streaming(["/bin/sh", "-c", "echo $$; exec sleep 30"], on_line=on_line)
+    assert time.monotonic() - started < 10
+    with pytest.raises(ProcessLookupError):
+        os.kill(pids[0], 0)  # killed and reaped
+
+
+def test_run_streaming_kills_what_the_child_started(tmp_path: Path) -> None:
+    """uv runs build backends of its own; they go with it."""
+    pids: list[int] = []
+
+    def on_line(line: str) -> None:
+        pids.append(int(line))
+        raise KeyboardInterrupt
+
+    script = "sleep 30 & echo $!; wait"
+    with pytest.raises(KeyboardInterrupt):
+        control.run_streaming(["/bin/sh", "-c", script], on_line=on_line)
+    deadline = time.monotonic() + 5  # the orphan is reaped by launchd, not by us
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pids[0], 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    os.kill(pids[0], signal.SIGKILL)
+    pytest.fail("the grandchild outlived the interrupted step")
 
 
 def test_run_streaming_missing_binary() -> None:

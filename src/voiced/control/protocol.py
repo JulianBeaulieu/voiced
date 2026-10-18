@@ -82,5 +82,8 @@ def event(name: str, data: dict[str, Any]) -> dict[str, Any]:
     return {"event": name, "data": data}
 
 
-def hello(version: str) -> dict[str, Any]:
-    return event("hello", {"protocol": PROTOCOL_VERSION, "version": version})
+def hello(version: str, install: dict[str, Any] | None = None) -> dict[str, Any]:
+    """``install`` is what ``install.json`` records (ADR 0017), None without
+    one; added within protocol 1, which ignores unknown fields."""
+    data = {"protocol": PROTOCOL_VERSION, "version": version, "install": install}
+    return event("hello", data)

@@ -80,6 +80,11 @@ speed = 1.0
 queue_depth = 8
 # Longest text accepted by one /v1/audio/speech request, in characters.
 max_input_chars = 4096
+# espeak-ng for Kokoro: a libespeak-ng.dylib, and optionally its data
+# directory, instead of the one found automatically. The tts service sets
+# VOICED_ESPEAK_LIBRARY and VOICED_ESPEAK_DATA from these.
+# espeak_library = "/opt/homebrew/opt/espeak-ng/lib/libespeak-ng.dylib"
+# espeak_data = "/opt/homebrew/opt/espeak-ng/share/espeak-ng-data"
 
 [launchd]
 # Reverse-DNS prefix for the launchd labels. Services are
@@ -122,5 +127,6 @@ venv_dir = "~/.voiced"
 # "3.12"; uv downloads it into <venv_dir>/python. Empty means 3.12.
 python = ""
 # Hugging Face cache directory for model downloads. Leave unset to use the
-# Hugging Face default (~/.cache/huggingface). Passed to the daemons as HF_HOME.
+# Hugging Face default (~/.cache/huggingface). voiced sets HF_HOME from it
+# and ignores one exported in your shell. Absolute, or starting with ~.
 # hf_home = "~/.cache/huggingface"

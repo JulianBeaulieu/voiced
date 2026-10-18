@@ -9,7 +9,8 @@ voice's style vector. mlx-audio's own pipeline (misaki G2P) is bypassed.
 espeak-ng is an external, GPL-3 program and is never vendored. The engine
 uses the Homebrew installation (``brew install espeak-ng``), or the library
 and data directory named by ``VOICED_ESPEAK_LIBRARY`` and
-``VOICED_ESPEAK_DATA`` when those are set, and fails at ``load()`` with the
+``VOICED_ESPEAK_DATA`` when those are set (the services set them from
+``[tts] espeak_library`` and ``espeak_data``), and fails at ``load()`` with the
 install command if neither works. When no data directory is named, the
 tokenizer reads the data of the espeak-ng copy in the ``espeakng-loader``
 wheel; that copy is cloned to a short path first (``_espeak_data``).
@@ -36,6 +37,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16
+from voiced.config import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 from voiced.text.sentences import cut_to_length
@@ -54,8 +56,6 @@ __all__ = [
 ]
 
 ESPEAK_INSTALL_HINT = "brew install espeak-ng"
-ENV_ESPEAK_LIBRARY = "VOICED_ESPEAK_LIBRARY"
-ENV_ESPEAK_DATA = "VOICED_ESPEAK_DATA"
 HOMEBREW_PREFIXES = ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng")
 MAX_ESPEAK_DATA_PATH = 159
 """Bytes. The espeak-ng in the ``espeakng-loader`` wheel keeps its data path in
@@ -145,7 +145,8 @@ def kokoro_voices(languages: list[str]) -> list[Voice]:
 def espeak_candidates() -> list[tuple[str, str | None]]:
     """``(library_path, data_path)`` pairs to try, most preferred first.
 
-    ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``) is the one
+    ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``), which
+    ``voiced`` sets from ``[tts] espeak_library`` and ``espeak_data``, is the one
     override and is the only candidate when set; a path that does not exist
     is an error naming it. Otherwise the Homebrew keg for Apple Silicon and
     for Intel, whichever exists.
@@ -154,9 +155,9 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
     if override:
         data = os.environ.get(ENV_ESPEAK_DATA) or None
         if not Path(override).is_file():
-            raise EspeakNotFound(f"{ENV_ESPEAK_LIBRARY}={override} is not a file")
+            raise EspeakNotFound(f"[tts] espeak_library {override} is not a file")
         if data and not Path(data).is_dir():
-            raise EspeakNotFound(f"{ENV_ESPEAK_DATA}={data} is not a directory")
+            raise EspeakNotFound(f"[tts] espeak_data {data} is not a directory")
         return [(override, data)]
     return [
         (f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data")
@@ -374,7 +375,7 @@ def _espeak_data(data: str | None) -> str | None:
         raise EspeakNotFound(
             f"espeak-ng data path {resolved} is {size} bytes, longer than the "
             f"{MAX_ESPEAK_DATA_PATH} the espeak-ng from espeakng-loader accepts. Use "
-            f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set {ENV_ESPEAK_DATA} "
+            f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set [tts] espeak_data "
             f"to a copy at a path of {MAX_ESPEAK_DATA_PATH} bytes or less."
         )
     return data
@@ -407,7 +408,7 @@ def _load_espeak() -> Any:
     raise EspeakNotFound(
         "Kokoro needs espeak-ng for pronunciation but it is not installed or not "
         f"working ({detail}). Install it with `{ESPEAK_INSTALL_HINT}`, or point "
-        f"{ENV_ESPEAK_LIBRARY} and {ENV_ESPEAK_DATA} at a working copy."
+        "[tts] espeak_library and espeak_data at a working copy."
     )
 
 

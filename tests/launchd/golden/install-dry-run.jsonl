@@ -1,0 +1,10 @@
+{"event": "hello", "protocol": 1, "version": "<version>"}
+{"event": "step", "step": "config", "state": "planned", "shown": "create <tmp>/missing.toml from config.example.toml"}
+{"event": "step", "step": "claim", "state": "planned", "shown": "create the configured log dir <tmp>/logs, and claim <tmp>/state (install.json)"}
+{"event": "step", "step": "check", "state": "planned", "shown": "<tmp>/env/bin/python -P -c <engine check>"}
+{"event": "step", "step": "models", "state": "planned", "shown": "<tmp>/env/bin/python -c <model download>"}
+{"event": "step", "step": "link", "state": "planned", "shown": "link <tmp>/state/bin/voiced -> <tmp>/env/bin/voiced"}
+{"event": "step", "step": "manifest", "state": "planned", "shown": "write <tmp>/state/install.json"}
+{"event": "step", "step": "prune", "state": "planned", "shown": "remove environments in <tmp>/state/envs other than the new and the previous one"}
+{"event": "step", "step": "stage", "state": "planned", "shown": "write the plists and scripts to <tmp>/stage"}
+{"event": "done", "staging_dir": "<tmp>/stage"}

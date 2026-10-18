@@ -70,7 +70,9 @@ if run uninstall "$user" >/dev/null 2>&1 || [ ! -f "$dest/$prefix.stt.plist" ]; 
 else ok "another user's install is kept (uninstall)"; fi
 
 # A run that holds the lock blocks a second one; a lock file nobody holds does not.
-clear_dest; lockf -k "$dest.lock" sleep 10 & holder=$!; sleep 1
+hold_lock() { exec /usr/bin/perl -MFcntl=:flock -e \
+    'open(my $f, ">>", $ARGV[0]) or die; flock($f, LOCK_EX) or die; sleep 10' "$1"; }
+clear_dest; hold_lock "$dest.lock" & holder=$!; sleep 1
 if run install "$user" >/dev/null 2>&1; then bad "ran while locked"; else ok "a held lock refuses"; fi
 kill "$holder"; wait "$holder" 2>/dev/null
 if run install "$user" >/dev/null 2>&1; then ok "a lock file left behind does not block"

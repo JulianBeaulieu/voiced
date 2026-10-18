@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, Settings, load_settings
+from voiced.config import (
+    DEFAULT_LAUNCHD_LABEL_PREFIX,
+    ENGINE_ENV,
+    Settings,
+    apply_engine_environment,
+    load_settings,
+)
 
 
 def test_defaults(settings: Settings) -> None:
@@ -62,3 +69,61 @@ def test_example_config_matches_defaults(settings: Settings) -> None:
     """config.example.toml documents the defaults, so loading it must change nothing."""
     example = Path(__file__).resolve().parents[1] / "config.example.toml"
     assert load_settings(example) == Settings()
+
+
+def test_engine_environment_comes_from_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the plists used to carry (ADR 0018): HF_HOME and the espeak-ng
+    overrides, set from the config file, and only from it."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[install]\nhf_home = "~/hf"\n[tts]\nespeak_library = "/x/libespeak-ng.dylib"\n')
+    settings = load_settings(cfg)
+    assert settings.engine_environment() == {
+        "HF_HOME": str(Path.home() / "hf"),
+        "VOICED_ESPEAK_LIBRARY": "/x/libespeak-ng.dylib",
+    }
+    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/terminal/lib.dylib")
+    monkeypatch.setenv("VOICED_ESPEAK_DATA", "/terminal/data")
+    monkeypatch.setenv("HF_HOME", "/elsewhere")  # often exported for other tools: no notice
+    assert apply_engine_environment(settings) == [
+        "ignoring VOICED_ESPEAK_LIBRARY from the environment; "
+        "set [tts] espeak_library in the config",
+        "ignoring VOICED_ESPEAK_DATA from the environment; set [tts] espeak_data in the config",
+    ]
+    assert {k: os.environ.get(k) for k in ENGINE_ENV} == {
+        "HF_HOME": str(Path.home() / "hf"),
+        "VOICED_ESPEAK_LIBRARY": "/x/libespeak-ng.dylib",
+        "VOICED_ESPEAK_DATA": None,  # the shell's is cleared
+    }
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("server", "log_dir"),
+        ("install", "hf_home"),
+        ("tts", "espeak_library"),
+        ("tts", "espeak_data"),
+    ],
+)
+def test_paths_the_services_and_installer_share_must_be_absolute(
+    tmp_path: Path, section: str, key: str
+) -> None:
+    """The services run in the home, the installer and its children anywhere:
+    a relative path would mean two different places."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(f'[{section}]\n{key} = "relative/dir"\n')
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        load_settings(cfg)
+    cfg.write_text(f'[{section}]\n{key} = "~/dir"\n')
+    assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"
+
+
+def test_no_notice_when_the_shell_agrees_with_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[tts]\nespeak_library = "/x/libespeak-ng.dylib"\n')
+    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/x/libespeak-ng.dylib")
+    assert apply_engine_environment(load_settings(cfg)) == []

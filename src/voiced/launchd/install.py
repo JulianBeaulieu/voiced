@@ -24,8 +24,14 @@ from pathlib import Path
 from typing import Literal
 
 import voiced
-from voiced.config import SERVICES, DaemonName, Settings, config_path
-from voiced.engines.kokoro import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
+from voiced.config import (
+    ENV_HF_HOME,
+    LOG_DIR_IN_HOME,
+    SERVICES,
+    DaemonName,
+    Settings,
+    config_path,
+)
 from voiced.launchd.control import (
     Runner,
     bootout_argv,
@@ -36,6 +42,7 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.plist import log_paths, render_plist
+from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
     MANIFEST,
@@ -160,16 +167,20 @@ class InstallPlan:
     state_dir_flag: str = "[install] venv_dir"
     python: str = ""
     uv: str | None = None
-    hf_home: Path | None = None
-    # VOICED_ESPEAK_LIBRARY / VOICED_ESPEAK_DATA from the installing shell, so the
-    # daemons load the same espeak-ng that `voiced doctor` found.
-    espeak_env: dict[str, str] = field(default_factory=dict)
+    # HF_HOME and the espeak-ng overrides as the config sets them, which is
+    # how the services get them (ADR 0018).
+    engine_env: dict[str, str] = field(default_factory=dict)
 
     # Paths -------------------------------------------------------------
 
     @property
     def entry(self) -> Path:
         return entry_point(self.state_dir)
+
+    @property
+    def hf_home(self) -> Path | None:
+        value = self.engine_env.get(ENV_HF_HOME)
+        return Path(value) if value else None
 
     @property
     def python_bin(self) -> Path:
@@ -194,16 +205,14 @@ class InstallPlan:
     # Plists ------------------------------------------------------------
 
     def environment_variables(self) -> dict[str, str]:
-        env = {
+        """The fixed environment the privileged script of ADR 0018 renders
+        too; everything else the services read from the config file."""
+        return {
             "HOME": str(self.home),
             "PATH": f"{self.entry.parent}:{BASE_PATH}",
             "VOICED_CONFIG": str(self.config_file),
             "PYTHONUNBUFFERED": "1",
         }
-        if self.hf_home is not None:
-            env["HF_HOME"] = str(self.hf_home)
-        env.update(self.espeak_env)
-        return env
 
     def program_arguments(self, service: str) -> list[str]:
         if service == "watchdog":
@@ -213,11 +222,12 @@ class InstallPlan:
     def render(self, service: str) -> bytes:
         # KeepAlive while the entry point resolves: after `brew uninstall
         # voiced` (or any deleted environment) launchd stops respawning a
-        # program that cannot start, and resumes once it is back.
+        # program that cannot start, and resumes once it is back. The default
+        # log dir, whatever the config says (voiced.launchd.stdio.follow_log_dir).
         return render_plist(
             label=self.labels[service],
             program_arguments=self.program_arguments(service),
-            log_dir=self.log_dir,
+            log_dir=self.home / LOG_DIR_IN_HOME,
             user_name=self.user,
             working_directory=self.home,
             environment=self.environment_variables(),
@@ -232,17 +242,19 @@ class InstallPlan:
     def build_commands(self) -> list[list[str]]:
         """With ``source``: create the environment and install the locked
         dependencies, then voiced itself, with hashes throughout. Empty
-        otherwise: the environment exists already."""
+        otherwise: the environment exists already. ``UV_NO_CONFIG``: a
+        ``uv.toml`` of the user's cannot change what is installed."""
         if self.source is None:
             return []
+        env = ["/usr/bin/env", "UV_NO_CONFIG=1"]
         uv = self.uv or "uv"
         python = str(self.python_bin)
         managed = f"UV_PYTHON_INSTALL_DIR={self.state_dir / PYTHONS}"
         version = self.python or DEFAULT_PYTHON_VERSION
-        install = [uv, "pip", "install", "--python", python, "--no-deps"]
+        install = [*env, uv, "pip", "install", "--python", python, "--no-deps"]
         return [
             [
-                "/usr/bin/env",
+                *env,
                 managed,
                 uv,
                 "venv",
@@ -261,12 +273,12 @@ class InstallPlan:
         return [str(self.python_bin), "-P", "-c", ENGINE_CHECK]
 
     def model_download_command(self) -> list[str]:
-        """The environment goes in as a JSON argument, not through
-        ``/usr/bin/env``, which would take a state path containing ``=``
-        for one more assignment."""
-        env = {"VOICED_CONFIG": str(self.config_file), **self.espeak_env}
-        if self.hf_home is not None:
-            env["HF_HOME"] = str(self.hf_home)
+        """The engine variables come with this process's environment, which
+        ``voiced`` set from the config (``apply_engine_environment``), so
+        the models land in the cache the services read. The rest goes in as
+        a JSON argument, not through ``/usr/bin/env``, which would take a
+        state path containing ``=`` for one more assignment."""
+        env = {"VOICED_CONFIG": str(self.config_file)}
         return [str(self.python_bin), "-c", MODEL_DOWNLOAD_SCRIPT, json.dumps(env)]
 
     def sudo_install_script(self) -> str:
@@ -407,6 +419,7 @@ ENGINE_CHECK = (
 MODEL_DOWNLOAD_SCRIPT = """
 import asyncio, json, os, sys
 os.environ.update(json.loads(sys.argv[1]))
+print(f"Hugging Face cache: {os.environ.get('HF_HOME') or 'the default'}", flush=True)
 from voiced.config import load_settings
 from voiced.engines.registry import UnknownEngine, get_stt_engine, get_tts_engine
 
@@ -477,15 +490,6 @@ def plan_install(
     else:
         source = source.expanduser().absolute()
         environment, found = new_environment_dir(state), "cli"
-    env_hf_home = os.environ.get("HF_HOME")
-    hf_home = settings.install.hf_home or (Path(env_hf_home) if env_hf_home else None)
-    if hf_home is not None:
-        hf_home = hf_home.expanduser().absolute()  # the daemon has a different cwd
-    espeak_env = {
-        key: str(Path(value).expanduser().absolute())
-        for key in (ENV_ESPEAK_LIBRARY, ENV_ESPEAK_DATA)
-        if (value := os.environ.get(key))
-    }
     return InstallPlan(
         user=installing_user(),
         home=home or Path.home(),
@@ -500,8 +504,7 @@ def plan_install(
         state_dir_flag="[install] venv_dir" if state_dir is None else "--state-dir",
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
-        hf_home=hf_home,
-        espeak_env=espeak_env,
+        engine_env=settings.engine_environment(),
     )
 
 
@@ -524,7 +527,7 @@ def plan_summary(plan: InstallPlan) -> str:
         f"staging        {plan.staging_dir}",
         f"hf_home        {plan.hf_home or '(Hugging Face default)'}",
     ]
-    lines += [f"{key:<14} {value}" for key, value in plan.espeak_env.items()]
+    lines += [f"{key:<14} {value}" for key, value in plan.engine_env.items() if key != ENV_HF_HOME]
     for service in SERVICES:
         lines.append(f"label {service:<9}{plan.labels[service]}")
     return "\n".join(lines)
@@ -638,9 +641,8 @@ def install_steps(
         def go() -> None:
             result = runner(argv)
             if not result.ok:
-                raise InstallError(
-                    f"{what} failed (exit {result.returncode}): {result.output}".rstrip()
-                )
+                output = f": {result.output}" if result.output else ""
+                raise InstallError(f"{what} failed (exit {result.returncode}){output}")
 
         return go
 
@@ -674,9 +676,9 @@ def install_steps(
             write_manifest(plan.state_dir, Manifest(source=plan.origin, environment=None))
 
     claimed = "" if previous is not None else f", and claim {plan.state_dir} ({MANIFEST})"
-    steps.append(Step("claim", f"create log dir {plan.log_dir}{claimed}", claim_dir))
+    steps.append(Step("claim", f"create the configured log dir {plan.log_dir}{claimed}", claim_dir))
     for argv in plan.build_commands():
-        what = "uv venv" if "venv" in argv else argv[0]
+        what = "uv venv" if "venv" in argv else "uv pip install"
         steps.append(Step("build", shlex.join(argv), run(argv, what), command=True))
 
     target = plan.environment / "bin" / "voiced"
@@ -774,14 +776,17 @@ def run_install(
     dry_run: bool = False,
     skip_models: bool = False,
     say: Say = print,
+    progress: Progress | None = None,
 ) -> None:
-    """Run (or with ``dry_run`` only show) :func:`install_steps`.
+    """Run (or with ``dry_run`` only show) :func:`install_steps`, reporting
+    each step to ``progress``.
 
     Long steps (build, model download) run through ``runner``, which by
     default streams output and has no timeout; the engine check through
     ``query``, which captures it. The whole install holds
     :func:`voiced.layout.install_lock`. Raises :class:`InstallError`.
     """
+    progress = progress or Progress()
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
@@ -790,6 +795,7 @@ def run_install(
             plan, previous, runner=runner, query=query, skip_models=skip_models, say=say
         ):
             say(step.render(dry_run=True))
+            progress.step(step.id, "planned", step.shown)
         return
     plan.state_dir.mkdir(parents=True, exist_ok=True)
     with install_lock(
@@ -801,7 +807,9 @@ def run_install(
         )
         for step in steps:
             say(step.render(dry_run=False))
+            progress.step(step.id, "start", step.shown)
             step.run()
+            progress.step(step.id, "done", step.shown)
     old = previous.environment if previous is not None else None
     if old is not None and not same_path(old, plan.environment):
         say(

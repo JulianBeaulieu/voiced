@@ -132,10 +132,12 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    modes refuse, and the app says "voiced is already installed for <user>
    on this Mac." An install whose `UserName` no longer resolves (the
    account was deleted) is orphaned: install and uninstall take it over and
-   say so. Two runs at once are stopped by a kernel lock (`flock`, through
-   `/usr/bin/lockf` on a file descriptor) on `/var/run/voiced-privileged.lock`,
+   say so. Two runs at once are stopped by a kernel lock (`flock` on a file
+   descriptor the shell keeps open, taken through `/usr/bin/perl`, since
+   macOS 14 has no `/usr/bin/lockf`) on `/var/run/voiced-privileged.lock`,
    held until the script exits however it exits, so there is no stale lock
-   and no pid to be reused.
+   and no pid to be reused. A lock that cannot be taken at all is reported
+   as that, not as another run.
 6. Temporary files go to a root-owned 0700 directory under `/private/tmp`
    (never `$TMPDIR`) and are removed by a trap on any exit.
 7. Only after all three plists are rendered does it touch launchd: per
@@ -448,7 +450,8 @@ script rebuilds and replaces the plists.
 ### The progress protocol
 
 `voiced install --json-progress` writes one JSON object per line on stdout;
-human output goes to stderr.
+human output, including the output of the commands the steps run, goes to
+stderr (`voiced.launchd.progress`).
 
 - The first line is `{"event": "hello", "protocol": 1, "version": "<voiced version>"}`.
   The app refuses any other protocol number with "Update voiced" or
@@ -457,15 +460,35 @@ human output goes to stderr.
 - `{"event": "step", "step": "<id>", "state": "start|done", "shown": "..."}`
   for each of ADR 0017's `install_steps`, by their `Step.id` (`config`,
   `claim`, `check`, `ports`, `models`, `link`, `manifest`, `legacy`,
-  `prune`, `stage`); the app's own environment step is `env`. A step that
+  `prune`, `stage`; a `--source` build adds three `build` steps, which the
+  app never runs); the app's own environment step is `env`. A step that
   does not apply is not in the list. The same list drives `--dry-run`, so
-  `--dry-run --json-progress` gives the app the steps before it starts.
+  `--dry-run --json-progress` gives the app the steps before it starts:
+  one `step` event per step with `"state": "planned"`, then `done`.
+  `shown` is the step's description without the dry run's "would" or a
+  command's `$ `.
 - `{"event": "download", "model": "<repo>", "bytes": n, "total": n}`, with
-  the total from the manifest, throttled to four a second.
-- `{"event": "log", "line": "..."}`
+  the total from the manifest, throttled to four a second. It arrives with
+  the model download that reports bytes (`snapshot_download` with pinned
+  revisions); until then the app shows the models step without a byte
+  count. The child will report on a line with an explicit prefix of its
+  own, not one that merely looks like this event.
+- `{"event": "log", "line": "..."}`: each line the steps' child processes
+  print (uv, the model download), as it comes; of a progress bar's `\r`
+  redraws, only the last state of the line.
 - The last line is `{"event": "done", "staging_dir": "..."}` or
   `{"event": "error", "step": "...", "message": "..."}`, and the exit code
-  agrees with it (0 only with `done`).
+  agrees with it (0 only with `done`). `step` is the step that was running,
+  or null for a refusal before any step (another account's state
+  directory, root, a config file that does not parse). An unexpected
+  exception still ends the stream with `error`, then exits non-zero with
+  its traceback on stderr. SIGTERM (the app's Cancel) kills the running
+  step's child process, ends the stream with `error` ("terminated
+  (SIGTERM)") and exits 143.
+
+The watchdog's control-socket `hello` (ADR 0013) gains `install`: what
+`install.json` records (`source`, `environment`, `version`, `lock_sha256`,
+`python`), read for each connection, or null when there is none.
 
 ## Lifecycle
 

@@ -10,11 +10,15 @@ running job do not (ADR 0004).
 
 from __future__ import annotations
 
+import contextlib
+import os
 import re
+import signal
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 LAUNCH_DAEMONS_DIR = Path("/Library/LaunchDaemons")
 SYSTEM_DOMAIN = "system"
@@ -39,6 +43,15 @@ Runner = Callable[[Sequence[str]], CommandResult]
 """Runs a command and returns its result. Must not raise for a missing binary."""
 
 
+class StreamingRunner(Protocol):
+    """:func:`run_streaming`'s signature: a :data:`Runner` that can hand
+    each output line to ``on_line``."""
+
+    def __call__(
+        self, argv: Sequence[str], on_line: Callable[[str], None] | None = None
+    ) -> CommandResult: ...
+
+
 def run_command(argv: Sequence[str], timeout_s: float | None = 30.0) -> CommandResult:
     """Default :data:`Runner` for short queries: captured output, bounded time."""
     try:
@@ -54,18 +67,46 @@ def run_command(argv: Sequence[str], timeout_s: float | None = 30.0) -> CommandR
     return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
 
-def run_streaming(argv: Sequence[str]) -> CommandResult:
+def run_streaming(
+    argv: Sequence[str], on_line: Callable[[str], None] | None = None
+) -> CommandResult:
     """:data:`Runner` for long steps (pip, model downloads).
 
     No timeout and no capture: output streams to the terminal so the user sees
-    progress, and nothing is lost if the step takes ten minutes.
+    progress, and nothing is lost if the step takes ten minutes. With
+    ``on_line``, each line of output (stdout and stderr together) goes there
+    instead, as it comes (``voiced install --json-progress`` keeps its own
+    stdout for events); of a progress bar's ``\r`` refreshes only the last
+    state of the line. Any exception here (SIGTERM, Ctrl-C) kills the child
+    and everything it started (it runs in a session of its own: uv's build
+    backends, say) before it goes on, so no install step keeps running.
     """
+    pipe = subprocess.PIPE if on_line is not None else None
     try:
-        proc = subprocess.run(list(argv), check=False)
+        proc = subprocess.Popen(
+            list(argv),
+            stdout=pipe,
+            stderr=subprocess.STDOUT if pipe else None,
+            start_new_session=True,
+        )
     except FileNotFoundError as exc:
         return CommandResult(127, "", f"{argv[0]}: not found ({exc})")
     except OSError as exc:
         return CommandResult(126, "", f"{argv[0]}: {exc}")
+    try:
+        if on_line is not None and proc.stdout is not None:
+            for raw in proc.stdout:
+                last = raw.rstrip(b"\r\n").rsplit(b"\r", 1)[-1]
+                on_line(last.decode(errors="replace"))
+        proc.wait()
+    except BaseException:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        raise
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
     return CommandResult(proc.returncode)
 
 

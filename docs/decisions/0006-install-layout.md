@@ -28,7 +28,7 @@ characters; that warning was removed.
 | config | `~/.config/voiced/config.toml` | copied from the packaged `config.example.toml` on first install, never overwritten |
 | staged plists and scripts | `~/.config/voiced/launchd/` | `<label>.plist` x3, `install-daemons.sh`, `uninstall-daemons.sh`, `metal-probe.sh`; the sudo scripts reference these absolute paths |
 | logs | `~/Library/Logs/voiced/` (`[server] log_dir`) | the macOS convention, visible in Console.app |
-| models | Hugging Face cache (`~/.cache/huggingface` or `[install] hf_home`) | not vendored; `HF_HOME` is passed to the daemons when configured |
+| models | Hugging Face cache (`~/.cache/huggingface` or `[install] hf_home`) | not vendored; the services set `HF_HOME` from the config |
 | installed plists | `/Library/LaunchDaemons/<label>.plist`, root:wheel 0644 | written only by the printed sudo script |
 
 The installer uses `uv` when it is on `PATH` (`uv venv --python 3.12`, then
@@ -101,10 +101,11 @@ original stderr (`/dev/null` under launchd) and logged as a warning in
 redirect rather than crash-looping. Plists rendered before this change keep the two keys, and
 the old exposure, until `voiced install` and its sudo script replace them.
 
-`HF_HOME` is resolved once when the plan is built (`[install] hf_home`,
-else the installing shell's `HF_HOME`, else unset) and written identically
-into the plists and the model download command, so the daemons find the
-weights the installer fetched.
+`HF_HOME` comes from `[install] hf_home`, not from the plists: every
+`voiced` command sets it, and the espeak-ng variables, from the config file
+alone and clears what the shell exported (ADR 0018). The services and the
+installer's model download, its child, therefore see the same cache, so
+the daemons find the weights the installer fetched.
 
 Every path that ends up in a generated shell script is quoted with
 `shlex.quote`, and `[launchd] label_prefix` is validated to letters, digits,

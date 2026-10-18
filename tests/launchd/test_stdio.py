@@ -23,6 +23,13 @@ def _child_env(prefix: Path) -> dict[str, str]:
     return {**os.environ, ENV_STDIO_LOG: str(prefix)}
 
 
+@pytest.fixture(autouse=True)
+def no_redirect_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """In-process redirects here are faked or fail; what they record must not
+    make a later ``voiced`` call in this process move pytest's own fds."""
+    monkeypatch.setattr(stdio, "_prefix", None)
+
+
 @pytest.fixture
 def restore_root_logger() -> Iterator[None]:
     root = logging.getLogger()
@@ -228,3 +235,43 @@ def test_closed_stdout_at_startup_is_reused_not_closed(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "stt.stdout.log").read_text() == "fd1 after\n"
     assert (tmp_path / "stt.stderr.log").read_text() == "fd2 after\n"
+
+
+def _entry(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[bytes]:
+    code = "import sys; from voiced.entry import main; sys.exit(main())"
+    return subprocess.run(
+        [sys.executable, "-c", code, *args], env=env, capture_output=True, timeout=60, check=False
+    )
+
+
+def test_a_custom_log_dir_from_the_config_wins(tmp_path: Path) -> None:
+    """The plists name the default log dir (root renders them from the user
+    name alone, ADR 0018); once the config is read, its log_dir takes over."""
+    default, custom = tmp_path / "default", tmp_path / "custom"
+    config = tmp_path / "config.toml"
+    config.write_text(f'[server]\nlog_dir = "{custom}"\n')
+    env = {**_child_env(default / "stt"), "VOICED_CONFIG": str(config)}
+    result = _entry(env, "config")
+    assert result.returncode == 0 and result.stdout == b""
+    assert str(custom) in (custom / "stt.stdout.log").read_text()
+    assert (default / "stt.stdout.log").read_text() == ""
+
+    config.write_text("[server\n")  # broken: the error lands in the default log
+    assert _entry(env, "config").returncode == 2
+    assert "config error" in (default / "stt.stderr.log").read_text()
+
+
+def test_follow_log_dir_without_a_redirect_does_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(stdio, "redirect_stdio", lambda *a: calls.append(a))
+    stdio.follow_log_dir(tmp_path)  # a terminal `voiced`: nothing redirected
+    monkeypatch.setenv(ENV_STDIO_LOG, str(tmp_path / "tts"))
+    stdio.redirect_stdio_from_env()
+    stdio.follow_log_dir(tmp_path)  # already there
+    stdio.follow_log_dir(tmp_path / "custom")
+    assert calls == [
+        (tmp_path / "tts.stdout.log", tmp_path / "tts.stderr.log"),
+        (tmp_path / "custom/tts.stdout.log", tmp_path / "custom/tts.stderr.log"),
+    ]

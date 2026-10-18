@@ -23,7 +23,13 @@ from typing import Any, Literal
 
 import psutil
 
-from voiced.config import HTTP_SERVICES, SERVICES, ServiceName, Settings, config_path
+from voiced.config import (
+    HTTP_SERVICES,
+    SERVICES,
+    ServiceName,
+    Settings,
+    config_path,
+)
 from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
@@ -231,8 +237,8 @@ def check_espeak(required: bool = True) -> Check:
     """Does the Kokoro engine find an espeak-ng library?
 
     Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`):
-    ``VOICED_ESPEAK_LIBRARY`` when set, else the Homebrew keg, which is found
-    whether or not it is linked. An ``espeak-ng`` binary on ``PATH`` is
+    ``[tts] espeak_library`` when set (``VOICED_ESPEAK_LIBRARY``), else the
+    Homebrew keg, which is found whether or not it is linked. An ``espeak-ng`` binary on ``PATH`` is
     irrelevant: the engine loads the library. ``required`` is whether the
     configured TTS engine needs it; if not, any problem is only a warning.
     The library is found, not loaded: the engine's phonemizer self-test runs
@@ -247,7 +253,7 @@ def check_espeak(required: bool = True) -> Check:
     if found:
         library, data = found[0]
         override = library == os.environ.get(ENV_ESPEAK_LIBRARY)
-        detail = f"found {library} ({ENV_ESPEAK_LIBRARY if override else 'Homebrew'})"
+        detail = f"found {library} ({'[tts] espeak_library' if override else 'Homebrew'})"
         if data:
             detail += f", data {data}"
         return Check(name, "pass", detail)
@@ -255,7 +261,7 @@ def check_espeak(required: bool = True) -> Check:
         name,
         result,
         f"library not found; Kokoro needs it: {ESPEAK_INSTALL_HINT} "
-        f"(or set {ENV_ESPEAK_LIBRARY} to libespeak-ng.dylib)",
+        "(or set [tts] espeak_library to libespeak-ng.dylib)",
     )
 
 

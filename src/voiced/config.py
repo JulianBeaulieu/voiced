@@ -27,6 +27,22 @@ from pydantic_settings import (
 ENV_PREFIX = "VOICED_"
 ENV_CONFIG_PATH = "VOICED_CONFIG"
 DEFAULT_CONFIG_PATH = Path("~/.config/voiced/config.toml")
+# The default log directory, under the home. The plists name it whatever the
+# config says (ADR 0018: root renders them from the user name alone); a
+# custom ``[server] log_dir`` takes over once the config is read.
+LOG_DIR_IN_HOME = Path("Library/Logs/voiced")
+
+# Environment variables the engines read, set from the config file
+# (:meth:`Settings.engine_environment`): the plists carry only a fixed
+# environment (ADR 0018).
+ENV_HF_HOME = "HF_HOME"
+ENV_ESPEAK_LIBRARY = "VOICED_ESPEAK_LIBRARY"
+ENV_ESPEAK_DATA = "VOICED_ESPEAK_DATA"
+ENGINE_ENV: dict[str, tuple[str, str]] = {  # variable -> (section, key) that sets it
+    ENV_HF_HOME: ("install", "hf_home"),
+    ENV_ESPEAK_LIBRARY: ("tts", "espeak_library"),
+    ENV_ESPEAK_DATA: ("tts", "espeak_data"),
+}
 
 # Single source of truth for the launchd label prefix. Changing this constant
 # (or the ``[launchd] label_prefix`` config key) is all that is needed to move
@@ -49,6 +65,17 @@ _LABEL_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 _toml_path: ContextVar[Path | None] = ContextVar("voiced_toml_path", default=None)
 
 
+def _absolute(value: Path | None) -> Path | None:
+    """``~`` expanded, and refused unless absolute: the services (cwd the
+    home), the installer and its children (any cwd) must agree on it."""
+    if value is None:
+        return None
+    path = value.expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{value} must be an absolute path, or start with ~")
+    return path
+
+
 class _Section(BaseModel):
     """Unknown keys are errors so typos in the config file do not go unnoticed."""
 
@@ -58,7 +85,7 @@ class _Section(BaseModel):
 class ServerConfig(_Section):
     bind: str = "127.0.0.1"
     api_key: str = ""
-    log_dir: Path = Field(default_factory=lambda: Path("~/Library/Logs/voiced").expanduser())
+    log_dir: Path = Field(default_factory=lambda: Path.home() / LOG_DIR_IN_HOME)
     log_level: LogLevel = "info"
     # Advertise the Wyoming listeners over mDNS so Home Assistant discovers
     # them. Only takes effect when ``bind`` is not a loopback address.
@@ -71,10 +98,7 @@ class ServerConfig(_Section):
     session_idle_s: float = Field(default=30.0, gt=0)
     write_timeout_s: float = Field(default=10.0, gt=0)
 
-    @field_validator("log_dir", mode="after")
-    @classmethod
-    def _expand(cls, value: Path) -> Path:
-        return value.expanduser()
+    _absolute_log_dir = field_validator("log_dir", mode="after")(_absolute)
 
 
 # voiced.engines.base.STT_SAMPLE_RATE and the 16-bit sample width, restated:
@@ -110,6 +134,12 @@ class TTSConfig(_Section):
     speed: float = Field(default=1.0, gt=0)
     queue_depth: int = Field(default=8, ge=1)
     max_input_chars: int = Field(default=4096, ge=1)
+    # espeak-ng for Kokoro: a libespeak-ng.dylib and its data directory, in
+    # place of the wheel's copy and Homebrew's (ADR 0009).
+    espeak_library: Path | None = None
+    espeak_data: Path | None = None
+
+    _absolute_espeak = field_validator("espeak_library", "espeak_data", mode="after")(_absolute)
 
 
 class LaunchdConfig(_Section):
@@ -155,10 +185,12 @@ class InstallConfig(_Section):
     # Hugging Face cache for model downloads; empty = the Hugging Face default.
     hf_home: Path | None = None
 
-    @field_validator("venv_dir", "hf_home", mode="after")
+    _absolute_hf_home = field_validator("hf_home", mode="after")(_absolute)
+
+    @field_validator("venv_dir", mode="after")
     @classmethod
-    def _expand(cls, value: Path | None) -> Path | None:
-        return value.expanduser() if value is not None else None
+    def _expand(cls, value: Path) -> Path:
+        return value.expanduser()
 
 
 class Settings(BaseSettings):
@@ -176,6 +208,11 @@ class Settings(BaseSettings):
     launchd: LaunchdConfig = Field(default_factory=LaunchdConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     install: InstallConfig = Field(default_factory=InstallConfig)
+
+    def engine_environment(self) -> dict[str, str]:
+        """:data:`ENGINE_ENV` as the config sets them; unset keys are left out."""
+        values = {env: getattr(getattr(self, s), key) for env, (s, key) in ENGINE_ENV.items()}
+        return {env: str(value) for env, value in values.items() if value is not None}
 
     def http_port(self, service: ServiceName) -> int:
         return self.stt.http_port if service == "stt" else self.tts.http_port
@@ -210,6 +247,27 @@ class Settings(BaseSettings):
         if path is not None and path.is_file():
             sources.append(TomlConfigSettingsSource(settings_cls, toml_file=path))
         return tuple(sources)
+
+
+def apply_engine_environment(settings: Settings) -> list[str]:
+    """Make :data:`ENGINE_ENV` in this process exactly what the config says,
+    for the engines, ``huggingface_hub`` (which reads ``HF_HOME`` on import)
+    and every child: one rule for the services, ``doctor`` and the
+    installer's model download, whatever the shell exported.
+
+    Returns a notice for each ``VOICED_ESPEAK_*`` the shell set otherwise
+    (voiced's own variables; ``HF_HOME`` is often exported for other tools).
+    """
+    wanted = settings.engine_environment()
+    notices = [
+        f"ignoring {key} from the environment; set [{section}] {name} in the config"
+        for key, (section, name) in ENGINE_ENV.items()
+        if key != ENV_HF_HOME and os.environ.get(key, wanted.get(key)) != wanted.get(key)
+    ]
+    for key in ENGINE_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(wanted)
+    return notices
 
 
 def config_path() -> Path:

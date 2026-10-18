@@ -257,14 +257,14 @@ weights. It says nothing about the transcripts you produce.
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
 espeak-ng at run time as a shared library from Homebrew
-(`brew install espeak-ng`), or from the path in `VOICED_ESPEAK_LIBRARY`, and
+(`brew install espeak-ng`), or from the path in `[tts] espeak_library`, and
 fails at startup with the install command if neither works. The `tts` extra
 also pulls in, as dependencies of `kokoro-onnx`, the `phonemizer` package
 (GPL-3.0-or-later), which the Kokoro engine imports, through
 `kokoro_onnx.tokenizer`, to drive espeak-ng in the tts process, and the
 `espeakng-loader` wheel, which carries its own GPL-3 copy of espeak-ng. voiced
 loads the Homebrew library rather than the wheel's copy; with
-`VOICED_ESPEAK_LIBRARY` set and `VOICED_ESPEAK_DATA` unset, the wheel's
+`[tts] espeak_library` set and `espeak_data` unset, the wheel's
 espeak-ng data files are used. Anyone redistributing a tts environment
 redistributes these GPL-3 packages with it: shipping a built tts environment
 (a venv, an app bundle, an image) means meeting the GPL-3 terms for it. The

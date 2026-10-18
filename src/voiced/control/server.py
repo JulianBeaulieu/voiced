@@ -158,6 +158,7 @@ class ControlServer:
         ops: Operations,
         *,
         version: str,
+        install: Callable[[], dict[str, Any] | None] = lambda: None,
         uid_of: Callable[[socket.socket], int | None] = peer_uid,
         status_poll_s: float = STATUS_POLL_S,
         status_push_max_s: float = STATUS_PUSH_MAX_S,
@@ -166,6 +167,9 @@ class ControlServer:
         self.path = path
         self.ops = ops
         self.version = version
+        self.install = install
+        """Read for every ``hello``: ``voiced install`` rewrites the manifest
+        after the link, which the watchdog may already have followed."""
         self.uid_of = uid_of
         self.status_poll_s = status_poll_s
         self.status_push_max_s = status_push_max_s
@@ -242,7 +246,7 @@ class ControlServer:
         self.clients.add(client)
         self.refresh_status()
         try:
-            self._send(client, hello(self.version))
+            self._send(client, hello(self.version, self.install()))
             await self._serve(client, reader)
         except (ConnectionError, asyncio.IncompleteReadError):
             pass

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -45,6 +46,7 @@ from voiced.control.ops import NoSupervisor, Operations, engines_in_subprocess
 from voiced.control.protocol import OpError
 from voiced.launchd.control import (
     Runner,
+    StreamingRunner,
     bootout_argv,
     bootstrap_argv,
     kickstart_argv,
@@ -54,7 +56,13 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.plist import log_paths
-from voiced.layout import ORIGINS, RunningEnvironment, entry_point, install_lock
+from voiced.layout import (
+    ORIGINS,
+    RunningEnvironment,
+    entry_point,
+    install_lock,
+    installed_manifest,
+)
 from voiced.settings_store import SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
@@ -68,7 +76,8 @@ from voiced.watchdog import (
 )
 
 if TYPE_CHECKING:
-    from voiced.launchd.install import UninstallTargets
+    from voiced.launchd.install import InstallPlan, UninstallTargets
+    from voiced.launchd.progress import Progress
 
 # voiced.launchd.install (and voiced.doctor) import the engine modules, and
 # with them numpy; they are imported inside the commands that need them so
@@ -105,6 +114,11 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         choices=ORIGINS,
         help="who made the environment, for install.json (default: homebrew for a keg, "
         "else cli; the menu bar app passes app)",
+    )
+    install.add_argument(
+        "--json-progress",
+        action="store_true",
+        help="progress as JSON lines on stdout (ADR 0018); human output goes to stderr",
     )
 
     start = sub.add_parser("start", help="start the daemons")
@@ -206,16 +220,74 @@ def _services(name: str) -> tuple[DaemonName, ...]:
 
 
 def cmd_install(
-    args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner = run_streaming
+    args: argparse.Namespace,
+    settings: Settings,
+    echo: Echo,
+    runner: StreamingRunner = run_streaming,
 ) -> int:
-    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
+    """With ``--json-progress``, stdout carries only the events of
+    :mod:`voiced.launchd.progress`: human output, the steps' own output
+    included, goes to stderr, and that output is sent as ``log`` events too.
+    SIGTERM ends the install with an ``error``, its child stopped."""
+    from voiced.launchd.install import InstallError
+    from voiced.launchd.progress import Progress, exit_on_sigterm
 
-    if is_root():
-        echo(
-            "Run `voiced install` as the user the services should run as, not with sudo. "
-            "It prints the one step that needs root."
-        )
-        return 2
+    progress = Progress(sys.stdout if args.json_progress else None)
+    run: Runner = runner
+    if args.json_progress:
+        echo = functools.partial(print, file=sys.stderr)
+
+        def tee(line: str) -> None:
+            echo(line)
+            progress.log(line)
+
+        run = functools.partial(runner, on_line=tee)
+    with exit_on_sigterm():  # from the first line on, SIGTERM still ends with error
+        progress.hello()
+        try:
+            with progress.reporting():
+                if is_root():
+                    refusal = (
+                        "Run `voiced install` as the user the services should run as, not "
+                        "with sudo. It prints the one step that needs root."
+                    )
+                    echo(refusal)
+                    progress.error(refusal)
+                    return 2
+                plan = _install(args, settings, echo, run, progress)
+                _show_staged(plan, echo, dry_run=args.dry_run)
+                progress.done(plan.staging_dir)  # last, after the human output
+        except InstallError as exc:
+            echo(f"install failed: {exc}")
+            return 1
+    return 0
+
+
+def _show_staged(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
+    if dry_run:
+        for service in SERVICES:
+            echo("")
+            echo(f"--- {plan.staged_plist(service)} (would be written)")
+            echo(plan.render(service).decode().rstrip())
+        echo("")
+        echo(f"--- {plan.install_script_path} (would be written)")
+        echo(plan.sudo_install_script().rstrip())
+        return
+    echo("")
+    echo("User-level install done. The LaunchDaemons need root. Review and run:")
+    echo("")
+    echo(f"  sudo bash {shlex.quote(str(plan.install_script_path))}")
+    echo("")
+    echo(plan.sudo_install_script().rstrip())
+    echo("")
+    echo(f"Then: {plan.entry} status")
+
+
+def _install(
+    args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
+) -> InstallPlan:
+    from voiced.launchd.install import plan_install, plan_summary, run_install
+
     plan = plan_install(
         settings,
         state_dir=args.state_dir,
@@ -231,31 +303,15 @@ def cmd_install(
     echo("")
     if args.dry_run:
         echo("dry run: nothing is written. Steps that would run:")
-    try:
-        run_install(
-            plan, runner=runner, dry_run=args.dry_run, skip_models=args.skip_models, say=echo
-        )
-    except InstallError as exc:
-        echo(f"install failed: {exc}")
-        return 1
-    if args.dry_run:
-        for service in SERVICES:
-            echo("")
-            echo(f"--- {plan.staged_plist(service)} (would be written)")
-            echo(plan.render(service).decode().rstrip())
-        echo("")
-        echo(f"--- {plan.install_script_path} (would be written)")
-        echo(plan.sudo_install_script().rstrip())
-        return 0
-    echo("")
-    echo("User-level install done. The LaunchDaemons need root. Review and run:")
-    echo("")
-    echo(f"  sudo bash {shlex.quote(str(plan.install_script_path))}")
-    echo("")
-    echo(plan.sudo_install_script().rstrip())
-    echo("")
-    echo(f"Then: {plan.entry} status")
-    return 0
+    run_install(
+        plan,
+        runner=runner,
+        dry_run=args.dry_run,
+        skip_models=args.skip_models,
+        say=echo,
+        progress=progress,
+    )
+    return plan
 
 
 # start / stop -------------------------------------------------------------
@@ -901,7 +957,12 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
     ops = Operations(
         WatchdogSupervisor(dog), config_path(), engines=lambda: engines_in_subprocess(entry=entry)
     )
-    server = ControlServer(socket_path(settings), ops, version=__version__)
+    server = ControlServer(
+        socket_path(settings),
+        ops,
+        version=__version__,
+        install=lambda: installed_manifest(state_dir(settings)),
+    )
     try:
         await server.start()
         serving = True

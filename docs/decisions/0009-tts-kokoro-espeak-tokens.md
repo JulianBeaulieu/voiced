@@ -66,8 +66,9 @@ command if neither works:
    on Apple Silicon, `/usr/local/opt/espeak-ng` on Intel.
 2. `VOICED_ESPEAK_LIBRARY` (and optionally `VOICED_ESPEAK_DATA`) when set.
    A configured path that does not exist is an error naming the path.
-   `voiced install` copies both variables from the installing shell into the
-   daemons' plist environment, as it does `HF_HOME`.
+   `voiced` sets both from `[tts] espeak_library` and `espeak_data` in the
+   config file, and only from there (ADR 0018: the plists carry only a fixed
+   environment, and the shell's are ignored so every command agrees).
 
 Each candidate is self-tested by phonemizing one word before it is accepted.
 The `kokoro-onnx` package also depends on the `espeakng-loader` wheel, which

@@ -202,20 +202,45 @@ class Manifest:
         )
 
 
+MAX_MANIFEST_BYTES = 64 * 1024
+
+
+def _read_manifest_bytes(path: Path) -> bytes:
+    """At most :data:`MAX_MANIFEST_BYTES` (one more, so a longer file fails
+    to parse), opened without blocking: the watchdog reads it on its event
+    loop for every ``hello``, so a FIFO or a huge file must not stall it. A
+    FIFO without a writer reads empty, a directory fails to read."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        return os.read(fd, MAX_MANIFEST_BYTES + 1)
+    finally:
+        os.close(fd)
+
+
 def read_manifest(state_dir: Path) -> Manifest | None:
     """The manifest, or None when there is none. Raises :class:`ManifestError`
     for one that cannot be read."""
     path = state_dir / MANIFEST
     try:
-        text = path.read_text()
+        data = _read_manifest_bytes(path)
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise ManifestError(f"{path}: {exc}") from exc
     try:
-        return Manifest.from_json(json.loads(text))
+        return Manifest.from_json(json.loads(data))  # not UTF-8 is a ValueError too
     except (ValueError, ManifestError) as exc:
         raise ManifestError(f"{path}: {exc}") from exc
+
+
+def installed_manifest(state_dir: Path) -> dict[str, Any] | None:
+    """``install.json`` for the watchdog's ``hello``: None when there is none
+    or it cannot be read."""
+    try:
+        manifest = read_manifest(state_dir)
+    except ManifestError:
+        return None
+    return None if manifest is None else manifest.to_json()
 
 
 def write_manifest(state_dir: Path, manifest: Manifest) -> None:

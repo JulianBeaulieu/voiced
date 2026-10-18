@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +79,28 @@ def test_serve_exits_non_zero_before_loading_when_a_port_is_in_use(
     assert elapsed < FAIL_FAST_S, f"serve took {elapsed:.1f}s to refuse"
     # Nothing was configured or loaded: no log file was even opened.
     assert not os.path.exists(os.path.join(tmp_path, "logs", f"{service}.log"))
+
+
+def test_main_sets_the_engine_environment_from_the_config_before_serving(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """huggingface_hub reads HF_HOME when it is imported, so main() sets the
+    config's before any command runs, and clears what the shell exported:
+    serve, doctor and the installer's download all see the same."""
+    from voiced import cli
+    from voiced.config import Settings
+
+    config = tmp_path / "config.toml"
+    config.write_text(f'[install]\nhf_home = "{tmp_path / "hf"}"\n')
+    monkeypatch.setenv("VOICED_CONFIG", str(config))
+    monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/from/the/shell.dylib")
+    seen: list[tuple[str | None, str | None]] = []
+
+    def bind(settings: Settings, service: str) -> socket.socket:
+        seen.append((os.environ.get("HF_HOME"), os.environ.get("VOICED_ESPEAK_LIBRARY")))
+        raise cli.PortInUse("HTTP", "127.0.0.1", 1)
+
+    monkeypatch.setattr(cli, "bind_service_ports", bind)
+    assert cli.main(["serve", "tts"]) == PORT_IN_USE_EXIT
+    assert seen == [(str(tmp_path / "hf"), None)]
+    assert "voiced: ignoring VOICED_ESPEAK_LIBRARY" in capsys.readouterr().err
