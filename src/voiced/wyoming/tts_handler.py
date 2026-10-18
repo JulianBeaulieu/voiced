@@ -15,8 +15,15 @@ Two request shapes, both answered with 24 kHz 16-bit mono audio:
 Synthesis for a stream runs in a worker task so text keeps being read while
 the engine works. Each sentence takes the inference slot on its own
 (``async with inference(ctx, Operation.SPEECH)``), so a slow conversation
-agent does not hold the GPU between sentences. The worker owns the error
-policy for the stream: one ``except`` maps the outcome and closes.
+agent does not hold the GPU between sentences.
+
+A stream that fails (its ``SynthesizeStart`` refused, its text over
+``tts.max_input_chars``, the engine or the slot failing in the worker) sends
+one ``Error``. Home Assistant writes the whole stream before it reads, so the
+connection stays open and the stream's remaining events, the compatibility
+``Synthesize`` included, are read and dropped until ``SynthesizeStop`` closes
+it, at most ``server.session_idle_s`` after the failure
+(:meth:`VoicedEventHandler.fail_and_drop`).
 """
 
 from __future__ import annotations
@@ -56,6 +63,7 @@ from voiced.wyoming.text import SentenceAccumulator
 log = logging.getLogger(__name__)
 
 _AUDIO_FORMAT = {"rate": TTS_SAMPLE_RATE, "width": TTS_SAMPLE_WIDTH, "channels": 1}
+_SYNTHESIS_EVENTS = (Synthesize, SynthesizeStart, SynthesizeChunk, SynthesizeStop)
 
 
 @dataclass
@@ -65,10 +73,6 @@ class _Stream:
     accumulator: SentenceAccumulator = field(default_factory=SentenceAccumulator)
     worker: asyncio.Task[None] | None = None
     chars: int = 0
-    failed: bool = False
-    refused: bool = False
-    """The SynthesizeStart was rejected and reported: no worker; the rest of
-    the stream is read and dropped until SynthesizeStop closes."""
 
 
 def _require_text(text: object, event: Event) -> None:
@@ -84,6 +88,12 @@ class TTSEventHandler(VoicedEventHandler):
         if Describe.is_type(event.type):
             await self.write_event((await tts_info(self.ctx)).event())
             return True
+        is_synthesis = any(t.is_type(event.type) for t in _SYNTHESIS_EVENTS)
+        if is_synthesis and self._dropping_until is not None:
+            # None of the failed stream's events may reach the engine or start
+            # a new stream.
+            worker = self._stream.worker if self._stream is not None else None
+            return await self.drop(SynthesizeStop.is_type(event.type), worker)
         if Synthesize.is_type(event.type):
             if self._stream is not None:
                 return True  # compatibility copy of the streamed text
@@ -99,13 +109,7 @@ class TTSEventHandler(VoicedEventHandler):
                 start = parse(SynthesizeStart, event)
                 voice = await self._resolve(start.voice)
             except EngineError as exc:
-                # One Error for the stream. The connection stays open until
-                # SynthesizeStop and the stream's events are dropped: a client
-                # like Home Assistant writes the whole stream before it reads,
-                # and closing now would answer its next write with a reset,
-                # which can discard the Error before it is read.
-                await self.report(exc)
-                self._stream = _Stream(voice="", refused=True)
+                await self.fail_and_drop(exc)
                 return True
             self._audio_started = False
             self._stream = stream = _Stream(voice=voice)
@@ -115,27 +119,22 @@ class TTSEventHandler(VoicedEventHandler):
             open_stream = self._stream
             if open_stream is None:
                 raise EngineError("synthesize-chunk before synthesize-start")
-            if open_stream.refused:
-                return True  # reported at SynthesizeStart; dropped until the stop
-            if open_stream.failed:
-                return False  # the worker already reported and closed
             text = parse(SynthesizeChunk, event).text
             _require_text(text, event)
             open_stream.chars += len(text)
             if open_stream.chars > self.ctx.settings.tts.max_input_chars:
-                # One error for the stream, then close: every later chunk and
-                # the SynthesizeStop would otherwise get an error of their own.
-                await self.report(self._input_limit_error())
-                return False
+                # One error for the stream: nothing more of it is spoken, and
+                # its later chunks and SynthesizeStop are dropped.
+                await cancel_task(open_stream.worker)
+                open_stream.worker = None
+                await self.fail_and_drop(self._input_limit_error())
+                return True
             for sentence in open_stream.accumulator.add(text):
                 open_stream.sentences.put_nowait(sentence)
             return True
         if SynthesizeStop.is_type(event.type):
             if self._stream is None:
                 raise EngineError("synthesize-stop before synthesize-start")
-            if self._stream.refused:
-                self._stream = None
-                return False  # the stream's one Error is already sent
             return await self._finish_stream()
         log.debug("tts %s: ignoring %s", self.peer, event.type)
         return True
@@ -202,7 +201,8 @@ class TTSEventHandler(VoicedEventHandler):
 
     async def _worker(self, stream: _Stream) -> None:
         """Synthesize sentences as they become complete. Owns the stream's
-        error policy: one ``except`` reports the outcome and closes."""
+        error policy: one ``except`` reports the outcome, and the connection
+        drops the rest of the stream."""
         try:
             while (sentence := await stream.sentences.get()) is not None:
                 text = normalize(sentence)
@@ -210,11 +210,9 @@ class TTSEventHandler(VoicedEventHandler):
                     continue
                 await self._speak(text, stream.voice)
         except Exception as exc:
-            # A broken stream always closes, whatever the outcome; report()'s
+            # A broken stream always ends, whatever the outcome; report()'s
             # keep-open answer only applies to request/response events.
-            stream.failed = True
-            await self.report(exc)
-            await self.stop()
+            await self.fail_and_drop(exc)
 
     async def _finish_stream(self) -> bool:
         stream = self._stream
@@ -224,8 +222,8 @@ class TTSEventHandler(VoicedEventHandler):
         stream.sentences.put_nowait(None)
         await stream.worker
         self._stream = None
-        if stream.failed:
-            return False
+        if self._dropping_until is not None:
+            return False  # the worker failed and sent the stream's one Error
         await self._end_audio()
         await self.write_event(SynthesizeStopped().event())
         log.debug("tts %s: stream finished", self.peer)

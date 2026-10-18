@@ -73,6 +73,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A streamed Wyoming TTS request whose engine failed mid-stream, or whose
+  text went over `tts.max_input_chars`, closed the connection right after
+  its `Error`. Home Assistant writes the whole stream before it reads, so its
+  next write met a reset and the `Error` could be lost. Like a failed STT
+  session, the stream now sends the one `Error`, reads and drops the rest of
+  the stream, and closes at `SynthesizeStop`, at most
+  `server.session_idle_s` after the failure. A refused `SynthesizeStart` now
+  has the same deadline.
 - A streamed Wyoming STT session that failed (`server_busy` after waiting
   for the slot, the utterance limit, a format change mid-stream, the
   wall-clock bound) closed the connection at once. Home Assistant writes

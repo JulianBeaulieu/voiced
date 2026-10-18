@@ -29,8 +29,8 @@ from wyoming.tts import (
 
 from tests.wyoming.conftest import wait_for
 from voiced import inference
-from voiced.engines.base import Voice
-from voiced.testing import FakeSTTEngine
+from voiced.engines.base import EngineError, PCMChunk, Voice
+from voiced.testing import FakeSTTEngine, FakeTTSEngine
 from voiced.wyoming import handlers, server, stt_handler
 from voiced.wyoming.server import WyomingListener
 
@@ -412,3 +412,99 @@ async def test_stt_failed_session_is_closed_after_session_idle_s_without_audio_s
         assert loop.time() - started < 2
         assert await closed(reader)
     await wait_for(lambda: ctx.queue.depth == 0)
+
+
+TTS_STREAM = [
+    SynthesizeStart().event(),
+    SynthesizeChunk(text="Hello there. ").event(),
+    SynthesizeChunk(text="More text. ").event(),
+    SynthesizeChunk(text="And more.").event(),
+    Synthesize(text="Hello there. More text. And more.").event(),
+    SynthesizeStop().event(),
+]
+
+
+@pytest.mark.parametrize(
+    ("raised", "code", "health"),
+    [
+        (EngineError("the engine refused"), "invalid_request_error", "ok"),
+        (RuntimeError("the engine broke"), "engine_error", "degraded"),
+    ],
+)
+@pytest.mark.parametrize("gap_s", [0.0, 0.05, 0.3])
+async def test_tts_stream_whose_engine_fails_mid_stream_reports_once_and_closes_at_stop(
+    tts_listener: WyomingListener,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    code: str,
+    health: str,
+    gap_s: float,
+) -> None:
+    """The engine speaks the first sentence and fails on the second. The
+    stream gets exactly one Error; the rest of it, written before the client
+    reads, is dropped and the connection closes at SynthesizeStop instead of
+    answering those writes with a reset."""
+    ctx = tts_listener.ctx
+    engine: FakeTTSEngine = ctx.engine  # type: ignore[assignment]
+    speak = engine.synthesize
+    asked: list[str] = []
+
+    async def fails_second(text: str, voice: str, speed: float = 1.0) -> AsyncIterator[PCMChunk]:
+        asked.append(text)
+        if len(asked) > 1:
+            raise raised
+        async for pcm in speak(text, voice, speed):
+            yield pcm
+
+    monkeypatch.setattr(engine, "synthesize", fails_second)
+    received = await write_stream_then_read(tts_listener, TTS_STREAM, gap_s)
+    assert [e.type for e in received] == ["audio-start", "audio-chunk", "error"]
+    error = Error.from_event(received[-1])
+    assert error.code == code and error.text.startswith(type(raised).__name__), error
+    assert asked == ["Hello there.", "More text."]  # nothing after the failure
+    await wait_for(lambda: ctx.queue.depth == 0)
+    assert ctx.health.status == health
+
+
+@pytest.mark.parametrize("gap_s", [0.0, 0.05, 0.3])
+async def test_tts_stream_over_max_input_chars_reports_once_and_closes_at_stop(
+    tts_listener: WyomingListener, gap_s: float
+) -> None:
+    """The third chunk takes the stream over the limit while the first
+    sentence may still be speaking: that is cancelled, the stream gets one
+    Error, and the rest of it is dropped until SynthesizeStop."""
+    ctx = tts_listener.ctx
+    ctx.settings.tts.max_input_chars = 30  # the chunks total 13, 24, 33
+    received = await write_stream_then_read(tts_listener, TTS_STREAM, gap_s)
+    types = [e.type for e in received]
+    assert types[-1] == "error" and types.count("error") == 1, types
+    assert set(types) <= {"audio-start", "audio-chunk", "error"}, types
+    error = Error.from_event(received[-1])
+    assert error.code == "invalid_request_error", error
+    assert error.text.startswith("EngineError: text exceeds max_input_chars"), error
+    await wait_for(lambda: ctx.queue.depth == 0)
+    assert ctx.health.status == "ok"
+
+
+async def test_tts_failed_stream_is_closed_after_session_idle_s_without_stop(
+    tts_listener: WyomingListener,
+) -> None:
+    """A client that keeps sending text after the Error and never sends
+    SynthesizeStop cannot hold the connection: the drop lasts session_idle_s."""
+    ctx = tts_listener.ctx
+    ctx.settings.server.session_idle_s = 0.3
+    ctx.settings.tts.max_input_chars = 10
+    async with raw(tts_listener) as (reader, writer):
+        for event in (SynthesizeStart().event(), SynthesizeChunk(text="far over ten").event()):
+            await async_write_event(event, writer)
+        error = await read_error(reader)
+        assert error.text.startswith("EngineError: text exceeds max_input_chars")
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with contextlib.suppress(ConnectionError):
+            while not reader.at_eof() and loop.time() - started < 3:
+                await async_write_event(SynthesizeChunk(text="more").event(), writer)
+                await asyncio.sleep(0.05)
+        assert loop.time() - started < 2
+        assert await closed(reader)
+    assert ctx.health.status == "ok"

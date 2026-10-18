@@ -535,10 +535,13 @@ needs the loaded engine.
 - Text is capped at `tts.max_input_chars`: the whole message for
   `Synthesize`, the running total for a stream.
 - The voice must be one `Describe` lists, as on HTTP; no voice means
-  `tts.default_voice`. A stream whose `SynthesizeStart` is refused gets one
-  `Error`; its chunks and the compatibility `Synthesize` are ignored, and the
-  connection closes at `SynthesizeStop`, so a client that writes the whole
-  stream before reading still reads the `Error`.
+  `tts.default_voice`.
+- A stream that fails (its `SynthesizeStart` refused, its text over
+  `tts.max_input_chars`, the engine failing mid-stream) gets one `Error`. Its
+  remaining chunks and the compatibility `Synthesize` are read and dropped,
+  and the connection closes at `SynthesizeStop` (or `server.session_idle_s`
+  after the failure, if no `SynthesizeStop` comes), so a client that writes
+  the whole stream before reading still reads the `Error`.
 
 **Errors.** An `Error` event whose `text` starts with the exception name and
 whose `code` is one of:
