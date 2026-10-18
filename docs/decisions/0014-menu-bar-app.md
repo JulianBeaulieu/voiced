@@ -1,6 +1,7 @@
 # 0014: Menu bar app
 
-Date: 2026-10-15. Status: accepted.
+Date: 2026-10-15. Status: accepted; amended by
+[ADR 0018](0018-install-from-the-menu-bar-app.md).
 
 ## Context
 
@@ -26,7 +27,9 @@ third-party packages.
   be larger and look foreign; a Python app (rumps, PyObjC) would put a GUI
   dependency into the service environment and still not look native.
 - **It speaks only the control socket.** It never reads or writes the config
-  file, never runs `launchctl` and never calls the HTTP API. The watchdog is
+  file and never calls the HTTP API. It runs `launchctl` only inside the
+  signed privileged script that installs and uninstalls the daemons, and
+  reads whether a label is loaded (amended by ADR 0018). The watchdog is
   the one place that validates settings (through `Settings`), writes the
   config atomically and restarts services without root, so the app cannot
   disagree with the CLI or bypass a rule such as the LAN-without-key
@@ -35,12 +38,17 @@ third-party packages.
   socket it reads only the LaunchDaemon plists, to tell "not installed"
   from "not running": voiced is installed when a `*.watchdog.plist` runs
   `... watchdog` as this user, whatever `[launchd] label_prefix` is.
+  When voiced is not installed, the app opens its installer (ADR 0018)
+  instead of linking to the install guide.
 - **Finding the socket.** Because it does not read the config, the app
   cannot know a custom state directory (`[install] venv_dir`). It uses
   `VOICED_CONTROL_SOCKET`, then the `controlSocketPath` user default, then
   `~/.voiced/control.sock`. An install with another state directory shows
   "not running" until one of the first two points at the socket; the
   window names the path it tried.
+  With the shared install layout (ADR 0017, used by ADR 0018) the state
+  directory is always `~/.voiced`, so the default is right for every new
+  install.
 - **Status in the menu bar window, settings in a Settings window.** The
   menu bar window shows only status and one-click actions and stays one
   size; "Settings…" (⌘,) opens the standard Settings window, a fixed
