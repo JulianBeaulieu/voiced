@@ -115,8 +115,8 @@ uses [Semantic Versioning](https://semver.org/).
 ### Security
 
 - The LaunchDaemon plists no longer set `StandardOutPath` or
-  `StandardErrorPath`. launchd opened those files as root in the
-  user-owned log directory, so a symlink planted there could make root
+  `StandardErrorPath`. launchd may open those files as root in
+  the user-owned log directory, so a symlink planted there could make root
   create or append to any file. The daemons now open
   `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
   a symlink, and point their stdout and stderr at them (`VOICED_STDIO_LOG`

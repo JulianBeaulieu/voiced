@@ -57,7 +57,7 @@ Each plist sets:
 | `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, and `HF_HOME` when configured | The daemon reads the same config file and model cache as the CLI. `VOICED_STDIO_LOG` (`~/Library/Logs/voiced/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them. |
 
 The plists do not set `StandardOutPath` or `StandardErrorPath`: launchd
-would open those files as root, in a log directory the user owns, so a
+may open those files as root, in a log directory the user owns, so a
 symlink planted there could make root create or append to any file. The
 process opens them as the user instead and refuses a symlink (ADR 0006).
 Plists from an older release still carry the two keys and keep working;

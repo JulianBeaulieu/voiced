@@ -55,7 +55,7 @@ def render_plist(
 
     ``keep_alive=False`` gives a one-shot job (used for the Metal probe).
 
-    There is no ``StandardOutPath``/``StandardErrorPath``: launchd would open
+    There is no ``StandardOutPath``/``StandardErrorPath``: launchd may open
     them as root in a directory the user owns. ``VOICED_STDIO_LOG`` tells the
     process to open them itself (``voiced.launchd.stdio``, ADR 0006).
     """

@@ -3,26 +3,43 @@
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import stat
 import subprocess
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from voiced.launchd import stdio
 from voiced.launchd.plist import ENV_STDIO_LOG
+from voiced.logging import configure_logging
+from voiced.watchdog import configure_watchdog_logging
 
 
 def _child_env(prefix: Path) -> dict[str, str]:
     return {**os.environ, ENV_STDIO_LOG: str(prefix)}
 
 
+@pytest.fixture
+def restore_root_logger() -> Iterator[None]:
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    yield
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+    for handler in handlers:
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
 def test_open_log_creates_0600_and_appends(tmp_path: Path) -> None:
     path = tmp_path / "svc.stderr.log"
     path.write_bytes(b"old\n")
-    path.chmod(0o600)
+    path.chmod(0o644)  # as launchd created it for an older plist
     fd = stdio.open_log(path)
     try:
         flags = os.get_blocking(fd), os.get_inheritable(fd)
@@ -31,6 +48,7 @@ def test_open_log_creates_0600_and_appends(tmp_path: Path) -> None:
         os.close(fd)
     assert path.read_bytes() == b"old\nnew\n"
     assert flags == (True, False)  # O_NONBLOCK cleared, O_CLOEXEC kept
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600  # tightened
 
     fresh = tmp_path / "fresh.log"
     os.close(stdio.open_log(fresh))
@@ -156,3 +174,57 @@ def test_console_script_redirects_before_the_cli(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert result.stderr == b""
     assert "invalid choice" in (tmp_path / "stt.stderr.log").read_text()
+
+
+def _fail_redirect(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: str) -> None:
+    (tmp_path / f"{service}.stderr.log").symlink_to(tmp_path / "elsewhere")
+    monkeypatch.setenv(ENV_STDIO_LOG, str(tmp_path / service))
+    stdio.redirect_stdio_from_env()  # fails before any dup2: safe in-process
+
+
+@pytest.mark.usefixtures("restore_root_logger")
+@pytest.mark.parametrize(
+    ("service", "configure"),
+    [
+        ("stt", lambda d: configure_logging("stt", "info", d, interactive=False)),
+        ("watchdog", lambda d: configure_watchdog_logging("info", d / "watchdog.log")),
+    ],
+)
+def test_failed_redirect_is_logged_once_in_the_app_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    service: str,
+    configure: Callable[[Path], None],
+) -> None:
+    """Under launchd the original stderr is /dev/null; the app log is not."""
+    _fail_redirect(tmp_path, monkeypatch, service)
+    configure(tmp_path)
+    configure(tmp_path)  # reconfiguring does not repeat it
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    text = (tmp_path / f"{service}.log").read_text()
+    assert text.count("not redirected to their log files") == 1
+    assert "WARNING" in text and "stderr.log" in text
+
+
+CLOSED_FD1 = """
+import os
+os.close(1)
+from voiced.launchd.stdio import redirect_stdio_from_env
+redirect_stdio_from_env()
+os.write(1, b"fd1 after\\n")
+os.write(2, b"fd2 after\\n")
+"""
+
+
+def test_closed_stdout_at_startup_is_reused_not_closed(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", CLOSED_FD1],
+        env=_child_env(tmp_path / "stt"),
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "stt.stdout.log").read_text() == "fd1 after\n"
+    assert (tmp_path / "stt.stderr.log").read_text() == "fd2 after\n"
