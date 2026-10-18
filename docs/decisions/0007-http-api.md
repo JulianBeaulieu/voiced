@@ -15,6 +15,10 @@ voice-agent frameworks need a live streaming transcription channel.
 
 ### ffmpeg is an external dependency
 
+*Amended by ADR 0018*: the binary now comes from the `imageio-ffmpeg`
+wheel, a core dependency, and a `PATH` ffmpeg is the fallback; it is still
+spawned as a separate program, as below.
+
 Uploads are decoded by spawning `ffmpeg` (`-f f32le -ac 1 -ar 16000`), and
 `mp3` / `opus` speech responses are encoded by piping PCM through it. The
 alternatives were Python bindings (`av`, `pydub`, `soundfile`): they either

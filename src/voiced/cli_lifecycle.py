@@ -238,6 +238,8 @@ def cmd_install(
         echo = functools.partial(print, file=sys.stderr)
 
         def tee(line: str) -> None:
+            if progress.child_line(line):  # the download's byte counts
+                return
             echo(line)
             progress.log(line)
 

@@ -4,24 +4,24 @@ Decoding (uploads to STT) goes through ``ffmpeg`` as an external program:
 any container or codec ffmpeg knows becomes mono float32 at 16 kHz. The
 upload is written to an anonymous temporary file first because containers
 such as ``.m4a`` put their index at the end and cannot be decoded from a
-pipe; ffmpeg may open nothing but that file (see :func:`decode`). ffmpeg
-is a hard external dependency (``voiced doctor`` checks for it); without it
-:func:`decode` raises :class:`FFmpegMissing`.
+pipe; ffmpeg may open nothing but that file (see :func:`decode`). The
+binary comes from the ``imageio-ffmpeg`` wheel (``voiced.ffmpeg_exe``,
+``voiced doctor`` checks it); without any ffmpeg :func:`decode` raises
+:class:`FFmpegMissing`.
 
 Encoding (TTS output) is streaming: :func:`encode_stream` pipes PCM through
 ffmpeg for ``mp3`` and ``opus`` while the engine is still producing audio.
 Raw PCM helpers (WAV header, int16 conversion, resampling) are in
 ``voiced.audio``, shared with the Wyoming layer.
 
-See ``docs/decisions/0007-http-api.md`` for why ffmpeg is an external
-dependency rather than a Python package.
+See ``docs/decisions/0007-http-api.md`` for why ffmpeg runs as an external
+program, and ADR 0018 for where it comes from.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import tempfile
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from contextlib import aclosing, suppress
@@ -32,6 +32,7 @@ from numpy.typing import NDArray
 
 from voiced.api.context import APIError
 from voiced.engines.base import STT_SAMPLE_RATE, TTS_SAMPLE_RATE
+from voiced.ffmpeg_exe import ffmpeg_path
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,8 @@ class AudioTooLong(Exception):
 
 
 class FFmpegMissing(APIError):
-    """ffmpeg is not installed. A server-side problem: 500 ``ffmpeg_missing``.
+    """No ffmpeg: the imageio-ffmpeg wheel is missing and none is on ``PATH``.
+    A server-side problem: 500 ``ffmpeg_missing``.
 
     An :class:`APIError` so the app's one ``APIError`` handler renders it for
     every route; ``voiced doctor`` reports the same condition as a failure.
@@ -71,7 +73,10 @@ class FFmpegMissing(APIError):
 
     def __init__(self, purpose: str) -> None:
         super().__init__(
-            500, f"ffmpeg is required for {purpose} (brew install ffmpeg)", "ffmpeg_missing"
+            500,
+            f"ffmpeg is required for {purpose} (it comes with voiced's imageio-ffmpeg "
+            "dependency: reinstall voiced)",
+            "ffmpeg_missing",
         )
 
 
@@ -81,11 +86,6 @@ def require_ffmpeg(purpose: str) -> str:
     if path is None:
         raise FFmpegMissing(purpose)
     return path
-
-
-def ffmpeg_path() -> str | None:
-    """Absolute path of the ffmpeg binary, or ``None`` if it is not on ``PATH``."""
-    return shutil.which("ffmpeg")
 
 
 def ffmpeg_available() -> bool:
@@ -236,6 +236,10 @@ async def encode_stream(
         "-hide_banner",
         "-loglevel",
         "error",
+        # Raw PCM needs no probing; ffmpeg 7.1 (imageio-ffmpeg's) probes it
+        # anyway and holds the first bytes back about a second without this.
+        "-probesize",
+        "32",
         "-f",
         "s16le",
         "-ar",

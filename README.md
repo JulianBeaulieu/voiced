@@ -35,7 +35,7 @@ There will be three ways to install, and all three set up the same
 - **From a checkout**, which is what works today:
 
 ```sh
-brew install espeak-ng ffmpeg
+brew install espeak-ng
 brew install uv    # skip if `uv --version` already works
 ```
 
@@ -275,17 +275,19 @@ package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
 (both pulled in by `librosa`, a `parakeet-mlx` dependency) are
 LGPL-2.1-or-later; `certifi` and parts of `tqdm` are MPL-2.0; `parakeet-mlx`
 is Apache-2.0; `mlx-audio`, `wyoming`, `pysilero-vad` and `kokoro-onnx` are
-MIT. ffmpeg runs as a separate program installed with Homebrew; voiced needs
-one that can read input from a file descriptor (`voiced doctor` checks), as
-any current Homebrew build can.
+MIT. ffmpeg runs as a separate program: the static ffmpeg 7.1 inside the
+`imageio-ffmpeg` wheel (the package BSD-2-Clause, the binary
+GPL-2.0-or-later), installed from PyPI like the rest and preferred over any
+ffmpeg on `PATH`, so every Mac runs the build voiced was tested with
+(`voiced doctor` names the one in use).
 
 ### Third-party software
 
 [NOTICE](NOTICE) lists every third-party component with its SPDX licence and
 a link to its source: the Python packages in `src/voiced/requirements.lock`,
 the CPython that installs use, uv, and the native code some wheels carry
-(espeak-ng in `espeakng-loader`, GPL-3.0-or-later; once it is locked, the
-ffmpeg build in `imageio-ffmpeg`, GPL-2.0-or-later). `scripts/notice.py`
+(espeak-ng in `espeakng-loader`, GPL-3.0-or-later; the ffmpeg build in
+`imageio-ffmpeg`, GPL-2.0-or-later). `scripts/notice.py`
 writes it from the lock and a test keeps the two in step. The menu bar app
 shows the same file under Settings > About.
 
@@ -392,7 +394,7 @@ daemons and Metal access, including from a real daemon context with
 | HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
 | HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |
 | tts exits at startup with `EspeakNotFound` | espeak-ng is missing: `brew install espeak-ng`. If Homebrew's old `espeak` formula is installed, `brew unlink espeak` first. |
-| HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg: `brew install ffmpeg`. |
+| HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg, which comes with voiced's `imageio-ffmpeg` dependency: reinstall voiced. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
 | Soprano clips the last word; the log shows `soprano: runaway generation` | The model ran past the sentence and was cut at its length bound. Expected now and then, mostly on one- and two-word replies; Kokoro does not do this. |
 | Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |

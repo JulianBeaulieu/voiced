@@ -120,6 +120,20 @@ def test_paths_the_services_and_installer_share_must_be_absolute(
     assert getattr(getattr(load_settings(cfg), section), key) == Path.home() / "dir"
 
 
+@pytest.mark.parametrize("key", ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT"])
+def test_a_shell_hf_cache_or_mirror_is_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    """Either would send the download somewhere the services do not read
+    (HF_HUB_CACHE overrides HF_HOME), or fetch it from another endpoint."""
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[install]\nhf_home = "/hf"\n')
+    monkeypatch.setenv(key, "/elsewhere")
+    assert apply_engine_environment(load_settings(cfg)) == []
+    assert key not in os.environ
+    assert os.environ["HF_HOME"] == "/hf"
+
+
 def test_no_notice_when_the_shell_agrees_with_the_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

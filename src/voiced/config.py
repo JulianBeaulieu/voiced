@@ -43,6 +43,10 @@ ENGINE_ENV: dict[str, tuple[str, str]] = {  # variable -> (section, key) that se
     ENV_ESPEAK_LIBRARY: ("tts", "espeak_library"),
     ENV_ESPEAK_DATA: ("tts", "espeak_data"),
 }
+# Hugging Face variables a shell may export for other tools, which would move
+# the cache away from HF_HOME's (the legacy name too) or fetch from a mirror:
+# cleared, so the installer and the services agree on one cache and the hub.
+CLEARED_HF_ENV = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT")
 
 # Single source of truth for the launchd label prefix. Changing this constant
 # (or the ``[launchd] label_prefix`` config key) is all that is needed to move
@@ -214,6 +218,15 @@ class Settings(BaseSettings):
         values = {env: getattr(getattr(self, s), key) for env, (s, key) in ENGINE_ENV.items()}
         return {env: str(value) for env, value in values.items() if value is not None}
 
+    def ports(self) -> dict[str, int]:
+        """The four service ports, by the config key that sets each."""
+        return {
+            "[stt] http_port": self.stt.http_port,
+            "[stt] wyoming_port": self.stt.wyoming_port,
+            "[tts] http_port": self.tts.http_port,
+            "[tts] wyoming_port": self.tts.wyoming_port,
+        }
+
     def http_port(self, service: ServiceName) -> int:
         return self.stt.http_port if service == "stt" else self.tts.http_port
 
@@ -253,7 +266,8 @@ def apply_engine_environment(settings: Settings) -> list[str]:
     """Make :data:`ENGINE_ENV` in this process exactly what the config says,
     for the engines, ``huggingface_hub`` (which reads ``HF_HOME`` on import)
     and every child: one rule for the services, ``doctor`` and the
-    installer's model download, whatever the shell exported.
+    installer's model download, whatever the shell exported. The
+    :data:`CLEARED_HF_ENV` variables are removed.
 
     Returns a notice for each ``VOICED_ESPEAK_*`` the shell set otherwise
     (voiced's own variables; ``HF_HOME`` is often exported for other tools).
@@ -264,7 +278,7 @@ def apply_engine_environment(settings: Settings) -> list[str]:
         for key, (section, name) in ENGINE_ENV.items()
         if key != ENV_HF_HOME and os.environ.get(key, wanted.get(key)) != wanted.get(key)
     ]
-    for key in ENGINE_ENV:
+    for key in (*ENGINE_ENV, *CLEARED_HF_ENV):
         os.environ.pop(key, None)
     os.environ.update(wanted)
     return notices

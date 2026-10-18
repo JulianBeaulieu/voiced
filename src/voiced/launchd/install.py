@@ -10,7 +10,6 @@ the state directory (``voiced.layout``).
 
 from __future__ import annotations
 
-import json
 import os
 import pwd
 import shlex
@@ -42,6 +41,7 @@ from voiced.launchd.control import (
     run_streaming,
 )
 from voiced.launchd.plist import log_paths, render_plist
+from voiced.launchd.ports import foreign_listeners
 from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
@@ -170,6 +170,10 @@ class InstallPlan:
     # HF_HOME and the espeak-ng overrides as the config sets them, which is
     # how the services get them (ADR 0018).
     engine_env: dict[str, str] = field(default_factory=dict)
+    # The four service ports, by their config key, and the address the
+    # services bind them on, for the ports step.
+    ports: dict[str, int] = field(default_factory=dict)
+    bind: str = "127.0.0.1"
 
     # Paths -------------------------------------------------------------
 
@@ -272,14 +276,15 @@ class InstallPlan:
         ``tts`` extras), before anything points at it."""
         return [str(self.python_bin), "-P", "-c", ENGINE_CHECK]
 
-    def model_download_command(self) -> list[str]:
-        """The engine variables come with this process's environment, which
-        ``voiced`` set from the config (``apply_engine_environment``), so
-        the models land in the cache the services read. The rest goes in as
-        a JSON argument, not through ``/usr/bin/env``, which would take a
-        state path containing ``=`` for one more assignment."""
-        env = {"VOICED_CONFIG": str(self.config_file)}
-        return [str(self.python_bin), "-c", MODEL_DOWNLOAD_SCRIPT, json.dumps(env)]
+    def model_download_command(self, report: bool = False) -> list[str]:
+        """``voiced.models`` in the new environment. The engine variables
+        come with this process's environment, which ``voiced`` set from the
+        config (``apply_engine_environment``), so the models land in the
+        cache the services read. ``report``: byte progress lines for
+        ``--json-progress``."""
+        argv = [str(self.python_bin), "-P", "-m", "voiced.models", "download"]
+        argv += ["--config", str(self.config_file)]
+        return [*argv, "--report"] if report else argv
 
     def sudo_install_script(self) -> str:
         lines = [
@@ -412,44 +417,6 @@ ENGINE_CHECK = (
     "import mlx.core, parakeet_mlx, mlx_audio, voiced; print('voiced', voiced.__version__)"
 )
 
-# Runs inside the venv's interpreter, which has the engine extras installed.
-# Loads each configured engine once so the weights land in the Hugging Face
-# cache; falls back to a plain snapshot download when the engine plugin is not
-# installed (for example a dev install without the MLX extras).
-MODEL_DOWNLOAD_SCRIPT = """
-import asyncio, json, os, sys
-os.environ.update(json.loads(sys.argv[1]))
-print(f"Hugging Face cache: {os.environ.get('HF_HOME') or 'the default'}", flush=True)
-from voiced.config import load_settings
-from voiced.engines.registry import UnknownEngine, get_stt_engine, get_tts_engine
-
-settings = load_settings()
-jobs = (
-    ("stt", settings.stt.engine, settings.stt.model, get_stt_engine),
-    ("tts", settings.tts.engine, settings.tts.model, get_tts_engine),
-)
-
-def snapshot(model):
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print(f"  huggingface_hub not installed; skipping download of {model}")
-        return
-    snapshot_download(model)
-
-for service, engine_name, model, getter in jobs:
-    print(f"{service}: engine={engine_name} model={model}", flush=True)
-    try:
-        cls = getter(engine_name)
-    except UnknownEngine as exc:
-        print(f"  {exc}; downloading weights only")
-        snapshot(model)
-        continue
-    engine = cls(model)
-    asyncio.run(engine.load())
-    print(f"  loaded {engine.name} ({engine.model_id})", flush=True)
-"""
-
 
 def new_environment_dir(state_dir: Path) -> Path:
     """A fresh ``envs/<id>``: a build never writes into an environment a
@@ -505,6 +472,8 @@ def plan_install(
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
         engine_env=settings.engine_environment(),
+        ports=settings.ports(),
+        bind=settings.server.bind,
     )
 
 
@@ -629,11 +598,13 @@ def install_steps(
     runner: Runner = run_streaming,
     query: Runner = run_command,
     skip_models: bool = False,
+    report: bool = False,
     say: Say = print,
 ) -> list[Step]:
     """Everything ``voiced install`` does, in order. Nothing that the
     running daemons use changes before the models are in: a failed install
-    leaves the previous one as it was (ADR 0017)."""
+    leaves the previous one as it was (ADR 0017). ``report``: the model
+    download reports its bytes (``--json-progress``)."""
     steps: list[Step] = []
     found: dict[str, str] = {}
 
@@ -698,16 +669,24 @@ def install_steps(
     steps.append(
         Step("check", f"{shlex.join(plan.check_command()[:3])} <engine check>", check, command=True)
     )
+
+    def ports() -> None:
+        conflicts, notes = foreign_listeners(plan.ports, plan.bind, plan.entry, query)
+        for note in notes:
+            say(note)
+        if conflicts:
+            raise InstallError(
+                f"{'; '.join(conflicts)}. Stop it, or set another port in {plan.config_file}"
+            )
+
+    numbers = ", ".join(str(port) for port in plan.ports.values())
+    steps.append(Step("ports", f"check that ports {numbers} are free", ports))
     if skip_models:
         say("skipping model download (--skip-models)")
     else:
+        download = plan.model_download_command(report)
         steps.append(
-            Step(
-                "models",
-                f"{plan.python_bin} -c <model download>",
-                run(plan.model_download_command(), "model download"),
-                command=True,
-            )
+            Step("models", shlex.join(download), run(download, "model download"), command=True)
         )
 
     # The switch: everything above can fail without touching what runs now.
@@ -792,7 +771,13 @@ def run_install(
     previous = current_manifest(plan)  # refuses before anything is written
     if dry_run:
         for step in install_steps(
-            plan, previous, runner=runner, query=query, skip_models=skip_models, say=say
+            plan,
+            previous,
+            runner=runner,
+            query=query,
+            skip_models=skip_models,
+            report=progress.streaming,
+            say=say,
         ):
             say(step.render(dry_run=True))
             progress.step(step.id, "planned", step.shown)
@@ -803,7 +788,13 @@ def run_install(
     ):
         previous = current_manifest(plan)  # what the other install left
         steps = install_steps(
-            plan, previous, runner=runner, query=query, skip_models=skip_models, say=say
+            plan,
+            previous,
+            runner=runner,
+            query=query,
+            skip_models=skip_models,
+            report=progress.streaming,
+            say=say,
         )
         for step in steps:
             say(step.render(dry_run=False))

@@ -4,8 +4,14 @@ The menu bar app runs ``voiced install --origin app --json-progress`` and
 reads these events from its stdout; human output goes to stderr. The first
 line is ``hello``, the last ``done`` or ``error``, and the exit code is 0
 only with ``done``. Readers ignore unknown events and fields, so adding
-either keeps protocol 1. The ``download`` event comes with the model
-download that reports bytes.
+either keeps protocol 1.
+
+The model download (``python -m voiced.models download --report``) tells
+the installer about itself on lines that start with :data:`DOWNLOAD_PREFIX`,
+never on a line that merely looks like an event. Each line's ``kind``
+says what it is: ``model`` names the model, revision and cache it fetches,
+which a models-step ``error`` then carries, and ``bytes`` its byte counts,
+which become ``download`` events.
 
 Standard library only.
 """
@@ -23,6 +29,7 @@ from typing import Literal, TextIO
 from voiced import __version__
 
 PROTOCOL = 1
+DOWNLOAD_PREFIX = "@@voiced-download "
 
 StepState = Literal["planned", "start", "done"]
 
@@ -58,6 +65,12 @@ class Progress:
         self.out = out
         self.step_id: str | None = None
         """The step running now, named by an ``error``."""
+        self.fetching: dict[str, object] = {}
+        """``repo``, ``revision`` and ``path`` of the model the download is on."""
+
+    @property
+    def streaming(self) -> bool:
+        return self.out is not None
 
     def emit(self, event: str, **fields: object) -> None:
         if self.out is None:
@@ -78,12 +91,37 @@ class Progress:
         """One output line of a step's child process."""
         self.emit("log", line=line)
 
+    def child_line(self, line: str) -> bool:
+        """Take a download child's own line (:data:`DOWNLOAD_PREFIX`); False
+        for any other line, which is output to log."""
+        if not line.startswith(DOWNLOAD_PREFIX):
+            return False
+        try:
+            fields = json.loads(line.removeprefix(DOWNLOAD_PREFIX))
+        except ValueError:
+            return False
+        if not isinstance(fields, dict) or not isinstance(fields.get("repo"), str):
+            return False
+        if fields.get("kind") == "model":
+            self.fetching = {k: fields.get(k) for k in ("repo", "revision", "path")}
+            return True
+        if fields.get("kind") != "bytes":
+            return False
+        counts = (fields.get("bytes"), fields.get("total"))
+        if not all(isinstance(n, int) and not isinstance(n, bool) for n in counts):
+            return False
+        self.emit("download", model=fields["repo"], bytes=counts[0], total=counts[1])
+        return True
+
     def done(self, staging_dir: Path) -> None:
         self.emit("done", staging_dir=str(staging_dir))
 
     def error(self, message: str) -> None:
-        """``step`` is None when no step was running."""
-        self.emit("error", step=self.step_id, message=message)
+        """``step`` is None when no step was running. A models-step error
+        names the model it was on, for the app's manual fallback and its
+        Show in Finder."""
+        extra = self.fetching if self.step_id == "models" else {}
+        self.emit("error", step=self.step_id, message=message, **extra)
 
     def fail_before_start(self, message: str) -> None:
         """For a failure before the install could start (a config file that

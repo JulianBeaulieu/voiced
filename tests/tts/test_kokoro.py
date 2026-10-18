@@ -35,6 +35,42 @@ from voiced.text import normalize
 # -- registry, metadata, voice table -----------------------------------------
 
 
+def test_load_asks_mlx_audio_for_the_pinned_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The voice packs come from the pinned snapshot, and the weights through
+    mlx-audio's own download at the same revision and patterns."""
+    import types
+
+    from voiced import models
+
+    pin = models.PINS[1]
+    asked: dict[str, Any] = {}
+
+    class Loaded(Exception):
+        pass
+
+    def load_model(repo: str, **kwargs: Any) -> Any:
+        asked.update(repo=repo, **kwargs)
+        raise Loaded
+
+    utils = types.ModuleType("mlx_audio.tts.utils")
+    utils.load_model = load_model  # type: ignore[attr-defined]
+    for name in ("mlx", "mlx.core", "mlx_audio", "mlx_audio.tts"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", utils)
+    monkeypatch.setattr("voiced.engines.kokoro._load_espeak", lambda: None)
+    snapshots: list[tuple[str, list[str] | None]] = []
+    monkeypatch.setattr(
+        models, "snapshot", lambda repo, patterns: snapshots.append((repo, patterns)) or tmp_path
+    )
+    with pytest.raises(Loaded):
+        KokoroEngine(pin.repo)._load_sync()
+    patterns = KokoroEngine.download_patterns()
+    assert snapshots == [(pin.repo, patterns)]
+    assert asked == {"repo": pin.repo, "revision": pin.revision, "allow_patterns": patterns}
+
+
 def test_registered_as_entry_point() -> None:
     assert get_tts_engine("kokoro") is KokoroEngine
     assert KokoroEngine("local/path").model_id == "local/path"

@@ -80,6 +80,39 @@ async def test_upload_cannot_make_ffmpeg_open_other_files(
 
 
 @requires_ffmpeg
+async def test_upload_cannot_name_another_file_by_absolute_path(tmp_path: Path) -> None:
+    other = tmp_path / "other.wav"
+    other.write_bytes(sine_wav(seconds=1.0))
+    concat = f"ffconcat version 1.0\nfile {other}\n".encode()
+    with pytest.raises(ffmpeg.AudioDecodeError):
+        await ffmpeg.decode(concat)
+
+
+async def test_decode_lets_ffmpeg_open_only_the_uploads_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``-protocol_whitelist fd``, before the input. ffmpeg 7.1's concat
+    demuxer also refuses absolute paths and URLs by itself (its ``safe``
+    option), so no upload tells the two apart; the whitelist is what holds
+    for every demuxer and every ffmpeg on ``PATH``."""
+    seen: list[str] = []
+
+    class Spawned(Exception):
+        pass
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.extend(str(a) for a in args)
+        raise Spawned
+
+    monkeypatch.setattr(ffmpeg, "ffmpeg_path", lambda: "/x/ffmpeg")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    with pytest.raises(Spawned):
+        await ffmpeg.decode(sine_wav())
+    at = seen.index("-protocol_whitelist")
+    assert seen[at + 1] == "fd" and at < seen.index("-i")
+
+
+@requires_ffmpeg
 async def test_upload_leaves_no_file_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -120,8 +153,10 @@ async def test_seekable_containers_still_decode(tmp_path: Path) -> None:
     src = tmp_path / "in.wav"
     src.write_bytes(sine_wav(seconds=1.0))
     out = tmp_path / "out.m4a"
+    exe = ffmpeg.ffmpeg_path()  # the one voiced runs, not whatever is on PATH
+    assert exe is not None
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "error", "-i", str(src), "-c:a", "aac", str(out)
+        exe, "-loglevel", "error", "-i", str(src), "-c:a", "aac", str(out)
     )
     assert await proc.wait() == 0
     samples = await ffmpeg.decode(out.read_bytes())

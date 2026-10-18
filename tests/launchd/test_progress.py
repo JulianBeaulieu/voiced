@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
+import re
 import signal
 import sys
 from collections.abc import Callable, Sequence
@@ -17,7 +19,7 @@ from voiced import __version__, cli_lifecycle
 from voiced.cli import build_parser, main
 from voiced.config import Settings
 from voiced.launchd.control import CommandResult
-from voiced.launchd.progress import Progress
+from voiced.launchd.progress import DOWNLOAD_PREFIX, Progress
 
 from .test_install import _compare, _environment
 
@@ -52,7 +54,8 @@ def test_reporting_names_the_running_step_and_reraises() -> None:
 
 
 def _normalise(text: str, tmp_path: Path) -> str:
-    return text.replace(str(tmp_path), "<tmp>").replace(json.dumps(__version__), '"<version>"')
+    text = text.replace(str(tmp_path), "<tmp>").replace(json.dumps(__version__), '"<version>"')
+    return re.sub(r"ports [0-9, ]+ are free", "ports <ports> are free", text)  # free_port()s
 
 
 @pytest.fixture
@@ -219,3 +222,135 @@ def test_sigterm_right_after_hello_still_ends_with_an_error(
     events = _events(capsys.readouterr().out)
     assert [e["event"] for e in events] == ["hello", "error"]
     assert events[1] == {"event": "error", "step": None, "message": "terminated (SIGTERM)"}
+
+
+# The model download's own lines ---------------------------------------------
+
+
+def _child(**fields: object) -> str:
+    return DOWNLOAD_PREFIX + json.dumps(fields)
+
+
+def _model(**fields: object) -> str:
+    return _child(kind="model", **fields)
+
+
+def _bytes(**fields: object) -> str:
+    return _child(kind="bytes", **fields)
+
+
+def test_the_downloads_byte_counts_become_download_events(
+    run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only lines with the child's prefix count; they are not logged, and a
+    line that merely looks like an event is output like any other."""
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        assert argv[-1] == "--report"
+        on_line(_model(repo="org/m", revision="abc", path="/hf/hub"))
+        on_line(_bytes(repo="org/m", bytes=10, total=100))
+        on_line(_bytes(repo="org/m", bytes=100, total=100))
+        on_line('{"event": "download", "model": "org/m", "bytes": 1, "total": 1}')
+        return CommandResult(0)
+
+    assert run(models) == 0
+    out, err = capsys.readouterr()
+    events = _events(out)
+    assert [e for e in events if e["event"] == "download"] == [
+        {"event": "download", "model": "org/m", "bytes": 10, "total": 100},
+        {"event": "download", "model": "org/m", "bytes": 100, "total": 100},
+    ]
+    logged = [e["line"] for e in events if e["event"] == "log"]
+    assert logged == ['{"event": "download", "model": "org/m", "bytes": 1, "total": 1}']
+    assert DOWNLOAD_PREFIX not in err
+
+
+def test_a_failed_download_names_the_model_and_its_cache(
+    run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """For the app's manual fallback and Show in Finder (ADR 0018)."""
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        on_line(_model(repo="org/a", revision="1" * 40, path="/hf/hub"))
+        on_line(_model(repo="org/b", revision=None, path="/hf/hub"))
+        return CommandResult(1)
+
+    assert run(models) == 1
+    assert _events(capsys.readouterr().out)[-1] == {
+        "event": "error",
+        "step": "models",
+        "message": "model download failed (exit 1)",
+        "repo": "org/b",
+        "revision": None,
+        "path": "/hf/hub",
+    }
+
+
+def test_a_models_error_before_any_model_names_none(
+    run: Callable[[StreamingFake], int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The download can fail before it says which model it is on (a config
+    it cannot read, an engine that does not import)."""
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        on_line("Traceback (most recent call last):")
+        return CommandResult(1)
+
+    assert run(models) == 1
+    assert _events(capsys.readouterr().out)[-1] == {
+        "event": "error",
+        "step": "models",
+        "message": "model download failed (exit 1)",
+    }
+
+
+def test_only_a_models_error_names_the_model() -> None:
+    out = io.StringIO()
+    progress = Progress(out)
+    progress.step("models", "start", "download")
+    assert progress.child_line(_model(repo="org/a", revision="r", path="/hf"))
+    progress.step("models", "done", "download")
+    progress.step("link", "start", "link")
+    progress.error("boom")
+    assert _events(out.getvalue())[-1] == {"event": "error", "step": "link", "message": "boom"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "plain output",
+        DOWNLOAD_PREFIX + "not json",
+        DOWNLOAD_PREFIX + "[1, 2]",
+        _bytes(bytes=1, total=2),  # no repo
+        _bytes(repo="org/m", bytes="1", total=2),
+        _bytes(repo="org/m", bytes=True, total=2),
+        _bytes(repo="org/m", bytes=1),
+        _child(repo="org/m", bytes=1, total=2),  # no kind
+        _child(kind="other", repo="org/m", revision="r", path="/hf"),
+    ],
+)
+def test_lines_that_are_not_the_childs_are_output(line: str) -> None:
+    out = io.StringIO()
+    assert not Progress(out).child_line(line)
+    assert out.getvalue() == ""
+
+
+def test_a_port_in_use_fails_before_the_models(
+    run: Callable[[StreamingFake], int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from voiced.launchd import ports
+
+    in_use = OSError(errno.EADDRINUSE, "Address already in use")
+    monkeypatch.setattr(ports, "bind_error", lambda bind, port: in_use)
+    monkeypatch.setattr(ports, "listener_pids", lambda port, runner: [4242])
+    monkeypatch.setattr(ports, "process_of", lambda pid: ("nc", ["nc", "-l"]))
+
+    def models(argv: Sequence[str], on_line: Callable[[str], None]) -> CommandResult:
+        pytest.fail("the models step ran")
+
+    assert run(models) == 1
+    last = _events(capsys.readouterr().out)[-1]
+    assert last["step"] == "ports"
+    assert "is in use by nc (pid 4242)" in last["message"]

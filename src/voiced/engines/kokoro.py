@@ -178,6 +178,12 @@ class KokoroEngine(SentenceTTSEngine):
         (``voiced.engines.catalogue``)."""
         return kokoro_voices(cls.languages)
 
+    @classmethod
+    def download_patterns(cls) -> list[str]:
+        """The config and the weights, with the voice packs in ``voices/``
+        (``voiced.models``); not the sample WAVs or the ``.pt`` copies."""
+        return ["config.json", "*.safetensors"]
+
     def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
         self._warmup = warmup
@@ -195,12 +201,22 @@ class KokoroEngine(SentenceTTSEngine):
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
-        model = load_model(self.model_id)
+        from voiced.models import pinned_revision, snapshot
+
+        patterns = self.download_patterns()
+        # Both at the pinned revision, from the cache voiced install filled.
+        # load_model takes the repo id: mlx-audio tells a Kokoro model by
+        # its name, which a snapshot directory does not always carry. Its
+        # resolve of the same revision and patterns is a cache hit.
+        root = snapshot(self.model_id, patterns)
+        model = load_model(
+            self.model_id, revision=pinned_revision(self.model_id), allow_patterns=patterns
+        )
         rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:
             raise RuntimeError(f"Kokoro model reports {rate} Hz, expected {TTS_SAMPLE_RATE}")
         all_voices = kokoro_voices(self.languages)
-        packs = self._load_voice_packs(all_voices)
+        packs = self._load_voice_packs(root, all_voices)
         voices = [v for v in all_voices if v.id in packs]
         if not voices:
             raise RuntimeError(f"no usable voices found in {self.model_id}")
@@ -223,14 +239,9 @@ class KokoroEngine(SentenceTTSEngine):
             time.perf_counter() - started,
         )
 
-    def _load_voice_packs(self, voices: list[Voice]) -> dict[str, Any]:
+    def _load_voice_packs(self, root: Path, voices: list[Voice]) -> dict[str, Any]:
         from mlx_audio.tts.models.kokoro.voice import load_voice_tensor
 
-        root = Path(self.model_id)
-        if not root.is_dir():
-            from huggingface_hub import snapshot_download
-
-            root = Path(snapshot_download(self.model_id, allow_patterns=["voices/*.safetensors"]))
         packs: dict[str, Any] = {}
         missing: list[str] = []
         for voice in voices:

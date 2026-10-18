@@ -29,7 +29,7 @@ from voiced.engines.base import AudioInput, PCMChunk, Transcript
 from voiced.testing import FakeSTTEngine, FakeTTSEngine
 
 requires_ffmpeg = pytest.mark.skipif(
-    not ffmpeg.ffmpeg_available(), reason="ffmpeg is not installed (brew install ffmpeg)"
+    not ffmpeg.ffmpeg_available(), reason="no ffmpeg (it comes with imageio-ffmpeg)"
 )
 
 

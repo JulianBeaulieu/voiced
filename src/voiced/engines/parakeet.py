@@ -148,6 +148,11 @@ class ParakeetEngine(STTEngine):
     languages = list(PARAKEET_V3_LANGUAGES)
     license = "CC-BY-4.0"
 
+    @classmethod
+    def download_patterns(cls) -> list[str]:
+        """What ``from_pretrained`` reads (``voiced.models``)."""
+        return ["config.json", "model.safetensors"]
+
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
         self._model: Any = None
@@ -171,9 +176,12 @@ class ParakeetEngine(STTEngine):
     def _load_blocking(self) -> None:
         from parakeet_mlx import from_pretrained
 
+        from voiced.models import snapshot
+
         t0 = time.perf_counter()
         log.info("loading STT model %s", self.model_id)
-        model = from_pretrained(self.model_id)
+        # The pinned revision's directory, from the cache voiced install filled.
+        model = from_pretrained(str(snapshot(self.model_id, self.download_patterns())))
         load_s = time.perf_counter() - t0
         # Warm up both paths so the first real request does not pay for Metal
         # kernel compilation, and so a broken GPU path fails here, before the

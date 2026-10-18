@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from voiced.config import ENGINE_ENV, Settings
+from voiced.config import CLEARED_HF_ENV, ENGINE_ENV, Settings
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
@@ -33,10 +33,21 @@ def restore_engine_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """``voiced``'s main() sets HF_HOME and the espeak-ng variables from the
     config (apply_engine_environment); in-process calls must not leak them
     into the next test."""
-    for key in ENGINE_ENV:
+    for key in (*ENGINE_ENV, *CLEARED_HF_ENV):
         monkeypatch.setenv(key, os.environ.get(key, ""))
         if not os.environ[key]:
             monkeypatch.delenv(key)
+
+
+@pytest.fixture(autouse=True)
+def no_port_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``voiced install``'s ports step finds every port free: tests never
+    depend on what this machine runs (its own voiced, say). The ports
+    step's tests set their own."""
+    from voiced.launchd import ports
+
+    monkeypatch.setattr(ports, "bind_error", lambda bind, port: None)
+    monkeypatch.setattr(ports, "listener_pids", lambda port, runner: [])
 
 
 def free_port() -> int:

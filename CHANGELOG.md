@@ -33,6 +33,19 @@ uses [Semantic Versioning](https://semver.org/).
   `error` and stops the running step and what it started); human output
   goes to stderr. `--dry-run --json-progress` lists the steps. The
   watchdog's control-socket `hello` adds what `install.json` records.
+- Pinned default models (ADR 0018): `voiced.models.PINS` sets the commit
+  and size of Parakeet and Kokoro, the engines load that revision, and
+  `voiced install` downloads only the files each engine loads.
+  `python -m voiced.models` prints the pins for the app's
+  `install-manifest.json`. With `--json-progress` the models step reports
+  its bytes as `download` events (at most four a second), and a `models`
+  error carries the repo, revision and Hugging Face cache when known.
+- A `ports` step in `voiced install`, before the models: each of the four
+  configured ports is bound as the services bind it and checked with
+  `lsof`, and one another program holds stops the install with the port,
+  its config key and its holder (another account's or the system's when
+  `lsof` cannot see it). voiced's own
+  running services are not a conflict.
 - `[tts] espeak_library` and `espeak_data` config keys for the espeak-ng
   that Kokoro loads.
 - Homebrew formula (`packaging/homebrew/voiced.rb`, for the
@@ -194,6 +207,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- ffmpeg comes from the `imageio-ffmpeg` wheel, a core dependency (a static
+  ffmpeg 7.1, GPL-2.0-or-later), preferred over one on `PATH`; `brew install
+  ffmpeg` is no longer needed. `voiced doctor` names the ffmpeg in use and
+  where it comes from.
+- voiced ignores a shell's `HF_HUB_CACHE`, `HUGGINGFACE_HUB_CACHE` and
+  `HF_ENDPOINT`, like `HF_HOME`: the models come from the hub into the
+  cache `[install] hf_home` names.
+- The `tts` extra needs `huggingface-hub` 1.1 or later.
 - The LaunchDaemon plists carry only a fixed environment (`HOME`, `PATH`,
   `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG` for the default
   log directory), the same values the menu bar app's privileged step
