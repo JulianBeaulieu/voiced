@@ -494,8 +494,13 @@ Bounds on one utterance, so a client cannot hold the GPU indefinitely:
 | Chunks queued ahead of the engine | 64; a client that outruns a busy GPU is slowed down through TCP, and gets `server_busy` if the wait exceeds `session_idle_s` |
 | Audio format | Rate, width and channels must stay as announced in `AudioStart` |
 
-A session that fails for any reason ends with an `Error` and the connection
-closes; send the next utterance on a new connection.
+A session that fails for any reason gets one `Error`. The connection stays
+open while the client finishes writing the utterance: its remaining
+`AudioChunk` events are read and dropped, and the connection closes at
+`AudioStop` (or `server.session_idle_s` after the failure, if no `AudioStop`
+comes). A client that writes the whole utterance before it reads, as Home
+Assistant does, therefore reads the `Error` instead of a reset. Send the next
+utterance on a new connection.
 
 Bounds on every connection, on both listeners:
 

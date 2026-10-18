@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
-from wyoming.audio import AudioStart
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.error import Error
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.tts import (
@@ -27,9 +28,10 @@ from wyoming.tts import (
 )
 
 from tests.wyoming.conftest import wait_for
+from voiced import inference
 from voiced.engines.base import Voice
 from voiced.testing import FakeSTTEngine
-from voiced.wyoming import handlers, server
+from voiced.wyoming import handlers, server, stt_handler
 from voiced.wyoming.server import WyomingListener
 
 Raw = tuple[asyncio.StreamReader, asyncio.StreamWriter]
@@ -283,3 +285,130 @@ async def test_tts_stream_that_cannot_start_fails_once_and_closes(
     assert [e.type for e in events] == ["error"]
     assert Error.from_event(events[0]).code == "invalid_request_error"
     assert tts_listener.ctx.health.status == "ok"
+
+
+def chunk(seconds: float, rate: int = 16_000, width: int = 2) -> Event:
+    audio = bytes(int(seconds * rate) * width)
+    return AudioChunk(rate=rate, width=width, channels=1, audio=audio).event()
+
+
+START = AudioStart(rate=16_000, width=2, channels=1).event()
+
+
+async def write_stream_then_read(
+    listener: WyomingListener, events: list[Event], gap_s: float
+) -> list[Event]:
+    """Write the whole stream, then read, as Home Assistant's wyoming STT
+    client does. A reset on any write or read fails the test."""
+    async with raw(listener) as (reader, writer):
+        for event in events:
+            await async_write_event(event, writer)
+            await asyncio.sleep(gap_s)
+        return await events_until_eof(reader)
+
+
+async def _hold_slot(listener: WyomingListener, gate: asyncio.Event) -> asyncio.Task[None]:
+    ctx = listener.ctx
+
+    async def hold() -> None:
+        async with ctx.queue.slot():
+            await gate.wait()
+
+    task = asyncio.create_task(hold())
+    await wait_for(lambda: ctx.queue.depth == 1)
+    return task
+
+
+@pytest.mark.parametrize(
+    ("kind", "code", "text"),
+    [
+        ("format-change", "invalid_request_error", "UnsupportedAudioFormat"),
+        ("bad-width", "invalid_request_error", "UnsupportedAudioFormat"),
+        ("utterance-limit", "invalid_request_error", "EngineError: more than"),
+        ("server-busy", "server_busy", "QueueFull"),
+    ],
+)
+@pytest.mark.parametrize("gap_s", [0.0, 0.05, 0.3])
+async def test_stt_session_that_fails_reports_once_and_closes_at_audio_stop(
+    stt_listener: WyomingListener,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    code: str,
+    text: str,
+    gap_s: float,
+) -> None:
+    """A failed STT session gets exactly one Error. Home Assistant writes every
+    chunk and the AudioStop before it reads, so the server drops the rest of
+    the session and closes at AudioStop: closing at once would answer those
+    writes with a reset, which can discard the Error before it is read."""
+    ctx = stt_listener.ctx
+    engine: FakeSTTEngine = ctx.engine  # type: ignore[assignment]
+    # The client is still writing when the session fails: its trailing audio
+    # spans 0.75 s, longer than the 0.5 s the busy case waits for the slot.
+    trailing = 3 if gap_s == 0 else math.ceil(0.75 / gap_s)
+    after = [*(chunk(0.1) for _ in range(trailing)), AudioStop().event()]
+    holder: asyncio.Task[None] | None = None
+    gate = asyncio.Event()
+    if kind == "format-change":
+        events = [START, chunk(0.1), chunk(0.1, rate=48_000), *after]
+    elif kind == "bad-width":
+        events = [AudioStart(rate=16_000, width=3, channels=1).event(), *after]
+    elif kind == "utterance-limit":
+        ctx.settings.stt.max_upload_mb = 1  # about 31 s at 16 kHz
+        events = [START, *(chunk(10.0) for _ in range(4)), *after]
+    else:  # server-busy: the queue fills while another request holds the slot
+        monkeypatch.setattr(stt_handler, "_QUEUE_CHUNKS", 2)
+        ctx.settings.server.session_idle_s = 0.5
+        holder = await _hold_slot(stt_listener, gate)
+        events = [START, *(chunk(0.064) for _ in range(3)), *after]
+    try:
+        received = await write_stream_then_read(stt_listener, events, gap_s)
+    finally:
+        gate.set()
+        if holder is not None:
+            await holder
+    assert [e.type for e in received] == ["error"]
+    error = Error.from_event(received[0])
+    assert error.code == code and error.text.startswith(text), error
+    assert engine.calls == (0 if kind in ("bad-width", "server-busy") else 1)
+    await wait_for(lambda: ctx.queue.depth == 0)
+    assert ctx.health.status == "ok"
+
+
+async def test_stt_session_over_its_wall_clock_reports_once_and_closes_at_audio_stop(
+    stt_listener: WyomingListener, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wall-clock bound fires while the client is still trickling audio;
+    its AudioStop, written before it reads, still finds the Error."""
+    monkeypatch.setattr(inference, "utterance_limit_s", lambda settings: 0.2)
+    ctx = stt_listener.ctx
+    ctx.settings.server.session_idle_s = 0.5  # the session may stay open 0.7 s
+    events = [START, *(chunk(0.001) for _ in range(9)), AudioStop().event()]
+    received = await write_stream_then_read(stt_listener, events, 0.1)
+    assert [e.type for e in received] == ["error"]
+    assert "session open longer than 0.7 s" in Error.from_event(received[0]).text
+    await wait_for(lambda: ctx.queue.depth == 0)
+    assert ctx.health.status == "ok"
+
+
+async def test_stt_failed_session_is_closed_after_session_idle_s_without_audio_stop(
+    stt_listener: WyomingListener,
+) -> None:
+    """A client that keeps streaming after the Error and never sends AudioStop
+    cannot hold the connection: the drop lasts session_idle_s."""
+    ctx = stt_listener.ctx
+    ctx.settings.server.session_idle_s = 0.3
+    async with raw(stt_listener) as (reader, writer):
+        for event in (START, chunk(0.1), chunk(0.1, rate=48_000)):
+            await async_write_event(event, writer)
+        error = await read_error(reader)
+        assert error.text.startswith("UnsupportedAudioFormat")
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with contextlib.suppress(ConnectionError):
+            while not reader.at_eof() and loop.time() - started < 3:
+                await async_write_event(chunk(0.01), writer)
+                await asyncio.sleep(0.05)
+        assert loop.time() - started < 2
+        assert await closed(reader)
+    await wait_for(lambda: ctx.queue.depth == 0)

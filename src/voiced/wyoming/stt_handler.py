@@ -10,8 +10,16 @@ so (ADR 0005) the session runs as its own task: it owns
 the ``AudioStart`` format, and consumes chunks from a bounded ``asyncio.Queue``
 with ``bounded`` reads, so an idle satellite releases the slot. The connection
 handler only feeds the queue (with backpressure) and never feeds a session that
-has ended. The task delivers the transcript on success; on any failure it
-reports the outcome and closes the connection, like the TTS worker.
+has ended. The task delivers the transcript on success.
+
+A failed session sends exactly one ``Error`` and never restarts on the same
+connection. Home Assistant writes every ``AudioChunk`` and the ``AudioStop``
+before it reads, so the connection stays open and the rest of the session's
+audio is read and dropped until ``AudioStop`` closes it, as for a refused TTS
+stream: closing at once would answer the client's next write with a reset,
+which can discard the Error before it is read. Dropping lasts at most
+``server.session_idle_s`` after the failure, and a client that goes silent
+instead is closed by the reader's idle bound.
 
 Limits: an utterance may carry at most ``stt.max_upload_mb`` of 16-bit audio
 at 16 kHz (:class:`voiced.inference.UtteranceBudget`, about 26 minutes at the default 50 MB),
@@ -33,8 +41,8 @@ from wyoming.event import Event
 from wyoming.info import Describe
 
 from voiced.audio import PCMConverter, UnsupportedAudioFormat
-from voiced.inference import ClientTimeout, UtteranceBudget, bounded, inference
-from voiced.metrics import Operation
+from voiced.inference import ClientTimeout, UtteranceBudget, bounded, classify, inference
+from voiced.metrics import Operation, Outcome
 from voiced.queue import QueueFull
 from voiced.wyoming.handlers import VoicedEventHandler, cancel_task, parse
 from voiced.wyoming.info import stt_info
@@ -51,6 +59,9 @@ class STTEventHandler(VoicedEventHandler):
     _language: str | None = None
     _queue: asyncio.Queue[AudioChunk | None] | None = None
     _task: asyncio.Task[bool] | None = None
+    _dropping_until: float | None = None
+    """Set when a session failed and reported: the loop time until which the
+    rest of its audio is read and dropped (see the module docstring)."""
 
     async def handle(self, event: Event) -> bool:
         if Describe.is_type(event.type):
@@ -61,10 +72,9 @@ class STTEventHandler(VoicedEventHandler):
             self._language = self.ctx.check_language(parse(Transcribe, event).language)
             return True
         is_audio = any(t.is_type(event.type) for t in (AudioStart, AudioChunk, AudioStop))
-        if is_audio and self._task is not None and self._task.done():
-            # The session failed and reported; its stop() lets events already
-            # buffered through. None of them may reach or restart a session.
-            return False
+        if is_audio and self._dropping_until is not None:
+            # None of the failed session's events may reach or restart a session.
+            return await self._drop(event)
         if AudioStart.is_type(event.type):
             start = parse(AudioStart, event)
             await self._begin(start.rate, start.width, start.channels)
@@ -96,13 +106,18 @@ class STTEventHandler(VoicedEventHandler):
         The queue only stays full while the session cannot drain it, which
         means it is still waiting for the slot (or the engine is slow): the
         server is the slow side, so running out of time is ``QueueFull``
-        (``server_busy``), not a client timeout.
+        (``server_busy``), not a client timeout: the session is cancelled,
+        reported and its rest dropped like any failed session.
         """
-        assert self._queue is not None
+        queue = self._queue
+        assert queue is not None
         try:
-            await bounded(self._queue.put(item), self._idle_timeout_s)
+            await bounded(queue.put(item), self._idle_timeout_s)
         except ClientTimeout:
-            raise QueueFull(self.ctx.queue.capacity) from None
+            if self._dropping_until is None:  # the session did not fail meanwhile
+                task, self._task = self._task, None
+                await cancel_task(task)
+                await self._fail(QueueFull(self.ctx.queue.capacity), queue)
 
     async def _finish(self) -> bool:
         task = self._task
@@ -111,9 +126,32 @@ class STTEventHandler(VoicedEventHandler):
             await self.write_event(Transcript(text="", language=self._language).event())
             return True
         await self._feed(None)
-        ok = await task  # the task delivers the transcript or reports its failure
+        # The task delivers the transcript or reports its failure; there is none
+        # left if _feed reported server_busy.
+        task = self._task
+        ok = task is not None and await task
         self._task = self._queue = None
         return ok
+
+    async def _drop(self, event: Event) -> bool:
+        """An audio event after the session failed: dropped, or the close."""
+        assert self._dropping_until is not None
+        loop = asyncio.get_running_loop()
+        if not AudioStop.is_type(event.type) and loop.time() < self._dropping_until:
+            return True
+        if self._task is not None:
+            await self._task  # it may still be sending the Error
+        return False
+
+    async def _fail(self, exc: Exception, queue: asyncio.Queue[AudioChunk | None]) -> bool:
+        """Report a failed session once and drop the rest of it. Returns ``False``."""
+        self._dropping_until = asyncio.get_running_loop().time() + self._idle_timeout_s
+        while not queue.empty():
+            queue.get_nowait()  # frees a put the connection may be waiting on
+        await self.report(exc)
+        if classify(exc) is Outcome.DISCONNECT:
+            await self.stop()  # nobody is left to read an Error
+        return False
 
     async def _session(
         self,
@@ -124,7 +162,7 @@ class STTEventHandler(VoicedEventHandler):
         queue: asyncio.Queue[AudioChunk | None],
     ) -> bool:
         """One utterance. Returns ``True`` once the transcript is delivered; on
-        failure reports the outcome, closes the connection and returns ``False``."""
+        failure reports the outcome (:meth:`_fail`) and returns ``False``."""
         try:
             async with inference(self.ctx, Operation.STREAM):
                 self.ctx.check_loaded()
@@ -152,9 +190,7 @@ class STTEventHandler(VoicedEventHandler):
             # A failed session never restarts on the same connection: a client
             # that keeps streaming after an error must not get a transcript of
             # the leftover audio or a fresh size budget.
-            await self.report(exc)
-            await self.stop()
-            return False
+            return await self._fail(exc, queue)
 
     async def cleanup(self) -> None:
         task, self._task, self._queue = self._task, None, None

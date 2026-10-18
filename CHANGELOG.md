@@ -73,6 +73,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A streamed Wyoming STT session that failed (`server_busy` after waiting
+  for the slot, the utterance limit, a format change mid-stream, the
+  wall-clock bound) closed the connection at once. Home Assistant writes
+  every chunk and the `AudioStop` before it reads, so its next write met a
+  reset and the `Error` could be lost. The server now sends the one `Error`,
+  reads and drops the rest of the utterance, and closes at `AudioStop`, at
+  most `server.session_idle_s` after the failure, as it already did for a
+  refused TTS stream.
 - A streaming STT session that waited for the slot behind another (two
   satellites talking at once) failed with "streaming backlog over 30s" when
   its client had sent more than 30 s meanwhile. `add_audio` now waits for the

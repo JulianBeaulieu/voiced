@@ -138,6 +138,7 @@ async def test_queue_full_sends_error_and_closes(stt_listener: WyomingListener) 
             events = await read_until(c, "error")
             assert events and Error.is_type(events[-1].type)
             assert Error.from_event(events[-1]).code == "server_busy"
+            await c.write_event(AudioStop().event())
             assert await c.read_event() is None  # server closed the connection
     finally:
         gate.set()
@@ -189,6 +190,7 @@ async def test_engine_failure_marks_degraded(
         await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
         event = await c.read_event()
         assert event is not None and Error.from_event(event).code == "engine_error"
+        await c.write_event(AudioStop().event())
         assert await c.read_event() is None
     assert stt_listener.ctx.health.status == "degraded"
     assert stt_listener.ctx.queue.depth == 0
@@ -291,6 +293,7 @@ async def test_client_stuck_behind_a_busy_slot_gets_server_busy(
             await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
             for _ in range(3):  # two fill the queue, the third waits for room
                 await c.write_event(chunk16k(pcm16(0.064)).event())
+            await c.write_event(AudioStop().event())
             events = await read_until(c)
         assert [e.type for e in events] == ["error"]
         assert Error.from_event(events[0]).code == "server_busy"
@@ -347,8 +350,8 @@ async def test_oversized_chunks_are_refused_while_the_slot_is_busy(
 async def test_audio_after_a_failed_session_never_reaches_a_session(
     stt_app: FastAPI, event: Event
 ) -> None:
-    """The session task has failed (and called stop()), but events already
-    buffered still reach handle(); none may restart or feed a session."""
+    """The session task has failed and reported; the rest of its events are
+    dropped until AudioStop closes. None may restart or feed a session."""
     ctx = stt_app.state.ctx
     await ctx.engine.load()
     ctx.health.mark_loaded()
@@ -362,7 +365,8 @@ async def test_audio_after_a_failed_session_never_reaches_a_session(
     await ended
     handler._task = ended
     handler._queue = asyncio.Queue()
-    assert await handler.handle(event) is False
+    handler._dropping_until = asyncio.get_running_loop().time() + 30
+    assert await handler.handle(event) is not AudioStop.is_type(event.type)
     assert handler._task is ended  # no new session was started
     assert handler._queue.empty()  # nothing was fed to the dead one
     assert engine.calls == 0
@@ -435,6 +439,7 @@ async def test_audio_before_the_model_loads_is_busy(stt_app: FastAPI) -> None:
     )
     async with listener, client(listener) as c:
         await c.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+        await c.write_event(AudioStop().event())
         events = await read_until(c)
     assert [e.type for e in events] == ["error"]
     assert Error.from_event(events[0]).code == "server_busy"

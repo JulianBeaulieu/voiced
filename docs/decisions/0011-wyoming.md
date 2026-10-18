@@ -79,11 +79,16 @@ in metrics; the request was admitted to the queue and gave up waiting, like an
 HTTP client that disconnects while queued.
 
 The connection handler only feeds the queue. The task reports its own outcome
-(the one place) and on any failure closes the connection, whatever the
-outcome: the handler never feeds a session that has ended, and a failed
-session never restarts on the same connection, so a client that keeps
-streaming after an error cannot get a transcript of the leftover audio or a
-fresh size budget.
+(the one place), whatever the outcome: the handler never feeds a session that
+has ended, and a failed session never restarts on the same connection, so a
+client that keeps streaming after an error cannot get a transcript of the
+leftover audio or a fresh size budget. After the one `Error` the connection
+stays open and the session's remaining audio events are read and dropped until
+`AudioStop` closes it, at most `session_idle_s` after the failure. Home
+Assistant writes the whole utterance before it reads; closing at once would
+answer its next write with a reset, which can discard the `Error` before it is
+read (the same reason a refused TTS stream is dropped until `SynthesizeStop`).
+A disconnect still closes at once.
 
 ### TTS: streaming with per-sentence slots
 
