@@ -1095,7 +1095,10 @@ def test_cli_uninstall_names_homebrew_from_the_manifest(
 PRIVILEGED = Path(__file__).parents[2] / "menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh"
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil, lockf)")
+@pytest.mark.skipif(
+    not all(Path(tool).exists() for tool in ("/usr/bin/plutil", "/usr/bin/lockf")),
+    reason="the script needs macOS's /usr/bin/plutil and /usr/bin/lockf",
+)
 def test_plists_equal_what_the_privileged_script_renders(
     settings: Settings, tmp_path: Path
 ) -> None:
