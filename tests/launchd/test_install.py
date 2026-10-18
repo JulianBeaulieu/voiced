@@ -381,8 +381,6 @@ def test_default_install_runner_streams() -> None:
     assert inspect.signature(run_install).parameters["runner"].default is run_streaming
 
 
-
-
 def test_engine_variables_come_from_the_config_not_the_plists(
     settings: Settings, tmp_path: Path
 ) -> None:

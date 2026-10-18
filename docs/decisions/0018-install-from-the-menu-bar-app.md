@@ -529,8 +529,8 @@ Speech to Text and Text to Speech panes.
    configured ports are free (added here), downloads the models with byte
    progress and loads each engine once, and only then links
    `~/.voiced/bin/voiced` to its own environment, writes `install.json`
-   (`--origin app` makes its `source` `app`), prunes old environments and
-   stages the plists.
+   (`--origin app` makes its `source` `app`) and prunes old environments.
+   It stages nothing: the next step renders the plists as root.
 4. **Approval**: one administrator prompt runs `voiced-privileged install`.
 5. **Starting**: the app waits for the watchdog's control socket and its
    `hello` (up to two minutes; model loading is slow on a cold disk).

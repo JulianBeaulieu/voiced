@@ -280,7 +280,7 @@ uses [Semantic Versioning](https://semver.org/).
   `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
   a symlink, and point their stdout and stderr at them (`VOICED_STDIO_LOG`
   in the plist). Existing installs keep the old plists, and the exposure,
-  until `voiced install` and its sudo script are run again.
+  until the root step `voiced install` prints is run again.
 - Uploads can no longer make ffmpeg open other files: ffmpeg reads the
   upload through an inherited descriptor and may open nothing else, so an
   `ffconcat` list or playlist is refused. Upload files are anonymous and

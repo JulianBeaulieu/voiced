@@ -82,7 +82,7 @@ public struct InstallProgress: Sendable, Equatable {
             "manifest": "Recording the install",
             "legacy": "Removing the previous install",
             "prune": "Removing old environments",
-            "stage": "Preparing the background services",
+            "unstage": "Removing files an earlier version left",
         ]
 
         static func title(id: String, shown: String) -> String {
