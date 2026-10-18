@@ -25,7 +25,7 @@ public struct InstallerView: View {
             case .environment(let step): EnvironmentScreen(step: step)
             case .installing(let progress): InstallingScreen(progress: progress)
             case .approval(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: false)
-            case .approving: ApprovalScreen(installer: installer, firewallOn: false, waiting: true)
+            case .approving(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: true)
             case .starting: StartingScreen(warning: installer.warning)
             case .homeAssistant(let stage): HomeAssistantScreen(installer: installer, stage: stage)
             case .done: DoneScreen(warning: installer.warning, loginItem: loginItem, close: close)
@@ -388,6 +388,11 @@ private struct FailureScreen: View {
 
     var body: some View {
         Screen(symbol: "xmark.octagon", tint: .red, title: failure.step, sentence: failure.cause) {
+            if let fallback = failure.fallback {
+                Text(fallback)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             if !failure.output.isEmpty {
                 Text(failure.output.joined(separator: "\n"))
                     .font(.system(.caption, design: .monospaced))

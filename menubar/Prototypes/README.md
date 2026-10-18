@@ -24,5 +24,6 @@ job run once and append a line to `$out/probe.out`. ADR 0018 has the results.
 ## PrivilegedInstall
 
 The privileged script that started here is now part of the app:
-`Sources/VoicedMenuBarUI/Installer/PrivilegedScript.swift`, and its test is
-`Scripts/test-privileged.sh` (see the menu bar README).
+`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`, compiled into the
+executable, and its test is `Scripts/test-privileged.sh` (see the menu bar
+README).

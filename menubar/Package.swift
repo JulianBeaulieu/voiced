@@ -12,7 +12,12 @@ let package = Package(
         // The control protocol: framing, client, payload models, view state. No UI.
         .target(name: "VoicedControl"),
         // SwiftUI views and the observable model that drives them.
-        .target(name: "VoicedMenuBarUI", dependencies: ["VoicedControl"]),
+        // The privileged script's bytes are compiled into the executable (ADR 0018), never a
+        // file in the bundle.
+        .target(
+            name: "VoicedMenuBarUI", dependencies: ["VoicedControl"],
+            resources: [.embedInCode("Installer/voiced-privileged.sh")]
+        ),
         // The app entry point; kept tiny so everything else is testable.
         .executableTarget(name: "VoicedMenuBar", dependencies: ["VoicedMenuBarUI"]),
         // A scripted control server for tests and for running the app without voiced.

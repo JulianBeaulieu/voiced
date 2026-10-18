@@ -4,11 +4,11 @@ import VoicedControl
 /// One line of `voiced install --json-progress` (ADR 0018, protocol 1). Unknown events and
 /// unknown fields are ignored, so either side can add them without a new protocol number.
 public enum InstallEvent: Sendable, Equatable {
-    case hello(protocol: Int, version: String?)
+    case hello(protocol: Int)
     case step(id: String, state: StepState, shown: String)
     case download(model: String, bytes: Int64, total: Int64)
     case log(String)
-    case done(stagingDir: String?)
+    case done
     case error(step: String?, message: String)
 
     public enum StepState: String, Sendable {
@@ -29,7 +29,7 @@ public enum InstallEvent: Sendable, Equatable {
         switch fields["event"]?.stringValue {
         case "hello":
             guard let number = fields["protocol"]?.intValue else { return nil }
-            self = .hello(protocol: number, version: fields["version"]?.stringValue)
+            self = .hello(protocol: number)
         case "step":
             guard let id = fields["step"]?.stringValue,
                 let state = fields["state"]?.stringValue.flatMap(StepState.init(rawValue:))
@@ -44,7 +44,7 @@ public enum InstallEvent: Sendable, Equatable {
             guard let text = fields["line"]?.stringValue else { return nil }
             self = .log(text)
         case "done":
-            self = .done(stagingDir: fields["staging_dir"]?.stringValue)
+            self = .done
         case "error":
             let message = fields["message"]?.stringValue ?? ""
             self = .error(step: fields["step"]?.stringValue, message: message.isEmpty ? "voiced install failed." : message)
@@ -123,17 +123,19 @@ public struct InstallProgress: Sendable, Equatable {
 /// last event and the exit status, which must agree.
 struct InstallSession {
     enum Outcome: Equatable {
-        case done(stagingDir: String?)
+        case done
         case failed(step: String?, cause: String)
     }
 
     /// How far back the download speed is averaged.
     static let speedWindow: Duration = .seconds(5)
     static let tailLength = 8
+    /// The most steps and downloads kept: the CLI has ten steps and two models, and a
+    /// misbehaving one cannot grow the screen without bound.
+    static let maximumEntries = 32
 
     private(set) var progress = InstallProgress()
     private(set) var tail: [String] = []
-    private(set) var version: String?
     /// Set when the hello is refused or missing; the run is stopped.
     private(set) var refusal: String?
     /// When the bytes of an unfinished download last grew, for the stall check.
@@ -154,7 +156,13 @@ struct InstallSession {
         guard refusal == nil else { return false }
         guard let event = InstallEvent(line: line) else { return true }
         if !greeted {
-            guard case .hello(let number, let version) = event else {
+            // Something on stdout before the hello, such as a library's warning, is shown,
+            // not taken for the protocol; `finish` still notices a hello that never comes.
+            if case .log(let text) = event {
+                keep(text)
+                return true
+            }
+            guard case .hello(let number) = event else {
                 refusal = "voiced install did not start with a progress hello. Update voiced."
                 return false
             }
@@ -163,7 +171,6 @@ struct InstallSession {
                 return false
             }
             greeted = true
-            self.version = version
             return true
         }
         switch event {
@@ -174,7 +181,7 @@ struct InstallSession {
             if let index = progress.steps.firstIndex(where: { $0.id == id }) {
                 progress.steps[index].isDone = state == .done
                 progress.steps[index].title = title
-            } else {
+            } else if progress.steps.count < Self.maximumEntries {
                 progress.steps.append(.init(id: id, title: title, isDone: state == .done))
             }
         case .download(let model, let bytes, let total):
@@ -200,8 +207,8 @@ struct InstallSession {
         switch terminal {
         case .error(let step, let message)?:
             return .failed(step: step, cause: message)
-        case .done(let staging)? where status == 0:
-            return .done(stagingDir: staging)
+        case .done? where status == 0:
+            return .done
         case .done?:
             return .failed(step: nil, cause: "voiced install reported done but exited with status \(status).")
         default:
@@ -212,14 +219,18 @@ struct InstallSession {
 
     private mutating func record(model: String, bytes: Int64, total: Int64, at now: ContinuousClock.Instant) {
         let known = progress.downloads.firstIndex { $0.model == model }
+        if known == nil, progress.downloads.count >= Self.maximumEntries { return }
         let index = known ?? progress.downloads.count
         if known == nil { progress.downloads.append(.init(model: model, bytes: bytes, total: total)) }
         // A new download counts as progress: the previous one may have finished long ago.
         if known == nil || bytes > progress.downloads[index].bytes { lastGrowth = now }
         progress.downloads[index].bytes = bytes
         progress.downloads[index].total = total
-        var window = samples[model, default: []].filter { now - $0.at <= Self.speedWindow }
+        var window = samples[model, default: []]
         window.append((now, bytes))
+        // Samples arrive in order, so the old ones are at the front.
+        let fresh = window.firstIndex { now - $0.at <= Self.speedWindow } ?? window.endIndex
+        window.removeFirst(fresh)
         samples[model] = window
         if let first = window.first, now > first.at {
             let seconds = (now - first.at) / .seconds(1)

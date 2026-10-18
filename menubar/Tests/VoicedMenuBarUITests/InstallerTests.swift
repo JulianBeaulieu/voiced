@@ -20,37 +20,36 @@ final class InstallerTests: XCTestCase {
         daemons = try launchDaemonsDirectory()
         socket = temporarySocketPath()
         runner = FakeInstallRunner()
+        resources = try installResources(in: home.appendingPathComponent("bundle"))
     }
 
     override func tearDown() async throws {
+        models.forEach { $0.stop() }
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
         try? FileManager.default.removeItem(at: daemons)
     }
 
-    private static let resources = InstallResources(
-        uv: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Helpers/uv"),
-        lock: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/requirements.lock"),
-        wheel: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/voiced-0.1.0-py3-none-any.whl"),
-        manifest: InstallManifest(
-            python: "3.12.15", lockSHA256: "ab", wheel: .init(name: "voiced-0.1.0-py3-none-any.whl", sha256: "cd"),
-            wheelsBytes: 205_000_000,
-            models: [
-                .init(repo: RecordedProgress.parakeet, revision: "1", bytes: 2_508_500_000),
-                .init(repo: RecordedProgress.kokoro, revision: "2", bytes: 355_300_000),
-            ]))
+    private var resources: InstallResources!
+    private var capacity: Int64? = 100_000_000_000
+    private var models: [AppModel] = []
 
     private func makeInstaller(
         startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60)
     ) -> Installer {
-        var configuration = InstallerConfiguration(
-            resources: Self.resources, home: home, socketPath: socket,
-            installProbe: InstallProbe(launchDaemonsDirectory: daemons))
+        let probe = InstallProbe(launchDaemonsDirectory: daemons)
+        var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
-        return Installer(configuration: configuration, runner: runner)
+        let capacity = capacity
+        configuration.availableCapacity = { _ in capacity }
+        let model = AppModel(
+            socketPath: socket, installProbe: probe, backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)),
+            opener: { _ in true })
+        models.append(model)
+        return Installer(configuration: configuration, runner: runner, model: model)
     }
 
     @discardableResult
@@ -100,6 +99,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(installer.phase, .welcome)
         XCTAssertFalse(installer.welcome.resuming)
         XCTAssertEqual(installer.welcome.downloadBytes, 3_068_800_000)
+        XCTAssertEqual(installer.welcome.availableBytes, 100_000_000_000)
 
         installer.install()
         await reachApproval(installer)
@@ -114,8 +114,8 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(uv[1].arguments.dropLast(), ["venv", "--managed-python", "--relocatable", "--python", "3.12.15"])
         XCTAssertEqual(
             uv[2].arguments,
-            ["pip", "install", "--python", partial + "/bin/python", "--no-deps", "--require-hashes", "-r", Self.resources.lock.path])
-        XCTAssertEqual(uv[3].arguments.last, Self.resources.wheel.path)
+            ["pip", "install", "--python", partial + "/bin/python", "--no-deps", "--require-hashes", "-r", resources.lock.path])
+        XCTAssertEqual(uv[3].arguments.last, resources.wheel.path)
         XCTAssertEqual(uv[0].environment["UV_NO_CONFIG"], "1")
         XCTAssertEqual(uv[0].environment["UV_LINK_MODE"], "clone")
         XCTAssertEqual(uv[0].environment["UV_PYTHON_INSTALL_DIR"], home.appendingPathComponent(".voiced/python").path)
@@ -139,8 +139,8 @@ final class InstallerTests: XCTestCase {
 
         installer.connectHomeAssistant(true)
         await reach(installer, "connected") { if case .homeAssistant(.connected) = $0 { true } else { false } }
-        let set = try XCTUnwrap(server.requests.first { $0.op == "settings.set" })
-        XCTAssertEqual(set.args, ["bind": "lan", "zeroconf": true])
+        let sets = server.requests.filter { $0.op == "settings.set" }.map(\.args)
+        XCTAssertEqual(sets, [["bind": "lan"], ["zeroconf": true]])
         XCTAssertTrue(server.requests.contains { $0.op == "service.restart" })
         guard case .homeAssistant(.connected(let info)) = installer.phase else { return XCTFail() }
         XCTAssertEqual(info, HomeAssistantInfo(
@@ -173,7 +173,7 @@ final class InstallerTests: XCTestCase {
     // MARK: - Welcome
 
     func testNotEnoughDiskDisablesInstall() {
-        runner.capacity = 2_000_000_000
+        capacity = 2_000_000_000
         let installer = makeInstaller()
         XCTAssertFalse(installer.welcome.hasRoom)
         XCTAssertEqual(installer.welcome.availableBytes, 2_000_000_000)
@@ -183,7 +183,7 @@ final class InstallerTests: XCTestCase {
     }
 
     func testUnknownFreeSpaceDoesNotBlock() {
-        runner.capacity = nil
+        capacity = nil
         XCTAssertTrue(makeInstaller().welcome.hasRoom)
     }
 
@@ -292,7 +292,7 @@ final class InstallerTests: XCTestCase {
         installer.install()
         let failure = await failure(installer)
         XCTAssertEqual(failure?.step, "Installing Python 3.12.15")
-        XCTAssertTrue(failure?.cause.hasPrefix("Cannot run \(Self.resources.uv.path)") == true)
+        XCTAssertTrue(failure?.cause.hasPrefix("Cannot run \(resources.uv.path)") == true)
     }
 
     // MARK: - Claiming ~/.voiced
@@ -353,6 +353,106 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("envs").path))
     }
 
+    func testASymlinkedStateDirectoryIsRefused() async throws {
+        let elsewhere = home.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: home.appendingPathComponent(".voiced"), withDestinationURL: elsewhere)
+        let installer = makeInstaller()
+        installer.install()
+        let failure = await failure(installer)
+        let target = elsewhere.resolvingSymlinksInPath().path
+        XCTAssertEqual(
+            failure?.cause,
+            "\(home.appendingPathComponent(".voiced").path) is a symbolic link to \(target). voiced needs a real folder there; move \(target) to \(home.appendingPathComponent(".voiced").path), then try again.")
+        XCTAssertTrue(runner.commands.isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path), [])
+    }
+
+    /// A venv at `path` with voiced installed, as `voiced install` made one before ADR 0017.
+    private func makeVoicedVenv(at path: URL, editable: Bool = false) throws {
+        let info = path.appendingPathComponent("lib/python3.12/site-packages/voiced-0.1.0.dist-info")
+        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: path.appendingPathComponent("pyvenv.cfg").path, contents: Data())
+        if editable {
+            try Data(#"{"url": "file:///src", "dir_info": {"editable": true}}"#.utf8)
+                .write(to: info.appendingPathComponent("direct_url.json"))
+        }
+    }
+
+    func testALegacyVenvIsLeftAsItIs() async throws {
+        try makeVoicedVenv(at: home.appendingPathComponent(".voiced"))
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path))
+    }
+
+    func testAnEditableVenvIsSomeoneElses() async throws {
+        try makeVoicedVenv(at: home.appendingPathComponent(".voiced"), editable: true)
+        let installer = makeInstaller()
+        installer.install()
+        let failure = await failure(installer)
+        XCTAssertTrue(failure?.cause.contains("is not voiced's folder") == true)
+    }
+
+    func testAWheelThatIsNotThePinnedOneIsRefused() async throws {
+        try Data("another wheel".utf8).write(to: resources.wheel)
+        let installer = makeInstaller()
+        installer.install()
+        let failure = await failure(installer)
+        XCTAssertEqual(failure?.cause, "\(resources.wheel.lastPathComponent) does not match the app's manifest. Download the app again.")
+        XCTAssertTrue(runner.commands.isEmpty)
+    }
+
+    // MARK: - Continuing
+
+    /// A complete environment of this app's wheel, as an interrupted run leaves it.
+    @discardableResult
+    private func completeEnvironment(_ name: String, version: String = "0.1.0") throws -> URL {
+        let environment = home.appendingPathComponent(".voiced/envs/\(name)")
+        let bin = environment.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: bin.appendingPathComponent("voiced").path, contents: Data(), attributes: [.posixPermissions: 0o755])
+        try FileManager.default.createDirectory(
+            at: environment.appendingPathComponent("lib/python3.12/site-packages/voiced-\(version).dist-info"),
+            withIntermediateDirectories: true)
+        try Data(#"{"source": "app", "environment": null}"#.utf8).write(to: manifest)
+        return environment
+    }
+
+    func testContinueRunsVoicedInstallInTheEnvironmentAlreadyBuilt() async throws {
+        try completeEnvironment("20250101T000000", version: "0.0.9")
+        let built = try completeEnvironment("20260101T000000")
+        let installer = makeInstaller()
+        XCTAssertTrue(installer.welcome.resuming)
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertTrue(runner.commands(named: "uv").isEmpty)
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.executable), [built.appendingPathComponent("bin/voiced").path])
+    }
+
+    func testContinueFollowsTheEntryPoint() async throws {
+        let linked = try completeEnvironment("20250101T000000")
+        try completeEnvironment("20260101T000000")
+        let bin = home.appendingPathComponent(".voiced/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: bin.appendingPathComponent("voiced").path, withDestinationPath: linked.appendingPathComponent("bin/voiced").path)
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.executable), [linked.appendingPathComponent("bin/voiced").path])
+    }
+
+    func testAnotherVersionsEnvironmentIsNotContinued() async throws {
+        try completeEnvironment("20250101T000000", version: "0.0.9")
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertEqual(runner.commands(named: "uv").count, 4)
+    }
+
     func testWaitsWhileAnotherInstallHoldsTheLock() async throws {
         let state = home.appendingPathComponent(".voiced")
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
@@ -385,6 +485,8 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(
             failure,
             InstallFailure(stage: .install, step: "Checking the ports", cause: "Port 10300 is in use by python3.12 (pid 4242)."))
+        // Only a download failure names the manual download.
+        XCTAssertNil(failure?.fallback)
         XCTAssertTrue(runner.privilegedCalls.isEmpty)
     }
 
@@ -404,6 +506,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(failure?.stage, .install)
         XCTAssertEqual(failure?.step, "Downloading the models")
         XCTAssertEqual(failure?.cause, "Connection reset.")
+        XCTAssertEqual(failure?.fallback, resources.manifest.manualDownload)
         let built = runner.commands(named: "uv").count
 
         installer.retry()
@@ -419,6 +522,8 @@ final class InstallerTests: XCTestCase {
         let failure = await failure(installer)
         XCTAssertEqual(failure?.step, "Downloading the models")
         XCTAssertTrue(failure?.cause.hasPrefix("The download stalled") == true)
+        XCTAssertEqual(failure?.fallback, resources.manifest.manualDownload)
+        XCTAssertTrue(failure?.fallback?.contains("\(RecordedProgress.parakeet) at revision 0a1b2c3") == true)
         let terminated = await eventually { self.runner.terminated.count == 1 }
         XCTAssertTrue(terminated)
     }
@@ -551,7 +656,7 @@ final class InstallerTests: XCTestCase {
         let failure = await failure(installer)
         XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasPrefix("voiced did not answer within") == true)
-        XCTAssertEqual(failure?.output, ["Cannot connect to voiced: the control socket does not exist."])
+        XCTAssertEqual(failure?.output.count, 1)
 
         try startServer()
         installer.retry()

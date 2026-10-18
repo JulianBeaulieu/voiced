@@ -102,20 +102,26 @@ prompt that runs the privileged script, waiting for the watchdog's `hello`,
 Connect Home Assistant, and Done. Each step that fails shows its cause and
 the last lines of output, with Try Again.
 
-`Installer` (in `Sources/VoicedMenuBarUI/Installer`) is the state machine. It
-does everything through an `InstallRunner`: `SystemInstallRunner` starts
-processes and shows the prompt, and the tests and the snapshots use
-`FakeInstallRunner` (in `Tests/TestSupport`), with recorded lines of the
-progress protocol, and the fake control server for the services. Nothing in
-`swift test` prompts, starts a daemon or touches `/Library`.
+`Installer` (in `Sources/VoicedMenuBarUI/Installer`) sequences the steps,
+which `InstallStages` implements, each returning what it made or why it
+failed. They reach the Mac only through an `InstallRunner`:
+`SystemInstallRunner` starts each command in a process group of its own and
+shows the prompt, and the tests and the snapshots use `FakeInstallRunner`
+(in `Tests/TestSupport`) with recorded lines of the progress protocol. The
+services are reached through the app's own `AppModel`, against the fake
+control server in tests. Nothing in `swift test` prompts, starts a daemon
+or touches `/Library`.
 
-The script that runs as root is a string constant in the executable
-(`PrivilegedScript.swift`), never a file in the bundle.
-`Scripts/privileged-script.sh` prints it, for every test that runs it. Its
-test mode runs as a normal user against a scratch directory;
-`Scripts/test-privileged.sh`
-compares what it renders with the plists `voiced install` stages and checks
-every refusal:
+The script that runs as root is
+`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`. Its bytes are
+compiled into the executable (`.embedInCode` in `Package.swift`); it is
+never a file in the bundle. The app runs it through `osascript` with an
+environment of `PATH` alone, so nothing of its own environment reaches the
+shells that run as root. Run as a normal user, the script has a test mode
+that writes to a scratch directory. `Scripts/test-privileged.sh` uses it to
+compare what the script renders with the plists `voiced install` stages, and
+checks every refusal. Stage the plists with the `voiced install` of the
+same commit first, as the comparison is exact:
 
 ```sh
 menubar/Scripts/test-privileged.sh ~/.config/voiced/launchd
@@ -154,7 +160,7 @@ On a crowded menu bar macOS can hide the icon. Launching the app again
 | `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner and the privileged script. |
 | `Sources/VoicedMenuBar` | The `@main` app with its `MenuBarExtra` and `Settings` scenes. |
 | `Sources/FakeControlServerKit`, `Sources/FakeControlServer` | The fake control server and its command line. |
-| `Sources/MenuBarSnapshots` | Renders both windows in each state to PNG. |
+| `Sources/MenuBarSnapshots` | Renders the menu bar window, the Settings window and each installer screen to PNG. |
 | `Tests/VoicedControlTests` | Framing, client dispatch, connection failures and cancellation against the fake server; payload reduction; settings edits; open checks; install probe. |
 | `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, the progress protocol, the privileged script in its test mode and the process runner. |
 | `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner and recorded progress lines. |

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import VoicedControl
 import VoicedMenuBarUI
@@ -39,7 +40,6 @@ public final class FakeInstallRunner: InstallRunner {
     /// The privileged step never returns, as while the prompt is up.
     public var privilegedHangs = false
     public var isOnline = true
-    public var capacity: Int64? = 100_000_000_000
 
     public private(set) var commands: [InstallCommand] = []
     public private(set) var privilegedCalls: [String] = []
@@ -100,8 +100,29 @@ public final class FakeInstallRunner: InstallRunner {
     }
 
     public func isReachable(_ url: URL) async -> Bool { isOnline }
+}
 
-    public func availableCapacity(at url: URL) -> Int64? { capacity }
+/// What a bundle would carry, in `directory`: a lock and a wheel with the hashes the manifest
+/// pins, and two models.
+public func installResources(in directory: URL) throws -> InstallResources {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let lock = directory.appendingPathComponent("requirements.lock")
+    let wheel = directory.appendingPathComponent("voiced-0.1.0-py3-none-any.whl")
+    try Data("numpy==2.0.0 --hash=sha256:00\n".utf8).write(to: lock)
+    try Data("a wheel".utf8).write(to: wheel)
+    func sha256(_ url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    }
+    return InstallResources(
+        uv: directory.appendingPathComponent("uv"), lock: lock, wheel: wheel,
+        manifest: InstallManifest(
+            python: "3.12.15", lockSHA256: try sha256(lock),
+            wheel: .init(name: wheel.lastPathComponent, sha256: try sha256(wheel)),
+            wheelsBytes: 205_000_000,
+            models: [
+                .init(repo: RecordedProgress.parakeet, revision: "0a1b2c3", bytes: 2_508_500_000),
+                .init(repo: RecordedProgress.kokoro, revision: "4d5e6f7", bytes: 355_300_000),
+            ]))
 }
 
 /// Lines of `voiced install --json-progress` as ADR 0018's protocol 1 specifies them, `shown`

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Runs the privileged script compiled into the app (as privileged-script.sh prints it) as the
-# current user, in its test mode: a scratch destination, no
+# Runs the privileged script the app compiles in (Sources/VoicedMenuBarUI/Installer/
+# voiced-privileged.sh) as the current user, in its test mode: a scratch destination, no
 # launchctl, no firewall. Checks that what root would install matches what `voiced install`
 # stages, plus the app's bundle id, and that bad input, another account's install and a
 # concurrent run are refused with nothing written.
@@ -11,10 +11,8 @@ staging="$1"
 user="$(id -un)"
 prefix="io.github.julianbeaulieu.voiced"
 scratch="$(mktemp -d)"; dest="$scratch/dest"; mkdir "$dest"
-# The script compiled into the app.
-script="$scratch/voiced-privileged.sh"
-"$here/privileged-script.sh" > "$script" || exit 2
-chmod +x "$script"
+# The script the app compiles in.
+script="$here/../Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh"
 failures=0
 
 run() { VOICED_TEST_DEST="$dest" "$script" "$@"; }

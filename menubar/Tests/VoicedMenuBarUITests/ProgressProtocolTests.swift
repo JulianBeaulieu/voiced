@@ -17,14 +17,14 @@ final class ProgressProtocolTests: XCTestCase {
     // MARK: - Events
 
     func testParsesEveryEvent() {
-        XCTAssertEqual(InstallEvent(line: RecordedProgress.hello), .hello(protocol: 1, version: "0.1.0"))
+        XCTAssertEqual(InstallEvent(line: RecordedProgress.hello), .hello(protocol: 1))
         XCTAssertEqual(
             InstallEvent(line: RecordedProgress.step("ports", "start", "Checking the ports")),
             .step(id: "ports", state: .start, shown: "Checking the ports"))
         XCTAssertEqual(
             InstallEvent(line: RecordedProgress.download("m", 5, 10)), .download(model: "m", bytes: 5, total: 10))
         XCTAssertEqual(InstallEvent(line: #"{"event": "log", "line": "hi"}"#), .log("hi"))
-        XCTAssertEqual(InstallEvent(line: RecordedProgress.done), .done(stagingDir: "/Users/someone/.config/voiced/launchd"))
+        XCTAssertEqual(InstallEvent(line: RecordedProgress.done), .done)
         XCTAssertEqual(
             InstallEvent(line: RecordedProgress.error("ports", "Port 10300 is in use by python (pid 12).")),
             .error(step: "ports", message: "Port 10300 is in use by python (pid 12)."))
@@ -38,7 +38,7 @@ final class ProgressProtocolTests: XCTestCase {
             .download(model: "m", bytes: 1, total: 2))
         XCTAssertEqual(
             InstallEvent(line: #"{"event": "hello", "protocol": 1, "version": "1", "extra": [1]}"#),
-            .hello(protocol: 1, version: "1"))
+            .hello(protocol: 1))
     }
 
     func testEventsMissingWhatTheyNeedAreIgnored() {
@@ -67,8 +67,7 @@ final class ProgressProtocolTests: XCTestCase {
 
     func testASuccessfulRunIsDone() {
         let run = session(RecordedProgress.success)
-        XCTAssertEqual(run.finish(status: 0), .done(stagingDir: "/Users/someone/.config/voiced/launchd"))
-        XCTAssertEqual(run.version, "0.1.0")
+        XCTAssertEqual(run.finish(status: 0), .done)
         XCTAssertEqual(
             run.progress.steps.map(\.id),
             ["config", "claim", "check", "ports", "models", "link", "manifest", "prune", "stage"])
@@ -120,6 +119,25 @@ final class ProgressProtocolTests: XCTestCase {
         XCTAssertTrue(cause.contains("did not start with a progress hello"))
     }
 
+    func testAStrayLineBeforeHelloIsKeptNotRefused() {
+        let run = session(["Warning: a library printed this", RecordedProgress.hello, RecordedProgress.done])
+        XCTAssertEqual(run.finish(status: 0), .done)
+        XCTAssertEqual(run.tail, ["Warning: a library printed this"])
+        // Without a hello after it, it is still an older voiced.
+        let unanswered = session(["Warning: a library printed this"])
+        XCTAssertEqual(
+            unanswered.finish(status: 0), .failed(step: nil, cause: "This voiced does not report install progress. Update voiced."))
+    }
+
+    func testStepsAndDownloadsAreBounded() {
+        let lines = [RecordedProgress.hello]
+            + (0..<100).map { RecordedProgress.step("s\($0)", "start", "x") }
+            + (0..<100).map { RecordedProgress.download("m\($0)", 1, 2) }
+        let run = session(lines)
+        XCTAssertEqual(run.progress.steps.count, InstallSession.maximumEntries)
+        XCTAssertEqual(run.progress.downloads.count, InstallSession.maximumEntries)
+    }
+
     func testNoOutputAtAllMeansAnOlderVoiced() {
         var run = InstallSession()
         run.receive(stderr: "error: unrecognized arguments: --json-progress")
@@ -137,7 +155,7 @@ final class ProgressProtocolTests: XCTestCase {
 
     func testTheFirstEndingEventCounts() {
         let run = session([RecordedProgress.hello, RecordedProgress.done, RecordedProgress.error("x", "late")])
-        XCTAssertEqual(run.finish(status: 0), .done(stagingDir: "/Users/someone/.config/voiced/launchd"))
+        XCTAssertEqual(run.finish(status: 0), .done)
     }
 
     func testDoneWithAFailingExitIsAFailure() {

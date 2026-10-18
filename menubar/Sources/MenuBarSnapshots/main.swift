@@ -169,26 +169,23 @@ struct InstallerShot {
     var setup: @MainActor (FakeInstallRunner) -> Void = { _ in }
     var server = false
     var otherAccount = false
+    var capacity: Int64 = 412_000_000_000
+    var stallTimeout: Duration = .seconds(60)
+    /// Files an interrupted run left in the home.
+    var leftovers: (URL) -> Void = { _ in }
     var steps: @MainActor (Installer) async -> Void = { _ in }
 }
-
-let resources = InstallResources(
-    uv: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Helpers/uv"),
-    lock: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/requirements.lock"),
-    wheel: URL(fileURLWithPath: "/Applications/voiced.app/Contents/Resources/voiced-0.1.0-py3-none-any.whl"),
-    manifest: InstallManifest(
-        python: "3.12.15", lockSHA256: "", wheel: .init(name: "voiced-0.1.0-py3-none-any.whl", sha256: ""),
-        wheelsBytes: 205_000_000,
-        models: [
-            .init(repo: RecordedProgress.parakeet, revision: "", bytes: 2_508_500_000),
-            .init(repo: RecordedProgress.kokoro, revision: "", bytes: 355_300_000),
-        ]))
 
 @MainActor
 func until(_ installer: Installer, _ condition: (InstallerPhase) -> Bool) async {
     for _ in 0..<250 where !condition(installer.phase) {
         try? await Task.sleep(for: .milliseconds(20))
     }
+}
+
+@MainActor
+func failed(_ installer: Installer) async {
+    await until(installer) { if case .failed = $0 { true } else { false } }
 }
 
 @MainActor
@@ -204,9 +201,23 @@ func reachHomeAssistant(_ installer: Installer) async {
     await until(installer) { $0 == .homeAssistant(.asking) }
 }
 
+@MainActor
+func respondToInstall(_ runner: FakeInstallRunner, _ response: FakeInstallRunner.Response) {
+    runner.respond = { command in
+        command.arguments.first == "install" ? response : FakeInstallRunner.defaultResponse(command)
+    }
+}
+
 let installerShots = [
     InstallerShot(name: "installer-welcome"),
-    InstallerShot(name: "installer-welcome-no-room", setup: { $0.capacity = 1_500_000_000 }),
+    InstallerShot(name: "installer-welcome-no-room", capacity: 1_500_000_000),
+    InstallerShot(
+        name: "installer-welcome-continue",
+        leftovers: { home in
+            let state = home.appendingPathComponent(".voiced")
+            try? FileManager.default.createDirectory(at: state.appendingPathComponent("envs"), withIntermediateDirectories: true)
+            try? Data(#"{"source": "app", "environment": null}"#.utf8).write(to: state.appendingPathComponent("install.json"))
+        }),
     InstallerShot(
         name: "installer-environment",
         setup: { runner in
@@ -218,13 +229,7 @@ let installerShots = [
         }),
     InstallerShot(
         name: "installer-downloading",
-        setup: { runner in
-            runner.respond = { command in
-                command.arguments.first == "install"
-                    ? .init(RecordedProgress.downloading.map(ProcessOutput.stdout), delay: .milliseconds(40), hangs: true)
-                    : FakeInstallRunner.defaultResponse(command)
-            }
-        },
+        setup: { respondToInstall($0, .init(RecordedProgress.downloading.map(ProcessOutput.stdout), delay: .milliseconds(40), hangs: true)) },
         steps: { installer in
             installer.install()
             await until(installer) {
@@ -240,6 +245,13 @@ let installerShots = [
             }
         },
         steps: reachApproval),
+    InstallerShot(
+        name: "installer-approving", setup: { $0.privilegedHangs = true },
+        steps: { installer in
+            await reachApproval(installer)
+            installer.approve()
+            await until(installer) { if case .approving = $0 { true } else { false } }
+        }),
     InstallerShot(
         name: "installer-starting",
         setup: { $0.privilegedOutcomes = [.finished(status: 4, output: "")] },
@@ -266,36 +278,56 @@ let installerShots = [
         }),
     InstallerShot(
         name: "installer-failed-port",
-        setup: { runner in
-            runner.respond = { command in
-                command.arguments.first == "install"
-                    ? .progress(
-                        [
-                            RecordedProgress.hello, RecordedProgress.step("ports", "start"),
-                            #"{"event": "log", "line": "port 10300: in use by python3.12 (pid 4242)"}"#,
-                            RecordedProgress.error("ports", "Port 10300 is in use by python3.12 (pid 4242)."),
-                        ], status: 1)
-                    : FakeInstallRunner.defaultResponse(command)
-            }
+        setup: {
+            respondToInstall(
+                $0,
+                .progress(
+                    [
+                        RecordedProgress.hello, RecordedProgress.step("ports", "start"),
+                        #"{"event": "log", "line": "port 10300: in use by python3.12 (pid 4242)"}"#,
+                        RecordedProgress.error("ports", "Port 10300 is in use by python3.12 (pid 4242)."),
+                    ], status: 1))
         },
         steps: { installer in
             installer.install()
-            await until(installer) { if case .failed = $0 { true } else { false } }
+            await failed(installer)
+        }),
+    InstallerShot(
+        name: "installer-failed-stall",
+        setup: { respondToInstall($0, .init(RecordedProgress.downloading.map(ProcessOutput.stdout), hangs: true)) },
+        stallTimeout: .seconds(1),
+        steps: { installer in
+            installer.install()
+            await failed(installer)
+        }),
+    InstallerShot(
+        name: "installer-failed-bootstrap",
+        setup: {
+            $0.privilegedOutcomes = [
+                .finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.tts\nbootstrap failed: io.github.julianbeaulieu.voiced.tts")
+            ]
+        },
+        steps: { installer in
+            await reachApproval(installer)
+            installer.approve()
+            await failed(installer)
         }),
     InstallerShot(
         name: "installer-failed-network", setup: { $0.isOnline = false },
         steps: { installer in
             installer.install()
-            await until(installer) { if case .failed = $0 { true } else { false } }
+            await failed(installer)
         }),
     InstallerShot(name: "installer-refused", otherAccount: true),
 ]
 
 @MainActor
 func renderInstaller(in scratch: URL) async {
+    guard let resources = try? installResources(in: scratch.appendingPathComponent("resources")) else { return }
     for shot in installerShots {
         let home = scratch.appendingPathComponent(shot.name, isDirectory: true)
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        shot.leftovers(home)
         let daemons = home.appendingPathComponent("LaunchDaemons", isDirectory: true)
         try? FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
         if shot.otherAccount {
@@ -313,16 +345,20 @@ func renderInstaller(in scratch: URL) async {
             try? server?.start()
         }
         let runner = FakeInstallRunner()
-        runner.capacity = 412_000_000_000
         shot.setup(runner)
-        var configuration = InstallerConfiguration(
-            resources: resources, home: home, socketPath: socket,
-            installProbe: InstallProbe(launchDaemonsDirectory: daemons))
+        let probe = InstallProbe(launchDaemonsDirectory: daemons)
+        var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = .seconds(600)
+        configuration.stallTimeout = shot.stallTimeout
         configuration.pollInterval = .milliseconds(20)
+        let capacity = shot.capacity
+        configuration.availableCapacity = { _ in capacity }
         // Documentation names, not this Mac's.
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
-        let installer = Installer(configuration: configuration, runner: runner)
+        let model = AppModel(
+            socketPath: socket, installProbe: probe, backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)),
+            opener: { _ in true })
+        let installer = Installer(configuration: configuration, runner: runner, model: model)
         await shot.steps(installer)
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
@@ -330,6 +366,7 @@ func renderInstaller(in scratch: URL) async {
             print(file.path)
         }
         installer.cancel()
+        model.stop()
         server?.stop()
     }
 }

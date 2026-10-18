@@ -12,6 +12,9 @@ struct VoicedMenuBarApp: App {
         let model = AppModel()
         model.start()
         _model = State(initialValue: model)
+        Install.installer = InstallResources.inBundle().map {
+            Installer(configuration: InstallerConfiguration(resources: $0), runner: Install.runner, model: model)
+        }
     }
 
     var body: some Scene {
@@ -42,9 +45,7 @@ struct VoicedMenuBarApp: App {
 @MainActor
 enum Install {
     static let runner = SystemInstallRunner()
-    static let installer: Installer? = InstallResources.inBundle().map {
-        Installer(configuration: InstallerConfiguration(resources: $0), runner: runner)
-    }
+    static var installer: Installer?
 }
 
 /// Hands SwiftUI's `openSettings` action to the app delegate, which has no environment.
@@ -68,11 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
     }
 
-    /// Launching the app again while it runs (from Finder, Spotlight or `open`) opens the
-    /// Settings window: on a crowded menu bar macOS may hide the icon, and this is the way
-    /// back in.
-    /// Quitting mid-install stops the installer's children (SIGTERM, then SIGKILL after
-    /// 5 s); the next launch continues from what is on disk.
+    /// Quitting mid-install stops the installer's children (SIGTERM to their process groups,
+    /// then SIGKILL after 5 s); the next launch continues from what is on disk.
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             Install.installer?.cancel()
@@ -80,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Launching the app again while it runs (from Finder, Spotlight or `open`) opens the
+    /// Settings window: on a crowded menu bar macOS may hide the icon, and this is the way
+    /// back in.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if let openSettings { SettingsWindow.show(openSettings) }
         return false

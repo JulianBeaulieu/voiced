@@ -1,12 +1,12 @@
-import AppKit
+import Foundation
 import TestSupport
 import XCTest
 
 @testable import VoicedMenuBarUI
 
-/// The privileged script as compiled into the app, run the way the app runs it but in the
-/// script's test mode (a scratch destination, no launchctl, no firewall), and the real
-/// process runner. Nothing here prompts or touches /Library.
+/// The privileged script as compiled into the app, how the app runs it, and the real process
+/// runner. Nothing here prompts or touches /Library: the script runs in its test mode (a
+/// scratch destination, no launchctl, no firewall) and the AppleScript is only compiled.
 @MainActor
 final class PrivilegedTests: XCTestCase {
     private var scratch: URL!
@@ -20,31 +20,45 @@ final class PrivilegedTests: XCTestCase {
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    /// `env -i ... bash --noprofile --norc -c "$SCRIPT" voiced-privileged MODE USER`, as the
-    /// AppleScript runs it, plus the test-mode destination.
-    private func runScript(_ mode: String, _ user: String) throws -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "-i", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "VOICED_TEST_DEST=\(scratch.appendingPathComponent("dest").path)",
-            "/bin/bash", "--noprofile", "--norc", "-c", PrivilegedScript.text, "voiced-privileged", mode, user,
-        ]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    private func collect(_ stream: AsyncThrowingStream<ProcessOutput, Error>) async throws -> [ProcessOutput] {
+        var outputs: [ProcessOutput] = []
+        for try await output in stream { outputs.append(output) }
+        return outputs
+    }
+
+    private func stdout(_ outputs: [ProcessOutput]) -> [String] {
+        outputs.compactMap { if case .stdout(let line) = $0 { line } else { nil } }
+    }
+
+    // MARK: - The script
+
+    /// The script as the root shell runs it: `env -i ... bash --noprofile --norc -c`, plus
+    /// the test-mode destination.
+    private func runScript(_ mode: String, _ user: String) async throws -> (status: Int32, output: [String]) {
+        let command = InstallCommand(
+            "/usr/bin/env",
+            [
+                "-i", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "VOICED_TEST_DEST=\(scratch.appendingPathComponent("dest").path)",
+                "/bin/bash", "--noprofile", "--norc", "-c", PrivilegedScript.text, "voiced-privileged", mode, user,
+            ])
+        let outputs = try await collect(SystemInstallRunner().run(command))
+        guard case .exit(let status) = outputs.last else { throw CancellationError() }
+        let lines = outputs.compactMap { output -> String? in
+            switch output {
+            case .stdout(let line), .stderr(let line): line
+            case .exit: nil
+            }
+        }
+        return (status, lines)
     }
 
     private var installed: [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: scratch.appendingPathComponent("dest").path)) ?? []).sorted()
     }
 
-    func testTheCompiledScriptRendersTheThreePlists() throws {
-        let install = try runScript("install", NSUserName())
-        XCTAssertEqual(install.status, 0, install.output)
+    func testTheCompiledScriptRendersTheThreePlists() async throws {
+        let install = try await runScript("install", NSUserName())
+        XCTAssertEqual(install.status, 0, install.output.joined(separator: "\n"))
         XCTAssertEqual(installed, ["stt", "tts", "watchdog"].map { "io.github.julianbeaulieu.voiced.\($0).plist" })
         let data = try Data(contentsOf: scratch.appendingPathComponent("dest/io.github.julianbeaulieu.voiced.watchdog.plist"))
         let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
@@ -53,100 +67,203 @@ final class PrivilegedTests: XCTestCase {
         XCTAssertEqual(plist["UserName"] as? String, NSUserName())
         XCTAssertEqual(plist["AssociatedBundleIdentifiers"] as? [String], ["io.github.julianbeaulieu.voiced.menubar"])
         XCTAssertNil(plist["StandardOutPath"])
-        XCTAssertEqual(try runScript("check", NSUserName()).status, 0)
+        let check = try await runScript("check", NSUserName())
+        XCTAssertEqual(check.status, 0)
     }
 
-    func testTheCompiledScriptRefusesRootAndWritesNothing() throws {
-        let refused = try runScript("install", "root")
+    func testTheCompiledScriptRefusesRootAndWritesNothing() async throws {
+        let refused = try await runScript("install", "root")
         XCTAssertEqual(refused.status, 1)
-        XCTAssertTrue(refused.output.contains("refused: root is not a regular account"), refused.output)
+        XCTAssertTrue(refused.output.contains("refused: root is not a regular account (uid 0)"), "\(refused.output)")
         XCTAssertEqual(installed, [])
     }
 
-    func testTheAppleScriptCompiles() throws {
-        var error: NSDictionary?
-        let script = try XCTUnwrap(NSAppleScript(source: PrivilegedScript.appleScript))
-        XCTAssertTrue(script.compileAndReturnError(&error), "\(String(describing: error))")
+    // MARK: - How the app runs it
+
+    func testThePrivilegedCommandGetsNothingOfTheAppsEnvironment() {
+        let command = PrivilegedScript.command(.install, user: "someone")
+        XCTAssertEqual(command.executable, "/usr/bin/osascript")
+        XCTAssertFalse(command.inheritsEnvironment)
+        XCTAssertEqual(command.environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        // The script and its inputs are arguments, never part of the AppleScript source.
+        XCTAssertEqual(
+            command.arguments,
+            ["-e", PrivilegedScript.appleScript, PrivilegedScript.text, "install", "someone", PrivilegedScript.prompt(for: .install)])
     }
 
-    func testTheScriptTextIsTheWholeScript() {
-        XCTAssertTrue(PrivilegedScript.text.hasPrefix("#!/bin/bash\n"))
-        XCTAssertTrue(PrivilegedScript.text.hasSuffix("esac"))
+    func testTheAppleScriptQuotesEveryInputAndClearsTheEnvironment() {
+        let source = PrivilegedScript.appleScript
+        XCTAssertTrue(source.contains("set {script_text, mode_name, user_name, prompt_text} to argv"))
+        XCTAssertTrue(
+            source.contains(
+                #"do shell script "/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash --noprofile --norc -c " & quoted form of script_text & " voiced-privileged " & quoted form of mode_name & " " & quoted form of user_name with prompt prompt_text with administrator privileges"#
+            ))
     }
 
-    /// What the shell tests run is what the app compiles in.
-    func testTheExtractionHelperPrintsTheCompiledText() throws {
-        let helper = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Scripts/privileged-script.sh")
-        let process = Process()
-        process.executableURL = helper
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0)
-        XCTAssertEqual(String(decoding: data, as: UTF8.self), PrivilegedScript.text + "\n")
+    func testTheAppleScriptCompiles() async throws {
+        // osacompile only compiles; nothing runs and nothing prompts.
+        let outputs = try await collect(SystemInstallRunner().run(InstallCommand(
+            "/usr/bin/osacompile", ["-e", PrivilegedScript.appleScript, "-o", scratch.appendingPathComponent("p.scpt").path])))
+        XCTAssertEqual(outputs.last, .exit(0), "\(outputs)")
     }
 
-    func testFailedLabelsNameTheirService() {
-        XCTAssertEqual(Installer.failedService("failed io.github.julianbeaulieu.voiced.stt"), "speech to text")
-        XCTAssertEqual(Installer.failedService("failed io.github.julianbeaulieu.voiced.watchdog"), "the watchdog")
-        XCTAssertNil(Installer.failedService("installed io.github.julianbeaulieu.voiced.stt"))
-        XCTAssertEqual(Installer.lines("a\rb\nc"), ["a", "b", "c"])
+    /// The attack ADR 0018's review found: `SHELLOPTS=xtrace` and a `PS4` with a command
+    /// substitution in the app's environment run that command in the first shell that starts.
+    func testAPoisonedEnvironmentDoesNotReachACommandThatInheritsNothing() async throws {
+        let marker = scratch.appendingPathComponent("ran")
+        setenv("SHELLOPTS", "xtrace", 1)
+        setenv("PS4", "$(/usr/bin/touch '\(marker.path)')", 1)
+        defer {
+            unsetenv("SHELLOPTS")
+            unsetenv("PS4")
+        }
+        let runner = SystemInstallRunner()
+        let exact = try await collect(runner.run(InstallCommand(
+            "/usr/bin/env", [], environment: PrivilegedScript.environment, inheritsEnvironment: false)))
+        XCTAssertEqual(stdout(exact), ["PATH=/usr/bin:/bin:/usr/sbin:/sbin"])
+        _ = try await collect(runner.run(InstallCommand(
+            "/bin/sh", ["-c", "/usr/bin/true"], environment: PrivilegedScript.environment, inheritsEnvironment: false)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        // The same command inheriting the app's environment does run it: the test can fail.
+        _ = try await collect(runner.run(InstallCommand("/bin/sh", ["-c", "/usr/bin/env > /dev/null"])))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    // MARK: - Reading the result
+
+    func testOsascriptOutcomes() {
+        XCTAssertEqual(
+            PrivilegedScript.outcome(status: 0, stdout: ["installed a", "installed b"], stderr: []),
+            .finished(status: 0, output: "installed a\ninstalled b"))
+        XCTAssertEqual(
+            PrivilegedScript.outcome(status: 1, stdout: [], stderr: ["0:342: execution error: User canceled. (-128)"]),
+            .cancelled)
+        XCTAssertEqual(
+            PrivilegedScript.outcome(
+                status: 1, stdout: [],
+                stderr: ["0:342: execution error: failed io.github.julianbeaulieu.voiced.tts", "bootstrap failed: io.github.julianbeaulieu.voiced.tts (3)"]),
+            .finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.tts\nbootstrap failed: io.github.julianbeaulieu.voiced.tts"))
+        XCTAssertEqual(
+            PrivilegedScript.outcome(status: 1, stdout: [], stderr: ["something else"]),
+            .finished(status: 1, output: "something else"))
+    }
+
+    func testResults() {
+        typealias R = PrivilegedScript.Result
+        XCTAssertEqual(PrivilegedScript.result(of: .finished(status: 0, output: "")), R.installed(warning: nil))
+        XCTAssertEqual(PrivilegedScript.result(of: .cancelled), R.cancelled)
+        guard case .installed(let warning4?) = PrivilegedScript.result(of: .finished(status: 4, output: "")),
+            case .installed(let warning5?) = PrivilegedScript.result(of: .finished(status: 5, output: ""))
+        else { return XCTFail("4 and 5 are warnings") }
+        XCTAssertTrue(warning4.contains("could not allow"))
+        XCTAssertTrue(warning5.contains("outside your home folder"))
+        XCTAssertEqual(
+            PrivilegedScript.result(of: .finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.stt\rfailed io.github.julianbeaulieu.voiced.watchdog")),
+            R.failed(
+                cause: "macOS did not start speech to text and the watchdog.",
+                output: ["failed io.github.julianbeaulieu.voiced.stt", "failed io.github.julianbeaulieu.voiced.watchdog"]))
+        XCTAssertEqual(
+            PrivilegedScript.result(of: .finished(status: 1, output: "refused: voiced is already installed for alex on this Mac")),
+            R.anotherAccount("voiced is already installed for alex on this Mac."))
+        XCTAssertEqual(
+            PrivilegedScript.result(of: .finished(status: 1, output: "refused: bad user name")),
+            R.failed(cause: "Refused: bad user name.", output: ["refused: bad user name"]))
+        guard case .failed(let cause, []) = PrivilegedScript.result(of: .damaged("a sealed resource is missing")) else {
+            return XCTFail("a damaged bundle is a failure")
+        }
+        XCTAssertTrue(cause.hasPrefix("This copy of voiced is damaged"))
+    }
+
+    // MARK: - The bundle check
+
+    func testTheBundleCheckPassesASignedAppAndCatchesAModifiedOne() throws {
+        let original = URL(fileURLWithPath: "/System/Applications/Calculator.app")
+        XCTAssertNil(BundleCheck.problem(at: original))
+        let copy = scratch.appendingPathComponent("Calculator.app")
+        try FileManager.default.copyItem(at: original, to: copy)
+        try Data("tampered".utf8).write(to: copy.appendingPathComponent("Contents/Resources/voiced-test"))
+        XCTAssertNotNil(BundleCheck.problem(at: copy))
+        // `swift run` is not a bundle and is not checked.
+        XCTAssertNil(BundleCheck.problem(at: scratch))
     }
 
     // MARK: - SystemInstallRunner
 
-    private func collect(_ stream: AsyncThrowingStream<ProcessOutput, Error>) async throws -> [ProcessOutput] {
-        var outputs: [ProcessOutput] = []
-        for try await output in stream { outputs.append(output) }
-        return outputs
-    }
-
     func testTheRunnerReportsBothStreamsThenTheExitStatus() async throws {
-        let runner = SystemInstallRunner()
-        let outputs = try await collect(runner.run(InstallCommand(
-            "/bin/sh", ["-c", "echo one; echo \"$VOICED_X\" >&2; echo two; exit 3"], environment: ["VOICED_X": "set"])))
-        XCTAssertEqual(outputs.filter { if case .stdout = $0 { true } else { false } }, [.stdout("one"), .stdout("two")])
+        let outputs = try await collect(SystemInstallRunner().run(InstallCommand(
+            "/bin/sh", ["-c", "echo one; echo \"$VOICED_X\" >&2; echo two; printf last; exit 3"],
+            environment: ["VOICED_X": "set"])))
+        XCTAssertEqual(stdout(outputs), ["one", "two", "last"])
         XCTAssertTrue(outputs.contains(.stderr("set")))
         XCTAssertEqual(outputs.last, .exit(3))
     }
 
     func testTheRunnerThrowsWhenItCannotStart() async {
-        let runner = SystemInstallRunner()
         do {
-            _ = try await collect(runner.run(InstallCommand("/nonexistent/voiced", [])))
+            _ = try await collect(SystemInstallRunner().run(InstallCommand("/nonexistent/voiced", [])))
             XCTFail("started")
         } catch {}
     }
 
-    func testCancellingTerminatesTheProcess() async throws {
+    private func pid(in file: URL) async throws -> pid_t {
+        let written = await eventually { ((try? String(contentsOf: file, encoding: .utf8)) ?? "").hasSuffix("\n") }
+        XCTAssertTrue(written)
+        return try XCTUnwrap(pid_t(String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
+    func testCancellingTerminatesTheWholeProcessGroup() async throws {
         let runner = SystemInstallRunner()
+        let marker = scratch.appendingPathComponent("grandchild")
+        // The child starts a grandchild that outlives it unless the group is signalled.
+        let task = Task {
+            try await self.collect(runner.run(InstallCommand(
+                "/bin/sh", ["-c", "/bin/sleep 30 & echo $! > '\(marker.path)'; wait"])))
+        }
+        let grandchild = try await pid(in: marker)
+        task.cancel()
+        let gone = await eventually { kill(grandchild, 0) != 0 }
+        XCTAssertTrue(gone)
+    }
+
+    func testCancellingKillsWhatIgnoresSIGTERM() async throws {
+        let runner = SystemInstallRunner(terminationGrace: 0.3)
         let marker = scratch.appendingPathComponent("pid")
         let task = Task {
-            try await self.collect(runner.run(InstallCommand("/bin/sh", ["-c", "echo $$ > '\(marker.path)'; exec sleep 30"])))
+            try await self.collect(runner.run(InstallCommand(
+                "/bin/sh", ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; while :; do /bin/sleep 0.1; done"])))
         }
-        let started = await eventually { FileManager.default.fileExists(atPath: marker.path) }
-        XCTAssertTrue(started)
-        let pid = try XCTUnwrap(Int32(String(decoding: Data(contentsOf: marker), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let child = try await pid(in: marker)
         task.cancel()
-        let gone = await eventually { kill(pid, 0) != 0 }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(kill(child, 0), 0, "SIGTERM is ignored, so it still runs within the grace")
+        let gone = await eventually { kill(child, 0) != 0 }
         XCTAssertTrue(gone)
     }
 
     func testTerminateAllKillsWhatIgnoresSIGTERM() async throws {
         let runner = SystemInstallRunner(terminationGrace: 0.3)
         let marker = scratch.appendingPathComponent("pid")
-        let stream = runner.run(InstallCommand("/bin/sh", ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; while :; do sleep 0.1; done"]))
+        let stream = runner.run(InstallCommand(
+            "/bin/sh", ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; while :; do /bin/sleep 0.1; done"]))
         let task = Task { try await self.collect(stream) }
-        let started = await eventually { FileManager.default.fileExists(atPath: marker.path) }
-        XCTAssertTrue(started)
+        _ = try await pid(in: marker)
         let began = ContinuousClock.now
         runner.terminateAll()
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - began, .milliseconds(250))
         let outputs = try await task.value
-        XCTAssertEqual(outputs.last, .exit(SIGKILL))
+        XCTAssertEqual(outputs.last, .exit(128 + SIGKILL))
+    }
+
+    func testOutputLines() {
+        var lines = OutputLines()
+        XCTAssertEqual(lines.append(Data("a\r\nb".utf8)), ["a"])
+        XCTAssertEqual(lines.append(Data("c\n\nd".utf8)), ["bc"])
+        XCTAssertEqual(lines.finish(), "d")
+        XCTAssertNil(lines.finish())
+        // A line too long is passed on in pieces, and the lines before it are kept.
+        let long = Data(repeating: 0x61, count: OutputLines.maximum + 1)
+        let pieces = lines.append(Data("x\n".utf8) + long)
+        XCTAssertEqual(pieces.first, "x")
+        XCTAssertEqual(pieces.count, 2)
     }
 }
