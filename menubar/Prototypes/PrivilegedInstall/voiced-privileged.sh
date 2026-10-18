@@ -81,9 +81,20 @@ trap '/bin/rm -rf -- "${work:?}"' EXIT
 
 # One install or uninstall at a time: a kernel lock (flock) on fd 9, held until this shell
 # exits, however it exits. Nothing to go stale, no pid to be reused; the file itself stays.
+# Taken through perl, which shares the shell's open file, so the lock outlives perl: macOS 14
+# has no /usr/bin/lockf. Exit 1 is "held by another run"; anything else is a lock that could
+# not be taken at all, reported as such.
 take_lock() {
+    local rc=0
     exec 9>>"$lockfile" || fail "cannot open $lockfile"
-    /usr/bin/lockf -s -t 0 9 || fail "another voiced install or uninstall is running"
+    /usr/bin/perl -MFcntl=:flock -e \
+        'open(my $fh, ">&=9") or exit 2; flock($fh, LOCK_EX | LOCK_NB) and exit 0;
+         exit($!{EWOULDBLOCK} ? 1 : 2)' || rc=$?
+    case "$rc" in
+    0) ;;
+    1) fail "another voiced install or uninstall is running" ;;
+    *) fail "cannot lock $lockfile (exit $rc)" ;;
+    esac
 }
 
 # One install per Mac: never replace or remove another account's daemons. Compared by uid. An

@@ -1095,10 +1095,7 @@ def test_cli_uninstall_names_homebrew_from_the_manifest(
 PRIVILEGED = Path(__file__).parents[2] / "menubar/Prototypes/PrivilegedInstall/voiced-privileged.sh"
 
 
-@pytest.mark.skipif(
-    not all(Path(tool).exists() for tool in ("/usr/bin/plutil", "/usr/bin/lockf")),
-    reason="the script needs macOS's /usr/bin/plutil and /usr/bin/lockf",
-)
+@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
 def test_plists_equal_what_the_privileged_script_renders(
     settings: Settings, tmp_path: Path
 ) -> None:
@@ -1131,3 +1128,35 @@ def test_plists_equal_what_the_privileged_script_renders(
         ours = plistlib.loads(plan.render(service))
         app = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.menubar"
         assert rendered == {**ours, "AssociatedBundleIdentifiers": [app]}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
+def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Path) -> None:
+    """A kernel lock on every macOS the app supports (14 has no lockf): held,
+    the run says so; a lock it cannot take at all is not reported as held."""
+    import fcntl
+
+    home, dest = tmp_path / "home", tmp_path / "dest"
+    home.mkdir()
+    dest.mkdir()
+    user = pwd.getpwuid(os.getuid()).pw_name
+    env = {"PATH": "/usr/bin:/bin", "VOICED_TEST_DEST": str(dest), "VOICED_TEST_HOME": str(home)}
+
+    def install() -> subprocess.CompletedProcess[str]:
+        argv = ["/bin/bash", str(PRIVILEGED), "install", user]
+        return subprocess.run(argv, env=env, capture_output=True, text=True)
+
+    lock = tmp_path / "dest.lock"
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        refused = install()
+    assert refused.returncode == 1
+    assert "another voiced install or uninstall is running" in refused.stderr
+    assert list(dest.iterdir()) == []
+    assert install().returncode == 0, "a lock file nobody holds does not block"
+
+    lock.unlink()
+    lock.mkdir()  # cannot be opened for writing
+    broken = install()
+    assert broken.returncode == 1 and "another voiced" not in broken.stderr
+    assert f"cannot open {lock}" in broken.stderr

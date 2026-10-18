@@ -132,10 +132,12 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    modes refuse, and the app says "voiced is already installed for <user>
    on this Mac." An install whose `UserName` no longer resolves (the
    account was deleted) is orphaned: install and uninstall take it over and
-   say so. Two runs at once are stopped by a kernel lock (`flock`, through
-   `/usr/bin/lockf` on a file descriptor) on `/var/run/voiced-privileged.lock`,
+   say so. Two runs at once are stopped by a kernel lock (`flock` on a file
+   descriptor the shell keeps open, taken through `/usr/bin/perl`, since
+   macOS 14 has no `/usr/bin/lockf`) on `/var/run/voiced-privileged.lock`,
    held until the script exits however it exits, so there is no stale lock
-   and no pid to be reused.
+   and no pid to be reused. A lock that cannot be taken at all is reported
+   as that, not as another run.
 6. Temporary files go to a root-owned 0700 directory under `/private/tmp`
    (never `$TMPDIR`) and are removed by a trap on any exit.
 7. Only after all three plists are rendered does it touch launchd: per
