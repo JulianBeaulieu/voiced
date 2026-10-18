@@ -39,16 +39,20 @@ exits 0 when done, 1 when it refused (nothing written), 3 when launchd did
 not load a label, 4 when the firewall exception could not be added and 5
 when the firewall is on but the environment's Python is outside your home
 (Homebrew's) and was left alone; 4 and 5 come after a successful install.
-The file is in an environment your account can write, the same trust as
-any script you run with `sudo`; read it first if you like. Re-running it
-is safe.
+The file is in the environment voiced runs from, which your account can
+write: the same trust as any script you run with `sudo`. `voiced install`
+prints the line only if the file and every directory on the way to it
+belong to you or root and no other account can write them; a Homebrew
+owned by another admin, or a group-writable directory with other members,
+gets no root step and a pointer to `voiced install --source`. Read it first
+if you like. Re-running it is safe.
 
 The plists name only `~/.voiced/bin/voiced`, `~/.config/voiced/config.toml`
 and the default labels, so the services take everything else from the
 config file when they start: a config change needs `voiced restart all`,
 not root. An install with another state directory, config path or
-`[launchd] label_prefix` gets no root step: `voiced install` says so, and
-such a layout runs with `voiced serve` instead.
+`[launchd] label_prefix` gets no root step: `voiced install` and `voiced
+uninstall` say so, and such a layout runs with `voiced serve` instead.
 
 `voiced doctor` checks Apple Silicon, the macOS version, Python, the
 espeak-ng library Kokoro would load (the Homebrew keg or `[tts]

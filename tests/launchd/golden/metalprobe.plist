@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>org.example.voiced.metalprobe</string>
+	<string>io.github.julianbeaulieu.voiced.metalprobe</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Users/someone/.voiced/bin/python</string>

@@ -12,6 +12,7 @@ directory (``voiced.layout``).
 from __future__ import annotations
 
 import contextlib
+import grp
 import os
 import pwd
 import shlex
@@ -165,6 +166,63 @@ def privileged_script(environment: Path) -> Path:
     return Path(voiced.__file__).resolve().parent / "launchd" / PRIVILEGED_SCRIPT
 
 
+def _account(uid: int) -> str:
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except KeyError:
+        return f"uid {uid}"
+
+
+def regular_account(name: str) -> bool:
+    """A uid from 500 to 2147483647, as the root script requires; a name
+    that does not resolve counts too. System accounts such as
+    ``_mbsetupuser``, in every Mac's ``admin`` group, do not log in."""
+    try:
+        uid = pwd.getpwnam(name).pw_uid
+    except KeyError:
+        return True
+    return 500 <= uid < 2**31
+
+
+def group_members(gid: int) -> set[str]:
+    """The regular accounts in group ``gid``: its listed members and the
+    accounts whose primary group it is."""
+    try:
+        members = set(grp.getgrgid(gid).gr_mem)
+    except KeyError:
+        members = set()
+    members |= {entry.pw_name for entry in pwd.getpwall() if entry.pw_gid == gid}
+    return {name for name in members if regular_account(name)}
+
+
+def foreign_writer(path: Path, uid: int | None = None) -> str | None:
+    """Why an account other than ``uid`` (default: this one) and root could
+    change what ``path`` holds, or None. The user runs the root script with
+    sudo, so it, and every directory on the way to it (the path as given and
+    resolved, Homebrew's ``opt`` link included), must belong to them or root
+    and be writable by no one else. A sticky directory lets nobody replace
+    an entry they do not own."""
+    uid = os.getuid() if uid is None else uid
+    me = _account(uid)
+    for start in dict.fromkeys((path.absolute(), path.resolve())):
+        for part in (start, *start.parents):
+            try:
+                st = os.lstat(part)
+            except OSError as exc:
+                return f"{part} cannot be checked ({exc.strerror})"
+            if st.st_uid not in (0, uid):
+                return f"{part} belongs to {_account(st.st_uid)}"
+            if stat.S_ISLNK(st.st_mode) or (stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX):
+                continue
+            if st.st_mode & stat.S_IWOTH:
+                return f"{part} is writable by every account"
+            if st.st_mode & stat.S_IWGRP:
+                others = sorted(group_members(st.st_gid) - {me, "root"})
+                if others:
+                    return f"{part} is writable by its group, which has {', '.join(others)}"
+    return None
+
+
 def root_command(script: Path, mode: Literal["install", "uninstall"], user: str) -> str:
     """The line the user pastes. ``/bin/bash`` by path: the script needs no
     execute bit and no ``PATH``; sudo resets the environment."""
@@ -239,6 +297,25 @@ class InstallPlan:
 
     def root_command(self, mode: Literal["install", "uninstall"]) -> str:
         return root_command(self.privileged_script, mode, self.user)
+
+    def root_step_refusal(self) -> str | None:
+        """Why no root step is printed for this plan, or None: the daemons
+        would not run this install, or another account could change the
+        script before the user runs it as root."""
+        mismatches = self.daemon_mismatches()
+        if mismatches:
+            return (
+                "the daemons run ~/.voiced/bin/voiced with ~/.config/voiced/config.toml "
+                f"under the default labels, and here {'; '.join(mismatches)}. "
+                "Run `voiced serve` yourself instead."
+            )
+        problem = foreign_writer(self.privileged_script)
+        if problem is not None:
+            return (
+                f"another account could change the root script: {problem}. Install voiced "
+                "into an environment of your own (`voiced install --source <checkout>`)."
+            )
+        return None
 
     def daemon_mismatches(self) -> list[str]:
         """Where this plan differs from what the root step installs: the
@@ -319,7 +396,7 @@ class InstallPlan:
         The plist is inside the script, so root reads nothing else the user
         can write; the result file in the user's log dir is removed and read
         as the user."""
-        label = self.labels["metalprobe"]
+        label = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"  # never the config's
         out = self.log_dir / METAL_PROBE_FILE
         plist = render_plist(
             label=label,

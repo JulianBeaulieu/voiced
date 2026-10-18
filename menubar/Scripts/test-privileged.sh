@@ -79,6 +79,10 @@ hold_lock() { exec /usr/bin/perl -MFcntl=:flock -e \
 clear_dest; hold_lock "$dest.lock" & holder=$!; sleep 1
 if run install "$user" >/dev/null 2>&1; then bad "ran while locked"; else ok "a held lock refuses"; fi
 kill "$holder"; wait "$holder" 2>/dev/null
+clear_dest; run install "$user" >/dev/null; hold_lock "$dest.lock" & holder=$!; sleep 1
+if run uninstall "$user" >/dev/null 2>&1 || [ -z "$(ls -A "$dest")" ]; then bad "uninstall ran while locked"
+else ok "a held lock refuses uninstall"; fi
+kill "$holder"; wait "$holder" 2>/dev/null
 if run install "$user" >/dev/null 2>&1; then ok "a lock file left behind does not block"
 else bad "leftover lock file blocked"; fi
 

@@ -213,10 +213,20 @@ takes the lock, and runs every tool by path; sudo resets the environment
 before bash starts. The file itself sits in an environment the user's
 account can write. That is the trust of any script a user chooses to run
 with `sudo`, and the same as the generated script before it; the docs say
-so and invite reading it first. What changes is that nothing else the
-user's account wrote is read as root. The Metal probe of ADR 0004 follows
-the same rule: its plist is inside the script `voiced doctor --metal-probe`
-writes, and its result file is removed and read as the user.
+so and invite reading it first. No other account may share it: the CLI
+prints the line only when the script and every directory on its path, as
+given and resolved (Homebrew's `opt` link included), belong to the user or
+root and are writable by nobody else (a group-writable directory passes
+only if its group holds no other regular account, uid 500 and up, as
+Homebrew's `admin` group does on a single-user Mac, where its other member
+is the system account `_mbsetupuser`; a sticky directory passes). Otherwise, for example a
+Homebrew that another admin owns, it prints why and points to `voiced
+install --source`, which builds an environment of the user's own. What
+changes is that nothing else the user's account wrote is read as root. The
+Metal probe of ADR 0004 follows the same rule: its plist is inside the
+script `voiced doctor --metal-probe` writes, its label uses the fixed
+prefix whatever the config says, and its result file is removed and read
+as the user.
 `voiced install` deletes the files earlier releases staged, so a stale
 `install-daemons.sh` cannot be run by mistake.
 
@@ -245,7 +255,9 @@ directory other than `~/.voiced` (`--state-dir`, `[install] venv_dir`), a
 config path other than the default (`VOICED_CONFIG`), and `[launchd]
 label_prefix`. `voiced install` with any of them still does the user-level
 install, for test harnesses and `voiced serve`, and says why it prints no
-root step. `label_prefix` stays a runtime key: it names the labels that
+root step; `voiced uninstall` likewise prints none, so a harness's
+`uninstall --state-dir` cannot be handed the line that removes the real
+daemons. `label_prefix` stays a runtime key: it names the labels that
 `status`, `start`, `stop`, `restart`, `doctor` and the watchdog address, so
 a harness that loads its own jobs under another prefix keeps working, and
 an install an earlier release made under one is still controlled.

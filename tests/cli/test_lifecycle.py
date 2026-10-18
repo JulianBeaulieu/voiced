@@ -198,9 +198,19 @@ def _uninstall_args(**overrides: bool) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def test_uninstall_refuses_while_loaded(settings: Settings, tmp_path: Path) -> None:
-    settings.install.venv_dir = tmp_path / "venv"
-    settings.install.venv_dir.mkdir()
+def _default_layout(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("VOICED_CONFIG")
+    settings.install.venv_dir = home / ".voiced"
+    return home
+
+
+def test_uninstall_refuses_while_loaded(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _default_layout(settings, tmp_path, monkeypatch)
+    settings.install.venv_dir.mkdir(parents=True)
     stt = settings.launchd.label("stt")
     fake = FakeLaunchctl({stt: True})
     out: list[str] = []
@@ -212,16 +222,25 @@ def test_uninstall_refuses_while_loaded(settings: Settings, tmp_path: Path) -> N
     assert lead == "Root step (stop and remove the daemons)"
     script = Path(lc.__file__).parent / "launchd/voiced-privileged.sh"
     assert shlex.split(command) == ["sudo", "/bin/bash", str(script), "uninstall", user]
-    assert not any("label_prefix" in line or "by hand" in line for line in out)
 
 
-def test_uninstall_names_daemons_under_another_prefix(settings: Settings, tmp_path: Path) -> None:
-    """The root step removes the default labels only; an install an earlier
-    release made under [launchd] label_prefix is pointed out."""
-    settings.launchd.label_prefix = "org.example.voiced"
+@pytest.mark.parametrize("layout", ["state_dir", "label_prefix"])
+def test_uninstall_prints_no_root_step_for_another_layout(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    """`uninstall --state-dir /tmp/x` from a harness must not print the line
+    that removes the real daemons; nor must another label prefix, whose
+    daemons the script would not remove."""
+    _default_layout(settings, tmp_path, monkeypatch)
+    args = _uninstall_args()
+    if layout == "state_dir":
+        args.state_dir = tmp_path / "x"
+    else:
+        settings.launchd.label_prefix = "org.example.voiced"
     out: list[str] = []
-    lc.cmd_uninstall(_uninstall_args(), settings, FakeLaunchctl({}), out.append)
-    assert "remove org.example.voiced.* by hand" in out[1]
+    lc.cmd_uninstall(args, settings, FakeLaunchctl({}), out.append)
+    assert out[0].startswith("No root step: the daemons run ~/.voiced/bin/voiced")
+    assert not any("sudo" in line for line in out)
 
 
 def test_uninstall_dry_then_real(

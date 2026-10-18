@@ -225,7 +225,7 @@ uses [Semantic Versioning](https://semver.org/).
   path or `[launchd] label_prefix` gets no root step; `label_prefix` now
   only names the labels the CLI and the watchdog address. `voiced doctor
   --metal-probe` writes one script, `~/.config/voiced/metal-probe.sh`, with
-  the probe's plist inside it.
+  the probe's plist inside it. Existing installs: run the printed line once.
 - The LaunchDaemon plists carry only a fixed environment (`HOME`, `PATH`,
   `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG` for the default
   log directory), the same values the menu bar app's privileged step
@@ -267,8 +267,11 @@ uses [Semantic Versioning](https://semver.org/).
   another account's daemons. Both are replaced by the menu bar app's
   privileged script, which renders the plists as root from the user name
   alone, refuses system accounts and another account's install, takes a
-  lock and calls every tool by path. The Metal probe's script carries its
-  plist and touches its result file only as the user.
+  lock and calls every tool by path. The CLI prints its line only when no
+  account but the user's and root can change the script or a directory on
+  its path (not, for example, from a Homebrew another admin owns). The
+  Metal probe's script carries its plist, uses the fixed label prefix, and
+  touches its result file only as the user.
 - The LaunchDaemon plists no longer set `StandardOutPath` or
   `StandardErrorPath`. launchd may open those files as root in
   the user-owned log directory, so a symlink planted there could make root

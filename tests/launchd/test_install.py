@@ -89,7 +89,8 @@ def test_metal_probe_matches_golden(plan: InstallPlan) -> None:
     _compare(probe.plist.decode(), "metalprobe.plist")
     assert plistlib.loads(probe.plist)["KeepAlive"] is False
     assert "StandardErrorPath" not in plistlib.loads(probe.plist)
-    assert probe.label == "org.example.voiced.metalprobe"
+    # The fixed prefix, whatever the config's label_prefix: config never steers root.
+    assert probe.label == f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"
     assert "trap " in probe.script and "EXIT" in probe.script
     assert probe.script_path == HOME / ".config/voiced/metal-probe.sh"
 
@@ -170,7 +171,7 @@ def test_metal_probe_script_cleans_up_when_bootstrap_fails(
 
 def test_metal_probe_waits_for_bootout_before_bootstrap(plan: InstallPlan) -> None:
     lines = plan.metal_probe(HOME / ".voiced/bin/python").script.splitlines()
-    label = "org.example.voiced.metalprobe"
+    label = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"
     bootout = lines.index(f"/bin/launchctl bootout system/{label} 2>/dev/null || true")
     wait = next(i for i, line in enumerate(lines) if f"print system/{label}" in line)
     bootstrap = lines.index(f"/bin/launchctl bootstrap system /Library/LaunchDaemons/{label}.plist")
@@ -212,6 +213,75 @@ def test_privileged_script_is_the_active_environments(tmp_path: Path) -> None:
     copy.parent.mkdir(parents=True)
     copy.write_text("#!/bin/bash\n")
     assert privileged_script(env) == copy
+
+
+def test_foreign_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The script and every directory to it: this account's or root's, and
+    writable by nobody else (a shared Homebrew is another admin's)."""
+    from voiced.launchd.install import foreign_writer
+
+    d = tmp_path / "env"
+    d.mkdir()
+    script = d / PRIVILEGED_SCRIPT
+    script.write_text("#!/bin/bash\n")
+    assert foreign_writer(script) is None
+    other = os.getuid() + 1
+    assert (
+        foreign_writer(script, uid=other)
+        == f"{script} belongs to {pwd.getpwuid(os.getuid()).pw_name}"
+    )
+    d.chmod(0o777)
+    assert foreign_writer(script) == f"{d} is writable by every account"
+    d.chmod(0o1777)  # sticky: nobody else can replace the script
+    assert foreign_writer(script) is None
+    d.chmod(0o775)
+    monkeypatch.setattr(install_module, "group_members", lambda gid: {"root", "someone-else"})
+    assert foreign_writer(script) == f"{d} is writable by its group, which has someone-else"
+    me = pwd.getpwuid(os.getuid()).pw_name
+    monkeypatch.setattr(install_module, "group_members", lambda gid: {"root", me})
+    assert foreign_writer(script) is None  # a single-user Homebrew's admin group
+    d.chmod(0o755)
+    link = tmp_path / "opt"
+    link.symlink_to(d)
+    assert foreign_writer(link / PRIVILEGED_SCRIPT) is None
+    d.chmod(0o777)  # reached through a link: the resolved path is checked too
+    assert foreign_writer(link / PRIVILEGED_SCRIPT) == f"{d} is writable by every account"
+    d.chmod(0o755)
+    assert foreign_writer(tmp_path / "missing").startswith(
+        f"{tmp_path / 'missing'} cannot be checked"
+    )
+
+
+def test_group_members_are_regular_accounts() -> None:
+    """``admin`` holds _mbsetupuser (uid 248) on every Mac; it is no one who
+    could edit a Homebrew keg, so it must not refuse a single-user one."""
+    from voiced.launchd.install import group_members, regular_account
+
+    assert not regular_account("root") and not regular_account("daemon")
+    assert not regular_account("nobody")
+    assert regular_account(pwd.getpwuid(os.getuid()).pw_name)
+    assert regular_account("no-such-account-voiced")
+    assert all(regular_account(name) for name in group_members(80))
+
+
+def test_install_prints_no_root_step_for_a_script_others_can_change(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    p = plan_install(
+        settings,
+        home=home,
+        state_dir=home / ".voiced",
+        config_file=home / ".config/voiced/config.toml",
+        uv=None,
+    )
+    assert p.root_step_refusal() is None
+    monkeypatch.setattr(install_module, "foreign_writer", lambda path: "/opt/x belongs to admin")
+    refusal = p.root_step_refusal()
+    assert refusal is not None
+    assert refusal.startswith(
+        "another account could change the root script: /opt/x belongs to admin"
+    )
 
 
 def test_daemon_mismatches(settings: Settings, tmp_path: Path) -> None:
@@ -1219,6 +1289,22 @@ def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Pa
     assert "another voiced install or uninstall is running" in refused.stderr
     assert list(dest.iterdir()) == []
     assert install().returncode == 0, "a lock file nobody holds does not block"
+
+    lock.unlink()
+    assert install().returncode == 0
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600  # the script's umask 077
+
+    def uninstall() -> subprocess.CompletedProcess[str]:
+        argv = ["/bin/bash", str(PRIVILEGED), "uninstall", user]
+        return subprocess.run(argv, env=env, capture_output=True, text=True)
+
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        refused = uninstall()
+    assert refused.returncode == 1
+    assert "another voiced install or uninstall is running" in refused.stderr
+    assert len(list(dest.iterdir())) == len(SERVICES), "a held lock refuses uninstall"
+    assert uninstall().returncode == 0 and list(dest.iterdir()) == []
 
     lock.unlink()
     lock.mkdir()  # cannot be opened for writing

@@ -81,9 +81,11 @@ sudo /bin/bash ~/.voiced/envs/<id>/lib/python3.12/site-packages/voiced/launchd/v
 That script is the one the menu bar app runs as root too. Given only your
 user name, it writes the three plists into `/Library/LaunchDaemons` from
 fixed values (the daemons run as your user, `UserName`, and run
-`~/.voiced/bin/voiced`), then loads them. It sits in an environment your
-account can write, like any script you choose to run with `sudo`, so read
-it first if you like. voiced never runs anything as root itself. Then:
+`~/.voiced/bin/voiced`), then loads them. `voiced install` prints the line
+only if that file and every folder on the way to it belong to you or root
+and no other account can change them (a Homebrew another admin owns does
+not qualify). Read it first if you like. voiced never runs anything as root
+itself. Then:
 
 ```sh
 voiced status

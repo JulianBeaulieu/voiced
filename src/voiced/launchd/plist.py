@@ -47,13 +47,11 @@ def render_plist(
     working_directory: Path | None = None,
     environment: dict[str, str] | None = None,
     throttle_interval_s: int = 10,
-    keep_alive: bool | dict[str, object] = True,
+    keep_alive: bool = True,
 ) -> bytes:
     """A LaunchDaemon plist with RunAtLoad and KeepAlive, logging to ``log_dir``.
 
-    ``keep_alive`` is launchd's value: ``True``, a conditions dict such as
-    ``{"PathState": {path: True}}``, or ``False`` for a one-shot job (the
-    Metal probe).
+    ``keep_alive`` is ``False`` for a one-shot job (the Metal probe).
 
     There is no ``StandardOutPath``/``StandardErrorPath``: launchd may open
     them as root in a directory the user owns. ``VOICED_STDIO_LOG`` tells the

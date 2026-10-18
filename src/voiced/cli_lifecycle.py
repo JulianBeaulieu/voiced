@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any
 
 from voiced import __version__
 from voiced.config import (
-    DEFAULT_LAUNCHD_LABEL_PREFIX,
     HTTP_SERVICES,
     SERVICES,
     DaemonName,
@@ -267,11 +266,9 @@ def cmd_install(
 
 def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
     echo("")
-    mismatches = plan.daemon_mismatches()
-    if mismatches:
-        echo(f"User-level install {'planned' if dry_run else 'done'}. No root step: the daemons")
-        echo("run ~/.voiced/bin/voiced with ~/.config/voiced/config.toml under the default")
-        echo(f"labels, and here {'; '.join(mismatches)}. Run `voiced serve` yourself instead.")
+    refusal = plan.root_step_refusal()
+    if refusal is not None:
+        echo(f"User-level install {'planned' if dry_run else 'done'}. No root step: {refusal}")
         return
     if dry_run:
         echo("A real run ends with the root step, the one command that needs root:")
@@ -654,7 +651,7 @@ def _not_installed_hint(settings: Settings) -> str:
     from voiced.launchd.install import plan_install
 
     plan = plan_install(settings)
-    if plan.entry.exists() and not plan.daemon_mismatches():
+    if plan.entry.exists() and plan.root_step_refusal() is None:
         return f"The daemons are not installed. Run: {plan.root_command('install')}"
     return "The daemons are not installed. Run `voiced install` first."
 
@@ -799,13 +796,11 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
     from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
 
     plan = plan_install(settings, state_dir=args.state_dir)
-    echo(f"Root step (stop and remove the daemons): {plan.root_command('uninstall')}")
-    if settings.launchd.label_prefix != DEFAULT_LAUNCHD_LABEL_PREFIX:
-        # An install an earlier release made under another prefix.
-        echo(
-            f"It removes the {DEFAULT_LAUNCHD_LABEL_PREFIX}.* daemons only; remove "
-            f"{settings.launchd.label_prefix}.* by hand (docs/operations.md)."
-        )
+    refusal = plan.root_step_refusal()
+    if refusal is None:
+        echo(f"Root step (stop and remove the daemons): {plan.root_command('uninstall')}")
+    else:  # daemons under another prefix are removed by hand (docs/operations.md)
+        echo(f"No root step: {refusal}")
     echo("")
 
     loaded = [s for s in SERVICES if print_service(settings.launchd.label(s), runner).loaded]
