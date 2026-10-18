@@ -258,7 +258,9 @@ Notes on the rows:
 ## Mac Studio
 
 Measured on the target machine: Mac Studio, M1 Max with the 24-core GPU,
-32 GB, macOS 27.0.1, voiced `main` at 48e1f20. The services ran as installed
+32 GB, macOS 27.0.1, voiced `main` at 48e1f20, before the services set the
+foreground task role (see [With the foreground task role](#with-the-foreground-task-role)
+for an A/B of that fix). The services ran as installed
 LaunchDaemons with the 256 MB Kokoro cache cap, and Ollama kept
 `ministral-3:8b` resident on the same GPU. `scripts/bench.py` ran with its
 defaults (10 trials, 32 alignments) and the servers' API key, on the Studio
@@ -285,24 +287,67 @@ and `LLM_MODEL=ministral-3:8b`. Over Wi-Fi, batch transcription was 326 ms
 median (412 ms worst), about 70 ms of upload over loopback's 258 ms, and
 Kokoro first audio 105 ms median, about 20 ms more.
 
-Misses on the Studio:
+Misses on the Studio, before the task role fix:
 
 - **Push-to-talk finalize.** With 0 ms of trailing silence the worst of 32
   is 164 ms (64 ms chunks) and 170 ms (100 ms chunks), medians 146 to 149 ms:
   the same miss as on the development machine (see known misses), somewhat
   slower.
-- **GPU contention is much worse than on the development machine.** With
-  Kokoro synthesizing in the other process, finalize after 200 ms of trailing
-  silence is median 179 / worst 250 ms (development machine: median 1, worst
-  54), and with 0 ms median 366 / worst 510 ms (140 / 192). Part of the gap
-  is launchd, not the Studio: the development machine's numbers came from a
-  terminal, and the same code under launchd on the development machine is
-  slower too (see [Under launchd](#under-launchd)); a resident Ollama model
-  was ruled out there. What remains after that fix (macOS 27, the system
-  domain) is to be measured on the Studio. It matters when one satellite is
+- **GPU contention was much worse than on the development machine in this
+  run.** With Kokoro synthesizing in the other process, finalize after 200 ms
+  of trailing silence is median 179 / worst 250 ms (development machine:
+  median 1, worst 54), and with 0 ms median 366 / worst 510 ms (140 / 192).
+  The two later runs without the task role, at 02c6f30 under the same
+  conditions, did not reproduce it (see [With the foreground task role](#with-the-foreground-task-role));
+  what made this run slower was not isolated. Part of the gap to the
+  development machine is launchd, not the Studio: the development machine's
+  numbers came from a terminal, and the same code under launchd on the
+  development machine is slower too (see [Under launchd](#under-launchd)); a
+  resident Ollama model was ruled out there. It matters when one satellite is
   speaking while another's reply is synthesized; a single Home Assistant
   pipeline does not overlap STT and TTS.
 - The idle footprint after use is 2.36 GB, within the 3 GB budget.
+
+### With the foreground task role
+
+The fix in [Under launchd](#under-launchd), measured on the Studio as an A/B:
+02c6f30 (no task role) and eda0ae5 (the role), alternating A, B, A, B, back
+to back. Each run is `scripts/bench.py` with its defaults over loopback
+against the installed LaunchDaemons, deployed with `voiced install --source`
+and `voiced restart all`, both services healthy before each run, Ollama
+keeping `ministral-3:8b` resident throughout. Each cell is the range across
+the two runs. With the role, both services logged
+`task role set to foreground application (darwin role read back: 1)` at
+start, so the role is set in the system domain on macOS 27; the `ENOTSUP`
+refusal applies to `setpriority`, not to the `task_policy_set` call used.
+
+| Metric | No role (02c6f30) | Role (eda0ae5) | Target |
+|---|---|---|---|
+| Kokoro first audio | median 85 / p95 88 / worst 89 ms | median 85 to 86 / p95 87 to 88 / worst 88 to 89 ms | <= 200 ms |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence | median 3 / p95 49 to 56 / worst 63 to 74 ms | median 3 / p95 3 to 4 / worst 5 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 145 to 148 / p95 157 to 160 / worst 161 to 165 ms | median 122 to 123 / p95 130 / worst 136 to 137 ms | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 200 ms trailing silence | median 3 / p95 4 / worst 34 to 40 ms | median 3 / p95 4 / worst 12 to 32 ms | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 147 to 148 / p95 158 to 163 / worst 163 to 165 ms | median 123 to 125 / p95 132 / worst 134 to 136 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 3 to 10 / p95 55 to 70 / worst 97 to 98 ms | median 2 / p95 38 to 61 / worst 64 to 75 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 174 to 178 / p95 215 to 218 / worst 229 to 252 ms | median 156 to 167 / p95 184 to 207 / worst 201 to 222 ms | <= 150 ms worst (miss) |
+| Batch transcription, 10.1 s clip | median 244 to 246 / p95 249 to 265 / worst 249 to 267 ms | median 254 to 256 / p95 264 to 266 / worst 264 to 268 ms | <= 300 ms |
+| STT + TTS (Kokoro) footprint, idle after use | 2.27 GB | 2.26 to 2.27 GB | <= 3 GB |
+
+The finalize rows are n=32 alone and n=16 with Kokoro synthesizing; first
+audio and batch are n=10. With the role, push-to-talk finalize alone moves
+from just over the 150 ms worst case (161 to 165 ms) to under it (134 to
+137 ms), 23 to 25 ms off the median; its median of 122 to 125 ms is still the
+50 ms median miss in [Known misses](#known-misses). Finalize after 200 ms of
+trailing silence loses its tail of slow cases (worst 5 against 63 to 74 ms
+with 64 ms chunks). The one row still over its target is push-to-talk
+finalize while Kokoro synthesizes, median 156 to 167 / worst 201 to 222 ms,
+against 174 to 178 / 229 to 252 without the role: the GPU contention in
+[Known misses](#known-misses). Batch transcription was about 10 ms slower
+with the role in both rounds, within its target; two rounds do not show
+whether that is the role. Kokoro first audio and memory did not change. The
+push-to-talk medians with the role match the development machine's
+LaunchAgents after the fix (122 and 124 ms), so on this measurement the
+system domain and macOS 27 did not change the result.
 
 Self-healing, with the installed LaunchDaemons on 48e1f20:
 
@@ -410,13 +455,18 @@ unchanged.
 (122 against 114 ms median, 64 ms chunks) and 40 ms faster on the 0 ms
 contention row (180 against 140 ms), which none of the settings tried above
 changed; the untested candidates are listed above. These were
-LaunchAgents in the user's GUI domain on macOS 15.7.4. The installed
-LaunchDaemons run in the system domain, and the Mac Studio runs macOS 27;
-both may schedule a job differently. On the Studio: re-measure the rows
-above, and confirm that the role holds after a long idle with a one-off
-check, `python3 -c "import os; print(os.getpriority(6, PID))"` for each
-service's PID (prints 1 while the role holds; it reads another process of the
-same user without root).
+LaunchAgents in the user's GUI domain on macOS 15.7.4. On a Mac Studio
+(M1 Max, macOS 27), with the installed LaunchDaemons in the system domain,
+the role is set and read back as 1 at start, and the rows above were
+re-measured as an A/B ([With the foreground task role](#with-the-foreground-task-role)).
+The one row still over target there is 0 ms trailing silence while Kokoro
+synthesizes, median 156 to 167 / worst 201 to 222 ms: the GPU contention in
+[Known misses](#known-misses), which the role narrows but does not close;
+that needs GPU scheduling between the two services. Not yet checked: that
+the role still holds after a long idle, with a one-off
+`python3 -c "import os; print(os.getpriority(6, PID))"` for each service's
+PID (prints 1 while the role holds; it reads another process of the same
+user without root).
 
 ## Versions
 
