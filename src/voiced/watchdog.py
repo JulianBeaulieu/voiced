@@ -38,6 +38,7 @@ from voiced.launchd.control import (
     run_command,
 )
 from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
+from voiced.launchd.stdio import log_redirect_error
 
 if TYPE_CHECKING:
     from voiced.config import WatchdogConfig
@@ -591,7 +592,7 @@ class Watchdog:
 def configure_watchdog_logging(level: str = "info", log_file: Path | None = None) -> None:
     """Stdlib-only logging: a rotating file when given, else stderr.
 
-    Under launchd stderr is captured unrotated by the plist, so the file is
+    Under launchd stderr is the unrotated ``watchdog.stderr.log``, so the file is
     the only handler there; stderr is for running ``voiced watchdog`` by hand.
     """
     root = logging.getLogger()
@@ -608,6 +609,7 @@ def configure_watchdog_logging(level: str = "info", log_file: Path | None = None
         handler = logging.StreamHandler()
     handler.setFormatter(formatter)
     root.addHandler(handler)
+    log_redirect_error(log)
 
 
 def silent_wav(duration_s: float = 0.2, rate: int = 16000) -> bytes:

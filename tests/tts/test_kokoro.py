@@ -3,7 +3,11 @@ Metal; everything else runs on CI."""
 
 from __future__ import annotations
 
+import os
 import statistics
+import subprocess
+import sys
+import textwrap
 import time
 from pathlib import Path
 from typing import Any
@@ -18,8 +22,11 @@ from voiced.engines.kokoro import (
     ENV_ESPEAK_LIBRARY,
     ESPEAK_INSTALL_HINT,
     HOMEBREW_PREFIXES,
+    MAX_ESPEAK_DATA_PATH,
     EspeakNotFound,
     KokoroEngine,
+    _espeak_data,
+    _short_espeak_copy,
     espeak_candidates,
     kokoro_voices,
 )
@@ -110,8 +117,139 @@ async def test_load_with_broken_espeak_names_the_brew_command(
     bogus = tmp_path / "libespeak-ng.dylib"
     bogus.write_bytes(b"not a library")
     monkeypatch.setattr("voiced.engines.kokoro.espeak_candidates", lambda: [(str(bogus), None)])
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: tmp_path / "cache")
     with pytest.raises(EspeakNotFound, match=ESPEAK_INSTALL_HINT):
         await KokoroEngine().load()
+
+
+# -- espeak-ng data path -------------------------------------------------------
+
+
+def _long_dir(root: Path, size: int) -> Path:
+    """A real (not symlinked) directory under ``root`` whose resolved path is
+    at least ``size`` bytes."""
+    path = Path(os.path.realpath(root))
+    while len(str(path).encode()) < size:
+        path = path / ("d" * 40)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@pytest.fixture
+def bundled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fake espeakng-loader wheel's data at a path longer than espeak-ng
+    accepts, and a short user cache directory."""
+    data = _long_dir(tmp_path / "venv", MAX_ESPEAK_DATA_PATH + 10) / "espeak-ng-data"
+    (data / "voices").mkdir(parents=True)
+    (data / "phontab").write_bytes(b"phonemes")
+    monkeypatch.setattr("voiced.engines.kokoro._bundled_espeak", lambda: (str(data), "1.0"))
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: tmp_path / "cache")
+    return data
+
+
+def test_bundled_data_is_cloned_to_the_user_cache(bundled: Path, tmp_path: Path) -> None:
+    expected = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
+    assert _espeak_data(None) == str(expected)
+    assert (expected / "phontab").read_bytes() == b"phonemes"
+    assert (expected / "voices").is_dir()
+    assert os.listdir(tmp_path / "cache" / "voiced") == ["espeak-ng-data-1.0"]
+
+
+def test_clone_is_reused_and_never_replaced(bundled: Path, tmp_path: Path) -> None:
+    first = Path(_short_espeak_copy(str(bundled), "1.0"))
+    (first / "marker").touch()
+    assert _short_espeak_copy(str(bundled), "1.0") == str(first)
+    assert (first / "marker").exists()
+    # A wheel upgrade gets its own directory; the old one stays for running services.
+    (bundled / "phontab").write_bytes(b"upgraded")
+    second = Path(_short_espeak_copy(str(bundled), "1.1"))
+    assert second != first
+    assert (second / "phontab").read_bytes() == b"upgraded"
+    assert (first / "marker").exists()
+
+
+def test_purged_clone_is_made_again(bundled: Path) -> None:
+    target = Path(_short_espeak_copy(str(bundled), "1.0"))
+    (target / "phontab").unlink()  # the system purged part of the cache
+    assert _short_espeak_copy(str(bundled), "1.0") == str(target)
+    assert (target / "phontab").read_bytes() == b"phonemes"
+
+
+def test_concurrent_clones_all_succeed(bundled: Path, tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(8) as pool:
+        paths = list(pool.map(lambda _: _short_espeak_copy(str(bundled), "1.0"), range(32)))
+    target = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
+    assert set(paths) == {str(target)}
+    assert (target / "phontab").read_bytes() == b"phonemes"
+    assert os.listdir(target.parent) == [target.name]
+
+
+def test_stale_staging_is_removed(bundled: Path, tmp_path: Path) -> None:
+    root = tmp_path / "cache" / "voiced"
+    stale = root / ".espeak-ng-data.crashed"
+    fresh = root / ".espeak-ng-data.running"
+    stale.mkdir(parents=True)
+    fresh.mkdir()
+    old = time.time() - 2 * 3600
+    os.utime(stale, (old, old))
+    _short_espeak_copy(str(bundled), "1.0")
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_copy_failure_names_the_target(bundled: Path, tmp_path: Path) -> None:
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "voiced").write_text("not a directory")
+    with pytest.raises(EspeakNotFound, match=r"could not copy espeak-ng data to .*voiced"):
+        _espeak_data(None)
+
+
+def test_no_user_cache_dir_keeps_the_wheel_path(
+    bundled: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: None)
+    with pytest.raises(EspeakNotFound, match=str(bundled)):
+        _espeak_data(None)
+
+
+def test_long_clone_path_is_refused(
+    bundled: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _long_dir(tmp_path / "longcache", MAX_ESPEAK_DATA_PATH)
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: cache)
+    with pytest.raises(EspeakNotFound, match=f"{MAX_ESPEAK_DATA_PATH} bytes or less"):
+        _espeak_data(None)
+
+
+def test_explicit_data_path_is_checked(bundled: Path, tmp_path: Path) -> None:
+    with pytest.raises(EspeakNotFound, match=ESPEAK_INSTALL_HINT):
+        _espeak_data(str(bundled))
+    short = tmp_path / "short-data"
+    short.mkdir()
+    assert _espeak_data(str(short)) == str(short)
+    # The limit is in bytes, not characters.
+    edge = Path(os.path.realpath(tmp_path)) / "é"
+    edge = edge / ("x" * (MAX_ESPEAK_DATA_PATH - len(str(edge).encode()) - 1))
+    assert len(str(edge).encode()) == MAX_ESPEAK_DATA_PATH
+    assert _espeak_data(str(edge)) == str(edge)
+    with pytest.raises(EspeakNotFound):
+        _espeak_data(str(edge) + "x")
+
+
+async def test_load_reports_the_long_path_instead_of_exiting(
+    bundled: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("kokoro_onnx")
+    library = tmp_path / "libespeak-ng.dylib"
+    library.touch()
+    monkeypatch.setattr(
+        "voiced.engines.kokoro.espeak_candidates", lambda: [(str(library), str(bundled))]
+    )
+    with pytest.raises(EspeakNotFound, match=f"{bundled}.*{MAX_ESPEAK_DATA_PATH}") as info:
+        await KokoroEngine().load()
+    assert "not installed" not in str(info.value)
 
 
 # -- Kokoro-specific contract (shared ones: test_sentence_engines.py) ---------
@@ -208,3 +346,41 @@ async def test_long_sentence_is_chunked_within_context(kokoro_engine: Any) -> No
     text = normalize(" ".join(["HVAC"] * 60))
     chunks = [c async for c in kokoro_engine.synthesize(text, "af_heart")]
     assert _pcm_seconds(chunks) > 10
+
+
+@pytest.mark.model
+def test_loads_from_a_venv_at_a_long_path(kokoro_engine: Any, tmp_path: Path) -> None:
+    """The espeakng-loader wheel at a resolved path longer than its espeak-ng
+    accepts: the engine loads from the short clone and phonemizes like the
+    default engine. Runs in a child process because a regression makes
+    espeak-ng exit the process."""
+    espeakng_loader = pytest.importorskip("espeakng_loader")
+    import shutil
+
+    wheel = _long_dir(tmp_path / "venv", MAX_ESPEAK_DATA_PATH + 20) / "espeakng_loader"
+    shutil.copytree(Path(espeakng_loader.__file__).parent, wheel)
+    data = wheel / "espeak-ng-data"
+    assert len(str(data).encode()) > MAX_ESPEAK_DATA_PATH
+    script = textwrap.dedent(
+        f"""
+        import asyncio
+        import espeakng_loader
+        espeakng_loader.get_library_path = lambda: {str(wheel / "libespeak-ng.dylib")!r}
+        espeakng_loader.get_data_path = lambda: {str(data)!r}
+        from voiced.engines.kokoro import KokoroEngine
+        engine = KokoroEngine(warmup=False)
+        asyncio.run(engine.load())
+        print(engine.phonemize("hello world", "af_heart"))
+        """
+    )
+    env = {**os.environ, ENV_ESPEAK_LIBRARY: str(wheel / "libespeak-ng.dylib")}
+    env.pop(ENV_ESPEAK_DATA, None)
+    env.pop("PHONEMIZER_ESPEAK_LIBRARY", None)
+    done = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=300
+    )
+    assert done.returncode == 0, done.stderr
+    assert "Error processing file" not in done.stdout + done.stderr
+    assert done.stdout.strip().splitlines()[-1] == kokoro_engine.phonemize(
+        "hello world", "af_heart"
+    )

@@ -73,6 +73,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A streaming STT session that waited for the slot behind another (two
+  satellites talking at once) failed with "streaming backlog over 30s" when
+  its client had sent more than 30 s meanwhile. `add_audio` now waits for the
+  encoder past the backlog bound instead of failing, so the session catches
+  up at about six times real time. Sessions still run one at a time: a
+  Wyoming session waits about 34 s for the slot before `server_busy`, so
+  with three satellites at once the third still fails on utterances over
+  about 31 s. ADR 0008 documents the capacity (one stream within the
+  finalize target, the rest queue).
 - `voiced restart all` restarted stt and tts but not the watchdog, which
   kept running the old code after an upgrade until it was killed by hand.
   It now restarts the watchdog last (SIGTERM, then `launchctl kickstart`)
@@ -114,6 +123,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- The LaunchDaemon plists no longer set `StandardOutPath` or
+  `StandardErrorPath`. launchd may open those files as root in
+  the user-owned log directory, so a symlink planted there could make root
+  create or append to any file. The daemons now open
+  `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
+  a symlink, and point their stdout and stderr at them (`VOICED_STDIO_LOG`
+  in the plist). Existing installs keep the old plists, and the exposure,
+  until `voiced install` and its sudo script are run again.
 - Uploads can no longer make ffmpeg open other files: ffmpeg reads the
   upload through an inherited descriptor and may open nothing else, so an
   `ffconcat` list or playlist is refused. Upload files are anonymous and

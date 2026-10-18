@@ -20,6 +20,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 import websockets
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
 from wyoming.tts import Synthesize, SynthesizeVoice
@@ -31,10 +33,12 @@ from tests.e2e.conftest import (
     SILENCE_WINDOW_S,
     LiveService,
     read_wav_pcm16,
+    silence_pcm16,
     wav_bytes,
 )
 from tests.e2e.test_ws_streaming import FINALIZE_WORST_S, collect_stream
 from tests.stt.conftest import words
+from voiced.engines import parakeet
 from voiced.engines.base import STT_SAMPLE_RATE
 
 pytestmark = pytest.mark.model
@@ -126,6 +130,63 @@ def test_simultaneous_synthesis(tts_kokoro_service: LiveService) -> None:
     with ThreadPoolExecutor(max_workers=6) as pool:
         sizes = list(pool.map(lambda _: one(), range(6)))
     assert all(size > MIN_AUDIO_BYTES for size in sizes)
+
+
+# Encoding audio that is already buffered, as a fraction of its duration: a
+# session that waited for the slot catches up at this rate (ADR 0008, about
+# 0.17 measured on an M1 Max; this leaves room for a busy GPU).
+CATCH_UP_RATIO = 0.35
+
+
+async def _paced_wyoming_utterance(
+    service: LiveService, audio: bytes, delay_s: float
+) -> tuple[str, float, float]:
+    """Stream ``audio`` over Wyoming in real time in 64 ms chunks, as a satellite
+    does. Returns the transcript, when AudioStop was sent and when the
+    transcript arrived (``time.monotonic()``)."""
+    fmt = {"rate": STT_SAMPLE_RATE, "width": 2, "channels": 1}
+    await asyncio.sleep(delay_s)
+    async with AsyncTcpClient(service.wyoming_host, service.wyoming_port) as client:
+        await client.write_event(Transcribe(language="en").event())
+        await client.write_event(AudioStart(**fmt).event())
+        started = time.monotonic()
+        for offset in range(0, len(audio), 2048):
+            await asyncio.sleep(max(0.0, started + offset / 2 / STT_SAMPLE_RATE - time.monotonic()))
+            await client.write_event(AudioChunk(audio=audio[offset : offset + 2048], **fmt).event())
+        await client.write_event(AudioStop().event())
+        stopped = time.monotonic()
+        async with asyncio.timeout(60):
+            while (event := await client.read_event()) is not None:
+                assert not Error.is_type(event.type), Error.from_event(event).text
+                if Transcript.is_type(event.type):
+                    return Transcript.from_event(event).text, stopped, time.monotonic()
+    raise AssertionError("connection closed before the transcript")
+
+
+async def test_two_satellites_talking_at_once(
+    stt_service: LiveService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sessions run one at a time: the second waits for the slot while its
+    satellite keeps streaming, then gets everything it sent at once. It catches
+    up at encoder speed instead of failing on the backlog bound (lowered here so
+    a 10 s utterance goes past it), and both transcripts are complete."""
+    monkeypatch.setattr(parakeet, "MAX_BACKLOG_S", 4.0)
+    samples, rate = read_wav_pcm16("speech_en.wav")
+    gap = silence_pcm16(0.3, rate)
+    audio = (samples.tobytes() + gap) * 3 + silence_pcm16(0.4, rate)
+    duration_s = len(audio) / 2 / rate
+    (first, first_stop, first_done), (second, second_stop, second_done) = await asyncio.gather(
+        _paced_wyoming_utterance(stt_service, audio, 0.0),
+        _paced_wyoming_utterance(stt_service, audio, 1.0),
+    )
+    for text in (first, second):
+        assert words(text).count("kitchen") == 3, text
+    assert first_done - first_stop <= FINALIZE_WORST_S
+    # The second slot opened when the first transcript was sent; by then the
+    # second satellite had sent nearly all of its audio.
+    caught_up_s = second_done - max(first_done, second_stop)
+    assert caught_up_s <= CATCH_UP_RATIO * duration_s + FINALIZE_WORST_S, caught_up_s
+    assert stt_service.health()["queue_depth"] == 0
 
 
 # --- the queue-full (busy) response -----------------------------------------
