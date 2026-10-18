@@ -208,7 +208,7 @@ The release job builds, from one commit:
 |---|---|
 | Python | `uv python install --no-bin 3.12.15` into `~/.voiced/python`. `--no-bin` because without it uv wrote `~/.local/bin/python3.12` onto the user's `PATH` (measured). The patch version, because the `3.12` minor link moves silently on the next install |
 | Environment | `uv venv --managed-python --python 3.12.15 ~/.voiced/envs/<id>.partial`, renamed to `envs/<id>` when the packages are in; `<id>` is a UTC timestamp, as ADR 0017 names environments |
-| Packages | `uv pip install --require-hashes --no-deps -r requirements.lock`, then `uv pip install --no-deps <voiced wheel>` |
+| Packages | `uv pip install --require-hashes --no-deps -r requirements.lock`, then `uv pip install --no-deps <voiced wheel>` (a built wheel, so ADR 0017's `build-requirements.lock` has nothing to constrain) |
 
 *Measured* cold, with an empty uv cache, no Homebrew on `PATH`
 (`/usr/bin:/bin:/usr/sbin:/sbin`) and a fresh `HOME`: Python 3 s (71 MB),
@@ -218,13 +218,12 @@ The largest are mlx-metal (45 MB), llvmlite (41), scipy (29), onnxruntime
 (21), transformers (13) and numpy (12). On APFS uv clones files from its
 cache, so cache and venv share most blocks.
 
-`voiced install --source` uses the same uv layout: it sets
-`UV_PYTHON_INSTALL_DIR` under the state directory, `UV_NO_CONFIG=1` and
-`--managed-python`, so a CLI install's Python can no longer be removed by an
-unrelated `uv python uninstall` (the root cause behind ADR 0016 finding 15).
-Today it runs `uv pip install --upgrade`, which re-resolves (`install.py`,
-`venv_commands`); under ADR 0017's one-lock rule it installs from the lock
-like every other path.
+`voiced install --source` already uses the same uv layout under ADR 0017:
+`UV_PYTHON_INSTALL_DIR` under the state directory and `--managed-python`, so
+a CLI install's Python can no longer be removed by an unrelated `uv python
+uninstall` (the root cause behind ADR 0016 finding 15), and it installs from
+the lock like every other path. This record adds `UV_NO_CONFIG=1` there, so
+a user's `uv.toml` cannot change what either path installs.
 
 ### ffmpeg: the pinned wheel, preferred
 
@@ -489,7 +488,7 @@ repairs and rolls back the environment.
 | `source = app` | manages it: the normal case |
 | `source = homebrew` | controls it; a version mismatch is shown, with "Updated by Homebrew: `brew upgrade voiced`". "Switch to updates from the app" builds an app environment and runs its `voiced install`, which repoints the symlink; config and models stay, and the keg is untouched until the user runs `brew uninstall voiced` |
 | `source = cli` (a `--source` environment in `envs/`) | the same: controls it, shows a mismatch, and switches only when asked. If that environment's voiced was installed from a local checkout (an editable or `file://` install in `direct_url.json`), the app says so before switching |
-| a legacy install (`~/.voiced` itself is a venv) | adopts it as `environment = ~/.voiced` and controls it as is. The first switch has no rollback: the legacy venv's own `bin/voiced` is the entry point path, so the two cannot coexist. The new environment is built first; once it answers `hello`, the legacy venv's files are removed under ADR 0006's rules. If the legacy plists ran a custom `venv_dir`, that switch's privileged step replaces them with the fixed ones |
+| a legacy install (`~/.voiced` itself is a venv) | adopts it as `environment = ~/.voiced` and controls it as is. The first switch has no rollback: the legacy venv's own `bin/voiced` is the entry point path, so the two cannot coexist. The new environment is built first; `voiced install` removes the legacy venv's files once that environment passes ADR 0017's engine check and is linked, before the app waits for its `hello`. If the legacy plists ran a custom `venv_dir`, that switch's privileged step replaces them with the fixed ones |
 | plists with a custom `[launchd] label_prefix` | controls it (ADR 0014 finds it whatever the prefix); does not manage it. The first switch to the app's environment boots out the custom labels and installs the default ones, in one prompt |
 | no plists installed, environment present | continues at Approval |
 
@@ -637,8 +636,8 @@ and says why in one line. If it does not need something, it never asks.
   --json` is optional.
 - The watchdog's `hello` adds `install.json`'s version, lock hash and
   Python.
-- The CLI's uv layout: Python under the state directory,
-  `UV_NO_CONFIG=1`, `--managed-python`.
+- `UV_NO_CONFIG=1` for the CLI's `--source` build (ADR 0017 already puts
+  its Python under the state directory with `--managed-python`).
 - The services open their own log files (`O_NOFOLLOW`, `dup2` onto stdout
   and stderr), and `voiced install` stops writing `StandardOutPath` and
   `StandardErrorPath` (a separate CLI change).
