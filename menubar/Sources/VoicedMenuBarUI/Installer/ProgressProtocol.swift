@@ -133,6 +133,9 @@ struct InstallSession {
     /// The most steps and downloads kept: the CLI has ten steps and two models, and a
     /// misbehaving one cannot grow the screen without bound.
     static let maximumEntries = 32
+    /// The most speed samples kept per download, however fast events come: the CLI sends
+    /// four a second, which is 20 in the window.
+    static let maximumSamples = 256
 
     private(set) var progress = InstallProgress()
     private(set) var tail: [String] = []
@@ -143,7 +146,7 @@ struct InstallSession {
     private var greeted = false
     /// The first `done` or `error`; anything after it changes nothing.
     private var terminal: InstallEvent?
-    private var samples: [String: [(at: ContinuousClock.Instant, bytes: Int64)]] = [:]
+    private(set) var samples: [String: [(at: ContinuousClock.Instant, bytes: Int64)]] = [:]
 
     /// A download with bytes to go whose bytes have not grown for `timeout`.
     func isStalled(at now: ContinuousClock.Instant, after timeout: Duration) -> Bool {
@@ -230,7 +233,7 @@ struct InstallSession {
         window.append((now, bytes))
         // Samples arrive in order, so the old ones are at the front.
         let fresh = window.firstIndex { now - $0.at <= Self.speedWindow } ?? window.endIndex
-        window.removeFirst(fresh)
+        window.removeFirst(max(fresh, window.count - Self.maximumSamples))
         samples[model] = window
         if let first = window.first, now > first.at {
             let seconds = (now - first.at) / .seconds(1)

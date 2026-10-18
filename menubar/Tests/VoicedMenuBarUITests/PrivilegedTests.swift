@@ -198,6 +198,12 @@ final class PrivilegedTests: XCTestCase {
         XCTAssertEqual(outputs.last, .exit(3))
     }
 
+    func testCommandsStartInTheRootDirectory() async throws {
+        // Never in the app's working directory: the privileged run's root shell starts there.
+        let outputs = try await collect(SystemInstallRunner().run(InstallCommand("/bin/pwd", [])))
+        XCTAssertEqual(stdout(outputs), ["/"])
+    }
+
     func testTheRunnerThrowsWhenItCannotStart() async {
         do {
             _ = try await collect(SystemInstallRunner().run(InstallCommand("/nonexistent/voiced", [])))
@@ -233,11 +239,15 @@ final class PrivilegedTests: XCTestCase {
                 "/bin/sh", ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; while :; do /bin/sleep 0.1; done"])))
         }
         let child = try await pid(in: marker)
+        // Without the SIGKILL the child would outlive the test; make sure it does not.
+        defer { if kill(child, 0) == 0 { kill(child, SIGKILL) } }
         task.cancel()
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(kill(child, 0), 0, "SIGTERM is ignored, so it still runs within the grace")
-        let gone = await eventually { kill(child, 0) != 0 }
+        let gone = await eventually(timeout: .seconds(3)) { kill(child, 0) != 0 }
         XCTAssertTrue(gone)
+        let ended = await finished(task, within: .seconds(3))
+        XCTAssertNotNil(ended, "the stream ends once the group is killed")
     }
 
     func testTerminateAllKillsWhatIgnoresSIGTERM() async throws {
@@ -246,12 +256,13 @@ final class PrivilegedTests: XCTestCase {
         let stream = runner.run(InstallCommand(
             "/bin/sh", ["-c", "trap '' TERM; echo $$ > '\(marker.path)'; while :; do /bin/sleep 0.1; done"]))
         let task = Task { try await self.collect(stream) }
-        _ = try await pid(in: marker)
+        let child = try await pid(in: marker)
+        defer { if kill(child, 0) == 0 { kill(child, SIGKILL) } }
         let began = ContinuousClock.now
         runner.terminateAll()
         XCTAssertGreaterThanOrEqual(ContinuousClock.now - began, .milliseconds(250))
-        let outputs = try await task.value
-        XCTAssertEqual(outputs.last, .exit(128 + SIGKILL))
+        let outputs = await finished(task, within: .seconds(3))
+        XCTAssertEqual(outputs?.last, .exit(128 + SIGKILL))
     }
 
     func testOutputLines() {

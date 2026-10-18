@@ -138,6 +138,14 @@ final class ProgressProtocolTests: XCTestCase {
         XCTAssertEqual(run.progress.downloads.count, InstallSession.maximumEntries)
     }
 
+    func testSpeedSamplesAreBoundedByCountAsWellAsTime() {
+        // Ten thousand events inside the time window.
+        let lines = [RecordedProgress.hello] + (1...10_000).map { RecordedProgress.download("m", Int64($0), 20_000) }
+        let run = session(lines, every: .microseconds(1))
+        XCTAssertEqual(run.samples["m"]?.count, InstallSession.maximumSamples)
+        XCTAssertNotNil(run.progress.downloads.first?.bytesPerSecond)
+    }
+
     func testNoOutputAtAllMeansAnOlderVoiced() {
         var run = InstallSession()
         run.receive(stderr: "error: unrecognized arguments: --json-progress")

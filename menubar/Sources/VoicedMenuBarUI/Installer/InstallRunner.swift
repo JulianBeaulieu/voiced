@@ -134,7 +134,11 @@ public final class SystemInstallRunner: InstallRunner {
 
     public func runPrivileged(_ mode: PrivilegedMode, user: String) async -> PrivilegedOutcome {
         #if !DEBUG
-            if let problem = BundleCheck.problem(at: Bundle.main.bundleURL) { return .damaged(problem) }
+            // It hashes the whole bundle; not on the main actor.
+            let bundle = Bundle.main.bundleURL
+            if let problem = await Task.detached(operation: { BundleCheck.problem(at: bundle) }).value {
+                return .damaged(problem)
+            }
         #endif
         var stdout: [String] = []
         var stderr: [String] = []
@@ -198,7 +202,7 @@ struct OutputLines {
 }
 
 /// A child started with `posix_spawn` in its own process group, so signals reach whatever it
-/// starts too, with only stdin (/dev/null), stdout and stderr open.
+/// starts too, in `/`, with only stdin (/dev/null), stdout and stderr open.
 private struct Spawned {
     let pid: pid_t
     let stdout: Int32
@@ -219,6 +223,8 @@ private struct Spawned {
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_adddup2(&actions, out[1], 1)
         posix_spawn_file_actions_adddup2(&actions, err[1], 2)
+        // Not the app's working directory, which the privileged run's root shell would start in.
+        posix_spawn_file_actions_addchdir_np(&actions, "/")
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
