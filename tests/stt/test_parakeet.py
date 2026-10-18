@@ -33,6 +33,7 @@ from voiced.engines.base import (
 )
 from voiced.engines.parakeet import (
     CONTEXT_SIZE,
+    FEED_MAX_S,
     HOLD_MAX_S,
     MAX_BACKLOG_S,
     PARAKEET_V3_LANGUAGES,
@@ -538,9 +539,42 @@ async def test_session_backlog_counts_the_call_in_flight() -> None:
     async with await engine.stream("en") as session:
         await session.add_audio(speech_like(20.0))
         await asyncio.to_thread(engine.libraries[0].started.wait, 2)  # in flight, none pending
-        assert session.backlog_s == pytest.approx(20.0)
+        # The running call's remainder under one pass is also in the planner.
+        assert 20.0 <= session.backlog_s < 20.0 + PASS_S
         await session.add_audio(speech_like(5.0))
-        assert session.backlog_s == pytest.approx(25.0)
+        assert 25.0 <= session.backlog_s < 25.0 + PASS_S
+
+
+async def test_session_over_the_bound_waits_for_the_call_in_flight() -> None:
+    engine = FakeEngine(delay_s=0.3)
+    async with await engine.stream("en") as session:
+        lib = engine.libraries[0]
+        await session.add_audio(speech_like(20.0))
+        await asyncio.to_thread(lib.started.wait, 2)
+        first_call = round(FEED_MAX_S * STT_SAMPLE_RATE) // PASS  # passes in one call
+        assert lib.calls < first_call
+        await session.add_audio(speech_like(11.0))  # 31 s: over the bound
+        assert lib.calls >= first_call
+        assert session.backlog_s <= MAX_BACKLOG_S
+
+
+async def test_session_feeds_a_burst_in_bounded_calls() -> None:
+    """A burst is fed a few seconds per model-thread call, so neither a waiting
+    ``add_audio`` nor ``close`` waits for all of it."""
+    engine = FakeEngine()
+    sizes: list[int] = []
+    async with await engine.stream("en") as session:
+        feed = session._adapter.feed
+
+        def spy(samples: NDArray[np.float32]) -> None:
+            sizes.append(len(samples))
+            feed(samples)
+
+        session._adapter.feed = spy  # type: ignore[method-assign]
+        await session.add_audio(speech_like(MAX_BACKLOG_S))
+        await session.finalize()
+    assert max(sizes) == round(FEED_MAX_S * STT_SAMPLE_RATE)
+    assert sum(sizes) == round(MAX_BACKLOG_S * STT_SAMPLE_RATE)
 
 
 async def test_session_rejects_one_chunk_over_the_backlog_bound() -> None:
@@ -552,8 +586,8 @@ async def test_session_rejects_one_chunk_over_the_backlog_bound() -> None:
 
 async def test_session_behind_waits_for_the_encoder_instead_of_failing() -> None:
     """A session that took the slot late gets everything its client sent
-    meanwhile at once: more than the bound in total, never more than the bound
-    unencoded, and nothing is lost."""
+    meanwhile at once: more than the bound in total, in chunks that never take
+    the backlog past the bound while the encoder is busy, and nothing is lost."""
     engine = FakeEngine(delay_s=0.002)
     total_s, chunk_s = 2.5 * MAX_BACKLOG_S, 1.0
     worst = 0.0

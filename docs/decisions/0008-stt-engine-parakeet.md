@@ -254,9 +254,19 @@ for both. The GPU has the throughput for about five real-time streams (a
 pass costs about a sixth of its 800 ms), but interleaving them would need
 per-session attention mode, a VAD per session and a slot policy that
 lets a stream share the GPU with others, which this ADR does not adopt.
-Waiting is bounded by the transport: a Wyoming client whose chunk queue stays
-full for `server.session_idle_s` (30 s by default) while the slot is busy gets
-`server_busy`; a WebSocket client waits in the queue (`stt.queue_depth`).
+Waiting is bounded by the transport. A Wyoming session waits for the slot
+while its handler's 64-chunk queue fills (about 4 s of Home Assistant's 64 ms
+chunks) and then for `server.session_idle_s` (30 s by default) with the queue
+full: about 34 s in all, after which it gets `server_busy`. Two satellites
+therefore both succeed up to utterances of about 34 s; with three, the third
+waits for the first utterance and the second's catch-up and fails once
+utterances pass about 31 s. A WebSocket client waits in the queue
+(`stt.queue_depth`).
+
+A session that is behind is fed to the model thread at most `FEED_MAX_S`
+(2 s) per call, so a waiting `add_audio` (and with it the transport's
+partials) and `close` wait for one call of about three passes, not for the
+whole backlog.
 
 ## Constants
 
@@ -267,7 +277,8 @@ full for `server.session_idle_s` (30 s by default) while the slot is busy gets
 | `PRE_ROLL_S` | 0.3 s | onset audio before Silero's 96 ms confirmation |
 | `HOLD_MAX_S` | 2.5 s | bounds how long a pause is held before the grid resumes |
 | `BATCH_CHUNK_S`, `BATCH_OVERLAP_S` | 20 s, 4 s | bound batch memory (see Consequences) |
-| `MAX_BACKLOG_S` | 30 s | bounds memory for a session that is behind; `add_audio` waits past it |
+| `MAX_BACKLOG_S` | 30 s | bounds memory for a session that is behind; `add_audio` waits past it (the backlog can exceed it by what the planner holds) |
+| `FEED_MAX_S` | 2 s | most audio per model-thread call, so waiting `add_audio` and `close` are not held for a whole backlog |
 | `SILENCE_FLOOR_DBFS` | -60 | batch only: skip near-silent input |
 | `LIBRARY_MIN_SAMPLES` | 257 | batch only, defensive (fact 3) |
 | `WARMUP_S` | 1.0 s | warm-up input length; not tuned |
