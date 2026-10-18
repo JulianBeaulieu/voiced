@@ -381,7 +381,42 @@ let installerShots = [
             await failed(installer)
         }),
     InstallerShot(name: "installer-refused", otherAccount: true),
+    InstallerShot(
+        name: "lifecycle-uninstall", leftovers: { appInstall(in: $0) },
+        steps: { $0.confirmUninstall() }),
+    InstallerShot(
+        name: "lifecycle-uninstalled", leftovers: { appInstall(in: $0) },
+        steps: { installer in
+            installer.confirmUninstall()
+            installer.uninstall(UninstallChoices(models: false, logs: true, config: false))
+            await until(installer) { if case .uninstalled = $0 { true } else { false } }
+        }),
+    InstallerShot(
+        name: "lifecycle-failed-uninstall", leftovers: { appInstall(in: $0, python: false) },
+        steps: { installer in
+            installer.confirmUninstall()
+            installer.uninstall(UninstallChoices())
+            await failed(installer)
+        }),
 ]
+
+/// An install the app made, in `home`: one environment, linked, with its Python unless
+/// `python` is false.
+func appInstall(in home: URL, python: Bool = true) {
+    let fileManager = FileManager.default
+    let state = home.appendingPathComponent(".voiced")
+    let environment = state.appendingPathComponent("envs/20261001T120000")
+    let bin = environment.appendingPathComponent("bin")
+    try? fileManager.createDirectory(at: bin, withIntermediateDirectories: true)
+    try? Data("#!/bin/sh\n".utf8).write(to: bin.appendingPathComponent("voiced"))
+    try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin.appendingPathComponent("voiced").path)
+    if python { try? Data().write(to: bin.appendingPathComponent("python")) }
+    try? fileManager.createDirectory(at: state.appendingPathComponent("bin"), withIntermediateDirectories: true)
+    try? fileManager.createSymbolicLink(
+        at: state.appendingPathComponent("bin/voiced"), withDestinationURL: bin.appendingPathComponent("voiced"))
+    let record = #"{"source": "app", "environment": "\#(environment.path)", "version": "0.1.0"}"#
+    try? Data(record.utf8).write(to: state.appendingPathComponent("install.json"))
+}
 
 @MainActor
 func renderInstaller(in scratch: URL) async {

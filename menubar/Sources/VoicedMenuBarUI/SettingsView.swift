@@ -62,6 +62,7 @@ public struct SettingsView: View {
     private let fixedPane: SettingsPane?
     @State private var newKey = ""
     @State private var confirmingRemoval = false
+    @Environment(\.openWindow) private var openWindow
 
     public init(
         model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, installer: Installer? = nil,
@@ -339,6 +340,7 @@ public struct SettingsView: View {
                     .truncationMode(.middle)
             }
         }
+        installSection
         Section {
             if let url = URL(string: "https://github.com/JulianBeaulieu/voiced") {
                 LabeledContent("Project") {
@@ -359,6 +361,68 @@ public struct SettingsView: View {
                 Button("Open Status Page") { Task { await model.open(.statusPage) } }
             }
         }
+    }
+
+    /// Who made the install, and what can be done with it: the Lifecycle actions for the
+    /// app's own (ADR 0018), the commands for one Homebrew or the command line manages.
+    @ViewBuilder
+    private var installSection: some View {
+        if let record = launch?.installRecord ?? model.installRecord {
+            let managed = installer?.managesInstall == true
+            Section {
+                LabeledContent("Installed by", value: Self.sourceName(record.source))
+                if let environment = record.environment {
+                    LabeledContent("Environment") {
+                        Text(environment)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                }
+                if let installer, managed {
+                    let working = installer.isWorking
+                    if case .differs = launch?.installMatch {
+                        Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
+                    }
+                    if let target = installer.rollbackTarget() {
+                        Button(target.version.map { "Roll Back to voiced \($0)…" } ?? "Roll Back…") {
+                            inInstaller(installer.rollBack)
+                        }
+                        .disabled(working)
+                    }
+                    Button("Repair voiced…") { inInstaller(installer.repair) }.disabled(working)
+                    Button("Uninstall voiced…") { inInstaller(installer.confirmUninstall) }.disabled(working)
+                } else {
+                    ForEach(ExternalInstall.commands(for: record.source), id: \.purpose) { entry in
+                        LabeledContent(entry.purpose) { CommandBlock(command: entry.command) }
+                    }
+                }
+            } header: {
+                Text("Install")
+            } footer: {
+                Text(
+                    managed
+                        ? "Moving this app to the Trash leaves the services running; uninstall here first."
+                        : "This install is not the app's, so the app only shows it; these commands change it."
+                )
+                .footnote()
+            }
+        }
+    }
+
+    nonisolated static func sourceName(_ source: InstallSource) -> String {
+        switch source {
+        case .app: "This app"
+        case .homebrew: "Homebrew"
+        case .cli: "The command line"
+        }
+    }
+
+    /// Starts a Lifecycle action and shows the installer window, where it runs.
+    private func inInstaller(_ action: () -> Void) {
+        action()
+        NSApplication.shared.activate()
+        openWindow(id: InstallerView.windowID)
     }
 
     // MARK: - Debug

@@ -59,7 +59,11 @@ which environment is active:
 `source` is `cli`, `homebrew` or `app`; `environment` the directory linked
 (null while a first install is in progress); `version` voiced's version in
 it; `lock_sha256` the SHA-256 of the dependency lock it was installed from;
-`python` its interpreter, resolved.
+`python` its interpreter, resolved; `previous` the environment that was
+active before it (null for none), which pruning keeps and the menu bar
+app rolls back to (ADR 0018). Re-running install in the active
+environment keeps `previous`; switching away from a legacy venv leaves it
+null, since that venv is removed.
 
 **Adopt or refuse.** One rule, `voiced.layout.claim`, decides for install
 and uninstall alike. A state directory is voiced's when it does not exist,

@@ -827,8 +827,13 @@ def install_steps(
             )
         )
     # Re-running install from the active environment keeps who made it (an
-    # app environment stays the app's).
+    # app environment stays the app's), and what it replaced.
     source = previous.source if unchanged and previous is not None else plan.origin
+    if unchanged and previous is not None:
+        replaced = previous.previous
+    else:
+        # A legacy venv is removed below, so there is nothing to go back to.
+        replaced = None if old is None or same_path(old, plan.state_dir) else old
 
     def manifest() -> None:
         write_manifest(
@@ -839,6 +844,7 @@ def install_steps(
                 version=found.get("version", ""),
                 lock_sha256=sha256_file(plan.lock) if plan.lock.is_file() else "",
                 python=os.path.realpath(plan.python_bin),
+                previous=replaced,
             ),
         )
 

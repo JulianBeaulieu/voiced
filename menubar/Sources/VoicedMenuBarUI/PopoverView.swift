@@ -85,14 +85,20 @@ public struct PopoverView: View {
     let launch: LaunchChecks?
     /// "Update voiced" on the version card of an install the app manages; nil hides it.
     let update: (() -> Void)?
+    /// "Repair voiced…" while an install the app manages does not answer; nil hides it.
+    let repair: (() -> Void)?
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
-    public init(model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil, update: (() -> Void)? = nil) {
+    public init(
+        model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil, update: (() -> Void)? = nil,
+        repair: (() -> Void)? = nil
+    ) {
         self.model = model
         self.canInstall = canInstall
         self.launch = launch
         self.update = update
+        self.repair = repair
     }
 
     public var body: some View {
@@ -103,7 +109,7 @@ public struct PopoverView: View {
                 .padding(.vertical, 12)
             Divider()
             if let launch {
-                LaunchCards(launch: launch, update: update)
+                LaunchCards(launch: launch, update: update.map(inInstaller))
             }
             if dashboard.showsInstallHelp {
                 InstallHelpView(openInstaller: installAction)
@@ -111,8 +117,13 @@ public struct PopoverView: View {
             } else if dashboard.isControllable {
                 ServiceList(model: model, dashboard: dashboard)
             } else {
-                MessageView(dashboard: dashboard, isConnecting: model.connection == .connecting)
-                    .padding(14)
+                VStack(alignment: .leading, spacing: 10) {
+                    MessageView(dashboard: dashboard, isConnecting: model.connection == .connecting)
+                    if let repairAction {
+                        Button("Repair voiced…", action: repairAction)
+                    }
+                }
+                .padding(14)
             }
             NoticeStrip(model: model) {
                 // The LAN warning's action: the key is set on the Network pane.
@@ -160,6 +171,23 @@ public struct PopoverView: View {
         // A translocated app asks to be moved first (its card says so).
         guard canInstall, launch?.allowsInstall ?? true else { return nil }
         return openInstaller
+    }
+
+    /// Repair, offered while an install the app made is in place but does not answer
+    /// (ADR 0018, Repair).
+    var repairAction: (() -> Void)? {
+        guard let repair, case .unreachable(installed: true, _) = model.connection,
+            launch?.installRecord?.source == .app
+        else { return nil }
+        return inInstaller(repair)
+    }
+
+    /// Starts `action` and shows the installer window, where it runs.
+    private func inInstaller(_ action: @escaping () -> Void) -> () -> Void {
+        {
+            action()
+            openInstaller()
+        }
     }
 
     private func openInstaller() {
@@ -632,7 +660,10 @@ struct LaunchCards: View {
         case .homebrew:
             return ("\(running) Homebrew manages this install; update it with:", "brew upgrade voiced", false)
         case .cli:
-            return ("\(running) This install was made from the command line, which also updates it.", nil, false)
+            return (
+                "\(running) This install was made from the command line; update it from your checkout with:",
+                ExternalInstall.commands(for: .cli).first?.command, false
+            )
         }
     }
 }

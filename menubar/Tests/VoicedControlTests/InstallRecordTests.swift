@@ -27,6 +27,7 @@ final class InstallRecordTests: XCTestCase {
             $0.install = .object([
                 "source": "app", "environment": "/Users/someone/.voiced/envs/20261018T120000",
                 "version": "0.1.0", "lock_sha256": "ABC", "python": "3.12.15",
+                "previous": "/Users/someone/.voiced/envs/20261001T120000",
             ])
         }
         defer { server.stop() }
@@ -37,7 +38,7 @@ final class InstallRecordTests: XCTestCase {
             hello.install,
             InstallRecord(
                 source: .app, environment: "/Users/someone/.voiced/envs/20261018T120000", version: "0.1.0",
-                lockSHA256: "ABC", python: "3.12.15"))
+                lockSHA256: "ABC", python: "3.12.15", previous: "/Users/someone/.voiced/envs/20261001T120000"))
     }
 
     func testHelloWithoutAnInstallHasNone() async throws {
@@ -64,7 +65,7 @@ final class InstallRecordTests: XCTestCase {
     // MARK: - install.json
 
     func testReadsTheFile() throws {
-        try Data(#"{"source": "homebrew", "environment": "/opt/homebrew/opt/voiced/libexec", "version": "0.2.0", "lock_sha256": "abc", "python": "3.12.15", "later": 1}"#.utf8)
+        try Data(#"{"source": "homebrew", "environment": "/opt/homebrew/opt/voiced/libexec", "version": "0.2.0", "lock_sha256": "abc", "python": "3.12.15", "previous": null, "later": 1}"#.utf8)
             .write(to: manifest)
         XCTAssertEqual(
             InstallRecord.read(stateDirectory: state),

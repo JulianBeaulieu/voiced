@@ -114,7 +114,9 @@ the same checkout with `~/voiced/menubar/Scripts/bundle.sh` and open
 `~/voiced/menubar/build/voiced.app`. It needs Swift 6 (Xcode 16 or newer)
 until there is a signed release, and it talks only to the watchdog's local
 control socket, never to the network. See
-[menubar/README.md](menubar/README.md).
+[menubar/README.md](menubar/README.md). Moving the app to the Trash leaves
+the services running: to remove an install the app made, use Settings >
+About > Uninstall voiced first.
 
 ## What you get
 

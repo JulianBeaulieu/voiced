@@ -169,13 +169,16 @@ class ManifestError(ValueError):
 @dataclass(frozen=True)
 class Manifest:
     """``install.json``. ``environment`` is None between claiming the
-    directory and linking the first environment."""
+    directory and linking the first environment. ``previous`` is the
+    environment that was active before it, which prune keeps: the app's
+    "Roll back" target (ADR 0018)."""
 
     source: Origin
     environment: Path | None
     version: str = ""
     lock_sha256: str = ""
     python: str = ""
+    previous: Path | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -184,6 +187,7 @@ class Manifest:
             "version": self.version,
             "lock_sha256": self.lock_sha256,
             "python": self.python,
+            "previous": None if self.previous is None else str(self.previous),
         }
 
     @classmethod
@@ -193,12 +197,17 @@ class Manifest:
         env = data.get("environment")
         if env is not None and not isinstance(env, str):
             raise ManifestError("environment is not a path")
+        # Optional: manifests written before it have none.
+        previous = data.get("previous")
+        if previous is not None and not isinstance(previous, str):
+            raise ManifestError("previous is not a path")
         return cls(
             source=data["source"],
             environment=None if env is None else Path(env),
             version=str(data.get("version", "")),
             lock_sha256=str(data.get("lock_sha256", "")),
             python=str(data.get("python", "")),
+            previous=Path(previous) if previous else None,
         )
 
 

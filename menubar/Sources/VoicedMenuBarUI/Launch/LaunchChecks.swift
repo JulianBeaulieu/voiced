@@ -103,6 +103,35 @@ public enum InstallMatch: Sendable, Equatable {
     }
 }
 
+/// What the user runs for an install another tool manages (ADR 0018, "An install that already
+/// exists"): the app shows these and never acts on such an install itself.
+public enum ExternalInstall {
+    public struct Command: Sendable, Equatable {
+        public var purpose: String
+        public var command: String
+    }
+
+    /// The commands that update, repair and uninstall an install made by `source`; none for
+    /// the app's own.
+    public static func commands(for source: InstallSource) -> [Command] {
+        switch source {
+        case .app:
+            []
+        case .homebrew:
+            [
+                Command(purpose: "Update", command: "brew upgrade voiced"),
+                Command(purpose: "Repair", command: "brew reinstall voiced"),
+                Command(purpose: "Uninstall", command: "voiced uninstall && brew uninstall voiced"),
+            ]
+        case .cli:
+            [
+                Command(purpose: "Update or repair", command: "voiced install --source <checkout>"),
+                Command(purpose: "Uninstall", command: "voiced uninstall"),
+            ]
+        }
+    }
+}
+
 /// The services' entries in System Settings > General > Login Items > Allow in the
 /// Background. The plists name the app in `AssociatedBundleIdentifiers`, so the entries show
 /// as voiced; when the user turns them off, launchd will not run the services.

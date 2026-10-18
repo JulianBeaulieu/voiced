@@ -1,6 +1,12 @@
 import Foundation
 
-/// The screens of the installer, in the order of ADR 0018's Flow.
+/// What the installer is doing: the first install, or one of ADR 0018's Lifecycle actions on
+/// an install the app manages. Each runs the same stages in its own order.
+public enum InstallerTask: Sendable, Equatable {
+    case install, update, rollBack, repair, uninstall
+}
+
+/// The screens of the installer, in the order of ADR 0018's Flow, then those of the Lifecycle.
 public enum InstallerPhase: Sendable, Equatable {
     case welcome
     /// Building the environment with the bundled uv: the current step's name, no bar.
@@ -11,10 +17,19 @@ public enum InstallerPhase: Sendable, Equatable {
     case approval(firewallOn: Bool)
     /// The administrator prompt and the privileged script.
     case approving(firewallOn: Bool)
+    /// `voiced-privileged check`: whether an update or repair needs the administrator.
+    case checking
     /// Waiting for the watchdog's hello.
     case starting
     case homeAssistant(HomeAssistantStage)
     case done
+    /// An update, rollback or repair is done: the services run this voiced.
+    case finished(version: String?)
+    /// What Uninstall removes, with the boxes for what it may also remove.
+    case confirmUninstall
+    case uninstalling(step: String)
+    /// What was kept, as chosen.
+    case uninstalled(UninstallChoices)
     case failed(InstallFailure)
     /// voiced is installed for another account; nothing else is offered.
     case refused(String)
@@ -39,7 +54,7 @@ public struct HomeAssistantInfo: Sendable, Equatable {
 /// runs the stage again; every stage is safe to repeat.
 public struct InstallFailure: Error, Sendable, Equatable {
     public enum Stage: Sendable, Equatable {
-        case environment, install, approval, starting
+        case environment, install, approval, starting, uninstall
     }
 
     public var stage: Stage
@@ -68,4 +83,24 @@ public struct WelcomeInfo: Sendable, Equatable {
 
     /// Unknown free space does not block: the install fails on its own if the disk fills.
     public var hasRoom: Bool { availableBytes.map { $0 >= requiredBytes } ?? true }
+}
+
+/// What Uninstall also removes besides the services and `~/.voiced`; all off by default, as
+/// in ADR 0006.
+public struct UninstallChoices: Sendable, Equatable {
+    public var models = false
+    public var logs = false
+    public var config = false
+
+    public init(models: Bool = false, logs: Bool = false, config: Bool = false) {
+        self.models = models
+        self.logs = logs
+        self.config = config
+    }
+}
+
+/// An environment the install kept, which "Roll back" returns to.
+public struct RollbackTarget: Sendable, Equatable {
+    public var environment: URL
+    public var version: String?
 }

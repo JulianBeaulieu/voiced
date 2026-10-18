@@ -26,9 +26,15 @@ public struct InstallerView: View {
             case .installing(let progress): InstallingScreen(progress: progress)
             case .approval(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: false)
             case .approving(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: true)
+            case .checking: CheckingScreen()
             case .starting: StartingScreen(warning: installer.warning)
             case .homeAssistant(let stage): HomeAssistantScreen(installer: installer, stage: stage)
             case .done: DoneScreen(warning: installer.warning, loginItem: loginItem, close: close)
+            case .finished(let version):
+                FinishedScreen(task: installer.task, version: version, warning: installer.warning, close: close)
+            case .confirmUninstall: ConfirmUninstallScreen(installer: installer, close: close)
+            case .uninstalling(let step): UninstallingScreen(step: step)
+            case .uninstalled(let choices): UninstalledScreen(choices: choices, close: close)
             case .failed(let failure): FailureScreen(installer: installer, failure: failure)
             case .refused(let message): RefusedScreen(message: message, close: close)
             }
@@ -119,6 +125,7 @@ public struct InstallerWindow: View {
         InstallerView(installer: installer, loginItem: loginItem) {
             dismissWindow(id: InstallerView.windowID)
         }
+        .onDisappear { installer.windowClosed() }
     }
 }
 
@@ -139,7 +146,9 @@ private struct WelcomeScreen: View {
                 Place(
                     symbol: "gearshape.2",
                     text: "Three background services run as you, and start at boot before anyone logs in.")
-                Place(symbol: "trash", text: "Moving this app to the Trash leaves the services running.")
+                Place(
+                    symbol: "trash",
+                    text: "Moving this app to the Trash leaves the services running; use Uninstall in Settings > About first.")
                 Divider().padding(.vertical, 2)
                 Text("Downloads about \(ByteText.size(welcome.downloadBytes)) and needs \(ByteText.size(welcome.requiredBytes)) free while it installs.")
                     .fixedSize(horizontal: false, vertical: true)
@@ -403,7 +412,125 @@ private struct FailureScreen: View {
                     .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
         } buttons: {
+            if failure.stage == .uninstall {
+                Button("Repair", action: installer.repair)
+            }
+            if installer.offersRollback, let target = installer.rollbackTarget() {
+                Button(target.version.map { "Roll Back to \($0)" } ?? "Roll Back", action: installer.rollBack)
+            }
             Button("Try Again", action: installer.retry)
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+}
+
+private struct CheckingScreen: View {
+    var body: some View {
+        Screen(
+            symbol: "gearshape.2", title: "Checking the background services",
+            sentence: "voiced asks for an administrator only if its background services need to change."
+        ) {
+            Working(text: "Checking")
+        } buttons: {
+            EmptyView()
+        }
+    }
+}
+
+/// An update, rollback or repair that ended with the services answering.
+private struct FinishedScreen: View {
+    let task: InstallerTask
+    let version: String?
+    let warning: String?
+    let close: () -> Void
+
+    var body: some View {
+        let running = version.map { "voiced \($0) is running." } ?? "voiced is running."
+        Screen(symbol: "checkmark.circle", tint: .green, title: title, sentence: running) {
+            VStack(alignment: .leading, spacing: 12) {
+                if task == .update {
+                    Text("The previous version is kept; Settings > About can roll back to it.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                WarningNotice(warning: warning)
+            }
+        } buttons: {
+            Button("Done", action: close)
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var title: String {
+        switch task {
+        case .update: "voiced is up to date"
+        case .rollBack: "voiced is rolled back"
+        case .repair: "voiced is repaired"
+        case .install, .uninstall: "voiced is running"
+        }
+    }
+}
+
+private struct ConfirmUninstallScreen: View {
+    let installer: Installer
+    let close: () -> Void
+    @State private var choices = UninstallChoices()
+
+    var body: some View {
+        Screen(
+            symbol: "trash", tint: .red, title: "Uninstall voiced",
+            sentence: "This stops and removes voiced's background services, which needs an administrator, and deletes voiced's own files in ~/.voiced."
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Also delete:").font(.callout.weight(.medium))
+                Toggle(
+                    "The downloaded speech models (about \(ByteText.size(installer.modelBytes)))",
+                    isOn: $choices.models)
+                Toggle("The logs in ~/Library/Logs/voiced", isOn: $choices.logs)
+                Toggle("The config file, with your settings and API key", isOn: $choices.config)
+                Text("What you leave unticked stays, so a later install reuses it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } buttons: {
+            Button("Cancel", action: close)
+                .keyboardShortcut(.cancelAction)
+            Button("Uninstall") { installer.uninstall(choices) }
+        }
+    }
+}
+
+private struct UninstallingScreen: View {
+    let step: String
+
+    var body: some View {
+        Screen(symbol: "trash", title: "Uninstalling voiced", sentence: "voiced removes its services, then its files.") {
+            Working(text: step)
+        } buttons: {
+            EmptyView()
+        }
+    }
+}
+
+private struct UninstalledScreen: View {
+    let choices: UninstallChoices
+    let close: () -> Void
+
+    var body: some View {
+        Screen(
+            symbol: "checkmark.circle", tint: .green, title: "voiced is uninstalled",
+            sentence: "Its background services and its files in ~/.voiced are gone."
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Still on this Mac:").font(.callout.weight(.medium))
+                Place(symbol: "app", text: "This app. Move it to the Trash to finish, or install again from it.")
+                if !choices.models { Place(symbol: "waveform.circle", text: "The speech models, in the Hugging Face cache.") }
+                if !choices.logs { Place(symbol: "doc.text", text: "The logs, in ~/Library/Logs/voiced.") }
+                if !choices.config { Place(symbol: "doc.badge.gearshape", text: "The config file, in ~/.config/voiced.") }
+            }
+        } buttons: {
+            Button("Done", action: close)
                 .keyboardShortcut(.defaultAction)
         }
     }

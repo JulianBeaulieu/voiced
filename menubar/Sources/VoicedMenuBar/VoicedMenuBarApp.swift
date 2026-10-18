@@ -29,7 +29,10 @@ struct VoicedMenuBarApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(model: model, canInstall: Install.installer != nil, launch: launch)
+            PopoverView(
+                model: model, canInstall: Install.installer != nil, launch: launch,
+                update: Install.installer.map { installer in { installer.update() } },
+                repair: Install.installer.map { installer in { installer.repair() } })
         } label: {
             MenuBarIcon(dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false)
                 .background(SettingsOpener { delegate.openSettings = $0 })
