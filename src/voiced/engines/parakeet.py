@@ -15,8 +15,9 @@ docs/decisions/0008-stt-engine-parakeet.md:
 * :class:`_LibraryStream` is the only code that touches ``StreamingParakeet``:
   encode one window, checkpoint and restore its state, and report the result
   with timestamps in session time.
-* :class:`ParakeetStreamSession` buffers ``add_audio`` (it never waits for the
-  encoder) and feeds both from one consumer task.
+* :class:`ParakeetStreamSession` buffers ``add_audio`` (it waits for the
+  encoder only when :data:`MAX_BACKLOG_S` is behind) and feeds both from one
+  consumer task.
 
 Every MLX call of an engine runs on the engine's :class:`ModelThread`. Entering
 the library's stream context switches the model to local attention globally;
@@ -105,8 +106,11 @@ HOLD_MAX_S = 2.5
 """How long a pause after a speculative call is held before it is given up on and
 the buffer goes on as if there had been no pause."""
 MAX_BACKLOG_S = 30.0
-"""A client streaming faster than real time must not grow the buffer without bound
-while holding the only inference slot; ``add_audio`` rejects audio past this."""
+"""Bound on the audio a session holds unencoded. ``add_audio`` waits for the
+encoder to catch up rather than go past it, so a session that is behind (it
+waited for the slot while its client kept streaming, or the client sends faster
+than real time) pushes back on its transport instead of growing the buffer.
+Only a single chunk larger than this is rejected."""
 WARMUP_S = 1.0
 SILENCE_FLOOR_DBFS = -60.0
 """Batch only: input with no 32 ms frame above this RMS is silence, nothing to
@@ -625,10 +629,11 @@ class ParakeetStreamSession(STTStreamSession):
         arr = _check_samples(samples)
         if len(arr) == 0:
             return
+        if len(arr) / _SR > MAX_BACKLOG_S:
+            raise EngineError(f"audio chunk over {MAX_BACKLOG_S:.0f}s; send smaller chunks")
         if self.backlog_s + len(arr) / _SR > MAX_BACKLOG_S:
-            raise EngineError(
-                f"streaming backlog over {MAX_BACKLOG_S:.0f}s; feed no faster than real time"
-            )
+            await self._drain()  # behind: wait for the encoder, pushing back on the caller
+            self._check_open()
         self._pending.append(arr)
         self._pending_samples += len(arr)
         self._samples_added += len(arr)

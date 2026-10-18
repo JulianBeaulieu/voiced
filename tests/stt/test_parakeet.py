@@ -536,13 +536,43 @@ async def test_session_runs_every_call_on_the_engine_thread() -> None:
 async def test_session_backlog_counts_the_call_in_flight() -> None:
     engine = FakeEngine(delay_s=0.3)
     async with await engine.stream("en") as session:
-        with pytest.raises(EngineError, match="backlog"):
-            await session.add_audio(speech_like(MAX_BACKLOG_S + 1))
         await session.add_audio(speech_like(20.0))
         await asyncio.to_thread(engine.libraries[0].started.wait, 2)  # in flight, none pending
         assert session.backlog_s == pytest.approx(20.0)
-        with pytest.raises(EngineError, match="backlog"):
-            await session.add_audio(speech_like(MAX_BACKLOG_S - 15.0))
+        await session.add_audio(speech_like(5.0))
+        assert session.backlog_s == pytest.approx(25.0)
+
+
+async def test_session_rejects_one_chunk_over_the_backlog_bound() -> None:
+    engine = FakeEngine()
+    async with await engine.stream("en") as session:
+        with pytest.raises(EngineError, match="chunk over"):
+            await session.add_audio(speech_like(MAX_BACKLOG_S + 1))
+
+
+async def test_session_behind_waits_for_the_encoder_instead_of_failing() -> None:
+    """A session that took the slot late gets everything its client sent
+    meanwhile at once: more than the bound in total, never more than the bound
+    unencoded, and nothing is lost."""
+    engine = FakeEngine(delay_s=0.002)
+    total_s, chunk_s = 2.5 * MAX_BACKLOG_S, 1.0
+    worst = 0.0
+    async with await engine.stream("en") as session:
+        for _ in range(round(total_s / chunk_s)):
+            await session.add_audio(speech_like(chunk_s))
+            worst = max(worst, session.backlog_s)
+        transcript = await session.finalize()
+    assert worst <= MAX_BACKLOG_S
+    assert transcript.duration_s == pytest.approx(total_s)
+    assert engine.libraries[0].encoded == grid(speech_like(total_s))
+
+
+async def test_session_waiting_for_the_encoder_reports_its_failure() -> None:
+    engine = FakeEngine(fail_on=2, delay_s=0.01)
+    async with await engine.stream("en") as session:
+        await session.add_audio(speech_like(MAX_BACKLOG_S - 1))
+        with pytest.raises(RuntimeError, match="encoder exploded"):
+            await session.add_audio(speech_like(2.0))
 
 
 async def test_session_reports_an_encoder_failure_once() -> None:
