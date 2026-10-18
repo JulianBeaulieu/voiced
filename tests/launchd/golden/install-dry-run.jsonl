@@ -7,5 +7,4 @@
 {"event": "step", "step": "link", "state": "planned", "shown": "link <tmp>/state/bin/voiced -> <tmp>/env/bin/voiced"}
 {"event": "step", "step": "manifest", "state": "planned", "shown": "write <tmp>/state/install.json"}
 {"event": "step", "step": "prune", "state": "planned", "shown": "remove environments in <tmp>/state/envs other than the new and the previous one"}
-{"event": "step", "step": "stage", "state": "planned", "shown": "write the plists and scripts to <tmp>/stage"}
-{"event": "done", "staging_dir": "<tmp>/stage"}
+{"event": "done"}

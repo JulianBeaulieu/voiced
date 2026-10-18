@@ -134,7 +134,7 @@ class WatchdogSupervisor:
         if not self.installed(spec.label):
             raise NotInstalled(
                 f"{spec.label} has no launchd plist; "
-                "run `voiced install` and the sudo script it prints"
+                "run `voiced install` and the sudo command it prints"
             )
         formula = self.dog.held_by_homebrew()
         if formula is not None:

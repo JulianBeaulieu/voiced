@@ -56,6 +56,16 @@ final class PrivilegedTests: XCTestCase {
         ((try? FileManager.default.contentsOfDirectory(atPath: scratch.appendingPathComponent("dest").path)) ?? []).sorted()
     }
 
+    /// One root script for the app and the CLI: the bytes compiled in are the file the voiced
+    /// package ships, which `voiced install` prints for sudo.
+    func testTheCompiledScriptIsThePackagedOne() throws {
+        let packaged = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("src/voiced/launchd/voiced-privileged.sh")
+        let compiled = Data(PackageResources.voiced_privileged_sh)
+        XCTAssert(compiled == (try Data(contentsOf: packaged)), "the compiled-in script differs from \(packaged.path)")
+    }
+
     func testTheCompiledScriptRendersTheThreePlists() async throws {
         let install = try await runScript("install", NSUserName())
         XCTAssertEqual(install.status, 0, install.output.joined(separator: "\n"))

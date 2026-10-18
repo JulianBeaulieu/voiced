@@ -524,9 +524,9 @@ struct InstallHelpView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
             CommandBlock(command: "voiced install --source ~/voiced")
-            Text("Then finish with administrator rights:")
+            Text("It ends with the one command to run with administrator rights.")
                 .foregroundStyle(.secondary)
-            CommandBlock(command: "sudo bash ~/.config/voiced/launchd/install-daemons.sh")
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

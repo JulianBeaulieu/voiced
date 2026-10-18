@@ -23,7 +23,7 @@ job run once and append a line to `$out/probe.out`. ADR 0018 has the results.
 
 ## PrivilegedInstall
 
-The privileged script that started here is now part of the app:
-`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`, compiled into the
-executable, and its test is `Scripts/test-privileged.sh` (see the menu bar
-README).
+The privileged script that started here is now
+`src/voiced/launchd/voiced-privileged.sh`, compiled into the app's
+executable and printed by `voiced install` for `sudo`; its test is
+`Scripts/test-privileged.sh` (see the menu bar README).

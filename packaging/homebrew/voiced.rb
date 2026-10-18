@@ -57,11 +57,11 @@ class Voiced < Formula
       in, as your user (never root). `brew services` cannot set that up, so:
 
         voiced install
-        sudo bash ~/.config/voiced/launchd/install-daemons.sh
 
-      The first command links ~/.voiced/bin/voiced to this formula, downloads
-      the models (about 2.7 GB) and stages the plists; the second is the only
-      step that needs root. Then `voiced status`.
+      It links ~/.voiced/bin/voiced to this formula, downloads the models
+      (about 2.7 GB) and prints one `sudo /bin/bash .../voiced-privileged.sh
+      install <you>` line: the only step that needs root, the same script the
+      menu bar app runs. Then `voiced status`.
 
       Upgrade with `brew upgrade --fetch-HEAD voiced` (until the first tagged
       release); once it has removed the old version, the watchdog moves the

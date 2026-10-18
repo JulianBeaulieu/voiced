@@ -19,7 +19,7 @@ brew install --HEAD --build-from-source "$USER/voiced-local/voiced"
 brew test "$USER/voiced-local/voiced"
 brew audit --strict --online "$USER/voiced-local/voiced"
 brew style "$USER/voiced-local/voiced"
-voiced install            # links ~/.voiced/bin/voiced to the keg, stages the plists
+voiced install            # links ~/.voiced/bin/voiced to the keg, prints the root step
 brew upgrade --fetch-HEAD "$USER/voiced-local/voiced"   # a plain upgrade is a no-op for HEAD
 voiced uninstall --yes    # after the sudo step it prints, if the daemons are installed
 brew uninstall voiced && brew untap "$USER/voiced-local"

@@ -75,8 +75,9 @@ the prompt reach it as `osascript` arguments (`on run argv`) and through
 `quoted form of`, never spliced into the source.
 
 `$SCRIPT` is compiled into the app's main executable
-(`menubar/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`, embedded
-with SwiftPM's `.embedInCode`), not a file in the bundle: a cask install puts the app in `/Applications`
+(`src/voiced/launchd/voiced-privileged.sh`, embedded with SwiftPM's
+`.embedInCode`; see "One script for the app and the CLI"), not a file in
+the bundle: a cask install puts the app in `/Applications`
 owned by the user, so any process of that user could edit a script file
 inside it. That the copy which runs is the signed one depends on the
 hardened runtime without the `allow-dyld-environment-variables` and
@@ -99,7 +100,7 @@ or show a look-alike dialog of its own. That is the same-user attacker ADR
 to type a password. What the design guarantees is that root never parses
 or runs anything a user process wrote.
 
-The script is `menubar/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh`:
+The script is `src/voiced/launchd/voiced-privileged.sh`:
 
 ```
 voiced-privileged install   USER    render the three plists and bootstrap them
@@ -119,9 +120,11 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
    `VOICED_CONFIG` (`<home>/.config/voiced/config.toml`),
    `PYTHONUNBUFFERED` and `VOICED_STDIO_LOG`
    (`<home>/Library/Logs/voiced/<service>`). No plist the user wrote is
-   parsed as root, so there is no allowlist to get wrong. These are the
-   plists `voiced install` stages, plus the bundle identifier: the test
-   compares them.
+   parsed as root, so there is no allowlist to get wrong. The CLI renders
+   no plist of its own for these daemons; a test runs the script and
+   compares what it writes with what the CLI expects: the labels it
+   addresses, the entry point it links, the config path it writes and the
+   environment the Metal probe gets too.
 2. **No `StandardOutPath` or `StandardErrorPath`**, as `voiced install`
    already writes them (ADR 0006): launchd opens those files as root, and
    `~/Library/Logs/voiced` belongs to the user, so a symlink planted there
@@ -130,8 +133,10 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
 3. Settings that used to travel in the plist environment (`HF_HOME`,
    `VOICED_ESPEAK_*`) come from the config file, which the services read
    at start (`[install] hf_home`); so does a custom `log_dir`, which then
-   wins over the default `VOICED_STDIO_LOG`. A custom config path or
-   `[launchd] label_prefix` is not supported by the app (see Lifecycle).
+   wins over the default `VOICED_STDIO_LOG`. A custom state directory,
+   config path or `[launchd] label_prefix` is supported neither by the app
+   (see Lifecycle) nor by the CLI's root step: `voiced install` then says
+   so and prints no `sudo` line.
 4. The user must exist and be a regular account: a uid from 500 to
    2147483647, which excludes `root`, system accounts and `nobody`
    (4294967294). The name is replaced by the account's own spelling
@@ -166,8 +171,9 @@ voiced-privileged check     USER    installed plists match and are loaded? (no r
 *Measured* with `menubar/Scripts/test-privileged.sh`, run as a
 normal user against a scratch destination with launchctl and the firewall
 skipped (the override is ignored when the script runs as root): the
-rendered plists equal those staged by `voiced install` on main (ADR 0017's
-`KeepAlive`, no log keys), plus the bundle identifier;
+rendered plists are this account's (label, `UserName`, `~/.voiced/bin/voiced`,
+the bundle identifier, mode 0644; pytest compares every key with what the
+CLI expects, ADR 0017's `KeepAlive` and no log keys included);
 `check` reports them up to date and notices a changed one. Refused with
 nothing written: user `root`, a uid below 500, `nobody`, an unknown user,
 a malformed name, extra arguments, a home owned by another account, a held
@@ -179,6 +185,93 @@ backslash and non-ASCII characters renders exactly. With a stand-in
 `socketfilterfw`, a Python under a home reached through a symlink is
 allowed, and one outside the home is left alone with exit 5. 26 of 26
 cases pass.
+
+#### One script for the app and the CLI
+
+The CLI used to stage the three plists in `~/.config/voiced/launchd/` and
+print a generated `install-daemons.sh` that copied them into
+`/Library/LaunchDaemons`. Those files were the user's: a process running as
+the user could rewrite a staged plist after the user had read the script
+(drop `UserName`, make `ProgramArguments` `/bin/sh -c ...`) and get code run
+as root at every boot. Its `uninstall-daemons.sh` had no owner check and no
+lock, so it removed another account's daemons, and both used bare tool
+names and no `umask`. The two root scripts had already drifted.
+
+So there is one: `voiced install` stages nothing for root and prints
+
+```sh
+sudo /bin/bash <active environment>/lib/python3.12/site-packages/voiced/launchd/voiced-privileged.sh install <user>
+```
+
+and `voiced uninstall` the same with `uninstall`; the dry run shows the
+line too. The path is the copy in the environment `~/.voiced/bin/voiced`
+points at, or the running package's when that environment has none of its
+own (an editable checkout), fully resolved: for Homebrew it names the
+versioned keg, so it is for running now, and `voiced uninstall` prints a
+fresh one later. Everything above holds for the CLI: root renders the plists from
+the user name, refuses system accounts and another account's install,
+takes the lock, and runs every tool by path; sudo resets the environment
+before bash starts. The file itself sits in an environment the user's
+account can write. That is the trust of any script a user chooses to run
+with `sudo`, and the same as the generated script before it; the docs say
+so and invite reading it first. No other account may share it: the CLI
+prints the line only when the script and every directory on its resolved
+path belong to the user or root and nobody else may write them, by mode
+bits or by an ACL allow entry granting a write, add or delete to anyone but
+the user or root. A group-writable directory passes only if its group holds
+no other account; `_mbsetupuser`, the setup assistant's account, is left
+out, because it is in `admin`, the group of Homebrew's directories, on
+every Mac, and on a stock Mac it is the only account other than root below
+uid 500 in `wheel`, `staff` or `admin`. A sticky directory passes on its
+mode bits. Checking the resolved path and printing it, rather than walking
+each link of a chain such as Homebrew's `opt`, is the simpler of the two
+and complete: the line root runs has no link left to swap. Otherwise, for
+example a Homebrew that another admin owns, it prints why and points to
+`voiced install --source`, which builds an environment of the user's own.
+A volume mounted with ownership ignored shows every file as the user's, so
+the check cannot judge an environment on one. What
+changes is that nothing else the user's account wrote is read as root. The
+Metal probe of ADR 0004 follows the same rule: its plist is inside the
+script `voiced doctor --metal-probe` writes, its label uses the fixed
+prefix whatever the config says, and its result file is removed and read
+as the user.
+`voiced install` deletes the files earlier releases staged, so a stale
+`install-daemons.sh` cannot be run by mistake.
+
+The script lives where both consumers can take it, `src/voiced/launchd/`,
+so the wheel ships it as package data without a build hook, and an
+editable checkout runs it in place. The menu bar target embeds
+`Installer/voiced-privileged.sh`, a relative symlink to that file.
+*Measured* with SwiftPM 6 (Xcode 26.3): `.embedInCode` follows the link;
+the generated `PackageResources.voiced_privileged_sh` holds exactly the
+file's bytes, an edit of the target file rebuilds the embedded
+copy incrementally, and `swift build -c release` and `bundle.sh` are
+unchanged. The wheel and sdist built by hatchling contain the file. The
+reverse (canonical in `menubar/`, force-included into the wheel) would
+need a `force-include` entry, a repo-relative fallback for editable
+installs, and would put a Python runtime file under the Swift tree; a copy
+kept equal by a test is a second file to edit. Guards: a Swift test
+compares the compiled-in bytes with the packaged file, a pytest checks the
+symlink is relative and resolves to it, and `test-privileged.sh` runs the
+script through the symlink.
+
+What the root step installs is fixed: `~/.voiced/bin/voiced`,
+`~/.config/voiced/config.toml`, the default labels. The settings that once
+reached the plists are read from the config file at start (item 3), so
+only three options remain that the root step does not follow: a state
+directory other than `~/.voiced` (`--state-dir`, `[install] venv_dir`), a
+config path other than the default (`VOICED_CONFIG`), and `[launchd]
+label_prefix`. `voiced install` with any of them still does the user-level
+install, for test harnesses and `voiced serve`, and says why it prints no
+root step; `voiced uninstall` likewise prints none, so a harness's
+`uninstall --state-dir` cannot be handed the line that removes the real
+daemons. `label_prefix` stays a runtime key: it names the labels that
+`status`, `start`, `stop`, `restart`, `doctor` and the watchdog address, so
+a harness that loads its own jobs under another prefix keeps working, and
+an install an earlier release made under one is still controlled.
+`voiced uninstall` points such an install out, since the script removes
+the default labels only; operations.md has the two commands per label.
+Nothing in this repository loads jobs under another prefix.
 
 The prompt says what it is for (`with prompt "voiced needs an
 administrator to install its background services."`). Cancelling it
@@ -436,8 +529,8 @@ Speech to Text and Text to Speech panes.
    configured ports are free (added here), downloads the models with byte
    progress and loads each engine once, and only then links
    `~/.voiced/bin/voiced` to its own environment, writes `install.json`
-   (`--origin app` makes its `source` `app`), prunes old environments and
-   stages the plists.
+   (`--origin app` makes its `source` `app`) and prunes old environments.
+   It stages nothing: the next step renders the plists as root.
 4. **Approval**: one administrator prompt runs `voiced-privileged install`.
 5. **Starting**: the app waits for the watchdog's control socket and its
    `hello` (up to two minutes; model loading is slow on a cold disk).
@@ -515,7 +608,8 @@ stderr (`voiced.launchd.progress`).
 - `{"event": "step", "step": "<id>", "state": "start|done", "shown": "..."}`
   for each of ADR 0017's `install_steps`, by their `Step.id` (`config`,
   `claim`, `check`, `ports`, `models`, `link`, `manifest`, `legacy`,
-  `prune`, `stage`; a `--source` build adds three `build` steps, which the
+  `prune`, and `unstage` when an earlier release left staged plists; a
+  `--source` build adds three `build` steps, which the
   app never runs); the app's own environment step is `env`. A step that
   does not apply is not in the list. The same list drives `--dry-run`, so
   `--dry-run --json-progress` gives the app the steps before it starts:
@@ -532,7 +626,7 @@ stderr (`voiced.launchd.progress`).
 - `{"event": "log", "line": "..."}`: each line the steps' child processes
   print (uv, the model download), as it comes; of a progress bar's `\r`
   redraws, only the last state of the line.
-- The last line is `{"event": "done", "staging_dir": "..."}` or
+- The last line is `{"event": "done"}` or
   `{"event": "error", "step": "...", "message": "..."}`, and the exit code
   agrees with it (0 only with `done`). `step` is the step that was running,
   or null for a refusal before any step (another account's state
@@ -648,8 +742,8 @@ uninstall`, the app offers Repair first and Uninstall after it.
 
 Moving voiced.app to the Trash leaves voiced running; the daemons do not
 need the app. The welcome text and the README say: use Uninstall in
-Settings first. Without the app, `voiced uninstall` (or its printed sudo
-script) still works from a terminal.
+Settings first. Without the app, `voiced uninstall` and the `sudo` line it
+prints, the same script, still work from a terminal.
 
 The cask adds:
 
@@ -778,10 +872,8 @@ and says why in one line. If it does not need something, it never asks.
   without `lsof` a port in use is said, not refused. Minutes pass between
   the check and the services starting, so it catches the common case, not
   a race.
-- The sudo script printed by the CLI stays for terminal users. Rather than
-  a second hand-written root script with the firewall step and the same
-  checks, the CLI will run the app's privileged script (`install|uninstall
-  USER`), which renders the plists as root; that is a separate change.
+- The CLI prints a `sudo` line for the same privileged script; it has no
+  root script of its own (see "One script for the app and the CLI").
 
 ### App side
 
@@ -798,9 +890,9 @@ and says why in one line. If it does not need something, it never asks.
   Debug pane, "What's new", and the Update, Roll back, Repair and
   Uninstall actions.
 - The release workflow above.
-- `InstallProbe` stays as it is: the plists still come from `voiced
-  install`, and the state directory, where the socket lives, is always
-  `~/.voiced`.
+- `InstallProbe` stays as it is: the plists come from the privileged
+  script whichever path ran it, and the state directory, where the socket
+  lives, is always `~/.voiced`.
 
 ## Alternatives considered
 

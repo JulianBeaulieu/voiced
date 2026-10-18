@@ -215,6 +215,17 @@ uses [Semantic Versioning](https://semver.org/).
   `HF_ENDPOINT`, like `HF_HOME`: the models come from the hub into the
   cache `[install] hf_home` names.
 - The `tts` extra needs `huggingface-hub` 1.1 or later.
+- `voiced install` no longer writes plists or `install-daemons.sh` to
+  `~/.config/voiced/launchd/`; it removes what earlier releases left there
+  and prints one line, `sudo /bin/bash <environment>/.../voiced/launchd/voiced-privileged.sh
+  install <user>`, which runs the privileged script the menu bar app runs
+  (ADR 0018). `voiced uninstall` prints the same with `uninstall`. The
+  `--staging-dir` flag is gone, and the `done` progress event no longer
+  carries `staging_dir`. An install with another state directory, config
+  path or `[launchd] label_prefix` gets no root step; `label_prefix` now
+  only names the labels the CLI and the watchdog address. `voiced doctor
+  --metal-probe` writes one script, `~/.config/voiced/metal-probe.sh`, with
+  the probe's plist inside it. Existing installs: run the printed line once.
 - The LaunchDaemon plists carry only a fixed environment (`HOME`, `PATH`,
   `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG` for the default
   log directory), the same values the menu bar app's privileged step
@@ -248,6 +259,20 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Root no longer copies files the user's account can write. The CLI's
+  generated `install-daemons.sh` copied plists staged in
+  `~/.config/voiced/launchd/` into `/Library/LaunchDaemons` unchecked, so
+  any process of the user's could rewrite one after the script was read
+  and get a program run as root at boot; its `uninstall-daemons.sh` removed
+  another account's daemons. Both are replaced by the menu bar app's
+  privileged script, which renders the plists as root from the user name
+  alone, refuses system accounts and another account's install, takes a
+  lock and calls every tool by path. The CLI prints its line, with the
+  path resolved, only when no account but the user's and root can change
+  the script or a directory on its path, by mode bits or ACL (not, for
+  example, from a Homebrew another admin owns). The
+  Metal probe's script carries its plist, uses the fixed label prefix, and
+  touches its result file only as the user.
 - The LaunchDaemon plists no longer set `StandardOutPath` or
   `StandardErrorPath`. launchd may open those files as root in
   the user-owned log directory, so a symlink planted there could make root
@@ -255,7 +280,7 @@ uses [Semantic Versioning](https://semver.org/).
   `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
   a symlink, and point their stdout and stderr at them (`VOICED_STDIO_LOG`
   in the plist). Existing installs keep the old plists, and the exposure,
-  until `voiced install` and its sudo script are run again.
+  until the root step `voiced install` prints is run again.
 - Uploads can no longer make ffmpeg open other files: ffmpeg reads the
   upload through an inherited descriptor and may open nothing else, so an
   `ffconcat` list or playlist is refused. Upload files are anonymous and

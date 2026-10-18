@@ -70,8 +70,7 @@ def running_env(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 def _argv(tmp_path: Path, *extra: str) -> list[str]:
-    state, stage = str(tmp_path / "state"), str(tmp_path / "stage")
-    return ["install", "--json-progress", "--state-dir", state, "--staging-dir", stage, *extra]
+    return ["install", "--json-progress", "--state-dir", str(tmp_path / "state"), *extra]
 
 
 @pytest.mark.usefixtures("running_env")
@@ -81,7 +80,7 @@ def test_dry_run_lists_the_steps(
     assert main(_argv(tmp_path, "--dry-run")) == 0
     out, err = capsys.readouterr()
     _compare(_normalise(out, tmp_path), "install-dry-run.jsonl")
-    assert "(would be written)" in err and "<plist" in err  # the human output
+    assert "No root step" in err  # the human output: a scratch state dir
     assert not (tmp_path / "state").exists()
 
 
@@ -115,7 +114,7 @@ def test_a_run_reports_every_step_and_ends_with_done(
     out, err = capsys.readouterr()
     _compare(_normalise(out, tmp_path), "install-run.jsonl")
     assert "stt: engine=fake model=m" in err  # the step's output is on stderr too
-    assert "sudo bash" in err
+    assert "Run `voiced serve` yourself" in err
 
 
 def test_a_failed_step_ends_with_its_error(

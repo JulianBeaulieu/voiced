@@ -10,16 +10,25 @@ yet; `voiced.computer` is the intended one if the project takes off.
 ## Decision
 
 The prefix is `io.github.julianbeaulieu.voiced`, giving the labels
-`io.github.julianbeaulieu.voiced.stt`, `.tts` and `.watchdog`. It is defined
-once, as `DEFAULT_LAUNCHD_LABEL_PREFIX` in `voiced/config.py`, and is also a
-config key (`[launchd] label_prefix`) so an installation can override it. All
-code derives labels through `settings.launchd.label(service)`; nothing else
-may spell the prefix out.
+`io.github.julianbeaulieu.voiced.stt`, `.tts` and `.watchdog`. Python code
+takes it from `DEFAULT_LAUNCHD_LABEL_PREFIX` in `voiced/config.py` and
+derives labels through `settings.launchd.label(service)`. The privileged
+script that installs the daemons for the CLI and the menu bar app
+(`voiced/launchd/voiced-privileged.sh`, ADR 0018) spells it too, since its
+only input is the user name; a test keeps the two equal.
+
+`[launchd] label_prefix` overrides the prefix for what the CLI and the
+watchdog address (status, start, stop, restart, doctor), not for what is
+installed: the root step installs the default labels only, and `voiced
+install` prints no root step under another prefix. Amended by ADR 0018;
+until then the key also changed the labels of the plists `voiced install`
+staged.
 
 ## Planned change
 
 When a domain is registered the default becomes `computer.voiced` (labels
 `computer.voiced.stt` and so on). That is a one-constant change plus a
-migration note in the installer: `uninstall` must recognise and boot out
-plists with the old prefix before `install` writes new ones. Keep the old
-prefix in the uninstall search list for at least one release after the switch.
+migration in the privileged script: its `install` and `uninstall` must
+recognise and boot out plists with the old prefix before `install` writes
+new ones. Keep the old prefix in its list for at least one release after the
+switch.

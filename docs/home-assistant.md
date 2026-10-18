@@ -33,11 +33,11 @@ machine cannot reach it. In `~/.config/voiced/config.toml`:
 bind = "0.0.0.0"
 ```
 
-Restart both services so they pick it up. The install script unloads and
-reloads the daemons and is safe to re-run:
+Restart both services so they pick it up; the services read the config when
+they start, so this needs no root:
 
 ```sh
-sudo bash ~/.config/voiced/launchd/install-daemons.sh
+voiced restart all
 ```
 
 Read the security note in the

@@ -21,8 +21,6 @@ CASES: list[tuple[list[str], dict[str, Any]]] = [
             "3.12",
             "--source",
             "/src/voiced",
-            "--staging-dir",
-            "/tmp/stage",
             "--skip-models",
         ],
         {
@@ -30,7 +28,6 @@ CASES: list[tuple[list[str], dict[str, Any]]] = [
             "state_dir": Path("/opt/v"),
             "python": "3.12",
             "source": Path("/src/voiced"),
-            "staging_dir": Path("/tmp/stage"),
             "skip_models": True,
         },
     ),

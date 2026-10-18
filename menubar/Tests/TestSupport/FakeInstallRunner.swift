@@ -144,7 +144,7 @@ public enum RecordedProgress {
         #"{"event": "error", "step": "\#(step)", "message": "\#(message)"}"#
     }
 
-    public static let done = #"{"event": "done", "staging_dir": "/Users/someone/.config/voiced/launchd"}"#
+    public static let done = #"{"event": "done"}"#
 
     private static let env = "/Users/someone/.voiced/envs/20261018T120000"
     /// Each step's `shown`, as the CLI words them.
@@ -157,7 +157,6 @@ public enum RecordedProgress {
         "link": "link /Users/someone/.voiced/bin/voiced -> \(env)/bin/voiced",
         "manifest": "write /Users/someone/.voiced/install.json",
         "prune": "remove environments in /Users/someone/.voiced/envs other than the new and the previous one",
-        "stage": "write the plists and scripts to /Users/someone/.config/voiced/launchd",
     ]
 
     public static func step(_ id: String, _ state: String) -> String {
@@ -186,5 +185,5 @@ public enum RecordedProgress {
             #"{"event": "download", "model": "\#(kokoro)", "bytes": 355300000, "total": 355300000, "file": "x"}"#,
             #"{"event": "log", "line": "loaded parakeet"}"#,
             step("models", "done"),
-        ] + steps("link", "manifest", "prune", "stage") + [done]
+        ] + steps("link", "manifest", "prune") + [done]
 }

@@ -51,6 +51,13 @@ if (( ! dirty )) && [ -n "$(git -C "$repo_dir" status --porcelain)" ]; then
     echo "bundle.sh: $repo_dir has uncommitted changes; commit them, or pass --dirty" >&2
     exit 1
 fi
+# The privileged script is compiled in through a symlink; a checkout without symlinks
+# (core.symlinks=false) has a file holding the link's target path instead.
+privileged="$package_dir/Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh"
+if [ "$(head -n 1 "$privileged")" != '#!/bin/bash' ]; then
+    echo "bundle.sh: $privileged is not the script (check out with symlinks)" >&2
+    exit 1
+fi
 app="$out_dir/voiced.app"
 downloads="$package_dir/build/downloads"
 

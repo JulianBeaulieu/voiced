@@ -48,9 +48,10 @@ ENGINE_ENV: dict[str, tuple[str, str]] = {  # variable -> (section, key) that se
 # cleared, so the installer and the services agree on one cache and the hub.
 CLEARED_HF_ENV = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT")
 
-# Single source of truth for the launchd label prefix. Changing this constant
-# (or the ``[launchd] label_prefix`` config key) is all that is needed to move
-# to a different reverse-DNS prefix such as ``computer.voiced`` later.
+# The launchd label prefix. The privileged script (voiced/launchd/
+# voiced-privileged.sh) spells it too, since its only input is the user name;
+# a test keeps the two equal. ``[launchd] label_prefix`` changes which labels
+# the CLI and the watchdog address, not what the root step installs (ADR 0003).
 DEFAULT_LAUNCHD_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
 
 LogLevel = Literal["debug", "info", "warning", "error"]
