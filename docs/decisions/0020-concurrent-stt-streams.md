@@ -94,8 +94,8 @@ thread**, over one set of weights, one stream state per session.
   `finalize` every call of the session ranks `WAITED`. While more than a
   pass is left to start (a backlog: the session waited for a slot, or its
   client sent faster than real time), it keeps running one call per job, so
-  other sessions' calls at a pause still go between them rather than wait
-  seconds for the whole backlog. The rest, the jobs planned but not started
+  other sessions' calls of any rank go between them, at most one per session
+  per turn, rather than wait seconds for the whole backlog. The rest, the jobs planned but not started
   and the audio not yet planned, about one pass, it queues as one call
   before its first await, which runs them, flushes the planner and returns
   the result. That call is queued behind the session's call in flight
@@ -182,6 +182,58 @@ utterances 1 s apart gave the second a 4.5 s finalize. Now
 `tests/e2e/test_concurrency.py::test_two_satellites_talking_at_once`
 streams two Wyoming satellites 1 s apart (10 s utterances ending in 0.4 s
 of silence) and requires both transcripts within 150 ms of `AudioStop`.
+
+### On the Mac Studio
+
+The target machine (M1 Max, 24-core GPU, 32 GB, as in ADR 0019),
+`scripts/bench.py` with its defaults (`--streams 3`) against the installed
+services, main (25226af) and this change (ae34627, before the planner change
+below) alternating, two rounds each:
+
+| Metric | main | This change | Target |
+|---|---|---|---|
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | worst 133 to 150 ms | worst 131 to 135 ms | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | worst 137 ms | worst 133 to 137 ms | <= 150 ms worst |
+| Streaming finalize, 3 clients at once, 64 ms chunks, 200 ms trailing silence | median 3 / p95 291 to 297 / worst 798 to 802 ms | median 3 / p95 93 to 96 / worst 115 to 129 ms | <= 150 ms worst |
+| Streaming finalize, 3 clients at once, 64 ms chunks, 0 ms trailing silence | median 124 to 125 / p95 448 to 480 / worst 985 to 1011 ms | median 126 to 127 / p95 187 to 203 / worst 218 to 233 ms | <= 150 ms worst |
+| Kokoro first audio while another client streams to STT | worst 235 to 263 ms | worst 233 to 244 ms | <= 200 ms |
+
+The three-client rows are n=96 per round. On main the second and third
+clients wait for the first, so their finalize is their catch-up: up to
+about a second. With this change the window row is within target in both
+rounds (no finalize over 150 ms in 192), and push-to-talk is the known miss
+above. The one-client rows are unchanged within their spread (main's 150 ms is one
+finalize of 32 in one round), and Kokoro first audio while another
+client streams stays the known miss of ADR 0019.
+
+## The planner decides frame by frame
+
+Interleaving made a latent dependence visible. The planner decided what to
+encode once per `feed` call, and a few of its decisions used the position of
+the last sample fed rather than of the last frame the detector had judged:
+
+- the call at a pause encoded everything fed so far, including up to a frame
+  the detector had not judged and the rest of the chunk that held the first
+  silent frame, and could exceed a pass by up to a frame;
+- after a long pause the buffer was cut to the last pass before the position
+  fed, so when speech resumed within that pass the grid restarted at a point
+  set by where a chunk ended, not `PRE_ROLL_S` before the speech;
+- when one call judged both the end of a pass and the first silent frame,
+  the order of the two checks decided whether the speech's last pass was a
+  regular call or the call at a pause.
+
+While feeds were the client's chunks this made the transcript a function of
+the audio and the chunk size, which ADR 0008 measured. With several sessions,
+how much audio one plan takes depends on timing (a session that is behind
+plans up to a pass at once, cut wherever a pass ends), so two runs of the
+same audio could keep different windows: CI caught a session whose grid after
+a pause differed from its solo run. The planner now takes its decisions after
+each judged 32 ms frame, from judged positions only. The call at a pause ends
+with the first frame judged silent, and a pause cut to a pass restarts the
+grid before the next speech. `test_what_is_encoded_does_not_depend_on_where_the_audio_is_cut`
+feeds eight clips with room noise in pieces cut anywhere and requires the
+same calls on the same windows as feeding them in chunks; the planner before
+this change failed it for five of the eight.
 
 ## Why not batching
 

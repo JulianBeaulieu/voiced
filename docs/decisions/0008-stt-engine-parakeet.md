@@ -106,9 +106,10 @@ Streaming is three pieces in `voiced.engines.parakeet`:
     before the next speech frame, the same lead-in as at speech start. A long
     pause keeps at most one pass of audio meanwhile.
   - *Speculative final call.* When the last 32 ms frame is not speech (Silero's
-    per-frame decision, `Endpointer.last_speech_s`) and less than a pass is
-    buffered, the planner checkpoints the stream and encodes the buffer at
-    once, zero-padded to a pass. The buffer is kept: if speech resumes, or the
+    per-frame decision, `Endpointer.last_speech_s`), the planner checkpoints
+    the stream and encodes the buffer up to the end of that frame at once,
+    zero-padded to a pass. (Until ADR 0020 it encoded everything fed so far,
+    so the call depended on where the last chunk ended.) The buffer is kept: if speech resumes, or the
     pause (measured from the last speech frame) outgrows `HOLD_MAX_S` (2.5 s),
     the checkpoint is restored and the grid goes on as if there had been no
     pause, so the padding never becomes

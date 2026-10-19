@@ -335,12 +335,19 @@ class _Planner:
       its 32 ms frames is speech. A pass with none is never encoded (the model
       invents words in silence): the grid restarts :data:`PRE_ROLL_S` before the
       next speech, and a long pause keeps at most one pass of audio meanwhile.
-    * **Pause.** When the latest 32 ms frame is not speech and less than a pass
-      is buffered, a checkpoint and one call over the buffer, padded to a pass,
-      run at once, so the hypothesis is complete before the endpointer's silence
-      window elapses. The buffer is kept. If speech resumes, or the pause outgrows
-      :data:`HOLD_MAX_S`, the checkpoint is restored and the buffer goes on as if
-      there had been no pause; at finalize the speculative call is the last one.
+    * **Pause.** When the latest 32 ms frame is not speech, a checkpoint and one
+      call over the buffer up to the end of the first frame after the last
+      speech (always under a pass), padded to a pass, run at once, so the
+      hypothesis is complete before the endpointer's silence window elapses.
+      The buffer is kept. If speech resumes, or the pause outgrows
+      :data:`HOLD_MAX_S`, the checkpoint is restored and the buffer goes on as
+      if there had been no pause; at finalize the speculative call is the last
+      one.
+
+    What is encoded depends on the audio alone, never on how it was cut into
+    ``feed`` calls (the client's chunks, or how much a session that is behind
+    plans at once): windows are decided from judged frames, and every position
+    is the start of speech, a pass after one, or a frame boundary.
     """
 
     def __init__(self, speech: Endpointer) -> None:
@@ -350,6 +357,7 @@ class _Planner:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._start = 0  # session position of _buffer[0]
         self._speculating = False
+        self._regrid = False  # the buffer held no speech: restart before the next
         self._speech_ends: list[int] = []  # where frames judged speech end, from _start on
         # enough history to reach back from a speech-start event to the pre-roll
         self._history = _PRE_ROLL + round(speech.min_speech_s * _SR) + 2 * _VAD_FRAME
@@ -359,26 +367,34 @@ class _Planner:
         return len(self._buffer)
 
     def feed(self, samples: NDArray[np.float32]) -> list[_Step]:
-        before = self._fed
-        events = self._detect(samples)
-        self._fed += len(samples)
         self._buffer = np.concatenate([self._buffer, samples])
+        steps: list[_Step] = []
+        for events, before in self._frames(samples):
+            steps += self._decide(events, before)
+        return steps
+
+    def _decide(self, events: list[EndpointEvent], before: int) -> list[_Step]:
+        """The steps due once one more 32 ms frame is judged (it ends at
+        :meth:`_heard`; ``before`` is where it starts). Taken frame by frame
+        from judged positions only, so they do not depend on how the audio was
+        cut into ``feed`` calls."""
         if not self._started:
             onset = next((e for e in events if e.kind == "speech_start"), None)
             if onset is None:
-                self._drop_before(self._fed - self._history)
+                self._drop_before(self._heard() - self._history)
                 return []
             self._started = True
             self._drop_before(round(onset.speech_start_s * _SR) - _PRE_ROLL)
         steps: list[_Step] = []
         if self._speculating:
-            if self._last_speech() <= before and self._fed - self._last_speech() <= _MAX_HELD:
+            if self._last_speech() <= before and self._heard() - self._last_speech() <= _MAX_HELD:
                 return []  # the pause goes on
             steps.append("restore")
             self._speculating = False
         steps += self._due()
         if self._has_speech() and self._at_pause():
-            steps += ["checkpoint", _Encode(_pad(self._buffer), self._start, speculative=True)]
+            window = self._buffer[: self._last_speech() + _VAD_FRAME - self._start]
+            steps += ["checkpoint", _Encode(_pad(window), self._start, speculative=True)]
             self._speculating = True
         return steps
 
@@ -386,6 +402,7 @@ class _Planner:
         """The calls still needed for the final hypothesis."""
         steps: list[_Step] = []
         if not self._speculating:
+            self._regrid_at_speech()
             while self._has_speech():
                 if self._speech_in(self._start):
                     steps.append(_Encode(_pad(self._buffer[:_PASS]), self._start))
@@ -398,6 +415,7 @@ class _Planner:
 
     def _due(self) -> list[_Step]:
         steps: list[_Step] = []
+        self._regrid_at_speech()
         # A window is decided once the detector has judged all of its frames, so
         # the decision does not depend on how the audio was chunked.
         while self._start + _PASS <= self._heard() and self._has_speech():
@@ -406,22 +424,37 @@ class _Planner:
                 self._drop_before(self._start + _PASS)
             else:
                 self._skip_to_speech()
-        if not self._has_speech():
-            self._drop_before(self._fed - _PASS)
+        if not self._has_speech() and self._heard() - _PASS > self._start:
+            # Silence fills more than a pass: keep one, and restart the grid
+            # before the next speech, as at speech start.
+            self._drop_before(self._heard() - _PASS)
+            self._regrid = True
         return steps
 
-    def _detect(self, samples: NDArray[np.float32]) -> list[EndpointEvent]:
-        """Feed the detector frame by frame, recording where each speech frame ends."""
-        events: list[EndpointEvent] = []
+    def _regrid_at_speech(self) -> None:
+        """After a long pause was cut to one pass, the grid restarts
+        :data:`PRE_ROLL_S` before the next speech frame, as at speech start. The
+        pass kept reaches back that far: that frame was judged after the cut,
+        so it starts at or after the cut's frame, and its onset less the
+        pre-roll is inside the pass."""
+        if self._regrid and self._has_speech():
+            self._regrid = False
+            self._skip_to_speech()
+
+    def _frames(self, samples: NDArray[np.float32]) -> Iterator[tuple[list[EndpointEvent], int]]:
+        """Feed the detector frame by frame, recording where each speech frame
+        ends; after each frame it judged, its events and where the frame began."""
         i, short = 0, self._fed - self._heard()  # samples the detector holds back
         while i < len(samples):
             n = min(_VAD_FRAME - short, len(samples) - i)
-            last = self._speech.last_speech_s
-            events += self._speech.feed(samples[i : i + n])
+            before, last = self._heard(), self._speech.last_speech_s
+            events = self._speech.feed(samples[i : i + n])
+            self._fed += n
             if self._speech.last_speech_s != last:
                 self._speech_ends.append(self._last_speech())
+            if self._heard() > before:
+                yield events, before
             i, short = i + n, 0
-        return events
 
     def _heard(self) -> int:
         """Session position up to which the detector has judged every frame."""
@@ -675,7 +708,7 @@ class _StepRunner:
         self,
         library: _Library,
         planner: _Planner,
-        session_rank: Callable[[], _Rank] = lambda: _Rank.AHEAD,
+        session_rank: Callable[[], _Rank],
     ) -> None:
         self._library = library
         self._planner = planner
@@ -776,12 +809,18 @@ class ParakeetStreamSession(STTStreamSession):
         self._pending: deque[NDArray[np.float32]] = deque()
         self._pending_samples = 0
         self._jobs: deque[_Job] = deque()  # planned, not yet started
-        self._planned_samples = 0  # what those jobs and the running one encode
+        # What those jobs and the running one encode, kept as a plain counter
+        # for backlog_s, which the model thread reads; _not_started() is the
+        # same without the running job, read on the loop only.
+        self._planned_samples = 0
         self._samples_added = 0
         self._consumer: asyncio.Task[None] | None = None
         self._progress = asyncio.Event()  # set after every call the consumer makes
-        self._closed = False  # finalize or close was called
-        self._handed_over = False  # finalize took the rest: the consumer stops
+        # The session's lifecycle: open, then closed (finalize or close: every
+        # call ranks WAITED, no more audio), then handed over (finalize took
+        # the rest as one call, or close discards it: the consumer stops).
+        self._closed = False
+        self._handed_over = False
 
     @property
     def passes(self) -> int:
@@ -839,7 +878,8 @@ class ParakeetStreamSession(STTStreamSession):
                     jobs = self._adapter.plan(self._take(_PASS))
                     self._jobs.extend(jobs)
                     self._planned_samples += sum(job.samples for job in jobs)
-                    await asyncio.sleep(0)  # a backlog of silence plans no job
+                    self._progress.set()  # a backlog of silence plans no job,
+                    await asyncio.sleep(0)  # but frees room all the same
                     continue
                 job = self._jobs.popleft()
                 try:
@@ -869,7 +909,8 @@ class ParakeetStreamSession(STTStreamSession):
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
     def _not_started(self) -> int:
-        """Samples pending or planned into jobs not yet started."""
+        """Samples pending or planned into jobs not yet started: unlike
+        ``_planned_samples``, without the job running now. Loop only."""
         return self._pending_samples + sum(job.samples for job in self._jobs)
 
     def partial(self) -> str:

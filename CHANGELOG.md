@@ -185,6 +185,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- What the Parakeet planner encoded could depend on where the audio was cut,
+  not only on the audio: the call at a pause encoded everything fed so far
+  (up to a frame past the last judged one, so sometimes more than a pass),
+  and after a long pause the grid could restart at a point set by where a
+  chunk ended. Each was rare with a client's fixed chunk size; with several
+  streams the amount planned at once depends on timing, so a session could
+  keep different windows than alone. Decisions are now taken after each
+  judged 32 ms frame from judged positions only (ADR 0020).
 - A push-to-talk finalize while Kokoro synthesized in the other service took
   up to 1.4 times as long in the median and 1.6 times at worst (Mac Studio: median
   152 to 177 / worst 201 to 221 ms against 123 to 125 / 131 to 134 alone):

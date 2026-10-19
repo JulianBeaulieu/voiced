@@ -15,7 +15,7 @@ import os
 import statistics
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -50,6 +50,7 @@ from voiced.engines.parakeet import (
     _is_silent,
     _Library,
     _Planner,
+    _Rank,
     _StepRunner,
     _to_transcript,
 )
@@ -324,7 +325,7 @@ def flush(a: _StepRunner) -> Any:
 
 def adapter(**library: Any) -> tuple[_StepRunner, FakeLibrary]:
     lib = FakeLibrary(**library)
-    return _StepRunner(lib, _Planner(energy_speech())), lib
+    return _StepRunner(lib, _Planner(energy_speech()), lambda: _Rank.AHEAD), lib
 
 
 class FakeEngine(ParakeetEngine):
@@ -496,9 +497,37 @@ def test_a_long_pause_is_given_up_on_and_dropped() -> None:
         feed(a, silence(0.1))
     assert a.rollbacks == 1
     assert lib.kept == [0], "after giving up, the speech is encoded on the grid"
-    assert a.buffered_s <= PASS_S
+    # a pass of judged audio, and what the detector has not judged yet
+    assert a.buffered_s < PASS_S + FRAME / STT_SAMPLE_RATE
     result = flush(a)
     assert result is not None and lib.kept == [0]
+
+
+@pytest.mark.parametrize("seed", range(1, 9))
+def test_what_is_encoded_does_not_depend_on_where_the_audio_is_cut(seed: int) -> None:
+    """Fed in pieces cut anywhere (what a session that is behind plans at once
+    depends on timing), the planner makes the same calls on the same windows as
+    when fed in the client's chunks: no window over a pass, the same grid after
+    long pauses, the same final call."""
+    clip = varied(seed, 14.0)
+    audio = clip + noise(14.0, -70.0, seed)[: len(clip)]
+
+    def run(sizes: Iterator[int]) -> tuple[list[int], list[bytes], str]:
+        a, lib = adapter()
+        i = 0
+        while i < len(audio):
+            n = next(sizes)
+            feed(a, audio[i : i + n])
+            i += n
+        result = flush(a)
+        calls = zip(lib.encoded, lib.windows, strict=True)
+        last = {start: window.tobytes() for start, window in calls}
+        return lib.kept, [last[start] for start in lib.kept], result.text
+
+    want = run(itertools.repeat(CHUNK))
+    for cut in range(10):
+        rng = np.random.default_rng(cut)
+        assert run(iter(int(n) for n in rng.integers(1, PASS + 1, 10_000))) == want
 
 
 def onset_offset(window: NDArray[np.float32]) -> int:
@@ -1474,7 +1503,7 @@ async def test_undone_calls_leave_the_real_stream_exact(
     def run() -> tuple[str, str, int]:
         assert engine._attention is not None
         lib = parakeet._LibraryStream(engine._model, engine._attention)
-        planned = _StepRunner(lib, _Planner(Endpointer(silence_ms=0)))
+        planned = _StepRunner(lib, _Planner(Endpointer(silence_ms=0)), lambda: _Rank.AHEAD)
         windows: list[tuple[NDArray[np.float32], int]] = []
         encode = lib.encode
 

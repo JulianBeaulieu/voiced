@@ -63,9 +63,11 @@ vad_silence_ms = 200
 # Requests waiting for the GPU beyond this number get HTTP 503. It also caps
 # how many uploads are decoded at once (more get 503 too).
 queue_depth = 8
-# Live streams (Wyoming, WebSocket) transcribed at once, at most queue_depth.
-# The next one waits for one of them to end; its client's audio is held
-# meanwhile. More than the measured default and every stream's final
+# Live streams (Wyoming, WebSocket) transcribed at once. Setting it above
+# queue_depth is an error, and the service opens no more than the engine can
+# interleave (its max_streams: 6 for parakeet, 1 for an engine that declares
+# nothing). The next one waits for one of them to end; its client's audio is
+# held meanwhile. More than the measured default and every stream's final
 # transcript is later (docs/decisions/0020-concurrent-stt-streams.md).
 streams = 3
 # Largest upload accepted by /v1/audio/transcriptions. Also caps the audio an

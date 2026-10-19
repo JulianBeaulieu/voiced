@@ -227,8 +227,9 @@ class STTEngine(_EngineMeta):
 
     max_streams: int = 1
     """Stream sessions the engine can have open at once. The server opens at
-    most ``min(stt.streams, max_streams)``; the next waits for one to end. An
-    engine that raises it interleaves the sessions' work itself."""
+    most ``min(stt.streams, stt.queue_depth, max_streams)``
+    (``voiced.config.STTConfig.open_streams``); the next waits for one to end.
+    An engine that raises it interleaves the sessions' work itself."""
 
     @abstractmethod
     async def load(self) -> None:
