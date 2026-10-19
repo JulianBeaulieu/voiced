@@ -41,6 +41,7 @@ from voiced.engines.parakeet import (
     PASS_S,
     PRE_ROLL_S,
     SILENCE_FLOOR,
+    URGENT_BACKLOG_S,
     ParakeetEngine,
     ParakeetStreamSession,
     _check_samples,
@@ -124,8 +125,10 @@ def test_pass_fits_the_right_context() -> None:
     assert parakeet.LIBRARY_MIN_SAMPLES < PASS
 
 
-def test_encoder_call_holds_the_gpu_lock(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Kokoro in the TTS service waits while an encoder call runs (ADR 0019)."""
+def test_urgent_encoder_call_holds_the_gpu_lock(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kokoro in the TTS service waits while an urgent encoder call runs (ADR 0019)."""
     pytest.importorskip("parakeet_mlx")
     from voiced import gpu
 
@@ -156,8 +159,9 @@ def test_encoder_call_holds_the_gpu_lock(tmp_path: Any, monkeypatch: pytest.Monk
     )
     lib = parakeet._LibraryStream(model)
     try:
-        lib.encode(np.zeros(PASS, dtype=np.float32), 0)
-        assert seen == [True]
+        lib.encode(np.zeros(PASS, dtype=np.float32), 0, urgent=True)
+        lib.encode(np.zeros(PASS, dtype=np.float32), PASS, urgent=False)
+        assert seen == [True, False]
         assert not gpu.stt_running()
     finally:
         lib.close()
@@ -235,6 +239,7 @@ class FakeLibrary:
         self.delay_s = delay_s
         self.encoded: list[int] = []  # every call, undone ones included
         self.windows: list[NDArray[np.float32]] = []
+        self.urgent: list[bool] = []  # per call: whether it held the GPU lock
         self.kept: list[int] = []  # the calls the current state is built from
         self.restores = 0
         self.closed = False
@@ -249,7 +254,7 @@ class FakeLibrary:
     def calls(self) -> int:
         return len(self.encoded)
 
-    def encode(self, window: NDArray[np.float32], start: int) -> None:
+    def encode(self, window: NDArray[np.float32], start: int, urgent: bool) -> None:
         assert len(window) == PASS, "every call is exactly one pass"
         self.in_call = True
         self.started.set()
@@ -257,6 +262,7 @@ class FakeLibrary:
             time.sleep(self.delay_s)
             self.encoded.append(start)
             self.windows.append(np.array(window))
+            self.urgent.append(urgent)
             if self.fail_on == len(self.encoded):
                 raise RuntimeError("encoder exploded")
             self.kept.append(start)
@@ -357,6 +363,14 @@ def test_a_pause_runs_the_final_call_before_finalize() -> None:
     assert result is not None and result.text == f"p0 p{PASS}"
     assert lib.encoded == [0, PASS], "finalize after a pause needs no encoder call"
     assert a.rollbacks == 0
+
+
+def test_only_the_call_at_a_pause_is_urgent_while_the_encoder_keeps_up() -> None:
+    a, lib = adapter()
+    a.feed(speech_like(2 * PASS_S + 0.3))
+    a.feed(silence(0.1))
+    assert lib.encoded == [0, PASS, 2 * PASS]
+    assert lib.urgent == [False, False, True]
 
 
 def test_the_pause_is_the_last_whole_frame() -> None:
@@ -553,6 +567,33 @@ async def test_session_streams_through_the_adapter() -> None:
     await assert_engine_accepts_a_new_stream(engine)
 
 
+async def test_session_calls_are_urgent_once_the_client_waits() -> None:
+    """Calls while the client streams and the encoder keeps up leave the GPU to
+    synthesis; after ``finalize``, or behind by over URGENT_BACKLOG_S, they go
+    first (ADR 0019)."""
+    engine = FakeEngine()
+    async with await engine.stream("en") as session:
+        lib = engine.libraries[0]
+        for _ in range(round(PASS_S * 10) + 3):
+            await session.add_audio(speech_like(0.1))
+            await asyncio.sleep(0.005)
+        assert lib.urgent == [False]
+        await session.finalize()  # the rest of the speech, without a pause
+    assert lib.urgent == [False, True]
+
+    engine = FakeEngine()
+    async with await engine.stream("en") as session:
+        lib = engine.libraries[0]
+        await session.add_audio(speech_like(URGENT_BACKLOG_S + 3 * PASS_S))  # a late start
+        await session._drain()  # caught up
+        assert lib.urgent == [True] * 5
+        for _ in range(round(PASS_S * 10)):  # caught up: streaming again
+            await session.add_audio(speech_like(0.1))
+            await asyncio.sleep(0.005)
+        assert lib.urgent == [True] * 5 + [False]
+        await session.finalize()
+
+
 async def test_session_runs_every_call_on_the_engine_thread() -> None:
     engine = FakeEngine()
     threads: set[int] = set()
@@ -560,9 +601,9 @@ async def test_session_runs_every_call_on_the_engine_thread() -> None:
         lib = engine.libraries[0]
         encode = lib.encode
 
-        def spy(window: NDArray[np.float32], start: int) -> None:
+        def spy(window: NDArray[np.float32], start: int, urgent: bool) -> None:
             threads.add(threading.get_ident())
-            encode(window, start)
+            encode(window, start, urgent)
 
         lib.encode = spy  # type: ignore[method-assign]
         busy = threading.Event()

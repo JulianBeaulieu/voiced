@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import AsyncIterator
-from contextvars import ContextVar
 from typing import Any, ClassVar
 
 from voiced.engines.base import (
@@ -38,15 +37,9 @@ from voiced.engines.base import (
 from voiced.text.sentences import split_sentences
 from voiced.threads import run_blocking
 
-__all__ = ["FIRST_OF_REPLY", "SentenceTTSEngine"]
+__all__ = ["SentenceTTSEngine"]
 
 WARMUP_TEXT = "Warming up."
-
-FIRST_OF_REPLY: ContextVar[bool] = ContextVar("voiced_first_of_reply", default=False)
-"""True while ``_synth_sentence`` synthesizes the sentence whose audio starts
-the reply (the first that is not silent); ``run_blocking`` carries it into
-the worker thread. Kokoro gives that sentence a shorter wait for the STT
-(ADR 0019)."""
 
 
 MLX_CACHE_LIMIT_BYTES = 256 * 1024 * 1024
@@ -124,15 +117,9 @@ class SentenceTTSEngine(TTSEngine):
             raise UnknownVoice(voice)
         if not self.MIN_SPEED <= speed <= self.MAX_SPEED:
             raise EngineError(f"speed must be between {self.MIN_SPEED} and {self.MAX_SPEED}")
-        first = True
         for sentence in split_sentences(text):
-            token = FIRST_OF_REPLY.set(first)
-            try:
-                pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)
-            finally:
-                FIRST_OF_REPLY.reset(token)
+            pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)
             if pcm:
-                first = False
                 yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
 
     def _check_loaded(self) -> None:

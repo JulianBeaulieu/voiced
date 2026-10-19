@@ -46,7 +46,7 @@ from voiced import gpu
 from voiced.audio import float32_to_pcm16
 from voiced.config import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
-from voiced.engines.sentence import FIRST_OF_REPLY, WARMUP_TEXT, SentenceTTSEngine
+from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 from voiced.text.sentences import cut_to_length
 
 log = logging.getLogger(__name__)
@@ -89,12 +89,10 @@ all queued in front of an encoder call that started (ADR 0019)."""
 
 class _Submissions:
     """One sentence's submissions: its yielder and the blocks submitted and
-    not yet waited for, oldest first. The sentence that starts a reply waits
-    for the STT less (:data:`voiced.gpu.FIRST_SENTENCE_WAIT_S`)."""
+    not yet waited for, oldest first."""
 
-    def __init__(self, first_of_reply: bool = False) -> None:
-        budget = gpu.FIRST_SENTENCE_WAIT_S if first_of_reply else gpu.SENTENCE_WAIT_S
-        self.yielder = gpu.Yielder(budget)
+    def __init__(self) -> None:
+        self.yielder = gpu.Yielder()
         self.in_flight: deque[Any] = deque()
 
 
@@ -522,7 +520,7 @@ def _synth(model: Any, tokenizer: Any, pack: Any, sentence: str, voice: str, spe
     if not phonemes:
         return b""
     parts: list[NDArray[np.float32]] = []
-    submissions = _Submissions(FIRST_OF_REPLY.get())
+    submissions = _Submissions()
     token = _submissions.set(submissions)
     try:
         # Sentences are at most 300 characters and phoneme strings run up to

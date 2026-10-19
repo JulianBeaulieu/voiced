@@ -378,12 +378,8 @@ def test_synth_waits_before_each_chunk_inside_its_own_context(
     from voiced.engines import kokoro
 
     waits: list[int] = []
-    budgets: list[float] = []
 
     class CountingYielder:
-        def __init__(self, budget_s: float) -> None:
-            budgets.append(budget_s)
-
         def __call__(self) -> None:
             waits.append(1)
 
@@ -404,14 +400,6 @@ def test_synth_waits_before_each_chunk_inside_its_own_context(
     assert seen[0] is seen[1]
     assert kokoro._submissions.get() is None
     assert len(pcm) == 2 * 480
-    assert budgets == [kokoro.gpu.SENTENCE_WAIT_S]
-    # The sentence that starts a reply waits less.
-    token = kokoro.FIRST_OF_REPLY.set(True)
-    try:
-        kokoro._synth(model, tokenizer, [object()] * 600, "text", "af_heart", 1.0)
-    finally:
-        kokoro.FIRST_OF_REPLY.reset(token)
-    assert budgets[-1] == kokoro.gpu.FIRST_SENTENCE_WAIT_S < kokoro.gpu.SENTENCE_WAIT_S
 
 
 @pytest.mark.model
