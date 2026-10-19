@@ -245,11 +245,22 @@ Notes on the rows:
   waits behind Kokoro's work on the one GPU. With 200 ms of trailing silence
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
   the two services. **Closed by ADR 0019** (Kokoro waits while an STT
-  encoder call runs): on the Mac Studio the row is median 124 to 127 /
-  worst 141 to 148 ms, within the 150 ms worst case (see
-  [With the GPU gate](#with-the-gpu-gate)). That was measured with every
-  encoder call taking the lock; the gate now takes it only for the calls a
-  client waits on (ADR 0019), so the Studio is re-measured with that.
+  encoder call a client waits on runs): on the Mac Studio the row is median
+  125 to 130 / worst 136 to 149 ms, within the 150 ms worst case, against
+  159 to 164 / 203 to 204 on main (see [With the GPU gate](#with-the-gpu-gate)).
+- **Kokoro first audio while another client's utterance ends.** With the
+  GPU gate (ADR 0019), first audio while another client streams to the STT
+  is median 128 to 130 / p95 158 to 200 / worst 239 to 243 ms on the Mac
+  Studio (n=30 per round), against 116 to 118 / 141 to 143 / 149 to 156 on
+  main; the target is 200 ms. Only the top few percent go over: the
+  requests that land while the other client's urgent tail runs (its call at
+  a pause and its last calls, 100 to 150 ms each), which the reply waits
+  for, up to 300 ms per sentence. Both clients wait on the one GPU at the
+  same moment, and the STT's push-to-talk finalize, the owner's priority,
+  is given it. Two other gate designs were measured on the Studio and
+  rejected: every encoder call taking the lock (first audio worst 252 to
+  265 ms) and a 45 ms budget for a reply's first sentence (first audio
+  within target, but push-to-talk finalize back to worst 181 to 210 ms).
 - **Transient memory while serving.** The idle footprint after use is
   2.21 GB, within the 3 GB budget, but both engines peak above their idle
   allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
@@ -361,7 +372,7 @@ on the Studio as an A/B against main 6e6012d, alternating, two rounds,
 installed LaunchDaemons, `scripts/bench.py` defaults; each cell is the range
 over both rounds. This is the gate as first built (3d522c3: every encoder
 call took the lock, one 300 ms wait budget for every sentence); ADR 0019 has
-the full table and what followed.
+the full table and the final design.
 
 | Metric | main | With the gate | Target |
 |---|---|---|---|
@@ -371,10 +382,21 @@ the full table and what followed.
 | Kokoro first audio | median 86 / worst 90 to 97 ms | median 91 / worst 92 to 110 ms | <= 200 ms |
 | Kokoro first audio while another client streams to STT | median 116 / worst 148 to 149 ms | median 127 to 129 / worst 252 to 265 ms | <= 200 ms |
 
-The STT miss is closed. First audio while another client speaks went over
-its target; ADR 0019 now takes the lock only for the encoder calls a client
-waits on (the tail of an utterance, or a session that is behind), which
-leaves the GPU to a reply that starts while someone is still speaking.
+First audio while another client speaks went over its target; the final
+design takes the lock only for the encoder calls a client waits on (the
+tail of an utterance, or a session that is behind). Against main 1145f82,
+same setup:
+
+| Metric | main | Final gate (f437a8f) | Target |
+|---|---|---|---|
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 159 to 164 / p95 187 to 202 / worst 203 to 204 ms | median 125 to 130 / p95 132 to 146 / worst 136 to 149 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 2 / p95 56 to 66 / worst 64 to 71 ms | median 2 / p95 3 / worst 3 to 5 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 123 to 124 / worst 129 to 136 ms | median 124 to 125 / worst 136 ms | <= 150 ms worst |
+| Kokoro first audio | median 85 to 86 / worst 90 to 92 ms | median 92 to 93 / worst 113 ms | <= 200 ms |
+| Kokoro first audio while another client streams to STT | median 116 to 118 / p95 141 to 143 / worst 149 to 156 ms | median 128 to 130 / p95 158 to 200 / worst 239 to 243 ms | <= 200 ms |
+
+The STT miss is closed. First audio while another client's utterance ends
+is a known miss (Known misses).
 
 Self-healing, with the installed LaunchDaemons on 48e1f20:
 

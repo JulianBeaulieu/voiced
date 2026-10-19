@@ -199,9 +199,10 @@ On the Studio the gate meets the STT target: push-to-talk finalize while
 Kokoro synthesizes is median 124 to 127 / worst 141 to 148 ms, against 152
 to 177 / 201 to 221 on main, and the alone rows did not change. The cost
 was first audio while another client speaks, worst 252 to 265 ms against
-the 200 ms target.
+the 200 ms target. This design, every encoder call taking the lock, was
+rejected for that.
 
-**A smaller budget for a reply's first sentence (replaced).** Without
+**A smaller budget for a reply's first sentence (rejected).** Without
 waiting, first audio while another client streams was 148 to 149 ms at
 worst on the Studio (main), and the submission points cost 5 ms by
 themselves (first audio alone 86 against 91 ms median), so a first sentence
@@ -243,10 +244,51 @@ finalize while Kokoro synthesizes worst 141 to 157 ms (one budget: 153 to
 160; split: 169 to 214), and first audio while another client streams worst
 167 to 185 ms (one budget: 233; split: 190 to 214). First audio there is
 still 15 to 27 ms over main at worst: a request that lands on the tail of
-the other client's utterance waits for it. The Studio A/B on this change
-decides.
+the other client's utterance waits for it.
+
+On the Mac Studio, installed LaunchDaemons, `scripts/bench.py` with its
+defaults, main (1145f82) and this change (f437a8f) alternating, two rounds
+each:
+
+| Metric | main | Urgent calls only | Target |
+|---|---|---|---|
+| Kokoro first audio | median 85 to 86 / p95 89 to 90 / worst 90 to 92 ms | median 92 to 93 / p95 106 to 107 / worst 113 ms | <= 200 ms |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence | median 3 / p95 4 to 5 / worst 6 to 16 ms | median 3 / p95 4 to 6 / worst 4 to 7 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 123 to 124 / p95 128 to 133 / worst 129 to 136 ms | median 124 to 125 / p95 131 to 134 / worst 136 ms | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 200 ms trailing silence | median 3 / p95 4 to 5 / worst 18 to 23 ms | median 3 / p95 5 to 9 / worst 23 to 29 ms | <= 150 ms worst |
+| Streaming finalize, 100 ms chunks, 0 ms trailing silence | median 123 to 127 / p95 132 to 135 / worst 136 to 137 ms | median 121 to 122 / p95 131 to 133 / worst 135 to 139 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 2 / p95 56 to 66 / worst 64 to 71 ms | median 2 / p95 3 / worst 3 to 5 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 159 to 164 / p95 187 to 202 / worst 203 to 204 ms | median 125 to 130 / p95 132 to 146 / worst 136 to 149 ms | <= 150 ms worst |
+| Kokoro first audio while another client streams to STT | median 116 to 118 / p95 141 to 143 / worst 149 to 156 ms | median 128 to 130 / p95 158 to 200 / worst 239 to 243 ms | <= 200 ms |
+| Batch transcription, 10.1 s clip | median 234 to 239 / worst 250 to 252 ms | median 234 to 236 / worst 245 to 250 ms | <= 300 ms |
+| STT + TTS (Kokoro) footprint, idle after use | 2.29 GB | 2.32 to 2.34 GB | <= 3 GB |
+
+The three designs on the Studio, worst case of the two rows that conflict
+(two rounds each against main):
+
+| Design | Push-to-talk finalize, Kokoro synthesizing | First audio while another client streams |
+|---|---|---|
+| main, no gate | 201 to 221 ms | 148 to 157 ms |
+| Every call takes the lock, 300 ms per sentence (rejected) | 141 to 148 ms | 252 to 265 ms |
+| Every call, first sentence 45 ms (rejected) | 181 to 210 ms | 186 to 191 ms |
+| **Urgent calls only, 300 ms per sentence** | **136 to 149 ms** | **239 to 243 ms** |
+
+**This design is accepted.** It meets the STT target, push-to-talk
+finalize being the one the owner set as the priority, and keeps the 200 ms
+trailing row's tail gone (worst 3 to 5 ms against 64 to 71). First audio
+while another client streams is over its 200 ms target only at the top
+(p95 158 to 200, worst 239 to 243 ms, n=30 per round): a reply that starts
+while the other client's urgent tail (its call at a pause and its last
+calls) runs waits for it. That is a real conflict for one GPU, two clients
+each waiting on it at the same moment, and the STT is given it. ADR 0015
+lists it under Known misses.
 
 ## Alternatives considered
+
+- **Every encoder call takes the lock** (the gate as first built) and **a
+  45 ms budget for a reply's first sentence**: measured and rejected above
+  ([Mac Studio](#mac-studio)). The first missed the first-audio target by
+  52 to 65 ms at worst; the second missed the STT target again.
 
 - **Smaller Kokoro buffers** (`MLX_MAX_OPS_PER_BUFFER`, read once per
   process). One operation per buffer brought the probe's tail encode to
@@ -279,8 +321,10 @@ decides.
   another client's utterance (the call at the pause and the last calls,
   about 100 to 150 ms each) or with a session catching up on a backlog.
   Both cases are two satellites at once, one finishing speaking while the
-  other's reply is synthesized. Kokoro is far faster than real time, so a
-  pause later in a reply is absorbed by the audio already sent.
+  other's reply is synthesized. For a reply's first sentence it is the
+  known miss above: first audio up to 239 to 243 ms on the Studio. Kokoro
+  is far faster than real time, so a pause later in a reply is absorbed by
+  the audio already sent.
 - Regular passes while someone speaks share the GPU with synthesis as on
   main, about 1.4 times slower each. The stream catches up while the
   speaker talks; a session that falls more than `URGENT_BACKLOG_S` behind

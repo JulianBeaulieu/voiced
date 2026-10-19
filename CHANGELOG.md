@@ -177,14 +177,13 @@ uses [Semantic Versioning](https://semver.org/).
   encoder call a client waits on (the call at a pause, the calls after the
   end of the stream, and every call of a session that is behind), and
   Kokoro submits a sentence block by block and waits while the lock is
-  held, at most 300 ms per sentence (ADR 0019). With every encoder call
-  taking the lock the row was median 124 to 127 / worst 141 to 148 ms on
-  the Studio, within the 150 ms target, but first audio while another
-  client streamed to the STT reached 252 to 265 ms against its 200 ms
-  target; regular passes while the speaker talks no longer take it. On the
-  development machine both rows are now within or near target (finalize
-  worst 141 to 157 ms, first audio worst 167 to 185 ms).
-  Kokoro first audio alone is about 5 to 9 ms later.
+  held, at most 300 ms per sentence (ADR 0019). On the Studio the row is
+  now median 125 to 130 / worst 136 to 149 ms, within the 150 ms target.
+  Known miss: Kokoro first audio while another client streams to the STT
+  reaches 239 to 243 ms at worst (p95 158 to 200; main 149 to 156) against
+  its 200 ms target, when a reply starts during the other client's urgent
+  tail; the STT is given the GPU there. Kokoro first audio alone is about
+  7 ms later (median 92 to 93 against 85 to 86 ms).
 - A streamed Wyoming TTS request whose engine failed mid-stream, or whose
   text went over `tts.max_input_chars`, closed the connection right after
   its `Error`. Home Assistant writes the whole stream before it reads, so its
