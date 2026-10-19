@@ -329,12 +329,12 @@ struct InstallStages {
     }
 
     /// `envs/<UTC timestamp>`, as ADR 0017 names environments, with a suffix on a collision.
-    private func newEnvironmentDirectory() -> URL {
+    func newEnvironmentDirectory(at date: Date = Date()) -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyyMMdd'T'HHmmss"
-        let base = formatter.string(from: Date())
+        let base = formatter.string(from: date)
         var name = base
         var n = 1
         let fileManager = FileManager.default
@@ -628,9 +628,11 @@ struct InstallStages {
                 ? .success(())
                 : .failure(InstallFailure(stage: .uninstall, step: step, cause: "\(paths.stateDirectory.path) is not a folder; left as it is."))
         }
-        guard Self.fileType(paths.installRecord) == S_IFREG else {
+        // Read as the watchdog and `layout.read_manifest` read it: one that does not parse is
+        // not voiced's to act on (Python refuses it with ManifestError).
+        guard Self.fileType(paths.installRecord) == S_IFREG, InstallRecord.read(stateDirectory: paths.stateDirectory) != nil else {
             return .failure(InstallFailure(
-                stage: .uninstall, step: step, cause: "\(paths.stateDirectory.path) has no install.json; left as it is."))
+                stage: .uninstall, step: step, cause: "\(paths.stateDirectory.path) has no readable install.json; left as it is."))
         }
         guard let lock = await acquireLock(progress: { _ in }) else {
             return .failure(InstallFailure(stage: .uninstall, step: step, cause: "Cannot lock \(paths.stateDirectory.path)."))

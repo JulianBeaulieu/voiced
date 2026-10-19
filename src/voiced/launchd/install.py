@@ -50,6 +50,7 @@ from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
     MANIFEST,
+    PARTIAL_SUFFIX,
     PYTHONS,
     Manifest,
     ManifestError,
@@ -549,12 +550,17 @@ ENGINE_CHECK = (
 )
 
 
-def new_environment_dir(state_dir: Path) -> Path:
+def new_environment_dir(state_dir: Path, stamp: str | None = None) -> Path:
     """A fresh ``envs/<id>``: a build never writes into an environment a
-    daemon may be running."""
-    base = state_dir / ENVS / time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    daemon may be running. An id whose ``.partial`` or ``.broken`` (the
+    app's, ADR 0018) is there is taken too, so ``install.json`` never names
+    a path that once was another environment."""
+    base = state_dir / ENVS / (stamp or time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
     candidate, n = base, 1
-    while candidate.exists():
+    while any(
+        os.path.lexists(candidate.with_name(candidate.name + suffix))
+        for suffix in ("", PARTIAL_SUFFIX, ".broken")
+    ):
         n += 1
         candidate = base.with_name(f"{base.name}-{n}")
     return candidate

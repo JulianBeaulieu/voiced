@@ -658,6 +658,44 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(remove.arguments, ["uninstall", "--yes", "--remove-models"])
     }
 
+    /// The app's own removal refuses a state directory that is a link, one without
+    /// `install.json`, and one whose `install.json` does not parse, and deletes nothing.
+    func testTheAppsRemovalRefusesWhatIsNotVoiceds() async throws {
+        let fileManager = FileManager.default
+        let stages = InstallStages(configuration: makeInstallerConfiguration(), runner: runner)
+        let everything = try fileManager.subpathsOfDirectory(atPath: state.path).sorted()
+
+        let target = home.appendingPathComponent("target", isDirectory: true)
+        try fileManager.moveItem(at: state, to: target)
+        try fileManager.createSymbolicLink(at: state, withDestinationURL: target)
+        guard case .failure(let linked) = await stages.removeStateDirectory() else { return XCTFail("removed through a link") }
+        XCTAssertTrue(linked.cause.contains("is not a folder"), linked.cause)
+        XCTAssertEqual(try fileManager.subpathsOfDirectory(atPath: target.path).sorted(), everything)
+        try fileManager.removeItem(at: state)
+        try fileManager.moveItem(at: target, to: state)
+
+        let record = state.appendingPathComponent("install.json")
+        for contents in [nil, Data("{not json".utf8), Data(#"{"source": "someone"}"#.utf8)] {
+            try? fileManager.removeItem(at: record)
+            if let contents { try contents.write(to: record) }
+            guard case .failure(let refused) = await stages.removeStateDirectory() else {
+                return XCTFail("removed without a readable install.json")
+            }
+            XCTAssertTrue(refused.cause.contains("no readable install.json"), refused.cause)
+            XCTAssertTrue(fileManager.fileExists(atPath: envs.appendingPathComponent(current.lastPathComponent).path))
+            XCTAssertTrue(fileManager.fileExists(atPath: pythonDirectory("3.12.15").path))
+        }
+    }
+
+    /// A new environment never takes an id whose `.partial` or `.broken` is there.
+    func testANewEnvironmentNeverTakesAMovedOrUnfinishedID() throws {
+        let stages = InstallStages(configuration: makeInstallerConfiguration(), runner: runner)
+        let date = Date(timeIntervalSince1970: 1_792_368_000)  // 2026-10-19T00:00:00Z
+        try FileManager.default.createDirectory(at: envs.appendingPathComponent("20261019T000000.broken"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: envs.appendingPathComponent("20261019T000000-2.partial"), withIntermediateDirectories: true)
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261019T000000-3")
+    }
+
     /// The app's own removal never goes through a link.
     func testTheAppsRemovalDoesNotFollowLinks() async throws {
         let theirs = home.appendingPathComponent("theirs", isDirectory: true)

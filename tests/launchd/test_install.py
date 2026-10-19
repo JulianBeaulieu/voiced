@@ -36,6 +36,7 @@ from voiced.launchd.install import (
     PRIVILEGED_SCRIPT,
     InstallError,
     InstallPlan,
+    new_environment_dir,
     plan_install,
     plan_summary,
     privileged_script,
@@ -1061,6 +1062,15 @@ def test_the_manifest_records_the_environment_it_replaced(
     assert manifest is not None
     assert (manifest.environment, manifest.previous) == (first.environment, second.environment)
     assert second.environment.exists()
+
+
+def test_a_new_environment_never_takes_a_moved_or_unfinished_id(tmp_path: Path) -> None:
+    envs = tmp_path / "envs"
+    (envs / "20261019T000000.broken").mkdir(parents=True)
+    (envs / "20261019T000000-2.partial").mkdir()
+    (envs / "20261019T000000-3").mkdir()
+    assert new_environment_dir(tmp_path, "20261019T000000").name == "20261019T000000-4"
+    assert new_environment_dir(tmp_path, "20261019T000001").name == "20261019T000001"
 
 
 def test_a_missing_active_environment_is_no_rollback(settings: Settings, tmp_path: Path) -> None:
