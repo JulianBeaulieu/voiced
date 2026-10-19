@@ -244,11 +244,12 @@ Notes on the rows:
   192 ms (n=16; the in-process e2e test saw up to 243 ms). The tail encode
   waits behind Kokoro's work on the one GPU. With 200 ms of trailing silence
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
-  the two services. ADR 0019 adds it (Kokoro waits while an STT encoder call
-  runs): on the development machine under launchd the row is now median 124
-  / worst 153 to 160 ms, still marginally over the worst-case target, and
-  not yet measured on the Mac Studio. The miss stays listed here until it
-  is.
+  the two services. **Closed by ADR 0019** (Kokoro waits while an STT
+  encoder call runs): on the Mac Studio the row is median 124 to 127 /
+  worst 141 to 148 ms, within the 150 ms worst case (see
+  [With the GPU gate](#with-the-gpu-gate)). That was measured with one wait
+  budget for every sentence; the first sentence's smaller budget that
+  followed costs this row some of it, so the Studio is re-measured with it.
 - **Transient memory while serving.** The idle footprint after use is
   2.21 GB, within the 3 GB budget, but both engines peak above their idle
   allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
@@ -352,6 +353,27 @@ whether that is the role. Kokoro first audio and memory did not change. The
 push-to-talk medians with the role match the development machine's
 LaunchAgents after the fix (122 and 124 ms), so on this measurement the
 system domain and macOS 27 did not change the result.
+
+### With the GPU gate
+
+ADR 0019 (STT encoder calls go first; Kokoro waits between blocks), measured
+on the Studio as an A/B against main 6e6012d, alternating, two rounds,
+installed LaunchDaemons, `scripts/bench.py` defaults; each cell is the range
+over both rounds. This is the gate with one 300 ms wait budget for every
+sentence (3d522c3); ADR 0019 has the full table and the first sentence's
+smaller budget that followed.
+
+| Metric | main | With the gate | Target |
+|---|---|---|---|
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 152 to 177 / p95 201 to 210 / worst 201 to 221 ms | median 124 to 127 / p95 138 to 141 / worst 141 to 148 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 2 / p95 69 to 76 / worst 97 to 100 ms | median 2 / p95 3 to 15 / worst 3 to 16 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 123 to 125 / worst 131 to 134 ms | median 125 / worst 138 to 142 ms | <= 150 ms worst |
+| Kokoro first audio | median 86 / worst 90 to 97 ms | median 91 / worst 92 to 110 ms | <= 200 ms |
+| Kokoro first audio while another client streams to STT | median 116 / worst 148 to 149 ms | median 127 to 129 / worst 252 to 265 ms | <= 200 ms |
+
+The STT miss is closed. First audio while another client speaks went over
+its target with one budget; ADR 0019 gives the first sentence of a reply a
+45 ms budget for it.
 
 Self-healing, with the installed LaunchDaemons on 48e1f20:
 
@@ -466,8 +488,9 @@ re-measured as an A/B ([With the foreground task role](#with-the-foreground-task
 The one row still over target there is 0 ms trailing silence while Kokoro
 synthesizes, median 156 to 167 / worst 201 to 222 ms: the GPU contention in
 [Known misses](#known-misses), which the role narrows but does not close;
-that needs GPU scheduling between the two services. ADR 0019 adds it; the
-Studio has not been re-measured with it yet. Not yet checked: that
+that needs GPU scheduling between the two services, which ADR 0019 adds
+and which closes it on the Studio ([With the GPU gate](#with-the-gpu-gate)).
+Not yet checked: that
 the role still holds after a long idle, with a one-off
 `python3 -c "import os; print(os.getpriority(6, PID))"` for each service's
 PID (prints 1 while the role holds; it reads another process of the same
