@@ -313,7 +313,7 @@ async def test_utterance_budget_leaves_other_timeouts_alone() -> None:
 async def test_stream_sessions_share_the_slot_and_a_transcription_holds_it_alone(
     ctx: ServiceContext,
 ) -> None:
-    ctx.queue = InferenceQueue(3, shared=2)
+    ctx.queue = InferenceQueue(3, max_shared=2)
     inside: set[str] = set()
     seen: list[set[str]] = []
     gate = asyncio.Event()

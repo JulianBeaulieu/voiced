@@ -90,13 +90,20 @@ thread**, over one set of weights, one stream state per session.
   finalizes while its call waits moves up at once. A ranked call cancelled
   before it starts never runs: a client that disconnects leaves no queued
   encoder call behind.
-- **The tail is one call, queued at once.** `finalize` takes the jobs
-  planned but not started and the audio not yet planned. It queues one call
-  at once, before its first await, that runs them, flushes the planner and
-  returns the result. That call has the same rank as the session's call
-  already in flight and was queued later, so it runs right after it. No other
-  session's call can start in between. With a call per job and an await
-  between them, each such gap could add another session's whole call.
+- **The last pass of the tail is one call, queued at once.** After
+  `finalize` every call of the session ranks `WAITED`. While more than a
+  pass is left to start (a backlog: the session waited for a slot, or its
+  client sent faster than real time), it keeps running one call per job, so
+  other sessions' calls at a pause still go between them rather than wait
+  seconds for the whole backlog. The rest, the jobs planned but not started
+  and the audio not yet planned, about one pass, it queues as one call
+  before its first await, which runs them, flushes the planner and returns
+  the result. That call is queued behind the session's call in flight
+  (equal rank, queued earlier), so it runs right after it, ahead of
+  anything queued later. With a call per job and an await between them,
+  each such gap could let another session's call start first and add up to
+  a whole call. A call queued earlier at `WAITED` by another session (its
+  own call at a pause or its finalize) still runs first.
 - **The GPU gate is unchanged.** All calls still run on the one model
   thread, the only holder of `voiced.gpu.stt_turn` in the process. A call
   holds it when its rank is `WAITED` or `BEHIND`, which is ADR 0019's
@@ -113,8 +120,15 @@ thread**, over one set of weights, one stream state per session.
   audio (the Wyoming handler's 64-chunk queue, then TCP), and it gets
   `server_busy` after about 34 s. `queue_depth` still bounds what is open
   or waiting.
-- **`stt.streams`, default 3**, measured below, at most `stt.queue_depth`
-  (the smaller is used).
+- **`stt.streams`, default 3**, measured below. Setting it above
+  `stt.queue_depth` is an error. The service opens
+  `min(stt.streams, stt.queue_depth, engine.max_streams)` at once
+  (`STTConfig.open_streams`), so a default above a small `queue_depth` is
+  not an error.
+- **Engines opt in.** `STTEngine.max_streams` (base.py) is 1 unless an
+  engine declares more, so a plugin engine keeps the one-session guarantee
+  it was written for. Parakeet declares 6, about where the model thread
+  stops keeping up with real time (above).
 
 ### Finalize with N streams
 
@@ -139,8 +153,16 @@ change alternating, through the same probe; the ranges span both rounds.
 The difference between them is within main's own spread from round to
 round. An earlier run of 150 s per row, while other work shared the
 machine, gave N=3 worst 100 ms (0 of 105 over) and N=4 worst 185 ms (2 of
-137 over). Four streams is at the target, not under it, so the default is
-three.
+137 over). Four streams met the target in the clean run (worst 141 ms)
+but not in that noisier one (185 ms), so the default is three.
+
+The model tier's `test_finalize_within_target_with_the_default_streams`
+(three clients, 45 s, about 33 finalizes) gave worst 105, 116, 117, 119
+and 127 ms in five runs, one of them with an artificially inflated Python heap.
+In one full model-tier run it gave 183 ms (median 0, 10 of 33 over 50 ms),
+which did not reproduce. Its cause was not found. The test's clients run
+in the same process as the engine, read partials and check every
+transcript, which may be why it reads higher than the probe.
 
 After the window, a session's call at the pause runs while the endpointer's
 192 ms elapse. With others streaming it waits at most for the call already
@@ -182,7 +204,10 @@ allows.
   116 to 126 against 112 to 121 ms on main, within main's spread between
   rounds; 0 to 2 ms after the endpointer's window on both).
 - Push-to-talk with other sessions active is median unchanged but worst up
-  to the solo cost plus one other session's call. A call already running
+  to the solo cost plus one other session's call: 226 to 281 ms from two
+  streams on, over the 150 ms target (ADR 0015, Known misses). A deployment
+  where most clients are push-to-talk and need the 150 ms worst case should
+  set `stt.streams = 1`. A call already running
   cannot be preempted, and a push-to-talk client gives no warning before it
   stops. Clients that can should stream 200 ms of silence before `end` (ADR
   0015, Known misses).
@@ -192,8 +217,7 @@ allows.
   before.
 - Each open session holds 36 MB of stream state. The MLX peak does not grow
   with the number of sessions.
-- The setting applies to whichever STT engine is loaded. The engine
-  interface has no way to say an engine can only run one session at a time,
-  so a plugin engine that cannot interleave needs `stt.streams = 1`.
+- A plugin STT engine serves one stream at a time unless it raises
+  `max_streams`.
 - A batch transcription waits until no stream is open, and streams that
   arrive after it wait for it.

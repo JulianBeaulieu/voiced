@@ -2,10 +2,12 @@
 
 Model objects are not thread-safe and share one GPU, so each service
 serializes GPU work (and MLX engines run every call for one model on one
-thread, see :mod:`voiced.threads`): one inference holds the slot at a time and
-the rest wait in FIFO order. Waiting is bounded; when ``capacity`` requests are
-already queued or running, new ones fail immediately with :class:`QueueFull`,
-which the API layer maps to HTTP 503. Callers are never blocked indefinitely.
+thread, see :mod:`voiced.threads`). A slot is exclusive (one holder at a
+time) or shared (up to ``max_shared`` holders at once, for an engine that
+interleaves their work itself); the rest wait in FIFO order. Waiting is
+bounded; when ``capacity`` requests are already queued or running, new ones
+fail immediately with :class:`QueueFull`, which the API layer maps to HTTP
+503. Callers are never blocked indefinitely.
 
 ``async with queue.slot():`` holds the GPU for the duration of the block. It
 is the queue's only interface; transports reach it through
@@ -15,8 +17,8 @@ so a cancelled caller keeps the slot until its thread has finished and a
 second inference never starts on a busy GPU.
 
 ``slot(shared=True)`` is for an engine that interleaves several holders'
-work itself (Parakeet's stream sessions, ADR 0020): up to ``shared`` such
-holders run at once, and an exclusive holder waits until none is left, and
+work itself (Parakeet's stream sessions, ADR 0020): up to ``max_shared``
+such holders run at once; an exclusive holder waits until none is left, and
 they wait for it. Admission stays FIFO, so an exclusive request at the head
 of the line is not overtaken by shared ones behind it.
 
@@ -46,13 +48,13 @@ class QueueFull(Exception):
 
 
 class InferenceQueue:
-    def __init__(self, capacity: int, shared: int = 1) -> None:
+    def __init__(self, capacity: int, max_shared: int = 1) -> None:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
-        if not 1 <= shared <= capacity:
-            raise ValueError("shared must be between 1 and capacity")
+        if not 1 <= max_shared <= capacity:
+            raise ValueError("max_shared must be between 1 and capacity")
         self.capacity = capacity
-        self.shared = shared
+        self.max_shared = max_shared
         self._pending = 0
         self._line: deque[tuple[bool, asyncio.Future[None]]] = deque()
         self._running_shared = 0
@@ -105,7 +107,7 @@ class InferenceQueue:
             shared, turn = self._line[0]
             if self._running_exclusive:
                 return
-            if shared and self._running_shared >= self.shared:
+            if shared and self._running_shared >= self.max_shared:
                 return
             if not shared and self._running_shared:
                 return

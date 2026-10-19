@@ -135,10 +135,11 @@ async def test_ranked_calls_run_lowest_rank_first_then_in_order() -> None:
     thread = ModelThread("test-model")
     release, blocker = await _occupied(thread)
     order: list[str] = []
-    calls = [
-        thread.run_ranked(functools.partial(int, rank), order.append, name)
-        for name, rank in [("late a", 2), ("behind", 1), ("late b", 2), ("waited", 0)]
-    ]
+    calls = []
+    for name, rank in [("late a", 2), ("behind", 1), ("late b", 2), ("waited", 0)]:
+        ranked = thread.run_ranked(functools.partial(int, rank), order.append, name)
+        calls.append(asyncio.create_task(ranked))
+        await asyncio.sleep(0)  # queued in this order
     release.set()
     await blocker
     await asyncio.gather(*calls)
@@ -152,8 +153,10 @@ async def test_a_rank_is_read_when_the_thread_picks_its_next_call() -> None:
     release, blocker = await _occupied(thread)
     order: list[str] = []
     rank = {"a": 2, "b": 2}
-    first = thread.run_ranked(lambda: rank["a"], order.append, "a")
-    second = thread.run_ranked(lambda: rank["b"], order.append, "b")
+    first = asyncio.create_task(thread.run_ranked(lambda: rank["a"], order.append, "a"))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(thread.run_ranked(lambda: rank["b"], order.append, "b"))
+    await asyncio.sleep(0)
     rank["b"] = 0
     release.set()
     await asyncio.gather(blocker, first, second)
@@ -161,24 +164,11 @@ async def test_a_rank_is_read_when_the_thread_picks_its_next_call() -> None:
     thread.shutdown()
 
 
-async def test_a_ranked_call_is_queued_before_its_first_await() -> None:
-    thread = ModelThread("test-model")
-    release, blocker = await _occupied(thread)
-    order: list[str] = []
-    later = thread.run_ranked(lambda: 0, order.append, "queued first")
-    plain = asyncio.create_task(thread.run(order.append, "queued second"))
-    await asyncio.sleep(0)
-    release.set()
-    await asyncio.gather(blocker, plain, later)
-    assert order == ["queued first", "queued second"]
-    thread.shutdown()
-
-
 async def test_a_ranked_call_cancelled_before_it_starts_never_runs() -> None:
     thread = ModelThread("test-model")
     release, blocker = await _occupied(thread)
     ran: list[str] = []
-    task = asyncio.ensure_future(thread.run_ranked(lambda: 0, ran.append, "withdrawn"))
+    task = asyncio.create_task(thread.run_ranked(lambda: 0, ran.append, "withdrawn"))
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -206,23 +196,6 @@ async def test_a_plain_call_cancelled_before_it_starts_still_runs() -> None:
         await task
     assert ran == ["kept"]
     await blocker
-    thread.shutdown()
-
-
-async def test_a_rank_that_raises_runs_its_call_first(caplog: pytest.LogCaptureFixture) -> None:
-    thread = ModelThread("test-model")
-    release, blocker = await _occupied(thread)
-    order: list[str] = []
-
-    def broken() -> int:
-        raise ValueError("no rank")
-
-    regular = thread.run_ranked(lambda: 1, order.append, "regular")
-    odd = thread.run_ranked(broken, order.append, "unranked")
-    release.set()
-    await asyncio.gather(blocker, regular, odd)
-    assert order == ["unranked", "regular"]
-    assert "ranking a model-thread call failed" in caplog.text
     thread.shutdown()
 
 

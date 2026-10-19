@@ -29,9 +29,8 @@ import asyncio
 import contextvars
 import functools
 import itertools
-import logging
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Generic, ParamSpec, TypeVar
@@ -39,11 +38,10 @@ from typing import Any, Generic, ParamSpec, TypeVar
 P = ParamSpec("P")
 T = TypeVar("T")
 
-log = logging.getLogger(__name__)
-
 Rank = Callable[[], int]
-"""How urgent a queued call is: lower runs first. Read on the model thread,
-under its lock, each time the thread picks its next call."""
+"""How urgent a queued call is: lower runs first, and 0, the rank of every
+:meth:`ModelThread.run` call, is the most urgent. Read on the model thread,
+under its lock, each time the thread picks its next call; it must not raise."""
 
 
 async def run_blocking(fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -72,22 +70,24 @@ class ModelThread:
         self._order = itertools.count()
 
     async def run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-        call = self._submit(_first, functools.partial(fn, *args, **kwargs), withdrawable=False)
-        return await self._wait(call)
+        call = self._submit(_first, functools.partial(fn, *args, **kwargs))
+        return await _uninterruptible(asyncio.wrap_future(call.future))
 
-    def run_ranked(self, rank: Rank, fn: Callable[..., T], /, *args: Any) -> Awaitable[T]:
-        """Queue ``fn(*args)`` at once, before the first await, so it is in line
-        behind whatever is queued now; await the result to get its value."""
-        call = self._submit(rank, functools.partial(fn, *args), withdrawable=True)
-        return self._wait(call)
+    async def run_ranked(
+        self, rank: Rank, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        call = self._submit(rank, functools.partial(fn, *args, **kwargs))
+        return await _uninterruptible(
+            asyncio.wrap_future(call.future), withdraw=lambda: self._withdraw(call)
+        )
 
     def shutdown(self) -> None:
         """Wait for queued calls, then end the thread (and its MLX stream)."""
         self._executor.shutdown(wait=True)
 
-    def _submit(self, rank: Rank, fn: Callable[[], T], *, withdrawable: bool) -> _Call[T]:
+    def _submit(self, rank: Rank, fn: Callable[[], T]) -> _Call[T]:
         bound = functools.partial(contextvars.copy_context().run, fn)
-        call: _Call[T] = _Call(next(self._order), rank, bound, withdrawable)
+        call: _Call[T] = _Call(next(self._order), rank, bound)
         with self._lock:
             self._waiting.append(call)
         try:
@@ -121,29 +121,12 @@ class ModelThread:
             self._waiting.remove(call)
         return call.future.cancel()
 
-    async def _wait(self, call: _Call[T]) -> T:
-        future = asyncio.wrap_future(call.future)
-        cancelled = False
-        while not future.done():
-            try:
-                await asyncio.wait({future})  # never cancels ``future`` itself
-            except asyncio.CancelledError:
-                if call.withdrawable and self._withdraw(call):
-                    raise
-                cancelled = True  # keep waiting: the thread cannot be stopped
-        if cancelled:
-            if not future.cancelled():
-                future.exception()  # mark as retrieved; the cancel wins
-            raise asyncio.CancelledError
-        return future.result()
-
 
 @dataclass(eq=False, slots=True)
 class _Call(Generic[T]):
     order: int
     rank: Rank
     fn: Callable[[], T]
-    withdrawable: bool
     future: Future[T] = field(default_factory=Future)
 
 
@@ -152,21 +135,28 @@ def _first() -> int:
 
 
 def _key(call: _Call[Any]) -> tuple[int, int]:
-    try:
-        return call.rank(), call.order
-    except Exception:
-        log.exception("ranking a model-thread call failed; running it first")
-        return 0, call.order
+    return call.rank(), call.order
 
 
 async def _run(executor: Executor | None, call: Callable[[], T]) -> T:
     context = contextvars.copy_context()
     future = asyncio.get_running_loop().run_in_executor(executor, context.run, call)
+    return await _uninterruptible(future)
+
+
+async def _uninterruptible(
+    future: asyncio.Future[T], withdraw: Callable[[], bool] | None = None
+) -> T:
+    """Await a thread's ``future``; a cancel waits for it to finish, then raises
+    ``CancelledError``. ``withdraw``, if given, is tried first: when it takes a
+    call that has not started out of line, the cancel is raised at once."""
     cancelled = False
     while not future.done():
         try:
             await asyncio.wait({future})  # never cancels ``future`` itself
         except asyncio.CancelledError:
+            if withdraw is not None and withdraw():
+                raise
             cancelled = True  # keep waiting: the thread cannot be stopped
     if cancelled:
         if not future.cancelled():

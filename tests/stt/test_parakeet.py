@@ -766,7 +766,8 @@ async def test_session_reports_an_encoder_failure_once() -> None:
             await session.finalize()
     assert engine.libraries[0].closed
     consumer = session._consumer
-    assert consumer is not None and consumer.done() and consumer.exception() is None
+    assert consumer is not None and consumer.done()
+    assert consumer.exception() is session._adapter.failure  # held once, by the adapter
     await assert_engine_accepts_a_new_stream(engine)
 
 
@@ -777,7 +778,7 @@ async def test_session_close_after_a_failure_without_finalize() -> None:
     await asyncio.sleep(0.05)
     await session.close()  # no "Task exception was never retrieved"
     consumer = session._consumer
-    assert consumer is not None and consumer.exception() is None
+    assert consumer is not None and consumer.exception() is session._adapter.failure
     assert engine.libraries[0].closed
     await assert_engine_accepts_a_new_stream(engine)
 
@@ -785,9 +786,10 @@ async def test_session_close_after_a_failure_without_finalize() -> None:
 async def test_session_failure_during_finalize_is_raised() -> None:
     engine = FakeEngine(fail_on=1, delay_s=0.1)
     async with await engine.stream("en") as session:
-        await session.add_audio(speech_like(PASS_S))
+        await session.add_audio(speech_like(PASS_S + 0.3))  # a tail left to flush
         with pytest.raises(RuntimeError, match="encoder exploded"):
             await session.finalize()
+    assert engine.libraries[0].calls == 1, "nothing is encoded after the failure"
 
 
 async def test_session_rejects_use_after_close() -> None:
@@ -889,6 +891,11 @@ async def alone(audio: NDArray[np.float32], chunk: int) -> tuple[Any, FakeLibrar
     return transcript, engine.libraries[0]
 
 
+def kept_window(lib: FakeLibrary, start: int) -> NDArray[np.float32]:
+    """The window of the last call at ``start``: the one the state keeps."""
+    return {s: w for s, w in zip(lib.encoded, lib.windows, strict=True)}[start]
+
+
 async def test_interleaved_sessions_each_transcribe_as_if_alone() -> None:
     cases = [(1, CHUNK), (2, WYOMING_CHUNK), (3, 700)]
     clips = [(varied(seed, 14.0), chunk) for seed, chunk in cases]
@@ -903,8 +910,11 @@ async def test_interleaved_sessions_each_transcribe_as_if_alone() -> None:
         await session.close()
     for (want, solo), got, lib in zip(expected, transcripts, engine.libraries, strict=True):
         assert got == want
-        assert lib.encoded == solo.encoded
-        assert all(np.array_equal(a, b) for a, b in zip(lib.windows, solo.windows, strict=True))
+        # What the state is built from; how many calls at a pause were undone
+        # depends on how much audio was pending each time the consumer planned.
+        assert lib.kept == solo.kept
+        for start in lib.kept:
+            assert np.array_equal(kept_window(lib, start), kept_window(solo, start))
     order = [session for session, _, _ in journal]
     switches = sum(a != b for a, b in itertools.pairwise(order))
     assert switches > len(order) / 3, "the sessions' calls interleave"
@@ -959,25 +969,57 @@ async def test_the_call_at_a_pause_goes_before_other_sessions_calls() -> None:
 
 
 async def test_finalize_runs_the_rest_right_after_the_call_in_flight() -> None:
-    """No other session's call starts between the session's call in flight at
-    ``finalize`` and the rest of its work, though they wait at the same rank."""
+    """No call queued after ``finalize`` (here another session's, behind on a
+    backlog) starts between the session's call in flight and the rest of its
+    work, under a pass, which is one call."""
     journal: list[tuple[int, int, bool]] = []
     engine = FakeEngine(delay_s=0.03, journal=journal)
     other = await engine.stream("en")
     session = await engine.stream("en")
     await other.add_audio(speech_like(MAX_BACKLOG_S - 1))
     await until_called(engine.libraries[0], 1)
-    await session.add_audio(speech_like(4 * PASS_S + 0.3))  # behind too: equal rank
+    await session.add_audio(speech_like(PASS_S))
     lib = engine.libraries[1]
     await until(lambda: lib.in_call)
-    done = lib.calls  # its calls finished before the one in flight
+    await session.add_audio(speech_like(PASS_S - 0.3))  # the rest: a tail under a pass
     transcript = await session.finalize()
-    mine = [i for i, (s, _, _) in enumerate(journal) if s == 1][done:]
-    assert len(mine) == 5 - done
-    assert mine == list(range(mine[0], mine[0] + len(mine))), journal
-    assert transcript.text == " ".join(f"p{i * PASS}" for i in range(5))
+    mine = [i for i, (s, _, _) in enumerate(journal) if s == 1]
+    assert len(mine) == 2
+    assert mine[1] == mine[0] + 1, journal
+    assert transcript.text == f"p0 p{PASS}"
     for s in (other, session):
         await s.close()
+
+
+async def test_a_long_tail_at_finalize_lets_other_sessions_calls_at_a_pause_go_between() -> None:
+    """A session that finalizes with a backlog encodes it call by call, so
+    another session's call at a pause waits for one call, not for the whole
+    backlog."""
+    journal: list[tuple[int, int, bool]] = []
+    engine = FakeEngine(delay_s=0.02, journal=journal)
+    long = await engine.stream("en")
+    quiet = await engine.stream("en")
+    await quiet.add_audio(speech_like(0.5))
+    await long.add_audio(speech_like(10.0))
+    await until_called(engine.libraries[0], 1)
+    finalizing = asyncio.create_task(long.finalize())
+    await until_called(engine.libraries[0], 3)
+    await quiet.add_audio(silence(0.1))  # its call at a pause: a client waits on it too
+    await until_called(engine.libraries[1], 1)
+    await finalizing
+    order = [session for session, _, _ in journal]
+    pause = order.index(1)
+    assert order.count(0) == 13  # 12 passes and the padded tail
+    assert pause < len(order) - 1 and order[pause + 1 :].count(0) > 1, order
+    assert order[:pause].count(0) <= 5, "it waited for one or two calls, not the backlog"
+    for s in (long, quiet):
+        await s.close()
+
+
+def queued_by(call: Any, session: STTStreamSession) -> bool:
+    """Whether a model-thread call waiting in line is one of ``session``'s jobs."""
+    assert isinstance(session, ParakeetStreamSession)
+    return getattr(call.rank, "func", None) == session._adapter.rank
 
 
 async def test_a_session_that_disconnects_mid_stream_leaves_the_others_intact() -> None:
@@ -998,7 +1040,7 @@ async def test_a_session_that_disconnects_mid_stream_leaves_the_others_intact() 
     blocker = asyncio.create_task(engine._thread.run(block))
     await asyncio.to_thread(started.wait, 2)
     # its next call waits behind the blocker
-    await until(lambda: any(call.withdrawable for call in engine._thread._waiting))
+    await until(lambda: any(queued_by(call, gone) for call in engine._thread._waiting))
     calls = engine.libraries[0].calls
     closing = asyncio.create_task(gone.close())  # the client went away
     await asyncio.sleep(0.01)
@@ -1738,8 +1780,10 @@ async def test_finalize_within_target_with_the_default_streams(
 async def test_push_to_talk_finalize_with_the_default_streams(
     engine: ParakeetEngine, speech: NDArray[np.float32]
 ) -> None:
-    """No trailing silence: the median stays the one-stream cost, and at worst
-    a finalize also waits for one other session's call (ADR 0020)."""
+    """No trailing silence: the median stays the one-stream cost. The worst
+    case is over the 150 ms target, the known miss in ADR 0015 and 0020 (a
+    finalize also waits for one other session's call); the 2x bound only
+    catches a regression past it."""
     latencies = await concurrent_finalizes(engine, speech, STT_STREAMS, 0.0, 45.0)
     report(f"push-to-talk finalize, {STT_STREAMS} streams", latencies)
     assert statistics.median(latencies) < FINALIZE_WORST_S

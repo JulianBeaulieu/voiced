@@ -9,17 +9,21 @@ uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Several live speech-to-text streams are transcribed at once: up to
-  `stt.streams` (default 3, at most `queue_depth`) WebSocket and Wyoming
-  sessions share the service, so two or three satellites talking together no
-  longer queue behind each other (ADR 0020). Each session has its own stream
-  state over the one loaded model (36 MB each; the weights are shared) and
-  its encoder calls take turns on the engine's one model thread. The calls a
-  client waits on go first, then sessions that are behind, then the rest. On
-  an M1 Max, with three clients at once, finalize after the endpointer's
-  200 ms window was worst 96 ms (median 0), within the 150 ms target. A session past
+  `stt.streams` (default 3) WebSocket and Wyoming sessions share the
+  service, so two or three satellites talking together no longer queue
+  behind each other (ADR 0020). Each session has its own stream state over
+  the one loaded model (36 MB each; the weights are shared), and its encoder
+  calls take turns on the engine's one model thread. The calls a client
+  waits on go first, then sessions that are behind, then the rest. On an M1
+  Max, with three clients at once, finalize after the endpointer's 200 ms
+  window was median 0 / worst 96 ms in the clean measurement and worst 105
+  to 127 ms in the model tests, once 183 ms (not reproduced). A session past
   `stt.streams` waits for one to end, as every second session did before,
-  and a batch transcription waits until no stream is open.
-  `scripts/bench.py` has a row for `--streams` clients at once.
+  and a batch transcription waits until no stream is open. `stt.streams`
+  above `queue_depth` is a configuration error. An STT engine declares how
+  many sessions it can interleave (`STTEngine.max_streams`, 1 by default,
+  6 for Parakeet), and the service never opens more. `scripts/bench.py`
+  has a row for `--streams` clients at once.
 - A release workflow: pushing a `v*` tag builds the voiced wheel and sdist
   and the menu bar app as a zip and a DMG with sha256 sums, signs and
   notarizes the app when the Developer ID secrets are set (an ad hoc build,
@@ -257,9 +261,11 @@ uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Push-to-talk finalize (no trailing silence) while other streams are open
-  can take one other session's encoder call longer, worst 226 ms with three
-  streams on an M1 Max; the median is unchanged (ADR 0020). Alone it is as
-  before.
+  is median unchanged but worst 226 to 281 ms from two streams on, over the
+  150 ms target (ADR 0015, Known misses): the tail can wait for another
+  session's encoder call that has just started. Alone it is as before. Set
+  `stt.streams = 1` where most clients are push-to-talk and need the 150 ms
+  worst case.
 - ffmpeg comes from the `imageio-ffmpeg` wheel, a core dependency (a static
   ffmpeg 7.1, GPL-2.0-or-later), preferred over one on `PATH`; `brew install
   ffmpeg` is no longer needed. `voiced doctor` names the ffmpeg in use and

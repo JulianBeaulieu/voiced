@@ -20,8 +20,11 @@ calls with ``voiced.threads.run_blocking`` (not ``asyncio.to_thread``, which
 lets a cancelled caller release the slot while the thread still runs) and
 must not assume they are reentrant: the
 server serializes calls per engine through ``voiced.queue.InferenceQueue`` and
-never calls two inference methods on the same engine at once. ``load()`` is
-called exactly once, before any other method.
+never calls two inference methods on the same engine at once, with one
+exception an engine opts into: an STT engine whose ``max_streams`` is above 1
+may have up to that many stream sessions open at once (never alongside a
+``transcribe``), and must interleave their work itself. ``load()`` is called
+exactly once, before any other method.
 
 Cancellation: the server cancels the awaiting task when a client disconnects.
 Engines must release any per-request state on ``CancelledError`` (a ``finally``
@@ -145,8 +148,11 @@ class STTStreamSession(ABC):
     async context manager so it is closed on error or cancellation; exiting
     without ``finalize`` discards the audio.
 
-    The server holds the engine's inference slot for the whole session, so
-    engines may keep model state (encoder cache, context) inside the session.
+    The server holds an inference slot for the whole session, so engines may
+    keep model state (encoder cache, context) inside the session. With
+    :attr:`STTEngine.max_streams` at 1 (the default) that slot is the
+    engine's only one; above 1 up to that many sessions share the engine, and
+    the state of each must be its own.
     """
 
     @abstractmethod
@@ -218,6 +224,11 @@ class STTEngine(_EngineMeta):
     ``__init__`` for engine-specific options (the registry passes ``model_id``
     only).
     """
+
+    max_streams: int = 1
+    """Stream sessions the engine can have open at once. The server opens at
+    most ``min(stt.streams, max_streams)``; the next waits for one to end. An
+    engine that raises it interleaves the sessions' work itself."""
 
     @abstractmethod
     async def load(self) -> None:

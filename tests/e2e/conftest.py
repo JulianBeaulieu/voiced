@@ -158,14 +158,14 @@ class LiveService:
         ctx = self.ctx
         saved = (
             ctx.queue.capacity,
-            ctx.queue.shared,
+            ctx.queue.max_shared,
             ctx.settings.server.session_idle_s,
             ctx.settings.server.write_timeout_s,
         )
         if queue_capacity is not None:
             ctx.queue.capacity = queue_capacity
         if streams is not None:
-            ctx.queue.shared = streams
+            ctx.queue.max_shared = streams
         if session_idle_s is not None:
             ctx.settings.server.session_idle_s = session_idle_s
         if write_timeout_s is not None:
@@ -175,7 +175,7 @@ class LiveService:
         finally:
             (
                 ctx.queue.capacity,
-                ctx.queue.shared,
+                ctx.queue.max_shared,
                 ctx.settings.server.session_idle_s,
                 ctx.settings.server.write_timeout_s,
             ) = saved

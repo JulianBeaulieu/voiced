@@ -43,8 +43,8 @@ import functools
 import logging
 import time
 from collections import deque
-from collections.abc import Callable
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from enum import IntEnum
 from typing import Any, Literal, Protocol
@@ -174,6 +174,10 @@ class ParakeetEngine(STTEngine):
     model_id = "mlx-community/parakeet-tdt-0.6b-v3"
     languages = list(PARAKEET_V3_LANGUAGES)
     license = "CC-BY-4.0"
+    max_streams = 6
+    """Its sessions take turns on one model thread, which keeps up with about
+    six real-time streams on an M1 Max; ``stt.streams`` (3) is what stays
+    within the finalize target (ADR 0020)."""
 
     @classmethod
     def download_patterns(cls) -> list[str]:
@@ -249,12 +253,12 @@ class ParakeetEngine(STTEngine):
         return _to_transcript(result, lang, duration)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
-        """A new session, alongside any already open: how many run at once is
-        the server's inference slot's to bound (``stt.streams``)."""
+        """A new session, alongside any already open: the server opens at most
+        :attr:`max_streams` at once (``stt.streams``, ADR 0020)."""
         model = self._require_loaded()
         lang = self.normalize_language(language)
-        adapter = _StepRunner(self._new_library(model), _Planner(self._new_detector()))
-        session = ParakeetStreamSession(self, adapter, lang)
+        planner = _Planner(self._new_detector())
+        session = ParakeetStreamSession(self, self._new_library(model), planner, lang)
         self._sessions.add(session)
         return session
 
@@ -661,16 +665,25 @@ class _StepRunner:
     """Runs the planner's steps against the library. :meth:`plan` runs on the
     event loop (numpy and Silero, about 0.12 ms per 32 ms frame); every other
     method runs on the engine's model thread, one call at a time, so ``close``
-    can never overlap a running encoder call."""
+    can never overlap a running encoder call.
 
-    def __init__(self, library: _Library, planner: _Planner) -> None:
+    The first failure, planning or encoding, is kept in :attr:`failure`: the
+    state is broken, so nothing more runs and every later call raises it.
+    """
+
+    def __init__(
+        self,
+        library: _Library,
+        planner: _Planner,
+        session_rank: Callable[[], _Rank] = lambda: _Rank.AHEAD,
+    ) -> None:
         self._library = library
         self._planner = planner
+        self._session_rank = session_rank
+        """The rank of the session's calls other than one at a pause."""
         self._checkpoint: object = None
-        self._failure: BaseException | None = None
+        self.failure: BaseException | None = None
         self.rollbacks = 0
-        self.session_rank: Callable[[], _Rank] = lambda: _Rank.AHEAD
-        """Set by the session: the rank of its calls other than one at a pause."""
 
     @property
     def buffered_s(self) -> float:
@@ -685,10 +698,11 @@ class _StepRunner:
         return self._library.calls
 
     def plan(self, samples: NDArray[np.float32]) -> list[_Job]:
-        return _jobs(self._planner.feed(samples))
+        with self._latch():
+            return _jobs(self._planner.feed(samples))
 
     def rank(self, job: _Job) -> _Rank:
-        return _Rank.WAITED if job.speculative else self.session_rank()
+        return _Rank.WAITED if job.speculative else self._session_rank()
 
     def urgent(self, job: _Job) -> bool:
         """Whether a client is waiting on this job's encoder call, so it goes
@@ -699,10 +713,8 @@ class _StepRunner:
         return self.rank(job) < _Rank.AHEAD
 
     def run(self, job: _Job) -> None:
-        if self._failure is not None:
-            raise self._failure  # the state is broken: run nothing more
         urgent = self.urgent(job)
-        try:
+        with self._latch():
             for step in job.steps:
                 if isinstance(step, _Encode):
                     self._library.encode(step.window, step.start, urgent)
@@ -712,23 +724,33 @@ class _StepRunner:
                     self._library.restore(self._checkpoint)
                     self._checkpoint = None
                     self.rollbacks += 1
-        except BaseException as exc:
-            self._failure = exc
-            raise
 
     def finish(self, jobs: list[_Job], samples: NDArray[np.float32]) -> Any:
-        """Everything left at ``finalize`` in one call: the jobs planned but not
-        run, the audio not yet planned, the calls still needed for the final
-        hypothesis. The final result, or ``None`` if nothing was encoded."""
-        for job in [*jobs, *self.plan(samples), *_jobs(self._planner.flush())]:
+        """The rest at ``finalize`` in one call: the jobs planned but not run,
+        the audio not yet planned (under about a pass), the calls still needed
+        for the final hypothesis. The final result, or ``None`` if nothing was
+        encoded."""
+        for job in [*jobs, *self.plan(samples)]:
             self.run(job)
-        if self._failure is not None:
-            raise self._failure
+        with self._latch():
+            steps = self._planner.flush()
+        for job in _jobs(steps):
+            self.run(job)
         return self._library.result()
 
     def close(self) -> None:
         self._library.close()
         log.debug("stream closed: %d encoder calls, %d undone", self.passes, self.rollbacks)
+
+    @contextmanager
+    def _latch(self) -> Iterator[None]:
+        if self.failure is not None:
+            raise self.failure
+        try:
+            yield
+        except BaseException as exc:
+            self.failure = exc
+            raise
 
 
 class ParakeetStreamSession(STTStreamSession):
@@ -740,10 +762,16 @@ class ParakeetStreamSession(STTStreamSession):
     ``async with``.
     """
 
-    def __init__(self, engine: ParakeetEngine, adapter: _StepRunner, language: str | None) -> None:
+    def __init__(
+        self,
+        engine: ParakeetEngine,
+        library: _Library,
+        planner: _Planner,
+        language: str | None,
+    ) -> None:
         self._engine = engine
         self._thread = engine._thread
-        self._adapter = adapter
+        self._adapter = _StepRunner(library, planner, self._rank)
         self._language = language
         self._pending: deque[NDArray[np.float32]] = deque()
         self._pending_samples = 0
@@ -752,9 +780,8 @@ class ParakeetStreamSession(STTStreamSession):
         self._samples_added = 0
         self._consumer: asyncio.Task[None] | None = None
         self._progress = asyncio.Event()  # set after every call the consumer makes
-        self._failure: BaseException | None = None
-        self._closed = False
-        adapter.session_rank = self._rank
+        self._closed = False  # finalize or close was called
+        self._handed_over = False  # finalize took the rest: the consumer stops
 
     @property
     def passes(self) -> int:
@@ -776,8 +803,7 @@ class ParakeetStreamSession(STTStreamSession):
             raise EngineError(f"audio chunk over {MAX_BACKLOG_S:.0f}s; send smaller chunks")
         # Behind: wait for the encoder, pushing back on the caller.
         while self.backlog_s + len(arr) / _SR > MAX_BACKLOG_S and self._consuming():
-            self._progress.clear()
-            await self._progress.wait()
+            await self._next_progress()
             self._check_open()
         self._pending.append(arr)
         self._pending_samples += len(arr)
@@ -797,11 +823,16 @@ class ParakeetStreamSession(STTStreamSession):
     def _consuming(self) -> bool:
         return self._consumer is not None and not self._consumer.done()
 
+    async def _next_progress(self) -> None:
+        self._progress.clear()
+        await self._progress.wait()
+
     async def _consume(self) -> None:
         """Plan a pass of pending audio at a time and run its jobs one by one,
-        until there is nothing left or ``finalize`` takes the rest."""
+        until there is nothing left or ``finalize`` takes the rest. A failure
+        is the adapter's to keep (:attr:`_StepRunner.failure`)."""
         try:
-            while not self._closed:
+            while not self._handed_over:
                 if not self._jobs:
                     if not self._pending:
                         return
@@ -818,8 +849,6 @@ class ParakeetStreamSession(STTStreamSession):
                 finally:
                     self._planned_samples -= job.samples
                     self._progress.set()
-        except Exception as exc:
-            self._failure = exc
         finally:
             self._progress.set()  # the task is done when a waiter wakes
 
@@ -839,19 +868,30 @@ class ParakeetStreamSession(STTStreamSession):
             return parts[0]
         return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
+    def _not_started(self) -> int:
+        """Samples pending or planned into jobs not yet started."""
+        return self._pending_samples + sum(job.samples for job in self._jobs)
+
     def partial(self) -> str:
         return self._adapter.text
 
     async def finalize(self) -> Transcript:
         self._check_open()
-        self._closed = True  # the consumer starts nothing more; the rest is one call
+        # From here every call of this session ranks WAITED (_rank reads it).
+        self._closed = True
+        # A backlog is encoded call by call, as before, so other sessions' calls
+        # at a pause still go between; what is left for the one call below is
+        # about a pass (the call in flight is not part of it).
+        while self._not_started() > _PASS and self._consuming():
+            await self._next_progress()
+        self._handed_over = True
         jobs, self._jobs = list(self._jobs), deque()
-        # Queued now, behind this session's call in flight (equal rank, earlier),
-        # so no other session's call starts between the two.
-        finish = self._thread.run_ranked(
-            _waited, self._adapter.finish, jobs, self._take(self._pending_samples)
-        )
-        result = await finish
+        self._planned_samples -= sum(job.samples for job in jobs)
+        audio = self._take(self._pending_samples)
+        # Queued before this coroutine first waits, so behind the session's own
+        # call in flight (equal rank, queued earlier) and ahead of anything
+        # queued after it.
+        result = await self._thread.run_ranked(self._rank, self._adapter.finish, jobs, audio)
         duration = self._samples_added / _SR
         if result is None:
             return Transcript(text="", language=self._language, duration_s=duration)
@@ -859,6 +899,7 @@ class ParakeetStreamSession(STTStreamSession):
 
     async def close(self) -> None:
         self._closed = True
+        self._handed_over = True
         try:
             task = self._consumer
             if task is not None:
@@ -875,14 +916,10 @@ class ParakeetStreamSession(STTStreamSession):
                 self._engine._session_closed(self)
 
     def _check_open(self) -> None:
-        if self._failure is not None:
-            raise self._failure
+        if self._adapter.failure is not None:
+            raise self._adapter.failure
         if self._closed:
             raise EngineError("stream session is closed")
-
-
-def _waited() -> _Rank:
-    return _Rank.WAITED
 
 
 # --- helpers ------------------------------------------------------------------
