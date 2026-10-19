@@ -125,6 +125,7 @@ def test_pass_fits_the_right_context() -> None:
     assert parakeet.LIBRARY_MIN_SAMPLES < PASS
 
 
+@pytest.mark.model
 def test_urgent_encoder_call_holds_the_gpu_lock(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -592,6 +593,18 @@ async def test_session_calls_are_urgent_once_the_client_waits() -> None:
             await asyncio.sleep(0.005)
         assert lib.urgent == [True] * 5 + [False]
         await session.finalize()
+
+
+async def test_session_audio_pending_at_finalize_is_encoded_as_urgent() -> None:
+    engine = FakeEngine(delay_s=0.1)
+    async with await engine.stream("en") as session:
+        lib = engine.libraries[0]
+        await session.add_audio(speech_like(PASS_S))
+        await asyncio.to_thread(lib.started.wait, 2)
+        await session.add_audio(speech_like(PASS_S + 0.1))  # pending: under the backlog bound
+        await session.finalize()
+    assert lib.encoded == [0, PASS, 2 * PASS]
+    assert lib.urgent == [False, True, True]
 
 
 async def test_session_runs_every_call_on_the_engine_thread() -> None:
@@ -1102,9 +1115,9 @@ async def test_undone_calls_leave_the_real_stream_exact(
         windows: list[tuple[NDArray[np.float32], int]] = []
         encode = lib.encode
 
-        def spy(window: NDArray[np.float32], start: int) -> None:
+        def spy(window: NDArray[np.float32], start: int, urgent: bool) -> None:
             windows.append((window, start))
-            encode(window, start)
+            encode(window, start, urgent)
 
         lib.encode = spy  # type: ignore[method-assign]
         try:
@@ -1118,7 +1131,7 @@ async def test_undone_calls_leave_the_real_stream_exact(
         straight = parakeet._LibraryStream(engine._model)
         try:
             for start, window in sorted(kept.items()):
-                straight.encode(window, start)
+                straight.encode(window, start, urgent=False)
             reference = straight.result()
         finally:
             straight.close()

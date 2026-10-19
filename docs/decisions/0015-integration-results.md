@@ -246,7 +246,8 @@ Notes on the rows:
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
   the two services. **Closed by ADR 0019** (Kokoro waits while an STT
   encoder call a client waits on runs): on the Mac Studio the row is median
-  125 to 130 / worst 136 to 149 ms, within the 150 ms worst case, against
+  125 to 130 / worst 136 to 149 ms, within the 150 ms worst case but at
+  it (149 ms, no margin), against
   159 to 164 / 203 to 204 on main (see [With the GPU gate](#with-the-gpu-gate)).
 - **Kokoro first audio while another client's utterance ends.** With the
   GPU gate (ADR 0019), first audio while another client streams to the STT

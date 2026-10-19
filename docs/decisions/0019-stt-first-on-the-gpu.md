@@ -274,8 +274,10 @@ The three designs on the Studio, worst case of the two rows that conflict
 | **Urgent calls only, 300 ms per sentence** | **136 to 149 ms** | **239 to 243 ms** |
 
 **This design is accepted.** It meets the STT target, push-to-talk
-finalize being the one the owner set as the priority, and keeps the 200 ms
-trailing row's tail gone (worst 3 to 5 ms against 64 to 71). First audio
+finalize being the one the owner set as the priority, though at it rather
+than under it: the worst of 149 ms leaves 1 ms to the 150 ms target. It
+keeps the 200 ms trailing row's tail gone (worst 3 to 5 ms against 64 to
+71). First audio
 while another client streams is over its 200 ms target only at the top
 (p95 158 to 200, worst 239 to 243 ms, n=30 per round): a reply that starts
 while the other client's urgent tail (its call at a pause and its last
@@ -332,13 +334,14 @@ lists it under Known misses.
 - Kokoro depends on two more mlx-audio internals, the residual block
   classes; the mlx-audio pin (pyproject, which names them) is what they were
   checked against. If they move, Kokoro still runs but loses the priority.
-  The tests that would notice need the `tts` extra, so they run locally and
-  in the model tier, not on CI: one checks the wrapped classes, and a model
-  test compares a seeded sentence's PCM with and without the submission
-  points.
+  The tests that would notice need the `tts` extra, so they are marked
+  `model` and run in the model tier, not on CI: one checks the wrapped
+  classes, one that a missing class is skipped, and one compares a seeded
+  sentence's PCM with and without the submission points.
 - Every Kokoro sentence is submitted in about 20 pieces even when no STT
-  call runs: first audio is 8 to 9 ms later in the benchmark (87 to 88
-  against 95 to 96 ms median) and 15 ms in the first-audio probe above
+  call runs: first audio is about 7 ms later in the benchmark on the Studio
+  (median 92 to 93 against 85 to 86 ms; 8 to 9 ms on the development
+  machine) and 15 ms in the first-audio probe above
   (102 against 117 ms); from a terminal, the engine's synthesis of a first
   sentence alone is 3 ms slower. Kokoro's transient MLX peak
   was lower in the benchmark (1.86 against 2.16 GB); why was not looked

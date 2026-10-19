@@ -312,10 +312,11 @@ def _pcm_seconds(chunks: list[Any]) -> float:
     return sum(c.duration_s for c in chunks)
 
 
+@pytest.mark.model
 def test_yield_points_wait_then_submit_each_block(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each residual block calls the sentence's yielder, then submits its graph,
     keeping at most BLOCKS_IN_FLIGHT unfinished, and computes what it did
-    before (ADR 0019). Runs where the tts extra is installed, not on CI."""
+    before (ADR 0019). Needs the tts extra: the model tier."""
     pytest.importorskip("mlx_audio")
     import mlx.core as mx
     from mlx_audio.tts.models.kokoro import istftnet
@@ -355,6 +356,21 @@ def test_yield_points_wait_then_submit_each_block(monkeypatch: pytest.MonkeyPatc
     assert len(submitted) == len(outs)
 
 
+@pytest.mark.model
+def test_submit_queues_the_block_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("mlx_audio")
+    import mlx.core as mx
+
+    from voiced.engines import kokoro
+
+    queued: list[object] = []
+    monkeypatch.setattr(mx, "async_eval", queued.append)
+    out = mx.zeros((2,))
+    kokoro._submit(out)
+    assert queued == [out]
+
+
+@pytest.mark.model
 def test_missing_block_class_is_skipped(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
