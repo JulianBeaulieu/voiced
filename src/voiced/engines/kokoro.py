@@ -15,6 +15,10 @@ install command if neither works. When no data directory is named, the
 tokenizer reads the data of the espeak-ng copy in the ``espeakng-loader``
 wheel; that copy is cloned to a short path first (``_espeak_data``).
 
+Each residual block of a sentence's graph is submitted to the GPU as soon as
+it is built, after waiting for any speech-to-text encoder call that holds the
+GPU (``voiced.gpu``, ADR 0019): the STT service's calls go first.
+
 Everything that touches MLX or espeak is imported inside ``load()`` so this
 module can be imported (the entry point registry does so) on machines
 without the ``tts`` extra.
@@ -29,6 +33,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections import deque
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -36,6 +42,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from voiced import gpu
 from voiced.audio import float32_to_pcm16
 from voiced.config import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
@@ -67,6 +74,31 @@ _CS_DARWIN_USER_CACHE_DIR = 65538
 _STALE_STAGING_SECONDS = 3600
 MAX_PHONEMES = 510
 """Kokoro's context is 512 tokens including the two padding tokens."""
+YIELD_POINT_BLOCKS = ("AdainResBlk1d", "AdaINResBlock1")
+"""Classes in ``mlx_audio.tts.models.kokoro.istftnet`` (called as
+``block(x, s)``) after which a sentence's graph is submitted, about 20 per
+sentence: the decoder's and the prosody predictor's residual blocks and the
+vocoder's. A shorter interval costs Kokoro more, a longer one makes the STT
+wait longer (ADR 0019)."""
+BLOCKS_IN_FLIGHT = 2
+"""Blocks a sentence may have submitted and not finished. Waiting for each
+block before the next (1) left the GPU idle while MLX encoded the next one:
+first audio 30 ms later. Unbounded, MLX let ten command buffers run ahead,
+all queued in front of an encoder call that started (ADR 0019)."""
+
+
+class _Submissions:
+    """One sentence's submissions: its yielder and the blocks submitted and
+    not yet waited for, oldest first."""
+
+    def __init__(self) -> None:
+        self.yielder = gpu.Yielder()
+        self.in_flight: deque[Any] = deque()
+
+
+_submissions: ContextVar[_Submissions | None] = ContextVar(
+    "voiced_kokoro_submissions", default=None
+)
 
 
 class EspeakNotFound(RuntimeError):
@@ -212,6 +244,7 @@ class KokoroEngine(SentenceTTSEngine):
         model = load_model(
             self.model_id, revision=pinned_revision(self.model_id), allow_patterns=patterns
         )
+        _install_yield_points()
         rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:
             raise RuntimeError(f"Kokoro model reports {rate} Hz, expected {TTS_SAMPLE_RATE}")
@@ -423,6 +456,61 @@ def _load_espeak() -> Any:
     )
 
 
+def _install_yield_points() -> None:
+    """Make each of :data:`YIELD_POINT_BLOCKS` a submission point: wait
+    until fewer than :data:`BLOCKS_IN_FLIGHT` of the sentence's blocks are
+    unfinished, then for the sentence's :class:`voiced.gpu.Yielder`, then
+    submit the block's output (:func:`_submit`).
+
+    Without this a sentence is one ``mx.eval`` of its whole graph, its work
+    is queued on the GPU at once, and an STT encoder call waits behind it.
+    ``async_eval`` does not wait for the GPU, so the next blocks are built
+    and encoded while earlier ones run. It must not run inside an
+    ``mx.compile`` trace; ``_synth`` never passes the model a ``decoder``
+    to compile.
+
+    Patches the classes once per process; the pinned mlx-audio range
+    (pyproject) is what it was checked against. It fails open: a class that
+    is missing is logged and skipped, and a block whose output is not an
+    array is returned untouched, so a changed mlx-audio loses the priority,
+    not the service.
+    """
+    import mlx.core as mx
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    for name in YIELD_POINT_BLOCKS:
+        cls = getattr(istftnet, name, None)
+        if cls is None:
+            log.warning("kokoro: mlx-audio has no %s; GPU priority for STT is partial", name)
+            continue
+        if getattr(cls, "_voiced_yield_point", False):
+            continue
+        call = cls.__call__
+
+        def submit(self: Any, *args: Any, _call: Any = call, **kwargs: Any) -> Any:
+            out = _call(self, *args, **kwargs)
+            current = _submissions.get()
+            if current is None or not isinstance(out, mx.array):  # not inside _synth
+                return out
+            while len(current.in_flight) >= BLOCKS_IN_FLIGHT:
+                mx.eval(current.in_flight.popleft())
+            current.yielder()
+            _submit(out)
+            current.in_flight.append(out)
+            return out
+
+        cls.__call__ = submit
+        cls._voiced_yield_point = True
+
+
+def _submit(out: Any) -> None:
+    """Queue ``out`` on the GPU without waiting for it."""
+    import mlx.core as mx
+
+    async_eval: Any = mx.async_eval  # untyped in mlx's stubs
+    async_eval(out)
+
+
 def _phonemize(tokenizer: Any, text: str, voice: str) -> str:
     return str(tokenizer.phonemize(text, KOKORO_LANGUAGES[voice[0]].espeak))
 
@@ -432,10 +520,16 @@ def _synth(model: Any, tokenizer: Any, pack: Any, sentence: str, voice: str, spe
     if not phonemes:
         return b""
     parts: list[NDArray[np.float32]] = []
-    # Sentences are at most 300 characters and phoneme strings run up to about
-    # 1.2 times the text (more for acronym-heavy text), so a sentence can
-    # exceed the model's 510-phoneme context; cut at spaces when it does.
-    for chunk in cut_to_length(phonemes, MAX_PHONEMES):
-        out = model(chunk, pack[len(chunk) - 1], speed, return_output=True)
-        parts.append(np.array(out.audio, copy=False).reshape(-1))
+    submissions = _Submissions()
+    token = _submissions.set(submissions)
+    try:
+        # Sentences are at most 300 characters and phoneme strings run up to
+        # about 1.2 times the text (more for acronym-heavy text), so a sentence
+        # can exceed the model's 510-phoneme context; cut at spaces when it does.
+        for chunk in cut_to_length(phonemes, MAX_PHONEMES):
+            submissions.yielder()
+            out = model(chunk, pack[len(chunk) - 1], speed, return_output=True)
+            parts.append(np.array(out.audio, copy=False).reshape(-1))
+    finally:
+        _submissions.reset(token)
     return float32_to_pcm16(np.concatenate(parts))

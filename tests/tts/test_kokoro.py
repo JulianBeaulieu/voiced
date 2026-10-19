@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +310,148 @@ def test_has_voice_reads_the_loaded_packs() -> None:
 
 def _pcm_seconds(chunks: list[Any]) -> float:
     return sum(c.duration_s for c in chunks)
+
+
+@pytest.mark.model
+def test_yield_points_wait_then_submit_each_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each residual block calls the sentence's yielder, then submits its graph,
+    keeping at most BLOCKS_IN_FLIGHT unfinished, and computes what it did
+    before (ADR 0019). Needs the tts extra: the model tier."""
+    pytest.importorskip("mlx_audio")
+    import mlx.core as mx
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    from voiced.engines import kokoro
+
+    kokoro._install_yield_points()
+    kokoro._install_yield_points()  # once per process, however often it is called
+    for name in kokoro.YIELD_POINT_BLOCKS:
+        assert getattr(istftnet, name)._voiced_yield_point
+    original = istftnet.AdaINResBlock1.__call__.__kwdefaults__["_call"]
+    assert not getattr(original, "__kwdefaults__", None)  # not wrapped twice
+
+    submitted: list[object] = []
+    monkeypatch.setattr(kokoro, "_submit", submitted.append)
+    block = istftnet.AdaINResBlock1(channels=4, kernel_size=3, dilation=(1, 3, 5), style_dim=8)
+    x = mx.random.normal((1, 4, 32))
+    s = mx.random.normal((1, 8))
+    sentence = kokoro._Submissions()
+    calls: list[int] = []
+    sentence.yielder = lambda: calls.append(1)  # type: ignore[assignment]
+    token = kokoro._submissions.set(sentence)
+    try:
+        outs = [block(x, s) for _ in range(kokoro.BLOCKS_IN_FLIGHT + 1)]
+        outs.append(block(x, s=s))  # keyword arguments pass through
+        expected = outs[-kokoro.BLOCKS_IN_FLIGHT :]
+        assert len(sentence.in_flight) == len(expected)
+        assert all(a is b for a, b in zip(sentence.in_flight, expected, strict=True))
+    finally:
+        kokoro._submissions.reset(token)
+    assert len(calls) == len(outs)
+    assert len(submitted) == len(outs)
+    assert all(a is b for a, b in zip(submitted, outs, strict=True))
+    assert mx.allclose(outs[0], original(block, x, s)).item()
+    block(x, s)  # outside a sentence: plain block
+    assert len(calls) == len(outs)
+    assert len(submitted) == len(outs)
+
+
+@pytest.mark.model
+def test_submit_queues_the_block_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("mlx_audio")
+    import mlx.core as mx
+
+    from voiced.engines import kokoro
+
+    queued: list[object] = []
+    monkeypatch.setattr(mx, "async_eval", queued.append)
+    out = mx.zeros((2,))
+    kokoro._submit(out)
+    assert queued == [out]
+
+
+@pytest.mark.model
+def test_missing_block_class_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A changed mlx-audio loses the GPU priority, not the service."""
+    pytest.importorskip("mlx_audio")
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    from voiced.engines import kokoro
+
+    monkeypatch.delattr(istftnet, "AdainResBlk1d")
+    with caplog.at_level("WARNING", logger="voiced.engines.kokoro"):
+        kokoro._install_yield_points()
+    assert any("AdainResBlk1d" in r.getMessage() for r in caplog.records)
+
+
+def test_synth_waits_before_each_chunk_inside_its_own_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_synth`` gives each sentence one yielder, calls it before every chunk
+    and exposes it to the blocks only while the sentence runs. No MLX needed."""
+    from voiced.engines import kokoro
+
+    waits: list[int] = []
+
+    class CountingYielder:
+        def __call__(self) -> None:
+            waits.append(1)
+
+    monkeypatch.setattr(kokoro.gpu, "Yielder", CountingYielder)
+    seen: list[object] = []
+
+    def model(chunk: str, style: object, speed: float, return_output: bool) -> object:
+        current = kokoro._submissions.get()
+        assert current is not None
+        seen.append(current)
+        assert len(waits) == len(seen)  # waited before this chunk
+        return type("Out", (), {"audio": np.zeros(240, dtype=np.float32)})()
+
+    phonemes = " ".join(["abcdefghi"] * 80)  # about 800 phonemes: two chunks
+    tokenizer = type("Tok", (), {"phonemize": lambda self, text, lang: phonemes})()
+    pcm = kokoro._synth(model, tokenizer, [object()] * 600, "text", "af_heart", 1.0)
+    assert len(seen) == 2
+    assert seen[0] is seen[1]
+    assert kokoro._submissions.get() is None
+    assert len(pcm) == 2 * 480
+
+
+@pytest.mark.model
+def test_block_submission_does_not_change_the_audio(kokoro_engine: Any) -> None:
+    """With the same seed, a sentence synthesized through the yield points gives
+    the same PCM as the model called outside a sentence, where the blocks run
+    as mlx-audio wrote them (ADR 0019). Within 1 LSB: two unpatched runs with
+    the same seed already differ by that at a few samples."""
+    import mlx.core as mx
+
+    from voiced.engines import kokoro
+
+    voice = "af_heart"
+    sentence = "Please play some relaxing music in the living room."
+    pack = kokoro_engine._packs[voice]
+    phonemes = kokoro_engine.phonemize(sentence, voice)
+
+    def through_yield_points() -> bytes:
+        mx.random.seed(7)
+        return kokoro._synth(
+            kokoro_engine._model, kokoro_engine._tokenizer, pack, sentence, voice, 1.0
+        )
+
+    def unpatched() -> bytes:
+        mx.random.seed(7)
+        out = kokoro_engine._model(phonemes, pack[len(phonemes) - 1], 1.0, return_output=True)
+        return kokoro.float32_to_pcm16(np.array(out.audio, copy=False).reshape(-1))
+
+    # On a worker thread, as the service runs it: MLX work left on pytest's
+    # main thread kept the process from exiting after the session.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        patched = pool.submit(through_yield_points).result()
+        plain = pool.submit(unpatched).result()
+    assert len(patched) == len(plain)
+    diff = np.frombuffer(patched, "<i2").astype(np.int32) - np.frombuffer(plain, "<i2")
+    assert np.abs(diff).max() <= 1
 
 
 @pytest.mark.model

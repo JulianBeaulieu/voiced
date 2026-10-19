@@ -19,6 +19,10 @@ docs/decisions/0008-stt-engine-parakeet.md:
   encoder only when :data:`MAX_BACKLOG_S` is behind) and feeds both from one
   consumer task.
 
+Every encoder call a client waits on (see :meth:`_StepRunner.urgent`) holds
+:func:`voiced.gpu.stt_turn`, so Kokoro synthesizing in the TTS service waits
+for it (ADR 0019).
+
 Every MLX call of an engine runs on the engine's :class:`ModelThread`. Entering
 the library's stream context switches the model to local attention globally;
 :meth:`ParakeetStreamSession.close` restores it. The engine refuses a second
@@ -32,6 +36,8 @@ import asyncio
 import bisect
 import logging
 import time
+from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
@@ -51,6 +57,7 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
+from voiced.gpu import stt_turn
 from voiced.threads import ModelThread
 from voiced.vad import Endpointer, EndpointEvent
 
@@ -117,6 +124,10 @@ FEED_MAX_S = 2.0
 """Most audio one model-thread call feeds. A session catching up runs a burst as
 several calls, so ``add_audio`` waits for one call (about three passes) rather
 than for the whole burst, and ``close`` is never held up longer than that."""
+URGENT_BACKLOG_S = 2 * PASS_S
+"""Unencoded audio past which a session is behind, so its encoder calls go first
+on the GPU (ADR 0019). A session that keeps up holds under one pass in the
+planner plus the few chunks that arrive during a call; this is one more pass."""
 WARMUP_S = 1.0
 SILENCE_FLOOR_DBFS = -60.0
 """Batch only: input with no 32 ms frame above this RMS is silence, nothing to
@@ -190,7 +201,7 @@ class ParakeetEngine(STTEngine):
         _generate(model, np.zeros(round(WARMUP_S * _SR), dtype=np.float32))
         warm = _LibraryStream(model)
         try:
-            warm.encode(np.zeros(_PASS, dtype=np.float32), 0)
+            warm.encode(np.zeros(_PASS, dtype=np.float32), 0, urgent=False)
         finally:
             warm.close()
         self._model = model
@@ -250,6 +261,8 @@ class _Encode:
 
     window: NDArray[np.float32]
     start: int
+    speculative: bool = False
+    """The call at a pause, which the hypothesis at the end of speech waits on."""
 
 
 _Step = _Encode | Literal["checkpoint", "restore"]
@@ -308,7 +321,7 @@ class _Planner:
             self._speculating = False
         steps += self._due()
         if self._has_speech() and self._at_pause():
-            steps += ["checkpoint", _Encode(_pad(self._buffer), self._start)]
+            steps += ["checkpoint", _Encode(_pad(self._buffer), self._start, speculative=True)]
             self._speculating = True
         return steps
 
@@ -405,7 +418,7 @@ class _Library(Protocol):
     def calls(self) -> int:
         """Encoder calls made, undone ones included."""
 
-    def encode(self, window: NDArray[np.float32], start: int) -> None: ...
+    def encode(self, window: NDArray[np.float32], start: int, urgent: bool) -> None: ...
 
     def checkpoint(self) -> object: ...
 
@@ -466,13 +479,14 @@ class _LibraryStream:
         self.text = ""
         self.calls = 0
 
-    def encode(self, window: NDArray[np.float32], start: int) -> None:
+    def encode(self, window: NDArray[np.float32], start: int, urgent: bool) -> None:
         stream = self._open()
         retained = 0 if stream.mel_buffer is None else int(stream.mel_buffer.shape[1])
         base = len(self._starts) * self._frames - retained  # mel frame of the buffer start
         known = len(stream.finalized_tokens)
         t0 = time.perf_counter()
-        stream.add_audio(self._array(window))
+        with stt_turn() if urgent else nullcontext():
+            stream.add_audio(self._array(window))
         if not self._frames:  # one window is shorter than the right context: untrimmed
             self._frames = int(stream.mel_buffer.shape[1])
         self._starts.append(start)
@@ -570,6 +584,8 @@ class _StepRunner:
         self._planner = planner
         self._checkpoint: object = None
         self.rollbacks = 0
+        self.client_waiting: Callable[[], bool] = lambda: False
+        """Set by the session: whether its client waits on the encoder now."""
 
     @property
     def buffered_s(self) -> float:
@@ -591,6 +607,14 @@ class _StepRunner:
         self._run(self._planner.flush())
         return self._library.result()
 
+    def urgent(self, step: _Encode) -> bool:
+        """Whether a client is waiting on this encoder call, so it goes first on
+        the GPU: the call at a pause, every call after ``finalize``, and every
+        call of a session that is behind. Calls while the speaker talks and the
+        encoder keeps up (it runs several times faster than real time) do not
+        need to, and synthesis keeps the GPU through them."""
+        return step.speculative or self.client_waiting()
+
     def close(self) -> None:
         self._library.close()
         log.debug("stream closed: %d encoder calls, %d undone", self.passes, self.rollbacks)
@@ -598,7 +622,7 @@ class _StepRunner:
     def _run(self, steps: list[_Step]) -> None:
         for step in steps:
             if isinstance(step, _Encode):
-                self._library.encode(step.window, step.start)
+                self._library.encode(step.window, step.start, self.urgent(step))
             elif step == "checkpoint":
                 self._checkpoint = self._library.checkpoint()
             else:
@@ -629,6 +653,7 @@ class ParakeetStreamSession(STTStreamSession):
         self._progress = asyncio.Event()  # set after every call the consumer makes
         self._failure: BaseException | None = None
         self._closed = False
+        adapter.client_waiting = self._client_waiting
 
     @property
     def passes(self) -> int:
@@ -659,6 +684,11 @@ class ParakeetStreamSession(STTStreamSession):
         self._samples_added += len(arr)
         if self._consumer is None or self._consumer.done():
             self._consumer = asyncio.create_task(self._consume())
+
+    def _client_waiting(self) -> bool:
+        """After ``finalize`` (the client waits for the transcript), or over
+        :data:`URGENT_BACKLOG_S` unencoded. Read on the model thread."""
+        return self._closed or self.backlog_s > URGENT_BACKLOG_S
 
     def _consuming(self) -> bool:
         return self._consumer is not None and not self._consumer.done()
