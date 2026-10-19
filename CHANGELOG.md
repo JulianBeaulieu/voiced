@@ -9,19 +9,18 @@ uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - Several live speech-to-text streams are transcribed at once: up to
-  `stt.streams` (default 3) WebSocket and Wyoming sessions share the
-  service, so two or three satellites talking together no longer queue
-  behind each other (ADR 0020). Each session has its own stream state over
-  the one loaded model (36 MB each; the weights are shared), and its encoder
-  calls take turns on the engine's one model thread. The calls a client
-  waits on go first, then sessions that are behind, then the rest. On an M1
-  Max, with three clients at once, finalize after the endpointer's 200 ms
-  window was median 0 / worst 96 ms in the clean measurement and on the Mac
-  Studio worst 115 to 129 ms. Rarely (2 of about 260 finalizes in the model
-  tests) one waits for both other sessions' calls and takes 183 to 186 ms;
-  `stt.streams = 2` keeps every one within 150 ms. A session past
-  `stt.streams` waits for one to end, as every second session did before,
-  and a batch transcription waits until no stream is open. `stt.streams`
+  `stt.streams` (default 2) WebSocket and Wyoming sessions share the
+  service, so two satellites talking together no longer queue behind each
+  other (ADR 0020). Each session has its own stream state over the one
+  loaded model (36 MB each; the weights are shared), and its encoder calls
+  take turns on the engine's one model thread. The calls a client waits on
+  go first, then sessions that are behind, then the rest. With two clients
+  at once, finalize after the endpointer's 200 ms window was worst 69 ms on
+  an M1 Max and 103 to 110 ms on the Mac Studio. `stt.streams = 3` serves
+  a third at once; its finalize stays within 150 ms at the 95th percentile,
+  but rarely one waits for both other sessions' calls and takes 162 to
+  186 ms. A session past `stt.streams` waits for one to end, as every
+  second session did before, and a batch transcription waits until no stream is open. `stt.streams`
   above `queue_depth` is a configuration error. An STT engine declares how
   many sessions it can interleave (`STTEngine.max_streams`, 1 by default,
   6 for Parakeet), and the service never opens more. `scripts/bench.py`

@@ -67,9 +67,10 @@ queue_depth = 8
 # queue_depth is an error, and the service opens no more than the engine can
 # interleave (its max_streams: 6 for parakeet, 1 for an engine that declares
 # nothing). The next one waits for one of them to end; its client's audio is
-# held meanwhile. More than the measured default and every stream's final
-# transcript is later (docs/decisions/0020-concurrent-stt-streams.md).
-streams = 3
+# held meanwhile. At 2 every final transcript stays within 150 ms of the
+# endpointer's window; 3 serves one more client at once but, rarely, takes
+# up to about 190 ms (docs/decisions/0020-concurrent-stt-streams.md).
+streams = 2
 # Largest upload accepted by /v1/audio/transcriptions. Also caps the audio an
 # upload decodes to, one WebSocket stream and one Wyoming utterance at the same
 # amount of 16-bit 16 kHz audio (about 26 minutes at 50).

@@ -1834,14 +1834,27 @@ async def test_finalize_within_target_with_the_default_streams(
     engine: ParakeetEngine, speech: NDArray[np.float32]
 ) -> None:
     """``stt.streams`` clients at once, ends after the endpointer's silence
-    window. A session has at most one call queued or running, so a call at a
-    pause waits for at most the call running and, with three streams, one
-    other session's urgent call queued just ahead: when all three coincide,
-    about 190 ms (ADR 0020). That is rare (2 of about 260 in the model tier),
-    so the target holds at the 95th percentile and the worst case is bounded
-    at twice it."""
+    window: every finalize within the 150 ms of ADR 0008. A session has at
+    most one call queued or running, so the call at a pause waits for one
+    call of the other session at most, and runs while the window elapses.
+    Ahead of it can also be its own regular call planned in the same pass,
+    and the other session's call can be its finalize, which may encode more
+    than one window (ADR 0020)."""
     latencies = await concurrent_finalizes(engine, speech, STT_STREAMS, SILENCE_WINDOW_S, 45.0)
     report(f"finalize, {STT_STREAMS} streams, {SILENCE_WINDOW_S * 1000:.0f} ms window", latencies)
+    assert max(latencies) < FINALIZE_WORST_S
+
+
+@pytest.mark.model
+async def test_finalize_with_three_streams(
+    engine: ParakeetEngine, speech: NDArray[np.float32]
+) -> None:
+    """``stt.streams = 3``, the opt-in: the call at a pause can wait for both
+    other sessions' calls, and when they coincide a finalize ends about
+    190 ms after the window (ADR 0020). That is rare, so the target holds at
+    the 95th percentile and the worst case is bounded at twice it."""
+    latencies = await concurrent_finalizes(engine, speech, 3, SILENCE_WINDOW_S, 45.0)
+    report(f"finalize, 3 streams, {SILENCE_WINDOW_S * 1000:.0f} ms window", latencies)
     assert float(np.percentile(latencies, 95)) < FINALIZE_WORST_S
     assert max(latencies) < 2 * FINALIZE_WORST_S
 

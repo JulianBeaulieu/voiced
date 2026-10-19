@@ -141,7 +141,7 @@ queue, `voiced.queue.InferenceQueue`:
   (`Operation.STREAM`) takes a shared slot instead: up to `max_shared` such
   holders run at once, and the engine interleaves their work on its model
   thread ([ADR 0020](decisions/0020-concurrent-stt-streams.md)). For STT
-  that is `stt.streams` (default 3), at most `queue_depth` and the engine's
+  that is `stt.streams` (default 2), at most `queue_depth` and the engine's
   `max_streams` (1 unless the engine declares more; Parakeet does). An
   exclusive holder, such as a batch transcription, waits until no shared
   holder is left. Admission stays FIFO, so neither kind overtakes the

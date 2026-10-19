@@ -120,8 +120,11 @@ thread**, over one set of weights, one stream state per session.
   audio (the Wyoming handler's 64-chunk queue, then TCP), and it gets
   `server_busy` after about 34 s. `queue_depth` still bounds what is open
   or waiting.
-- **`stt.streams`, default 3**, measured below. Setting it above
-  `stt.queue_depth` is an error. The service opens
+- **`stt.streams`, default 2**, measured below: the most streams for which
+  every finalize after the endpointer's window stays within 150 ms. Three
+  meets the target at the 95th percentile but not in the worst case (below),
+  and is a documented opt-in. Setting it above `stt.queue_depth` is an
+  error. The service opens
   `min(stt.streams, stt.queue_depth, engine.max_streams)` at once
   (`STTConfig.open_streams`), so a default above a small `queue_depth` is
   not an error.
@@ -143,8 +146,8 @@ machine; 90 s per row:
 |---|---|---|---|---|
 | 1 (main) | 0 / 1 to 2 / 1 to 2 ms | 0 of 28 | 112 to 121 / 126 to 136 / 126 to 136 ms | 0 of 28 |
 | 1 | 0 / 2 / 2 ms | 0 of 28 | 116 to 126 / 132 to 138 / 132 to 138 ms | 0 of 28 |
-| 2 | 0 / 32 / 69 ms | 0 of 43 | 116 / 138 / 246 ms | 1 of 44 |
-| **3** | **0 / 68 / 96 ms** | **0 of 63** | 121 / 196 / 226 ms | 14 of 64 |
+| **2** | **0 / 32 / 69 ms** | **0 of 43** | 116 / 138 / 246 ms | 1 of 44 |
+| 3 | 0 / 68 / 96 ms | 0 of 63 | 121 / 196 / 226 ms | 14 of 64 |
 | 4 | 8 / 100 / 141 ms | 0 of 83 | 121 / 210 / 281 ms | 23 of 83 |
 | 5 | 29 / 194 / 219 ms | 10 of 105 | | |
 
@@ -154,38 +157,44 @@ The difference between them is within main's own spread from round to
 round. An earlier run of 150 s per row, while other work shared the
 machine, gave N=3 worst 100 ms (0 of 105 over) and N=4 worst 185 ms (2 of
 137 over). Four streams met the target in the clean run (worst 141 ms)
-but not in that noisier one (185 ms), so the default is three.
+but not in that noisier one (185 ms). Three met it in every probe run, but
+not in the model tier (below) or on the Mac Studio (162 ms, below), so the
+default is two.
 
-The model tier's `test_finalize_within_target_with_the_default_streams`
-(three clients, 45 s, about 33 finalizes) gave worst 105, 113, 116, 117,
-119, 127 and 138 ms in seven runs, and 183 and 186 ms in two more. A
-session has
-at most one call queued or running, so a call at a pause waits for at most
-one call per other session. With two streams that is the call running, at
-most about 165 ms, and the call itself, about 105 to 140 ms, ends inside
-the endpointer's 192 ms plus about 120 ms: always within target (measured
-worst 69 ms). With three, when the other two sessions' urgent calls (the
-call running and a call at a pause queued just ahead) coincide with this
-one's pause, it can end about 190 to 220 ms after the window, which is
-where the two misses fall. Neither miss was caught with the model thread's
-calls logged (the two instrumented runs gave 113 and 138 ms). What those
-runs ruled out is state left by earlier tests in the same process: no
-session left open, nothing queued at the start, no collection over 16 ms.
-It happened in 2 of
-about 260 model-tier finalizes and in none of about 370 in the probes and
-192 on the Studio. The model test therefore holds three streams to the
-target at the 95th percentile and bounds the worst case at twice it, as the
-push-to-talk test does. A deployment that needs every finalize after the
-window within 150 ms sets `stt.streams = 2`.
+The model tier with three clients (45 s, about 33 finalizes a run) gave
+worst 105, 113, 116, 117, 119, 127 and 138 ms in seven runs, and 183 and
+186 ms in two more. A session has at most one call queued or running, so
+its call at a pause waits for at most one call per other session. Two
+things can come before it besides: its own regular call, when the same
+pass planned both (it is queued first, at the session's rank), and, when
+the other session is finalizing, that session's last call, which encodes
+the rest of its tail and can be more than one window. With two streams the
+call at a pause runs after at most the other session's call, about 165 ms
+at most, and the call itself, about 105 to 140 ms, mostly inside the
+endpointer's 192 ms: measured worst 69 ms here and 103 to 110 ms on the
+Studio. With three, when the other two sessions' urgent calls (the call
+running and a call at a pause queued just ahead) coincide with this one's
+pause, it can end about 190 to 220 ms after the window, which is where the
+two misses fall. Neither miss was caught with the model thread's calls
+logged (the two instrumented runs gave 113 and 138 ms). What those runs
+ruled out is state left by earlier tests in the same process: no session
+left open, nothing queued at the start, no collection over 16 ms. It
+happened in 2 of about 260 model-tier finalizes, in none of about 370 in
+the probes, and on the Studio in none of 192 on ae34627 and 1 of 192 on
+f8d6cc8 (162 ms, below). The model tier therefore holds the default, two
+streams, to 150 ms in the worst case
+(`test_finalize_within_target_with_the_default_streams`), and three to the
+target at the 95th percentile with the worst case bounded at twice it, as
+the push-to-talk test does (`test_finalize_with_three_streams`).
 
 After the window, a session's call at the pause runs while the endpointer's
 192 ms elapse. With others streaming it waits at most for the call already
 running and for other sessions' calls at a pause, which is why the window
-row holds to three or four streams. Push-to-talk has no such head start:
-`finalize` must encode the tail after `end`, and if another session's call
-has just started, it waits for that call too. The median stays the
-one-stream cost, but the worst case is about one call more (226 to 281 ms)
-from two streams on.
+row holds to two streams in every run and to three or four in most.
+Push-to-talk has no such head start: `finalize` must encode the tail after
+`end`, and if another session's call has just started, it waits for that
+call too. The median stays the one-stream cost, but the worst case is about
+one call more (226 to 281 ms) from two streams on.
 
 Each transcript matched the one-stream transcript at the same alignment
 (`test_concurrent_streams_each_transcribe_as_if_alone`). Across alignments
@@ -200,9 +209,9 @@ of silence) and requires both transcripts within 150 ms of `AudioStop`.
 ### On the Mac Studio
 
 The target machine (M1 Max, 24-core GPU, 32 GB, as in ADR 0019),
-`scripts/bench.py` with its defaults (`--streams 3`) against the installed
-services, main (25226af) and this change (ae34627, before the planner change
-below) alternating, two rounds each:
+`scripts/bench.py` with `--streams 3` (then its default) against the
+installed services, main (25226af) and this change (ae34627, before the
+planner change below) alternating, two rounds each:
 
 | Metric | main | This change | Target |
 |---|---|---|---|
@@ -219,6 +228,21 @@ rounds (no finalize over 150 ms in 192), and push-to-talk is the known miss
 above. The one-client rows are unchanged within their spread (main's 150 ms is one
 finalize of 32 in one round), and Kokoro first audio while another
 client streams stays the known miss of ADR 0019.
+
+After the planner change (f8d6cc8), this change alone, two rounds of n=96
+per multi-client row; a cell is the two rounds:
+
+| Metric | 2 clients | 3 clients | Target |
+|---|---|---|---|
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence | p95 53 / 91, worst 103 / 110 ms | p95 90 / 95, worst 162 / 102 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | p95 154 / 146, worst 221 / 220 ms | worst 253 / 248 ms | <= 150 ms worst |
+
+One finalize of 192 with three clients went over 150 ms, the rare case
+above; with two none did. The one-client rows were unchanged (0 ms trailing
+silence, worst 129 to 143 ms). An A/B on cebe52a, the commit before,
+gave main worst 813 / 816 ms with three clients after the window and this
+change 123 / 137 ms. Push-to-talk with other clients streaming is the known
+miss above, at two clients as at three.
 
 ## The planner decides frame by frame
 
@@ -293,11 +317,13 @@ allows.
   cannot be preempted, and a push-to-talk client gives no warning before it
   stops. Clients that can should stream 200 ms of silence before `end` (ADR
   0015, Known misses).
-- With three streams, a finalize after the window can, rarely, wait for
-  both other sessions' calls and end about 190 to 220 ms after it (above);
-  `stt.streams = 2` keeps every one within 150 ms.
-- `stt.streams` above the measured default serves more sessions at once,
-  each finalizing later. At 5 the endpointer-window worst was 219 ms. The
+- A third satellite talking while two others do waits for one of them to
+  end, as a second one did before this change.
+- `stt.streams = 3` serves one more session at once. A finalize after the
+  window can then, rarely, wait for both other sessions' calls and end
+  about 190 to 220 ms after it (above; 162 ms on the Studio, 1 of 192).
+- More streams still serve more sessions at once, each finalizing later.
+  At 5 the endpointer-window worst was 219 ms. The
   thread runs out at about six. Below it, sessions past the limit wait as
   before.
 - Each open session holds 36 MB of stream state. The MLX peak does not grow

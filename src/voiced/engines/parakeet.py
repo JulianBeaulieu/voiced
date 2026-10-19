@@ -176,8 +176,8 @@ class ParakeetEngine(STTEngine):
     license = "CC-BY-4.0"
     max_streams = 6
     """Its sessions take turns on one model thread, which keeps up with about
-    six real-time streams on an M1 Max; ``stt.streams`` (3) is what stays
-    within the finalize target (ADR 0020)."""
+    six real-time streams on an M1 Max; ``stt.streams`` (2) is what keeps
+    every finalize within the target (ADR 0020)."""
 
     @classmethod
     def download_patterns(cls) -> list[str]:
@@ -404,6 +404,10 @@ class _Planner:
             steps.append("restore")
             self._speculating = False
         steps += self._due()
+        # _has_speech asks which pass the recorded speech frames belong to, so
+        # it applies the half-frame rule against _start; _at_pause measures the
+        # pause from the end of the last speech frame (_speech_ends[-1]), where
+        # the buffer starts does not matter.
         if self._has_speech() and self._at_pause():
             window = self._buffer[: self._last_speech() + _VAD_FRAME - self._start]
             steps += ["checkpoint", _Encode(_pad(window), self._start, speculative=True)]

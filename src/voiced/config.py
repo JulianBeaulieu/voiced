@@ -112,7 +112,7 @@ _STT_RATE = 16_000
 _PCM16_BYTES = 2
 
 
-STT_STREAMS = 3
+STT_STREAMS = 2
 """Stream sessions within the finalize target for Parakeet on an M1 Max (ADR 0020)."""
 
 
