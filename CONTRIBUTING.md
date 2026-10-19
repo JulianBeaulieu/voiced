@@ -45,6 +45,14 @@ uv run pytest
 | mypy | `strict` over the `voiced` package. Third-party MLX and Wyoming packages are `ignore_missing_imports`; add new untyped dependencies to that list in `pyproject.toml`, do not sprinkle `type: ignore`. |
 | pytest | `asyncio_mode = "auto"`; `DeprecationWarning` from `voiced.*` is an error. |
 
+Changes under `.github/` also go through the `workflows` job:
+[actionlint](https://github.com/rhysd/actionlint) and
+[zizmor](https://docs.zizmor.sh/) (`actionlint` and `uvx zizmor .github/`
+locally). Every `uses:` is pinned to a full commit SHA with its version as a
+trailing comment, and checkouts set `persist-credentials: false`. Dependabot
+proposes updates to the pins weekly (`.github/dependabot.yml`); do not
+replace a pin with a tag.
+
 ## Tests
 
 The default `pytest` run must pass on a machine with no model, no GPU and no
