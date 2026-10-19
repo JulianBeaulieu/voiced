@@ -36,6 +36,7 @@ from voiced.launchd.install import (
     PRIVILEGED_SCRIPT,
     InstallError,
     InstallPlan,
+    new_environment_dir,
     plan_install,
     plan_summary,
     privileged_script,
@@ -48,7 +49,14 @@ from voiced.launchd.install import (
 )
 from voiced.launchd.ports import bind_error as real_bind_error
 from voiced.launchd.ports import listener_pids as real_listener_pids
-from voiced.layout import Manifest, install_lock, read_manifest, sha256_file, write_manifest
+from voiced.layout import (
+    Manifest,
+    ManifestError,
+    install_lock,
+    read_manifest,
+    sha256_file,
+    write_manifest,
+)
 
 GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
@@ -1029,6 +1037,84 @@ def test_reinstalling_the_active_environment_keeps_its_origin_and_rollback(
     manifest = read_manifest(p_app.state_dir)
     assert manifest is not None and manifest.source == "app"
     assert first is not None and first.environment is not None and first.environment.exists()
+
+
+def test_the_manifest_records_the_environment_it_replaced(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """`previous` is the environment prune keeps: re-running install keeps
+    it, and running the previous environment's install (a rollback) makes
+    the two swap."""
+    first = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(first)
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None and manifest.previous is None
+    second = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(second)
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (second.environment, first.environment)
+    _install(_plan(settings, tmp_path, prefix=second.environment, origin="app"))
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None and manifest.previous == first.environment
+    _install(_plan(settings, tmp_path, prefix=first.environment, origin="app"))
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (first.environment, second.environment)
+    assert second.environment.exists()
+
+
+def test_a_new_environment_never_takes_a_moved_or_unfinished_id(tmp_path: Path) -> None:
+    envs = tmp_path / "envs"
+    (envs / "20261019T000000.broken").mkdir(parents=True)
+    (envs / "20261019T000000-2.partial").mkdir()
+    (envs / "20261019T000000-3").mkdir()
+    assert new_environment_dir(tmp_path, "20261019T000000").name == "20261019T000000-4"
+    assert new_environment_dir(tmp_path, "20261019T000001").name == "20261019T000001"
+
+
+def test_a_missing_active_environment_is_no_rollback(settings: Settings, tmp_path: Path) -> None:
+    """The app moves an environment whose Python is gone to `<id>.broken`
+    before it builds a fresh one: the environment that one replaced stays
+    `previous`, and prune keeps it."""
+    first = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(first)
+    second = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(second)
+    second.environment.rename(second.environment.with_name(second.environment.name + ".broken"))
+    third = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(third)
+    manifest = read_manifest(third.state_dir)
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (third.environment, first.environment)
+    assert first.environment.exists()
+
+    # Without that one either, there is nothing to go back to.
+    shutil.rmtree(third.environment)
+    shutil.rmtree(first.environment)
+    fourth = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    _install(fourth)
+    manifest = read_manifest(fourth.state_dir)
+    assert manifest is not None and manifest.previous is None
+
+
+def test_switching_away_from_a_legacy_venv_has_no_previous(
+    settings: Settings, tmp_path: Path
+) -> None:
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    _environment(p.state_dir)
+    _install(p)
+    manifest = read_manifest(p.state_dir)
+    assert manifest is not None and manifest.previous is None
+
+
+def test_a_manifest_without_previous_reads() -> None:
+    manifest = Manifest.from_json({"source": "app", "environment": "/e"})
+    assert manifest.previous is None
+    assert manifest.to_json()["previous"] is None
+    with pytest.raises(ManifestError):
+        Manifest.from_json({"source": "app", "environment": "/e", "previous": 1})
 
 
 def test_build_system_matches_the_build_group() -> None:

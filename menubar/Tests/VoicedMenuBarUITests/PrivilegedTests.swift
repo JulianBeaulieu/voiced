@@ -81,6 +81,42 @@ final class PrivilegedTests: XCTestCase {
         XCTAssertEqual(check.status, 0)
     }
 
+    /// What `check` prints for a changed or missing plist reads as a difference, so an update
+    /// or repair asks for the administrator.
+    func testTheScriptsCheckOutputReadsAsADifference() async throws {
+        _ = try await runScript("install", NSUserName())
+        var check = try await runScript("check", NSUserName())
+        XCTAssertEqual(PrivilegedScript.check(status: check.status, lines: check.output), .upToDate)
+        let tts = scratch.appendingPathComponent("dest/io.github.julianbeaulieu.voiced.tts.plist")
+        try FileManager.default.removeItem(at: tts)
+        check = try await runScript("check", NSUserName())
+        XCTAssertEqual(
+            PrivilegedScript.check(status: check.status, lines: check.output),
+            .differs("differs io.github.julianbeaulieu.voiced.tts"))
+        check = try await runScript("check", "root")
+        XCTAssertEqual(
+            PrivilegedScript.check(status: check.status, lines: check.output),
+            .failed("Refused: root is not a regular account (uid 0)."))
+    }
+
+    func testCheckResults() {
+        XCTAssertEqual(PrivilegedScript.check(status: 0, lines: ["up to date"]), .upToDate)
+        XCTAssertEqual(
+            PrivilegedScript.check(status: 1, lines: ["not loaded io.github.julianbeaulieu.voiced.stt"]),
+            .differs("not loaded io.github.julianbeaulieu.voiced.stt"))
+        XCTAssertEqual(PrivilegedScript.check(status: 1, lines: []), .failed("The check exited with status 1."))
+        XCTAssertEqual(PrivilegedScript.check(status: 2, lines: ["differs x"]), .failed("The check exited with status 2."))
+    }
+
+    func testTheCheckRunsAsTheUserWithNothingOfTheAppsEnvironment() {
+        let command = PrivilegedScript.checkCommand(user: "someone")
+        XCTAssertEqual(command.executable, "/bin/bash")
+        XCTAssertFalse(command.inheritsEnvironment)
+        XCTAssertEqual(command.environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        XCTAssertEqual(
+            command.arguments, ["--noprofile", "--norc", "-c", PrivilegedScript.text, "voiced-privileged", "check", "someone"])
+    }
+
     func testTheCompiledScriptRefusesRootAndWritesNothing() async throws {
         let refused = try await runScript("install", "root")
         XCTAssertEqual(refused.status, 1)
@@ -160,10 +196,10 @@ final class PrivilegedTests: XCTestCase {
 
     func testResults() {
         typealias R = PrivilegedScript.Result
-        XCTAssertEqual(PrivilegedScript.result(of: .finished(status: 0, output: "")), R.installed(warning: nil))
+        XCTAssertEqual(PrivilegedScript.result(of: .finished(status: 0, output: "")), R.done(warning: nil))
         XCTAssertEqual(PrivilegedScript.result(of: .cancelled), R.cancelled)
-        guard case .installed(let warning4?) = PrivilegedScript.result(of: .finished(status: 4, output: "")),
-            case .installed(let warning5?) = PrivilegedScript.result(of: .finished(status: 5, output: ""))
+        guard case .done(let warning4?) = PrivilegedScript.result(of: .finished(status: 4, output: "")),
+            case .done(let warning5?) = PrivilegedScript.result(of: .finished(status: 5, output: ""))
         else { return XCTFail("4 and 5 are warnings") }
         XCTAssertTrue(warning4.contains("could not allow"))
         XCTAssertTrue(warning5.contains("outside your home folder"))

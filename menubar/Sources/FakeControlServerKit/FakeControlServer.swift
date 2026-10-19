@@ -17,6 +17,9 @@ public final class FakeControlServer: @unchecked Sendable {
         public var version = "0.0.1"
         /// The hello's `install`: what `install.json` records, null for none.
         public var install: JSONValue = .null
+        /// Read for each hello instead of `install` when set, as the watchdog reads
+        /// `install.json`: an install that rewrites it shows on the next connection.
+        public var installFile: URL?
         /// Sent verbatim instead of `hello` when set, to test bad servers.
         public var firstLine: String?
         /// Requests with these ops are recorded but never answered, to test timeouts.
@@ -249,11 +252,16 @@ public final class FakeControlServer: @unchecked Sendable {
                         "data": [
                             "protocol": .number(Double(scenario.helloProtocol)),
                             "version": .string(options.version),
-                            "install": options.install,
+                            "install": installValue,
                         ],
                     ], to: client)
             }
         }
+    }
+
+    private var installValue: JSONValue {
+        guard let file = options.installFile else { return options.install }
+        return (try? Data(contentsOf: file)).flatMap { try? JSONValue(data: $0) } ?? .null
     }
 
     private func read(_ client: Client) {

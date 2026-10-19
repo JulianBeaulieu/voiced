@@ -40,6 +40,37 @@ enum PrivilegedScript {
             environment: environment, inheritsEnvironment: false)
     }
 
+    /// `check` runs as the user, without a prompt, from the same compiled-in text and with
+    /// the same fixed environment: the plists are world-readable and `launchctl print
+    /// system/<label>` needs no root.
+    static func checkCommand(user: String) -> InstallCommand {
+        InstallCommand(
+            "/bin/bash", ["--noprofile", "--norc", "-c", text, "voiced-privileged", "check", user],
+            environment: environment, inheritsEnvironment: false)
+    }
+
+    /// What `check` found.
+    enum Check: Equatable {
+        case upToDate
+        /// A plist differs or is missing, or a label is not loaded: install needs the prompt.
+        case differs(String)
+        /// A refusal install would make too, or a check that could not run.
+        case failed(String)
+    }
+
+    /// `check` exits 0 when up to date and 1 with `differs <label>` or `not loaded <label>`;
+    /// a `refused: ...` line is a refusal.
+    static func check(status: Int32, lines: [String]) -> Check {
+        if status == 0 { return .upToDate }
+        if let refusal = lines.first(where: { $0.hasPrefix("refused: ") }) {
+            return .failed("Refused: \(refusal.dropFirst("refused: ".count)).")
+        }
+        if status == 1, let found = lines.first(where: { $0.hasPrefix("differs ") || $0.hasPrefix("not loaded ") }) {
+            return .differs(found)
+        }
+        return .failed("The check exited with status \(status).")
+    }
+
     /// Reads how `osascript` ended. A failed `do shell script` exits 1 with
     /// `... execution error: <the script's stderr> (<its exit status>)`; -128 is a cancelled
     /// prompt.
@@ -57,8 +88,8 @@ enum PrivilegedScript {
 
     /// What a run of the script means for the installer.
     enum Result: Equatable {
-        /// Installed; a firewall problem, if any, is a warning, not a failure.
-        case installed(warning: String?)
+        /// Installed or removed; a firewall problem, if any, is a warning, not a failure.
+        case done(warning: String?)
         case cancelled
         /// Another live account's install, as the screen says it.
         case anotherAccount(String)
@@ -81,11 +112,11 @@ enum PrivilegedScript {
         }
         switch status {
         case 0:
-            return .installed(warning: nil)
+            return .done(warning: nil)
         case 4:
-            return .installed(warning: "voiced could not allow its services through the firewall. Allow them in System Settings > Network > Firewall.")
+            return .done(warning: "voiced could not allow its services through the firewall. Allow them in System Settings > Network > Firewall.")
         case 5:
-            return .installed(warning: "Your firewall is on and voiced's Python is outside your home folder, so voiced left the firewall alone. Allow it in System Settings > Network > Firewall.")
+            return .done(warning: "Your firewall is on and voiced's Python is outside your home folder, so voiced left the firewall alone. Allow it in System Settings > Network > Firewall.")
         case 3:
             let services = lines.compactMap(failedService)
             let names = services.isEmpty ? "the background services" : services.joined(separator: " and ")

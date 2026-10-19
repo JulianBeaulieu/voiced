@@ -34,7 +34,7 @@ public enum InstallSource: String, Codable, Sendable {
 }
 
 /// `~/.voiced/install.json` (ADR 0017): who installed voiced, which environment is active,
-/// and the voiced version, lock hash and Python in it. The watchdog's `hello` carries it, and
+/// the voiced version, lock hash and Python in it, and the environment it replaced. The watchdog's `hello` carries it, and
 /// without a watchdog the app reads the file. Fields the record lacks are nil.
 public struct InstallRecord: Codable, Sendable, Equatable {
     public var source: InstallSource
@@ -42,20 +42,23 @@ public struct InstallRecord: Codable, Sendable, Equatable {
     public var version: String?
     public var lockSHA256: String?
     public var python: String?
+    /// The environment active before this one, which pruning keeps: the rollback target.
+    public var previous: String?
 
     public init(
         source: InstallSource, environment: String? = nil, version: String? = nil, lockSHA256: String? = nil,
-        python: String? = nil
+        python: String? = nil, previous: String? = nil
     ) {
         self.source = source
         self.environment = environment
         self.version = version
         self.lockSHA256 = lockSHA256
         self.python = python
+        self.previous = previous
     }
 
     enum CodingKeys: String, CodingKey {
-        case source, environment, version, python
+        case source, environment, version, python, previous
         case lockSHA256 = "lock_sha256"
     }
 
@@ -71,6 +74,7 @@ public struct InstallRecord: Codable, Sendable, Equatable {
         version = text(.version)
         lockSHA256 = text(.lockSHA256)
         python = text(.python)
+        previous = text(.previous)
     }
 
     /// Reads `install.json` in `stateDirectory`: nil when it is missing, unreadable or not

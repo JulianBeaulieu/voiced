@@ -50,6 +50,7 @@ from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
     MANIFEST,
+    PARTIAL_SUFFIX,
     PYTHONS,
     Manifest,
     ManifestError,
@@ -549,12 +550,17 @@ ENGINE_CHECK = (
 )
 
 
-def new_environment_dir(state_dir: Path) -> Path:
+def new_environment_dir(state_dir: Path, stamp: str | None = None) -> Path:
     """A fresh ``envs/<id>``: a build never writes into an environment a
-    daemon may be running."""
-    base = state_dir / ENVS / time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+    daemon may be running. An id whose ``.partial`` or ``.broken`` (the
+    app's, ADR 0018) is there is taken too, so ``install.json`` never names
+    a path that once was another environment."""
+    base = state_dir / ENVS / (stamp or time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
     candidate, n = base, 1
-    while candidate.exists():
+    while any(
+        os.path.lexists(candidate.with_name(candidate.name + suffix))
+        for suffix in ("", PARTIAL_SUFFIX, ".broken")
+    ):
         n += 1
         candidate = base.with_name(f"{base.name}-{n}")
     return candidate
@@ -698,6 +704,26 @@ def prune_environments(state_dir: Path, keep: Sequence[Path | None], say: Say) -
         say(f"removed unused environment {env}")
 
 
+def rollback_target(
+    plan: InstallPlan, previous: Manifest | None, *, unchanged: bool
+) -> Path | None:
+    """What ``install.json`` records as ``previous``: the environment this
+    install replaces, which prune keeps (ADR 0018's "Roll back")."""
+    if previous is None or previous.environment is None:
+        return None
+    if unchanged:
+        return previous.previous
+    old = previous.environment
+    if same_path(old, plan.state_dir):
+        return None  # a legacy venv, removed by this install: nothing to go back to
+    if old.exists():
+        return old
+    # The active environment is gone (the app moved a broken one aside to
+    # repair it): the one it replaced is still the way back, if it is there.
+    kept = previous.previous
+    return kept if kept is not None and kept.exists() else None
+
+
 @dataclass(frozen=True)
 class Step:
     """One step of ``voiced install``, in order: ``id`` names it (for the
@@ -827,8 +853,9 @@ def install_steps(
             )
         )
     # Re-running install from the active environment keeps who made it (an
-    # app environment stays the app's).
+    # app environment stays the app's), and what it replaced.
     source = previous.source if unchanged and previous is not None else plan.origin
+    replaced = rollback_target(plan, previous, unchanged=unchanged)
 
     def manifest() -> None:
         write_manifest(
@@ -839,6 +866,7 @@ def install_steps(
                 version=found.get("version", ""),
                 lock_sha256=sha256_file(plan.lock) if plan.lock.is_file() else "",
                 python=os.path.realpath(plan.python_bin),
+                previous=replaced,
             ),
         )
 
@@ -859,7 +887,7 @@ def install_steps(
                 "prune",
                 f"remove environments in {plan.state_dir / ENVS} other than "
                 "the new and the previous one",
-                lambda: prune_environments(plan.state_dir, [plan.environment, old], say),
+                lambda: prune_environments(plan.state_dir, [plan.environment, old, replaced], say),
             )
         )
     if any(path.exists() or path.is_symlink() for path in plan.legacy_staged_files()):

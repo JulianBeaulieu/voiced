@@ -8,6 +8,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The menu bar app updates, rolls back, repairs and uninstalls an install
+  it made (ADR 0018, Lifecycle). Update builds a new environment beside the
+  current one and asks for an administrator only when
+  `voiced-privileged check` finds the services differ; Roll back returns to
+  the previous environment; Repair reinstalls the bundled lock and wheel, or
+  builds afresh when the environment's Python is gone; Uninstall removes
+  the services, then runs `voiced uninstall --yes`, with the models, logs
+  and config as unticked boxes. Homebrew's and the command line's installs
+  are shown with the commands that change them.
+- `install.json` records `previous`: the environment the active one
+  replaced, which pruning keeps and the app rolls back to (null for none).
+
 - The menu bar app's bundle carries what the installer needs (ADR 0018):
   `bundle.sh` adds uv at a pinned version and checksum, the voiced wheel
   built from the checkout with its lock, `install-manifest.json` (Python,

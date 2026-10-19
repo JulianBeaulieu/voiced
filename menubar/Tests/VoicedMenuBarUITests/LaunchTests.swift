@@ -123,8 +123,8 @@ final class LaunchTests: XCTestCase {
         XCTAssertEqual(
             cli?.text,
             "The services run voiced 0.2.0 with other dependencies than this app carries. "
-                + "This install was made from the command line, which also updates it.")
-        XCTAssertNil(cli?.command)
+                + "This install was made from the command line; update it from your checkout with:")
+        XCTAssertEqual(cli?.command, "voiced install --source <checkout>")
         XCTAssertEqual(cli?.managed, false)
     }
 
@@ -234,6 +234,27 @@ final class LaunchTests: XCTestCase {
         XCTAssertNotNil(PopoverView(model: model, canInstall: true, launch: nil).installAction)
         XCTAssertNil(PopoverView(model: model, canInstall: true, launch: translocated).installAction, "move it first")
         XCTAssertNil(PopoverView(model: model, canInstall: false, launch: launch).installAction, "no resources: the guide")
+    }
+
+    /// Repair is offered while an install the app made is in place but does not answer.
+    func testRepairIsOfferedForTheAppsInstallThatDoesNotAnswer() async throws {
+        try writePlist(
+            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"], "UserName": NSUserName()],
+            to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+        try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.2.0", "lock_sha256": "ab12"}"#)
+        let (launch, model) = makeChecks()
+        await launch.refresh()
+        XCTAssertNil(PopoverView(model: model, launch: launch, repair: {}).repairAction, "still connecting")
+        model.start()
+        let unreachable = await eventually {
+            if case .unreachable(installed: true, _) = model.connection { true } else { false }
+        }
+        XCTAssertTrue(unreachable)
+        XCTAssertNotNil(PopoverView(model: model, launch: launch, repair: {}).repairAction)
+        XCTAssertNil(PopoverView(model: model, launch: launch).repairAction, "no installer")
+        try writeInstallJSON(#"{"source": "homebrew", "environment": "/opt/homebrew/opt/voiced/libexec"}"#)
+        await launch.refresh()
+        XCTAssertNil(PopoverView(model: model, launch: launch, repair: {}).repairAction, "Homebrew's to repair")
     }
 
     func testWatchingStopsWhenCancelled() async throws {

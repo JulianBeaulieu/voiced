@@ -168,6 +168,45 @@ The app offers the installer only when its bundle carries
 `requirements.lock` and the wheel the manifest names, as every bundle from
 `bundle.sh` does; `swift run` has none of them and points to the guide.
 
+### Update, Roll back, Repair and Uninstall
+
+For an install the app made (`source = app` in `install.json`), the same
+window runs ADR 0018's Lifecycle with the same stages in another order:
+
+- **Update voiced** (the version card, or Settings > About): a new
+  environment beside the current one, its own `voiced install`, then
+  `voiced-privileged check` as the user. The administrator prompt appears
+  only if a plist differs, a label is not loaded, or the firewall is on and
+  the services' Python changed. The app waits for a `hello` from the new
+  environment, runs `voiced restart all` if none comes within the startup
+  grace, and afterwards removes the Pythons no environment uses (none when
+  `~/.voiced`, `envs` or `python` is a link, or an environment's
+  `pyvenv.cfg` cannot be read) and clears its uv cache.
+- **Roll back**: the environment `install.json` names as `previous`, which
+  pruning keeps, while it is still in `envs/`. Its own `voiced install`
+  links it again. A failed update offers it once the new environment is
+  linked; Settings > About offers it afterwards.
+- **Repair** (Settings > About, or the menu while the services do not
+  answer): the bundled lock and wheel reinstalled into the active
+  environment, or, when its Python is gone, a fresh one built after the old
+  one is moved to `envs/<id>.broken`; then `voiced install`, the check, and
+  a restart.
+- **Uninstall** (Settings > About): the privileged script's `uninstall`,
+  then `voiced uninstall --yes`, which removes only voiced's files under the
+  install lock and refuses symbolic links. Models, logs and the config are
+  boxes, unticked by default. Running it again after a failure is safe:
+  plists already removed need no prompt, and when no `voiced` is left to
+  run (an interrupted removal, a Python gone), the app removes the state
+  directory by the same rules (`install.state_targets`), never through a
+  link, and says the models, logs and config stayed. Dragging the app to
+  the Trash leaves the services running; the app, anything left unticked,
+  and a firewall entry for voiced's Python (when the firewall is on) stay
+  after Uninstall.
+
+Homebrew's and the command line's installs are shown, never changed:
+Settings > About lists the commands that update, repair and remove them,
+with `voiced uninstall` and its root step before `brew uninstall voiced`.
+
 ### Installing a development voiced
 
 A debug build of the app can install another voiced than the one it carries,
@@ -238,7 +277,7 @@ On a crowded menu bar macOS can hide the icon. Launching the app again
 | `Sources/FakeControlServerKit`, `Sources/FakeControlServer` | The fake control server and its command line. |
 | `Sources/MenuBarSnapshots` | Renders the menu bar window, the Settings window and each installer screen to PNG. |
 | `Tests/VoicedControlTests` | Framing, client dispatch, connection failures and cancellation against the fake server; payload reduction; settings edits; open checks; install probe. |
-| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, the progress protocol, the privileged script in its test mode and the process runner. The launch checks, What's new, the diagnostics and the development override. |
+| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, Update, Roll back, Repair and Uninstall, the progress protocol, the privileged script in its test mode and the process runner. The launch checks, What's new, the diagnostics and the development override. |
 | `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner and recorded progress lines. |
 
 The protocol is the control channel's
