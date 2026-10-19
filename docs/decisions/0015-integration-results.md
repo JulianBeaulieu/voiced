@@ -236,8 +236,9 @@ Notes on the rows:
   (116 to 121 ms) but reaches 226 to 281 ms at worst on the development
   machine: the tail waits for another session's encoder call that has just
   started, which cannot be preempted. After the endpointer's window, three
-  streams had worst 96 ms in the clean measurement and 105 to 127 ms in the
-  model tier, once 183 ms (ADR 0020).
+  streams had worst 96 ms in the clean measurement and 115 to 129 ms on the
+  Mac Studio; rarely (2 of about 260 model-tier finalizes) one waits for both
+  other sessions' calls and takes 183 to 186 ms (ADR 0020).
 - **Push-to-talk finalize median.** With 0 ms of trailing silence the median
   is about 114 ms against the 50 ms median goal, and the worst of 32 has
   reached 165 ms in an earlier run on the same machine. Cause: the tail must be

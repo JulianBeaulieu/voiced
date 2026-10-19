@@ -157,12 +157,26 @@ machine, gave N=3 worst 100 ms (0 of 105 over) and N=4 worst 185 ms (2 of
 but not in that noisier one (185 ms), so the default is three.
 
 The model tier's `test_finalize_within_target_with_the_default_streams`
-(three clients, 45 s, about 33 finalizes) gave worst 105, 116, 117, 119
-and 127 ms in five runs, one of them with an artificially inflated Python heap.
-In one full model-tier run it gave 183 ms (median 0, 10 of 33 over 50 ms),
-which did not reproduce. Its cause was not found. The test's clients run
-in the same process as the engine, read partials and check every
-transcript, which may be why it reads higher than the probe.
+(three clients, 45 s, about 33 finalizes) gave worst 105, 113, 116, 117,
+119, 127 and 138 ms in seven runs, and 183 and 186 ms in two more. A
+session has
+at most one call queued or running, so a call at a pause waits for at most
+one call per other session. With two streams that is the call running, at
+most about 165 ms, and the call itself, about 105 to 140 ms, ends inside
+the endpointer's 192 ms plus about 120 ms: always within target (measured
+worst 69 ms). With three, when the other two sessions' urgent calls (the
+call running and a call at a pause queued just ahead) coincide with this
+one's pause, it can end about 190 to 220 ms after the window, which is
+where the two misses fall. Neither miss was caught with the model thread's
+calls logged (the two instrumented runs gave 113 and 138 ms). What those
+runs ruled out is state left by earlier tests in the same process: no
+session left open, nothing queued at the start, no collection over 16 ms.
+It happened in 2 of
+about 260 model-tier finalizes and in none of about 370 in the probes and
+192 on the Studio. The model test therefore holds three streams to the
+target at the 95th percentile and bounds the worst case at twice it, as the
+push-to-talk test does. A deployment that needs every finalize after the
+window within 150 ms sets `stt.streams = 2`.
 
 After the window, a session's call at the pause runs while the endpointer's
 192 ms elapse. With others streaming it waits at most for the call already
@@ -233,7 +247,23 @@ with the first frame judged silent, and a pause cut to a pass restarts the
 grid before the next speech. `test_what_is_encoded_does_not_depend_on_where_the_audio_is_cut`
 feeds eight clips with room noise in pieces cut anywhere and requires the
 same calls on the same windows as feeding them in chunks; the planner before
-this change failed it for five of the eight.
+this change failed it for five of the eight. (It now runs 24 clips that end
+in a short pause, fed in fixed and random pieces; deciding once per `feed`
+again fails 17 of them.)
+
+Two more planner changes came with it:
+
+- A call at a pause that would be planned and undone within one `feed` (a
+  quiet frame inside a chunk) is not made. Deciding per frame had added
+  about 3 % more of them, each urgent and each undone at once. The kept
+  calls are the same; how many calls are undone now depends on the pieces,
+  which is why the test compares kept calls.
+- `_has_speech` counted a speech frame reaching under half a frame past the
+  buffer's start, which `_skip_to_speech` (rightly) assigns to the pass
+  before; when a pause then outgrew `HOLD_MAX_S`, the planner raised
+  `IndexError` and the session failed. It happened on main too (6 of 200
+  generated clips; 10 of 200 with per-frame decisions). Both now use the
+  same half-frame rule.
 
 ## Why not batching
 
@@ -263,6 +293,9 @@ allows.
   cannot be preempted, and a push-to-talk client gives no warning before it
   stops. Clients that can should stream 200 ms of silence before `end` (ADR
   0015, Known misses).
+- With three streams, a finalize after the window can, rarely, wait for
+  both other sessions' calls and end about 190 to 220 ms after it (above);
+  `stt.streams = 2` keeps every one within 150 ms.
 - `stt.streams` above the measured default serves more sessions at once,
   each finalizing later. At 5 the endpointer-window worst was 219 ms. The
   thread runs out at about six. Below it, sessions past the limit wait as

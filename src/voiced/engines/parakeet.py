@@ -313,6 +313,19 @@ class _Job:
         )
 
 
+def _without_undone(steps: list[_Step]) -> list[_Step]:
+    """Without any call at a pause that the same steps undo: a pause that began
+    and ended inside one ``feed`` (a quiet frame in a chunk) needs no call,
+    and it would run as urgent. The kept calls are the same."""
+    out: list[_Step] = []
+    for step in steps:
+        if step == "restore" and len(out) >= 2 and out[-2] == "checkpoint":
+            del out[-2:]
+        else:
+            out.append(step)
+    return out
+
+
 def _jobs(steps: list[_Step]) -> list[_Job]:
     jobs: list[_Job] = []
     start = 0
@@ -357,7 +370,6 @@ class _Planner:
         self._buffer = np.zeros(0, dtype=np.float32)
         self._start = 0  # session position of _buffer[0]
         self._speculating = False
-        self._regrid = False  # the buffer held no speech: restart before the next
         self._speech_ends: list[int] = []  # where frames judged speech end, from _start on
         # enough history to reach back from a speech-start event to the pre-roll
         self._history = _PRE_ROLL + round(speech.min_speech_s * _SR) + 2 * _VAD_FRAME
@@ -371,7 +383,7 @@ class _Planner:
         steps: list[_Step] = []
         for events, before in self._frames(samples):
             steps += self._decide(events, before)
-        return steps
+        return _without_undone(steps)
 
     def _decide(self, events: list[EndpointEvent], before: int) -> list[_Step]:
         """The steps due once one more 32 ms frame is judged (it ends at
@@ -402,7 +414,6 @@ class _Planner:
         """The calls still needed for the final hypothesis."""
         steps: list[_Step] = []
         if not self._speculating:
-            self._regrid_at_speech()
             while self._has_speech():
                 if self._speech_in(self._start):
                     steps.append(_Encode(_pad(self._buffer[:_PASS]), self._start))
@@ -415,7 +426,6 @@ class _Planner:
 
     def _due(self) -> list[_Step]:
         steps: list[_Step] = []
-        self._regrid_at_speech()
         # A window is decided once the detector has judged all of its frames, so
         # the decision does not depend on how the audio was chunked.
         while self._start + _PASS <= self._heard() and self._has_speech():
@@ -425,21 +435,11 @@ class _Planner:
             else:
                 self._skip_to_speech()
         if not self._has_speech() and self._heard() - _PASS > self._start:
-            # Silence fills more than a pass: keep one, and restart the grid
-            # before the next speech, as at speech start.
+            # Silence fills more than a pass: keep one. The next speech frame
+            # ends past it, so the grid restarts before that frame
+            # (_skip_to_speech), as at speech start.
             self._drop_before(self._heard() - _PASS)
-            self._regrid = True
         return steps
-
-    def _regrid_at_speech(self) -> None:
-        """After a long pause was cut to one pass, the grid restarts
-        :data:`PRE_ROLL_S` before the next speech frame, as at speech start. The
-        pass kept reaches back that far: that frame was judged after the cut,
-        so it starts at or after the cut's frame, and its onset less the
-        pre-roll is inside the pass."""
-        if self._regrid and self._has_speech():
-            self._regrid = False
-            self._skip_to_speech()
 
     def _frames(self, samples: NDArray[np.float32]) -> Iterator[tuple[list[EndpointEvent], int]]:
         """Feed the detector frame by frame, recording where each speech frame
@@ -465,7 +465,12 @@ class _Planner:
         return round(self._speech.last_speech_s * _SR)
 
     def _has_speech(self) -> bool:
-        return self._last_speech() > self._start
+        """Whether the buffer holds a speech frame by :meth:`_speech_in`'s rule
+        (most of the frame past ``_start``), the one :meth:`_skip_to_speech`
+        relies on: a frame reaching under half a frame past ``_start`` belongs to
+        the pass before."""
+        half = _VAD_FRAME // 2
+        return bool(self._speech_ends) and self._speech_ends[-1] - half > self._start
 
     def _speech_in(self, start: int) -> bool:
         """Whether the pass starting at ``start`` holds the middle of a speech frame

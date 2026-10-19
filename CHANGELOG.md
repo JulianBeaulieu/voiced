@@ -16,8 +16,10 @@ uses [Semantic Versioning](https://semver.org/).
   calls take turns on the engine's one model thread. The calls a client
   waits on go first, then sessions that are behind, then the rest. On an M1
   Max, with three clients at once, finalize after the endpointer's 200 ms
-  window was median 0 / worst 96 ms in the clean measurement and worst 105
-  to 127 ms in the model tests, once 183 ms (not reproduced). A session past
+  window was median 0 / worst 96 ms in the clean measurement and on the Mac
+  Studio worst 115 to 129 ms. Rarely (2 of about 260 finalizes in the model
+  tests) one waits for both other sessions' calls and takes 183 to 186 ms;
+  `stt.streams = 2` keeps every one within 150 ms. A session past
   `stt.streams` waits for one to end, as every second session did before,
   and a batch transcription waits until no stream is open. `stt.streams`
   above `queue_depth` is a configuration error. An STT engine declares how
@@ -193,6 +195,10 @@ uses [Semantic Versioning](https://semver.org/).
   streams the amount planned at once depends on timing, so a session could
   keep different windows than alone. Decisions are now taken after each
   judged 32 ms frame from judged positions only (ADR 0020).
+- A streaming STT session could fail with `IndexError` when a pause outgrew
+  2.5 s after a speech frame that reached just past the start of the
+  planner's buffer (`_has_speech` and `_skip_to_speech` disagreed by half a
+  frame).
 - A push-to-talk finalize while Kokoro synthesized in the other service took
   up to 1.4 times as long in the median and 1.6 times at worst (Mac Studio: median
   152 to 177 / worst 201 to 221 ms against 123 to 125 / 131 to 134 alone):
