@@ -460,39 +460,55 @@ def _install_yield_points() -> None:
     """Make each of :data:`YIELD_POINT_BLOCKS` a submission point: wait
     until fewer than :data:`BLOCKS_IN_FLIGHT` of the sentence's blocks are
     unfinished, then for the sentence's :class:`voiced.gpu.Yielder`, then
-    submit the block's output with ``async_eval``.
+    submit the block's output (:func:`_submit`).
 
     Without this a sentence is one ``mx.eval`` of its whole graph, its work
     is queued on the GPU at once, and an STT encoder call waits behind it.
     ``async_eval`` does not wait for the GPU, so the next blocks are built
-    and encoded while earlier ones run. Patches the classes once per
-    process; the pinned mlx-audio range (pyproject) is what it was checked
-    against.
+    and encoded while earlier ones run. It must not run inside an
+    ``mx.compile`` trace; ``_synth`` never passes the model a ``decoder``
+    to compile.
+
+    Patches the classes once per process; the pinned mlx-audio range
+    (pyproject) is what it was checked against. It fails open: a class that
+    is missing is logged and skipped, and a block whose output is not an
+    array is returned untouched, so a changed mlx-audio loses the priority,
+    not the service.
     """
     import mlx.core as mx
     from mlx_audio.tts.models.kokoro import istftnet
 
-    async_eval: Any = mx.async_eval  # untyped in mlx's stubs
     for name in YIELD_POINT_BLOCKS:
-        cls = getattr(istftnet, name)
+        cls = getattr(istftnet, name, None)
+        if cls is None:
+            log.warning("kokoro: mlx-audio has no %s; GPU priority for STT is partial", name)
+            continue
         if getattr(cls, "_voiced_yield_point", False):
             continue
         call = cls.__call__
 
-        def submit(self: Any, x: Any, s: Any, _call: Any = call) -> Any:
-            out = _call(self, x, s)
+        def submit(self: Any, *args: Any, _call: Any = call, **kwargs: Any) -> Any:
+            out = _call(self, *args, **kwargs)
             current = _submissions.get()
-            if current is None:  # not inside _synth
+            if current is None or not isinstance(out, mx.array):  # not inside _synth
                 return out
             while len(current.in_flight) >= BLOCKS_IN_FLIGHT:
                 mx.eval(current.in_flight.popleft())
             current.yielder()
-            async_eval(out)
+            _submit(out)
             current.in_flight.append(out)
             return out
 
         cls.__call__ = submit
         cls._voiced_yield_point = True
+
+
+def _submit(out: Any) -> None:
+    """Queue ``out`` on the GPU without waiting for it."""
+    import mlx.core as mx
+
+    async_eval: Any = mx.async_eval  # untyped in mlx's stubs
+    async_eval(out)
 
 
 def _phonemize(tokenizer: Any, text: str, voice: str) -> str:

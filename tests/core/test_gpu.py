@@ -70,6 +70,19 @@ def test_another_process_holding_the_lock_and_its_exit(lock_file: Path) -> None:
         assert holder.stdout is not None
         assert holder.stdout.readline().strip() == "held"
         assert gpu.stt_running()
+        # The STT never waits for it: the call runs without the lock.
+        ran = threading.Event()
+
+        def call() -> None:
+            with gpu.stt_turn():
+                ran.set()
+
+        thread = threading.Thread(target=call, daemon=True)
+        started = time.perf_counter()
+        thread.start()
+        thread.join(timeout=5)
+        assert ran.is_set()
+        assert time.perf_counter() - started < 1.0
         holder.kill()  # a crashed STT: the kernel drops its lock
         holder.wait(timeout=10)
         assert not gpu.stt_running()
@@ -137,3 +150,16 @@ def test_lock_file_symlink_is_not_followed(lock_file: Path, tmp_path: Path) -> N
     with gpu.stt_turn():
         assert not gpu.stt_running()
     assert target.read_text() == "keep"
+
+
+def test_lock_file_of_another_user_is_not_used(
+    lock_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    lock_file.touch()
+    real = os.getuid()
+    monkeypatch.setattr(gpu.os, "getuid", lambda: real + 1)
+    with caplog.at_level(logging.WARNING, logger="voiced.gpu"):
+        with gpu.stt_turn():
+            assert not gpu.stt_running()
+    assert gpu._fds == {}
+    assert any("another user" in r.getMessage() for r in caplog.records)

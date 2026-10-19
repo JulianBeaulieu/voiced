@@ -244,10 +244,11 @@ Notes on the rows:
   192 ms (n=16; the in-process e2e test saw up to 243 ms). The tail encode
   waits behind Kokoro's work on the one GPU. With 200 ms of trailing silence
   it stays at 54 ms worst. Not addressed here: it needs GPU scheduling between
-  the two services. Addressed by ADR 0019: Kokoro now waits while an STT
-  encoder call runs, which brings this row to within a few ms of the alone
-  row in the median, its worst case at about 150 ms on the development
-  machine.
+  the two services. ADR 0019 adds it (Kokoro waits while an STT encoder call
+  runs): on the development machine under launchd the row is now median 124
+  / worst 153 to 160 ms, still marginally over the worst-case target, and
+  not yet measured on the Mac Studio. The miss stays listed here until it
+  is.
 - **Transient memory while serving.** The idle footprint after use is
   2.21 GB, within the 3 GB budget, but both engines peak above their idle
   allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
@@ -465,7 +466,8 @@ re-measured as an A/B ([With the foreground task role](#with-the-foreground-task
 The one row still over target there is 0 ms trailing silence while Kokoro
 synthesizes, median 156 to 167 / worst 201 to 222 ms: the GPU contention in
 [Known misses](#known-misses), which the role narrows but does not close;
-that needs GPU scheduling between the two services, which ADR 0019 adds. Not yet checked: that
+that needs GPU scheduling between the two services. ADR 0019 adds it; the
+Studio has not been re-measured with it yet. Not yet checked: that
 the role still holds after a long idle, with a one-off
 `python3 -c "import os; print(os.getpriority(6, PID))"` for each service's
 PID (prints 1 while the role holds; it reads another process of the same

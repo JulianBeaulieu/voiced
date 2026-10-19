@@ -3,8 +3,8 @@
 The STT and TTS services are separate processes on one GPU. Their command
 buffers take turns (as measured, not documented), and a streaming encoder
 call is many short GPU round trips, so each one waited behind a whole buffer
-of Kokoro's work: a push-to-talk finalize took about 1.4 times as long while
-Kokoro synthesized.
+of Kokoro's work: a push-to-talk finalize took 1.4 times as long in the
+median (1.6 times at worst) while Kokoro synthesized.
 
 The two services agree through an advisory lock on one file per user
 (:func:`lock_path`), not through a socket or a server: the STT holds it
@@ -17,8 +17,9 @@ synthesis waiting, and a TTS that never looks costs the STT nothing.
 Locks belong to an open file, not to a process, so the holder and the probe
 each open the file themselves: in a single process (the end-to-end tests run
 both services in one) they still exclude each other. Every failure to open or
-lock the file is logged once and treated as "no STT call running": the gate
-is an optimisation and must never stop either service.
+lock the file, or finding it held by another process, is logged once and
+treated as "no STT call running": the gate is an optimisation and must
+never stop either service.
 
 Standard library only.
 """
@@ -38,7 +39,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-__all__ = ["LOCK_NAME", "MAX_WAIT_S", "Yielder", "lock_path", "stt_running", "stt_turn"]
+__all__ = ["LOCK_NAME", "MAX_WAIT_S", "TAKE_S", "Yielder", "lock_path", "stt_running", "stt_turn"]
 
 LOCK_NAME = "voiced-gpu.lock"
 MAX_WAIT_S = 0.3
@@ -47,6 +48,11 @@ MAX_WAIT_S = 0.3
 the next; a session catching up on a backlog runs calls back to back and must
 not stop synthesis for seconds."""
 POLL_S = 0.001
+TAKE_S = 0.005
+"""Most the STT tries to take the lock before running a call without it. A
+TTS probe holds it shared for microseconds; anything longer is another
+process holding it (an old instance during a restart, a second copy started
+by hand), and the STT must never wait for that."""
 _CS_DARWIN_USER_TEMP_DIR = 65537
 """``confstr`` name for the per-user temporary directory under ``/var/folders``."""
 
@@ -73,14 +79,22 @@ def lock_path() -> Path:
 
 def _fd(role: str) -> int | None:
     """This process's descriptor for ``role`` ("holder" or "probe"), opened
-    on first use; ``None`` when the file cannot be opened."""
+    on first use and shared by every thread of the process (the STT takes the
+    holder on its one model thread only); ``None`` when the file cannot be
+    opened or belongs to another user (the ``tempfile`` fallback directory is
+    shared)."""
     with _lock:
         fd = _fds.get(role)
         if fd is None:
+            path = lock_path()
             try:
-                fd = os.open(lock_path(), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             except OSError as exc:
-                _warn(f"cannot open {lock_path()}: {exc}")
+                _warn(f"cannot open {path}: {exc}")
+                return None
+            if os.fstat(fd).st_uid != os.getuid():
+                os.close(fd)
+                _warn(f"{path} belongs to another user")
                 return None
             _fds[role] = fd
         return fd
@@ -90,24 +104,33 @@ def _warn(message: str) -> None:
     global _warned
     if not _warned:
         _warned = True
-        log.warning("GPU priority for speech-to-text is off: %s", message)
+        log.warning("GPU priority for speech-to-text is unavailable: %s", message)
 
 
 @contextmanager
 def stt_turn() -> Iterator[None]:
-    """Hold the GPU lock for one STT encoder call.
+    """Hold the GPU lock for one STT encoder call, if it can be had at once.
 
-    Only the STT service takes it, one call at a time on its model thread,
-    so taking it never waits.
+    It is tried for at most :data:`TAKE_S` without blocking; if another
+    process holds it, the call runs without it.
     """
     fd = _fd("holder")
     held = False
     if fd is not None:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            held = True
-        except OSError as exc:
-            _warn(f"cannot lock {lock_path()}: {exc}")
+        deadline = time.perf_counter() + TAKE_S
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except BlockingIOError:
+                if time.perf_counter() >= deadline:
+                    _warn(f"{lock_path()} is held by another process")
+                    break
+                time.sleep(POLL_S / 4)
+            except OSError as exc:
+                _warn(f"cannot lock {lock_path()}: {exc}")
+                break
     try:
         yield
     finally:

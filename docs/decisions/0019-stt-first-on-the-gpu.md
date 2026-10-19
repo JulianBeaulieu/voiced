@@ -58,8 +58,11 @@ GPU while one runs.
   user's temporary directory (`confstr`, not `$TMPDIR`, which launchd jobs do
   not have). The STT holds it exclusively for every encoder call of a stream
   (`voiced.gpu.stt_turn` around `StreamingParakeet.add_audio`): regular passes,
-  the speculative call and the last call. It never waits to take it: only
-  one STT service runs, one call at a time.
+  the speculative call and the last call. It never blocks on it: it tries
+  without blocking for up to 5 ms (a TTS probe holds it shared for
+  microseconds), and if another process still holds it (an old instance
+  during a restart, a second copy started by hand) the call runs without
+  it.
 - **Kokoro submits a sentence block by block and waits between blocks.**
   voiced wraps mlx-audio's residual blocks (`AdainResBlk1d`,
   `AdaINResBlock1`, about 20 per sentence across the prosody predictor,
@@ -76,10 +79,14 @@ GPU while one runs.
   session catching up on a backlog, which runs encoder calls back to back,
   slows synthesis but cannot stop it.
 - **Failure is open.** The kernel drops the lock when the STT process exits,
-  however it exits. If the file cannot be opened or locked, either side logs
-  one warning and runs as before. The holder and the probe use separate file
-  descriptors, because `flock` locks belong to an open file, not a process:
-  the end-to-end tests run both services in one process.
+  however it exits. If the file cannot be opened or locked, belongs to
+  another user, or is held by another process, either side logs one warning
+  and runs as before. If mlx-audio no longer has one of the block classes,
+  Kokoro logs it and runs without that submission point; the wrapper passes
+  any arguments through and leaves a block whose output is not an array
+  alone. The holder and the probe use separate file descriptors, because
+  `flock` locks belong to an open file, not a process: the end-to-end tests
+  run both services in one process.
 
 Batch transcription does not take the lock: a long file would hold it for
 seconds, and the batch target is measured alone. Soprano does not wait for
@@ -138,7 +145,8 @@ each (each cell is the range over both):
 | STT + TTS (Kokoro) footprint, idle after use | 2.21 GB | 2.22 GB | <= 3 GB |
 
 The contention rows are n=16, the other finalize rows n=32. Push-to-talk
-finalize while Kokoro synthesizes drops from 1.4 times the alone row to
+finalize while Kokoro synthesizes drops from 1.4 times the alone row in the
+median (1.6 times at worst) to
 within a few ms of it in the median. Its worst case, 153 to 160 ms here
 and 141 to 155 ms over the four n=32 runs above, is at the 150 ms target,
 not clearly under it; the alone row's worst in the same runs was 134 to
@@ -175,7 +183,7 @@ rows and Kokoro first audio while the STT streams.
   two engines without a lock, but it merges two services, their slots,
   watchdog checks and restarts, for what a lock file does.
 - **Accepting the miss.** The gate brings the row from 1.4 times the alone
-  row to within a few ms of it in the median for 3 to 8 ms of Kokoro first
+  row to within a few ms of it in the median for about 8 ms of Kokoro first
   audio; what remains is the alone row's own margin to 150 ms, and the cost
   to a reply that starts while someone speaks (Consequences).
 - **A semaphore or the control socket as the signal.** Python has no named
@@ -197,12 +205,18 @@ rows and Kokoro first audio while the STT streams.
   audio already sent.
 - Synthesis slows by about the encoder's share of the GPU while someone
   speaks (one call of 100 to 150 ms per 0.8 s pass).
-- Kokoro depends on two more mlx-audio internals, the residual block classes
-  and their `(x, s)` call; the mlx-audio pin (pyproject) is what they were
-  checked against, and a test (run where mlx-audio is installed) fails if
-  the classes move.
+- Kokoro depends on two more mlx-audio internals, the residual block
+  classes; the mlx-audio pin (pyproject, which names them) is what they were
+  checked against. If they move, Kokoro still runs but loses the priority.
+  The tests that would notice need the `tts` extra, so they run locally and
+  in the model tier, not on CI: one checks the wrapped classes, and a model
+  test compares a seeded sentence's PCM with and without the submission
+  points.
 - Every Kokoro sentence is submitted in about 20 pieces even when no STT
-  call runs: first audio is 3 to 8 ms later. Kokoro's transient MLX peak
+  call runs: first audio is 8 to 9 ms later in the benchmark (87 to 88
+  against 95 to 96 ms median) and 15 ms in the first-audio probe above
+  (102 against 117 ms); from a terminal, the engine's synthesis of a first
+  sentence alone is 3 ms slower. Kokoro's transient MLX peak
   was lower in the benchmark (1.86 against 2.16 GB); why was not looked
   into.
 - Two installs of voiced for the same user share the lock, which is right:

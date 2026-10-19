@@ -170,14 +170,16 @@ uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - A push-to-talk finalize while Kokoro synthesized in the other service took
-  up to 1.6 times as long (on an M1 Max laptop under launchd, median 170 /
-  worst 212 ms against 122 / 134 alone): each of the STT encoder's short GPU
+  1.4 times as long in the median and 1.6 times at worst (on an M1 Max laptop
+  under launchd, median 170 / worst 212 ms against 122 / 134 alone): each of the STT encoder's short GPU
   round trips waited behind a whole buffer of Kokoro's work. The STT now
   holds a per-user lock file for each encoder call, and Kokoro submits a
   sentence block by block and waits while the lock is held, up to 300 ms a
-  sentence: that row is now median 124 / worst 153 to 160 ms (ADR 0019).
-  Kokoro first audio is 3 to 8 ms later, and up to one encoder call later
-  when a reply starts while someone speaks.
+  sentence: that row is now median 124 / worst 153 to 160 ms, still
+  marginally over the 150 ms target (ADR 0019). Kokoro first audio is about
+  8 ms later in the benchmark. A reply that starts while another client is
+  streaming speech to the STT waits for the running encoder call: its first
+  audio reached a worst of 233 ms (139 ms before), over the 200 ms target.
 - A streamed Wyoming TTS request whose engine failed mid-stream, or whose
   text went over `tts.max_input_chars`, closed the connection right after
   its `Error`. Home Assistant writes the whole stream before it reads, so its

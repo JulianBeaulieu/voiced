@@ -45,8 +45,9 @@ dependencies = [
 # Real inference engines. Apple Silicon only; not installed in CI.
 stt = ["parakeet-mlx>=0.5,<0.6"]
 # mlx-audio is pinned to the releases the engines were checked against: Kokoro
-# relies on its internals (load_voice_tensor, model(..., return_output=True)),
-# and Soprano replaces its token loop (stream_generate) and reads private model
+# relies on its internals (load_voice_tensor, model(..., return_output=True),
+# the residual blocks istftnet.AdainResBlk1d and AdaINResBlock1 it wraps for
+# ADR 0019), and Soprano replaces its token loop (stream_generate) and reads private model
 # attributes. scipy (also an mlx-audio dependency) is declared because
 # voiced.audio.resample uses it to take Soprano's 32 kHz output to 24 kHz.
 tts = ["mlx-audio>=0.5.8,<0.5.10", "kokoro-onnx>=0.4", "huggingface-hub>=1.1", "scipy>=1.11"]
