@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 
+from tests.scripts_support import load
 from voiced.cli import main
 from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, LOG_DIR_IN_HOME, SERVICES, Settings
 from voiced.launchd import install as install_module
@@ -504,19 +505,16 @@ def test_model_download_runs_in_the_new_environment(plan: InstallPlan) -> None:
 
 def test_shipped_lock_matches_uv_lock() -> None:
     """Every install path installs from these files; they must say what
-    uv.lock says. Regenerate with the commands in CONTRIBUTING.md."""
+    uv.lock says. ``scripts/refresh_locks.py`` writes them."""
     uv = shutil.which("uv")
     root = Path(__file__).resolve().parents[2]
     if uv is None or not (root / "uv.lock").is_file():
         pytest.skip("needs uv and a checkout")
-    exports = {
-        "src/voiced/requirements.lock": ["--no-dev", "--extra", "stt", "--extra", "tts"],
-        "src/voiced/build-requirements.lock": ["--only-group", "build"],
-    }
-    for path, flags in exports.items():
-        argv = [uv, "export", "--frozen", *flags, "--no-emit-project", "--no-header", "-q"]
+    refresh = load("refresh_locks")
+    for path in refresh.EXPORTS:
+        argv = refresh.export_argv(uv, path)
         out = subprocess.run(argv, cwd=root, capture_output=True, text=True, check=True).stdout
-        assert out == (root / path).read_text(), f"{path} is stale"
+        assert out == (root / path).read_text(), f"{path} is stale; run: {refresh.COMMAND}"
     assert install_module.packaged_lock().is_file()
 
 

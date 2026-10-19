@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
         for problem in problems:
             print(f"NOTICE: {problem}", file=sys.stderr)
         if problems:
-            print("Run: uv run python scripts/notice.py", file=sys.stderr)
+            print("Run: uv run python scripts/refresh_locks.py", file=sys.stderr)
         return 1 if problems else 0
     licences = {name: licence(name, version) for name, version in packages}
     NOTICE.write_text(render(packages, licences))

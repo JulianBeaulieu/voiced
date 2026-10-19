@@ -144,7 +144,10 @@ once restored.
 `voiced/requirements.lock`, and the build backend likewise,
 `voiced/build-requirements.lock` (a `build` dependency group pins
 `hatchling`, so it is in `uv.lock` with hashes). A test fails when either
-differs from `uv.lock`, so CI catches a stale one. Every path runs
+differs from `uv.lock`, so CI catches a stale one, and names the one command
+that rewrites both and NOTICE, `scripts/refresh_locks.py`; a Dependabot
+pull request, which changes only `pyproject.toml` and `uv.lock`, lands after
+a maintainer runs it on its branch (CONTRIBUTING.md, "Updating a dependency"). Every path runs
 `uv pip install --require-hashes --no-deps -r requirements.lock`, then
 `uv pip install --no-deps --build-constraints build-requirements.lock
 <voiced>`; uv verifies the hashes of build dependencies in constraints.
@@ -341,6 +344,21 @@ state directory into the keg.** One fewer indirection, but the plists would
 differ per install path (switching would need root), the control socket
 would live inside the keg, and the menu bar app would no longer find it at
 `~/.voiced/control.sock`. Rejected.
+
+**A workflow that regenerates the locks on Dependabot's pull requests.** It
+would save checking out the branch, but it needs to push to it. A workflow
+triggered by Dependabot's `pull_request` gets a read-only token and no
+secrets, so it would need `pull_request_target` (or `workflow_run`) with
+`contents: write`, running `uv lock` and `uv export` on a checkout of the
+pull request's code with a write token in reach: exactly what zizmor flags
+as dangerous-triggers, and safe only with the regenerating job holding no
+token and a second job committing its artefact. A commit pushed with
+`GITHUB_TOKEN` also does not start CI again, so the pull request would stay
+red without a personal access token or an app key as a repository secret.
+That is two jobs, a long-lived credential and a privileged trigger, to save
+one command a month. Dropping the `uv` ecosystem from Dependabot was the
+other way out; it keeps proposing updates and grouping them, which is the
+useful part, so it stays.
 
 ## Consequences
 
