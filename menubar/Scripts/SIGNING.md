@@ -113,7 +113,10 @@ of using the login keychain, as CI does.
 `.github/workflows/release.yml` runs `sign.sh` on a macOS runner when the
 build is for a tag and all six secrets are set; otherwise it runs
 `sign.sh --adhoc`, which only packages, and names the assets
-`voiced-<version>-macos-adhoc.zip` and `.dmg`. The secrets:
+`voiced-<version>-macos-adhoc.zip` and `.dmg`. Stapling and its validation, for
+the app and the DMG, are tried up to five times, 10 to 40 seconds apart,
+since Apple's ticket service sometimes drops the connection right after a
+notarization. The secrets:
 
 | Secret | Contents |
 |---|---|
