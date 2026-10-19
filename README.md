@@ -20,19 +20,19 @@ one machine. Expect breaking changes.
 Requirements: an Apple Silicon Mac, macOS 14 or newer,
 [Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
 
-There will be three ways to install, and all three set up the same
+There are three ways to install, and all three set up the same
 `~/.voiced` and the same launchd plists
 ([ADR 0017](docs/decisions/0017-homebrew-packaging.md)):
 
-- **The menu bar app, from a Homebrew cask**, for most people: the app
-  installs the services itself. It needs a signed release (a Developer ID
-  and v0.1.0), so it does not exist yet.
+- **The menu bar app, from a Homebrew cask**, for most people:
+  `brew install --cask julianbeaulieu/voiced/voiced`, then open voiced.app;
+  the app installs the services itself.
 - **The Homebrew formula**, for headless Macs and terminal use:
-  `brew install julianbeaulieu/voiced/voiced`, then `voiced install`. It
-  needs the formula in the [tap](https://github.com/JulianBeaulieu/homebrew-voiced),
-  which it is not in yet, and `--HEAD` until v0.1.0. To try it now from a
-  local tap, see [packaging/homebrew/README.md](packaging/homebrew/README.md).
-- **From a checkout**, which is what works today:
+  `brew install julianbeaulieu/voiced/voiced`, then `voiced install`. Both
+  come from the [tap](https://github.com/JulianBeaulieu/homebrew-voiced).
+  To try a formula change from a local tap, see
+  [packaging/homebrew/README.md](packaging/homebrew/README.md).
+- **From a checkout**, for development or to run `main`:
 
 ```sh
 brew install espeak-ng
