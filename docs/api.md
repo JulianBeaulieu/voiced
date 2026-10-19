@@ -190,8 +190,11 @@ the close reason:
 | 1011 | The engine failed. `/health` turns `degraded`. |
 | 1013 | The inference queue is full; retry later. |
 
-The connection holds one inference slot for its whole life, so `queue_depth`
-also limits concurrent streams. A session carries at most `stt.max_upload_mb`
+The connection holds one inference slot for its whole life. Up to
+`stt.streams` sessions (default 3, at most `queue_depth`) are transcribed at
+once, WebSocket and Wyoming together; the next waits for one of them to end
+while its audio is held, and a batch transcription waits until none is open
+(ADR 0020). `queue_depth` bounds the sessions open or waiting. A session carries at most `stt.max_upload_mb`
 worth of 16-bit 16 kHz audio (about 26 minutes at the default) and lasts at
 most that long plus `server.session_idle_s`. One frame may be up to 16 MiB,
 uvicorn's limit.

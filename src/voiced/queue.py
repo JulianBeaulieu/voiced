@@ -2,7 +2,7 @@
 
 Model objects are not thread-safe and share one GPU, so each service
 serializes GPU work (and MLX engines run every call for one model on one
-thread, see :mod:`voiced.threads`): exactly one inference runs at a time and
+thread, see :mod:`voiced.threads`): one inference holds the slot at a time and
 the rest wait in FIFO order. Waiting is bounded; when ``capacity`` requests are
 already queued or running, new ones fail immediately with :class:`QueueFull`,
 which the API layer maps to HTTP 503. Callers are never blocked indefinitely.
@@ -13,6 +13,12 @@ is the queue's only interface; transports reach it through
 model calls inside the block go through :func:`voiced.threads.run_blocking`,
 so a cancelled caller keeps the slot until its thread has finished and a
 second inference never starts on a busy GPU.
+
+``slot(shared=True)`` is for an engine that interleaves several holders'
+work itself (Parakeet's stream sessions, ADR 0020): up to ``shared`` such
+holders run at once, and an exclusive holder waits until none is left, and
+they wait for it. Admission stays FIFO, so an exclusive request at the head
+of the line is not overtaken by shared ones behind it.
 
 Cancellation: if the awaiting task is cancelled while waiting, it leaves the
 queue without running.
@@ -26,6 +32,7 @@ slot from a child task while its parent holds one, or both wait forever.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 
@@ -39,13 +46,18 @@ class QueueFull(Exception):
 
 
 class InferenceQueue:
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int, shared: int = 1) -> None:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
+        if not 1 <= shared <= capacity:
+            raise ValueError("shared must be between 1 and capacity")
         self.capacity = capacity
-        self._lock = asyncio.Lock()
+        self.shared = shared
         self._pending = 0
-        self._holder: asyncio.Task[object] | None = None
+        self._line: deque[tuple[bool, asyncio.Future[None]]] = deque()
+        self._running_shared = 0
+        self._running_exclusive = False
+        self._holders: set[asyncio.Task[object]] = set()
 
     @property
     def depth(self) -> int:
@@ -53,22 +65,63 @@ class InferenceQueue:
         return self._pending
 
     @asynccontextmanager
-    async def slot(self) -> AsyncIterator[None]:
+    async def slot(self, shared: bool = False) -> AsyncIterator[None]:
         task = asyncio.current_task()
-        if task is not None and task is self._holder:
+        if task is not None and task in self._holders:
             raise RuntimeError("this task already holds the inference slot")
         if self._pending >= self.capacity:
             raise QueueFull(self.capacity)
         self._pending += 1
         try:
-            async with self._lock:
-                self._holder = task
-                try:
-                    yield
-                finally:
-                    self._holder = None
+            await self._enter(shared)
+            if task is not None:
+                self._holders.add(task)
+            try:
+                yield
+            finally:
+                self._holders.discard(task)
+                self._leave(shared)
         finally:
             self._pending -= 1
+
+    async def _enter(self, shared: bool) -> None:
+        turn = asyncio.get_running_loop().create_future()
+        entry = (shared, turn)
+        self._line.append(entry)
+        self._admit()
+        try:
+            await turn
+        except asyncio.CancelledError:
+            if turn.done() and not turn.cancelled():
+                self._leave(shared)  # admitted as the cancel arrived
+            else:
+                self._line.remove(entry)
+                self._admit()  # it may have been holding up the next in line
+            raise
+
+    def _admit(self) -> None:
+        """Let in, in order, every request at the head of the line that fits."""
+        while self._line:
+            shared, turn = self._line[0]
+            if self._running_exclusive:
+                return
+            if shared and self._running_shared >= self.shared:
+                return
+            if not shared and self._running_shared:
+                return
+            self._line.popleft()
+            if shared:
+                self._running_shared += 1
+            else:
+                self._running_exclusive = True
+            turn.set_result(None)
+
+    def _leave(self, shared: bool) -> None:
+        if shared:
+            self._running_shared -= 1
+        else:
+            self._running_exclusive = False
+        self._admit()
 
 
 class TooManyUploads(QueueFull):

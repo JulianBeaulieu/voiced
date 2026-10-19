@@ -177,6 +177,16 @@ def test_configured_languages_are_enforced(settings: Settings) -> None:
         assert exc.value.code == 1008 and "'en' is not served" in exc.value.reason
 
 
+@pytest.mark.parametrize(("streams", "shared"), [(1, 1), (2, 2), (5, 2)])
+def test_streams_share_the_queue_up_to_its_depth(
+    settings: Settings, streams: int, shared: int
+) -> None:
+    settings.stt.streams = streams  # queue_depth is 2 in the test settings
+    app = build_stt_app(settings, FakeSTTEngine())
+    assert app.state.ctx.queue.shared == shared
+    assert app.state.ctx.queue.capacity == 2
+
+
 def test_queue_full_closes_with_1013(settings: Settings) -> None:
     app = build_stt_app(settings, FakeSTTEngine())  # queue_depth is 2 in the test settings
     with sync_client(app) as client:

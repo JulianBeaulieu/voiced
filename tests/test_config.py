@@ -8,6 +8,7 @@ import pytest
 from voiced.config import (
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENGINE_ENV,
+    STT_STREAMS,
     Settings,
     apply_engine_environment,
     load_settings,
@@ -24,6 +25,7 @@ def test_defaults(settings: Settings) -> None:
     assert Settings().tts.wyoming_port == 10200
     assert settings.tts.default_voice == "af_heart"
     assert settings.stt.vad_silence_ms == 200
+    assert Settings().stt.streams == STT_STREAMS
     assert settings.stt.languages == ["en"]
     assert settings.launchd.label_prefix == DEFAULT_LAUNCHD_LABEL_PREFIX
     assert settings.launchd.label("stt") == "io.github.julianbeaulieu.voiced.stt"

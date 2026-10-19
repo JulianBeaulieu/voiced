@@ -237,7 +237,9 @@ def create_stt_app(settings: Settings, engine: STTEngine) -> FastAPI:
         service="stt",
         settings=settings,
         engine=engine,
-        queue=InferenceQueue(settings.stt.queue_depth),
+        queue=InferenceQueue(
+            settings.stt.queue_depth, shared=min(settings.stt.streams, settings.stt.queue_depth)
+        ),
         health=HealthState(
             service="stt",
             engine=engine.name,

@@ -27,6 +27,10 @@ It prints a Markdown table. What each row measures:
   ``--alignments`` lead offsets of 20 ms, for 64 ms and 100 ms chunks; then
   once more with the TTS server synthesizing continuously, so both models
   contend for the one GPU;
+* streaming finalize with ``--streams`` clients at once: each streams the clip
+  again and again (64 ms chunks, real time, a lead offset that steps 20 ms
+  per utterance and a pause of up to 0.8 s between them), so each one's end
+  of speech falls at every phase of the others' encoder calls (ADR 0020);
 * first audio while another client speaks: the first-audio request, sent at
   a random point (0.2 to 0.6 s after the last reply) while a second client
   streams the clip over the WebSocket in real time, again and again, so
@@ -81,6 +85,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WAV = REPO_ROOT / "tests" / "fixtures" / "speech_en.wav"
 STT_SAMPLE_RATE = 16_000
 SILENCE_WINDOW_S = 0.2  # the default stt.vad_silence_ms
+STREAMS = 3  # the default stt.streams
 RECV_TIMEOUT_S = 30.0
 SETTLE_S = 1.0
 MEMORY_TARGET_BYTES = 3_000_000_000
@@ -243,6 +248,40 @@ def ws_finalize_ms(
         lead = np.zeros(round(i * 0.02 * rate), dtype="<i2")
         stream = np.concatenate([lead, samples, silence]).tobytes()
         latencies.append(stream_and_finalize(ws_url, api_key, stream, rate, chunk_samples)[1])
+    return latencies
+
+
+def concurrent_finalize_ms(
+    ws_url: str,
+    api_key: str,
+    samples: NDArray[np.int16],
+    rate: int,
+    clients: int,
+    utterances: int,
+    trailing_silence_s: float,
+) -> list[float]:
+    """Finalize latency of ``clients`` WebSocket clients streaming at once,
+    ``utterances`` each, with ``trailing_silence_s`` before each ``end``."""
+    silence = np.zeros(round(trailing_silence_s * rate), dtype="<i2")
+    latencies: list[float] = []
+    lock = threading.Lock()
+
+    def client(k: int) -> None:
+        pauses = random.Random(k)
+        time.sleep(0.37 * k)
+        for i in range(utterances):
+            lead = np.zeros(round(((i * clients + k) % 32) * 0.02 * rate), dtype="<i2")
+            stream = np.concatenate([lead, samples, silence]).tobytes()
+            ms = stream_and_finalize(ws_url, api_key, stream, rate, 1024)[1]
+            with lock:
+                latencies.append(ms)
+            time.sleep(pauses.uniform(0.0, 0.8))
+
+    threads = [threading.Thread(target=client, args=(k,), daemon=True) for k in range(clients)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
     return latencies
 
 
@@ -459,6 +498,13 @@ def main(argv: list[str] | None = None) -> int:
         help="lead offsets (20 ms apart) per streaming finalize row (default: 32)",
     )
     parser.add_argument(
+        "--streams",
+        type=int,
+        default=STREAMS,
+        help="clients at once for the concurrent finalize rows; at most the server's "
+        f"stt.streams (default: {STREAMS}, its default)",
+    )
+    parser.add_argument(
         "--trials",
         type=int,
         default=10,
@@ -511,6 +557,18 @@ def main(argv: list[str] | None = None) -> int:
             rows.append(
                 Row(
                     f"Streaming finalize, 64 ms chunks, {tail}, Kokoro synthesizing",
+                    fmt_ms(fin),
+                    "<= 150 ms worst",
+                )
+            )
+    if args.streams > 1:
+        for trailing, tail in tails:
+            fin = concurrent_finalize_ms(
+                ws_url, key, samples, rate, args.streams, args.alignments, trailing
+            )
+            rows.append(
+                Row(
+                    f"Streaming finalize, {args.streams} clients at once, 64 ms chunks, {tail}",
                     fmt_ms(fin),
                     "<= 150 ms worst",
                 )

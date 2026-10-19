@@ -133,7 +133,7 @@ def test_simultaneous_synthesis(tts_kokoro_service: LiveService) -> None:
 
 
 # Encoding audio that is already buffered, as a fraction of its duration: a
-# session that waited for the slot catches up at this rate (ADR 0008, about
+# session that waited for a stream catches up at this rate (ADR 0008, about
 # 0.17 measured on an M1 Max; this leaves room for a busy GPU).
 CATCH_UP_RATIO = 0.35
 
@@ -163,22 +163,41 @@ async def _paced_wyoming_utterance(
     raise AssertionError("connection closed before the transcript")
 
 
-async def test_two_satellites_talking_at_once(
-    stt_service: LiveService, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Sessions run one at a time: the second waits for the slot while its
-    satellite keeps streaming, then gets everything it sent at once. It catches
-    up at encoder speed instead of failing on the backlog bound (lowered here so
-    a 10 s utterance goes past it), and both transcripts are complete."""
-    monkeypatch.setattr(parakeet, "MAX_BACKLOG_S", 4.0)
+def _three_repetitions() -> tuple[bytes, float]:
     samples, rate = read_wav_pcm16("speech_en.wav")
     gap = silence_pcm16(0.3, rate)
     audio = (samples.tobytes() + gap) * 3 + silence_pcm16(0.4, rate)
-    duration_s = len(audio) / 2 / rate
-    (first, first_stop, first_done), (second, second_stop, second_done) = await asyncio.gather(
+    return audio, len(audio) / 2 / rate
+
+
+async def test_two_satellites_talking_at_once(stt_service: LiveService) -> None:
+    """Both are transcribed at once (``stt.streams``, ADR 0020): each
+    transcript is complete and arrives within the finalize target."""
+    audio, _ = _three_repetitions()
+    results = await asyncio.gather(
         _paced_wyoming_utterance(stt_service, audio, 0.0),
         _paced_wyoming_utterance(stt_service, audio, 1.0),
     )
+    for text, stopped, done in results:
+        assert words(text).count("kitchen") == 3, text
+        assert done - stopped <= FINALIZE_WORST_S
+    assert stt_service.health()["queue_depth"] == 0
+
+
+async def test_a_satellite_past_the_streams_waits_then_catches_up(
+    stt_service: LiveService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One stream served: the second waits for it while its satellite keeps
+    streaming, then gets everything it sent at once. It catches up at encoder
+    speed instead of failing on the backlog bound (lowered here so a 10 s
+    utterance goes past it), and both transcripts are complete."""
+    monkeypatch.setattr(parakeet, "MAX_BACKLOG_S", 4.0)
+    audio, duration_s = _three_repetitions()
+    with stt_service.override(streams=1):
+        (first, first_stop, first_done), (second, second_stop, second_done) = await asyncio.gather(
+            _paced_wyoming_utterance(stt_service, audio, 0.0),
+            _paced_wyoming_utterance(stt_service, audio, 1.0),
+        )
     for text in (first, second):
         assert words(text).count("kitchen") == 3, text
     assert first_done - first_stop <= FINALIZE_WORST_S

@@ -112,6 +112,10 @@ _STT_RATE = 16_000
 _PCM16_BYTES = 2
 
 
+STT_STREAMS = 3
+"""Measured capacity of the Parakeet engine on an M1 Max (ADR 0020)."""
+
+
 class STTConfig(_Section):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
@@ -120,6 +124,8 @@ class STTConfig(_Section):
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
+    # Stream sessions served at once (at most queue_depth); the next waits.
+    streams: int = Field(default=STT_STREAMS, ge=1)
     max_upload_mb: int = Field(default=50, ge=1)
 
     @property

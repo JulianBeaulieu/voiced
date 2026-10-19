@@ -15,6 +15,7 @@ from wyoming.event import Event
 from wyoming.info import Describe, Info
 
 from voiced import __version__, inference
+from voiced.config import Settings
 from voiced.context import ServiceContext
 from voiced.engines.base import STTStreamSession
 from voiced.testing import FakeSTTEngine
@@ -302,6 +303,59 @@ async def test_client_stuck_behind_a_busy_slot_gets_server_busy(
     finally:
         gate.set()
         await holder
+    assert ctx.health.status == "ok"
+
+
+@pytest.fixture
+def two_streams(settings: Settings) -> Settings:
+    """Requested before ``stt_listener``, so its app is built with these."""
+    settings.stt.queue_depth = 3
+    settings.stt.streams = 2
+    return settings
+
+
+async def test_sessions_up_to_streams_run_at_once_and_the_next_waits_then_is_busy(
+    two_streams: Settings,
+    stt_app: FastAPI,
+    stt_listener: WyomingListener,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two satellites are transcribed at once; a third waits for a stream
+    while its audio is held (the handler's queue, then TCP), and gets
+    server_busy once session_idle_s passes with the queue full, as when one
+    stream was all there was."""
+    monkeypatch.setattr(stt_handler, "_QUEUE_CHUNKS", 2)
+    engine: FakeSTTEngine = stt_app.state.ctx.engine
+    ctx = stt_listener.ctx
+    ctx.settings.server.session_idle_s = 0.3
+    start = AudioStart(rate=16_000, width=2, channels=1).event()
+    talking = True
+
+    async def talk(c: AsyncTcpClient) -> None:
+        await c.write_event(start)
+        while talking:
+            await c.write_event(chunk16k(pcm16(0.064)).event())
+            await asyncio.sleep(0.05)
+
+    async with client(stt_listener) as a, client(stt_listener) as b:
+        talkers = [asyncio.create_task(talk(c)) for c in (a, b)]
+        await wait_for(lambda: engine.calls == 2)  # both sessions open together
+        async with client(stt_listener) as third:
+            await third.write_event(start)
+            for _ in range(3):  # two fill the queue, the third waits for room
+                await third.write_event(chunk16k(pcm16(0.064)).event())
+            await third.write_event(AudioStop().event())
+            events = await read_until(third)
+        assert [e.type for e in events] == ["error"]
+        assert Error.from_event(events[0]).code == "server_busy"
+        assert engine.calls == 2, "the third never got a stream"
+        talking = False
+        await asyncio.gather(*talkers)
+        for c in (a, b):
+            await c.write_event(AudioStop().event())
+            event = await c.read_event()
+            assert event is not None and Transcript.from_event(event).text == "hello world"
+    await wait_for(lambda: ctx.queue.depth == 0)
     assert ctx.health.status == "ok"
 
 

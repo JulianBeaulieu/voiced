@@ -147,20 +147,25 @@ class LiveService:
         self,
         *,
         queue_capacity: int | None = None,
+        streams: int | None = None,
         session_idle_s: float | None = None,
         write_timeout_s: float | None = None,
     ) -> Iterator[None]:
-        """Temporarily change a live knob (queue depth or a socket bound) on the
-        shared warm service, so the busy and timeout paths are exercised without
-        reloading a model. Restored on exit; tests run serially."""
+        """Temporarily change a live knob (queue depth, the streams served at
+        once or a socket bound) on the shared warm service, so the busy and
+        timeout paths are exercised without reloading a model. Restored on
+        exit; tests run serially."""
         ctx = self.ctx
         saved = (
             ctx.queue.capacity,
+            ctx.queue.shared,
             ctx.settings.server.session_idle_s,
             ctx.settings.server.write_timeout_s,
         )
         if queue_capacity is not None:
             ctx.queue.capacity = queue_capacity
+        if streams is not None:
+            ctx.queue.shared = streams
         if session_idle_s is not None:
             ctx.settings.server.session_idle_s = session_idle_s
         if write_timeout_s is not None:
@@ -170,6 +175,7 @@ class LiveService:
         finally:
             (
                 ctx.queue.capacity,
+                ctx.queue.shared,
                 ctx.settings.server.session_idle_s,
                 ctx.settings.server.write_timeout_s,
             ) = saved

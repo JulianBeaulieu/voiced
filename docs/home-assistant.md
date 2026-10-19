@@ -123,7 +123,7 @@ satellite's device page, **Voice assistant**.
 | Not discovered | Confirm `bind = "0.0.0.0"` and that `http://<mac-ip>:8880/health` opens from another machine. Add by host and port if mDNS is blocked between networks. |
 | Integration added, but not ready | The service is still loading its model (`/health` says `starting`), or the Mac is waiting at the FileVault unlock screen after a reboot; see [operations.md](operations.md#filevault). |
 | STT returns nothing or an error | The pipeline language does not match the configured `languages`. Version 1 is English only. |
-| Error `server_busy` in the Home Assistant log | The inference queue was full or the model was loading. Raise `queue_depth` if many satellites talk at once. |
+| Error `server_busy` in the Home Assistant log | The inference queue was full or the model was loading. `stt.streams` (default 3) satellites are transcribed at once and the next waits; after about 34 s of waiting (its 64 queued chunks, then `server.session_idle_s`) it gets `server_busy`. Raise `queue_depth` if many satellites talk at once. |
 | Voices missing from the picker | Only voices in a configured language are advertised. |
 
 Logs: `voiced logs stt` and `voiced logs tts`, or the files under

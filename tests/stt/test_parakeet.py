@@ -15,6 +15,7 @@ import os
 import statistics
 import threading
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +24,7 @@ import pytest
 from numpy.typing import NDArray
 
 from tests.stt.conftest import word_accuracy, words
+from voiced.config import STT_STREAMS
 from voiced.engines import parakeet
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
@@ -30,11 +32,11 @@ from voiced.engines.base import (
     EngineError,
     EngineNotLoaded,
     STTEngine,
+    STTStreamSession,
     UnsupportedLanguage,
 )
 from voiced.engines.parakeet import (
     CONTEXT_SIZE,
-    FEED_MAX_S,
     HOLD_MAX_S,
     MAX_BACKLOG_S,
     PARAKEET_V3_LANGUAGES,
@@ -156,9 +158,10 @@ def test_urgent_encoder_call_holds_the_gpu_lock(
     model = SimpleNamespace(
         preprocessor_config=SimpleNamespace(hop_length=160),
         encoder_config=SimpleNamespace(subsampling_factor=8),
-        transcribe_stream=lambda context_size: Stream(),
+        encoder=_FakeEncoder(),
+        transcribe_stream=lambda context_size, keep_original_attention: Stream(),
     )
-    lib = parakeet._LibraryStream(model)
+    lib = parakeet._LibraryStream(model, parakeet._Attention(model))
     try:
         lib.encode(np.zeros(PASS, dtype=np.float32), 0, urgent=True)
         lib.encode(np.zeros(PASS, dtype=np.float32), PASS, urgent=False)
@@ -235,9 +238,17 @@ class FakeLibrary:
     ``p<start>`` (its session position), timed from ``start`` to one pass later,
     so a transcript shows exactly which windows the state holds."""
 
-    def __init__(self, *, fail_on: int | None = None, delay_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on: int | None = None,
+        delay_s: float = 0.0,
+        journal: list[tuple[int, int, bool]] | None = None,
+    ) -> None:
         self.fail_on = fail_on
         self.delay_s = delay_s
+        self.journal = journal  # (session, start, urgent) of every call, all sessions
+        self.session = 0
         self.encoded: list[int] = []  # every call, undone ones included
         self.windows: list[NDArray[np.float32]] = []
         self.urgent: list[bool] = []  # per call: whether it held the GPU lock
@@ -261,6 +272,8 @@ class FakeLibrary:
         self.started.set()
         try:
             time.sleep(self.delay_s)
+            if self.journal is not None:
+                self.journal.append((self.session, start, urgent))
             self.encoded.append(start)
             self.windows.append(np.array(window))
             self.urgent.append(urgent)
@@ -299,6 +312,16 @@ def energy_speech() -> Endpointer:
     return Endpointer(EnergyDetector(threshold_dbfs=-50.0), silence_ms=0)
 
 
+def feed(a: _StepRunner, samples: NDArray[np.float32]) -> None:
+    """What the session does with a chunk, minus the threads."""
+    for job in a.plan(samples):
+        a.run(job)
+
+
+def flush(a: _StepRunner) -> Any:
+    return a.finish([], np.zeros(0, dtype=np.float32))
+
+
 def adapter(**library: Any) -> tuple[_StepRunner, FakeLibrary]:
     lib = FakeLibrary(**library)
     return _StepRunner(lib, _Planner(energy_speech())), lib
@@ -308,20 +331,23 @@ class FakeEngine(ParakeetEngine):
     def __init__(self, **library: Any) -> None:
         super().__init__()
         self._model = object()
-        self._speech = energy_speech()
         self._library_args = library
         self.libraries: list[FakeLibrary] = []
 
     def _new_library(self, model: Any) -> _Library:
         lib = FakeLibrary(**self._library_args)
+        lib.session = len(self.libraries)
         self.libraries.append(lib)
         return lib
+
+    def _new_detector(self) -> Endpointer:
+        return energy_speech()
 
 
 def feed_all(a: _StepRunner, chunks: list[NDArray[np.float32]]) -> Any:
     for chunk in chunks:
-        a.feed(chunk)
-    return a.flush()
+        feed(a, chunk)
+    return flush(a)
 
 
 def chunked(audio: NDArray[np.float32], size: int = CHUNK) -> list[NDArray[np.float32]]:
@@ -347,7 +373,7 @@ def grid(audio: NDArray[np.float32]) -> list[int]:
 def test_regular_calls_run_on_the_pass_grid() -> None:
     a, lib = adapter()
     for _ in range(round(PASS_S * 10)):
-        a.feed(speech_like(0.1))
+        feed(a, speech_like(0.1))
     assert lib.encoded == [0]
     assert a.text == "p0"
     assert a.buffered_s == 0.0
@@ -355,12 +381,12 @@ def test_regular_calls_run_on_the_pass_grid() -> None:
 
 def test_a_pause_runs_the_final_call_before_finalize() -> None:
     a, lib = adapter()
-    a.feed(speech_like(PASS_S + 0.3))
+    feed(a, speech_like(PASS_S + 0.3))
     assert lib.encoded == [0]
-    a.feed(silence(0.1))  # the speaker went quiet: everything buffered, padded, at once
+    feed(a, silence(0.1))  # the speaker went quiet: everything buffered, padded, at once
     assert lib.encoded == [0, PASS]
-    a.feed(silence(0.1))  # the pause is held, not encoded
-    result = a.flush()
+    feed(a, silence(0.1))  # the pause is held, not encoded
+    result = flush(a)
     assert result is not None and result.text == f"p0 p{PASS}"
     assert lib.encoded == [0, PASS], "finalize after a pause needs no encoder call"
     assert a.rollbacks == 0
@@ -368,18 +394,18 @@ def test_a_pause_runs_the_final_call_before_finalize() -> None:
 
 def test_only_the_call_at_a_pause_is_urgent_while_the_encoder_keeps_up() -> None:
     a, lib = adapter()
-    a.feed(speech_like(2 * PASS_S + 0.3))
-    a.feed(silence(0.1))
+    feed(a, speech_like(2 * PASS_S + 0.3))
+    feed(a, silence(0.1))
     assert lib.encoded == [0, PASS, 2 * PASS]
     assert lib.urgent == [False, False, True]
 
 
 def test_the_pause_is_the_last_whole_frame() -> None:
     a, lib = adapter()
-    a.feed(np.concatenate([speech_like(0.2), silence(0.064)]))
+    feed(a, np.concatenate([speech_like(0.2), silence(0.064)]))
     assert lib.encoded == [0]
     b, lib_b = adapter()
-    b.feed(np.concatenate([silence(0.1), speech_like(0.2)]))  # speech to the end
+    feed(b, np.concatenate([silence(0.1), speech_like(0.2)]))  # speech to the end
     assert lib_b.encoded == []
 
 
@@ -425,7 +451,7 @@ def test_a_pass_of_silence_alone_is_never_encoded(pause_s: float, chunk: int) ->
 @pytest.mark.parametrize("backlog_s", [0.65, 1.7, 2.5, 5.0])
 def test_a_backlog_is_encoded_on_the_grid(backlog_s: float) -> None:
     a, lib = adapter()
-    a.feed(speech_like(backlog_s))
+    feed(a, speech_like(backlog_s))
     assert lib.encoded == list(range(0, seconds(backlog_s) - PASS + 1, PASS))
     assert a.buffered_s == pytest.approx((seconds(backlog_s) % PASS) / STT_SAMPLE_RATE)
 
@@ -448,30 +474,30 @@ def test_pass_boundaries_do_not_depend_on_chunking(size: int) -> None:
 def test_silence_is_never_encoded() -> None:
     a, lib = adapter()
     for _ in range(50):
-        a.feed(silence(0.1))
+        feed(a, silence(0.1))
     assert a.buffered_s < 1.0, "an open microphone does not grow the buffer"
-    assert a.flush() is None
+    assert flush(a) is None
     assert lib.encoded == []
     a.close()
 
 
 def test_quiet_speech_after_long_silence_is_heard() -> None:
     a, lib = adapter()
-    a.feed(np.concatenate([silence(10.0), speech_like(1.0, level=0.005)]))
+    feed(a, np.concatenate([silence(10.0), speech_like(1.0, level=0.005)]))
     assert lib.encoded
 
 
 def test_a_long_pause_is_given_up_on_and_dropped() -> None:
     a, lib = adapter()
-    a.feed(speech_like(0.5))
-    a.feed(silence(0.1))  # speculative call
+    feed(a, speech_like(0.5))
+    feed(a, silence(0.1))  # speculative call
     assert lib.encoded == [0]
     for _ in range(round(HOLD_MAX_S * 10) + 5):
-        a.feed(silence(0.1))
+        feed(a, silence(0.1))
     assert a.rollbacks == 1
     assert lib.kept == [0], "after giving up, the speech is encoded on the grid"
     assert a.buffered_s <= PASS_S
-    result = a.flush()
+    result = flush(a)
     assert result is not None and lib.kept == [0]
 
 
@@ -483,7 +509,7 @@ def onset_offset(window: NDArray[np.float32]) -> int:
 def test_gate_encodes_nothing_before_speech_and_keeps_the_pre_roll() -> None:
     a, lib = adapter()
     for chunk in chunked(noise(1.0, -55.0)):
-        a.feed(chunk)
+        feed(a, chunk)
     assert lib.encoded == [], "room noise alone is never encoded"
     feed_all(a, chunked(speech_like(1.0)))
     # The first call starts PRE_ROLL_S before the onset, which is frame-aligned.
@@ -500,8 +526,8 @@ def test_gate_finds_the_onset_inside_one_large_chunk() -> None:
 def test_gate_never_encodes_a_session_of_room_noise() -> None:
     a, lib = adapter()
     for chunk in chunked(noise(3.0, -55.0)):
-        a.feed(chunk)
-    assert a.flush() is None
+        feed(a, chunk)
+    assert flush(a) is None
     assert lib.encoded == []
 
 
@@ -518,17 +544,24 @@ def test_calls_carry_their_session_position() -> None:
     assert result.sentences[0].start == pytest.approx(lead - PRE_ROLL_S, abs=0.04)
 
 
-def test_engine_reuses_its_speech_detector() -> None:
+def test_every_session_has_its_own_speech_detector() -> None:
     engine = ParakeetEngine()
-    assert engine._speech_detector() is engine._speech_detector()
+    assert engine._new_detector() is not engine._new_detector()
 
 
 def test_close_is_idempotent() -> None:
     a, lib = adapter()
-    a.feed(speech_like(1.0))
+    feed(a, speech_like(1.0))
     a.close()
     assert lib.closed
     a.close()
+
+
+async def consumed(session: STTStreamSession) -> None:
+    """Wait until the session's consumer has run everything added so far."""
+    assert isinstance(session, ParakeetStreamSession)
+    if session._consumer is not None:
+        await asyncio.wait({session._consumer})
 
 
 async def assert_engine_accepts_a_new_stream(engine: ParakeetEngine) -> None:
@@ -536,14 +569,17 @@ async def assert_engine_accepts_a_new_stream(engine: ParakeetEngine) -> None:
     await session.close()
 
 
-async def test_engine_allows_one_session_at_a_time() -> None:
+async def test_engine_serves_several_sessions_but_no_batch_meanwhile() -> None:
     engine = FakeEngine()
-    session = await engine.stream("en")
-    with pytest.raises(EngineError):
-        await engine.stream("en")
+    first = await engine.stream("en")
+    second = await engine.stream("en")
     with pytest.raises(EngineError):
         await engine.transcribe(AudioInput(speech_like(0.5)))
-    await session.close()
+    await first.close()
+    with pytest.raises(EngineError):
+        await engine.transcribe(AudioInput(speech_like(0.5)))
+    await second.close()
+    assert engine._sessions == set()
     await assert_engine_accepts_a_new_stream(engine)
 
 
@@ -586,12 +622,14 @@ async def test_session_calls_are_urgent_once_the_client_waits() -> None:
     async with await engine.stream("en") as session:
         lib = engine.libraries[0]
         await session.add_audio(speech_like(URGENT_BACKLOG_S + 3 * PASS_S))  # a late start
-        await session._drain()  # caught up
-        assert lib.urgent == [True] * 5
+        await consumed(session)  # caught up
+        # Urgent while what is not yet encoded, the call's own pass included,
+        # is over URGENT_BACKLOG_S: 5, 4 and 3 passes, not 2 and 1.
+        assert lib.urgent == [True] * 3 + [False] * 2
         for _ in range(round(PASS_S * 10)):  # caught up: streaming again
             await session.add_audio(speech_like(0.1))
             await asyncio.sleep(0.005)
-        assert lib.urgent == [True] * 5 + [False]
+        assert lib.urgent == [True] * 3 + [False] * 3
         await session.finalize()
 
 
@@ -647,30 +685,41 @@ async def test_session_over_the_bound_waits_for_the_call_in_flight() -> None:
         lib = engine.libraries[0]
         await session.add_audio(speech_like(20.0))
         await asyncio.to_thread(lib.started.wait, 2)
-        first_call = round(FEED_MAX_S * STT_SAMPLE_RATE) // PASS  # passes in one call
-        assert lib.calls < first_call
+        assert lib.calls == 0
         await session.add_audio(speech_like(11.0))  # 31 s: over the bound
-        assert lib.calls >= first_call
+        assert lib.calls >= 1  # one call is one pass
         assert session.backlog_s <= MAX_BACKLOG_S
 
 
-async def test_session_feeds_a_burst_in_bounded_calls() -> None:
-    """A burst is fed a few seconds per model-thread call, so neither a waiting
-    ``add_audio`` nor ``close`` waits for all of it."""
+async def test_session_runs_a_burst_one_encoder_call_at_a_time() -> None:
+    """A burst is planned a pass at a time and run one encoder call per
+    model-thread call, so another session's urgent call, a waiting
+    ``add_audio`` and ``close`` each wait for one call at most."""
     engine = FakeEngine()
-    sizes: list[int] = []
+    planned: list[int] = []
+    encodes: list[int] = []
     async with await engine.stream("en") as session:
-        feed = session._adapter.feed
+        assert isinstance(session, ParakeetStreamSession)
+        adapter = session._adapter
+        plan, run = adapter.plan, adapter.run
 
-        def spy(samples: NDArray[np.float32]) -> None:
-            sizes.append(len(samples))
-            feed(samples)
+        def plan_spy(samples: NDArray[np.float32]) -> Any:
+            planned.append(len(samples))
+            return plan(samples)
 
-        session._adapter.feed = spy  # type: ignore[method-assign]
+        def run_spy(job: Any) -> None:
+            encodes.append(sum(isinstance(step, parakeet._Encode) for step in job.steps))
+            run(job)
+
+        adapter.plan = plan_spy  # type: ignore[method-assign]
+        adapter.run = run_spy  # type: ignore[method-assign]
         await session.add_audio(speech_like(MAX_BACKLOG_S))
+        await consumed(session)
         await session.finalize()
-    assert max(sizes) == round(FEED_MAX_S * STT_SAMPLE_RATE)
-    assert sum(sizes) == round(MAX_BACKLOG_S * STT_SAMPLE_RATE)
+    assert max(planned) == PASS
+    assert sum(planned) == round(MAX_BACKLOG_S * STT_SAMPLE_RATE)
+    assert max(encodes) == 1
+    assert sum(encodes) == len(engine.libraries[0].encoded)
 
 
 async def test_session_rejects_one_chunk_over_the_backlog_bound() -> None:
@@ -806,6 +855,277 @@ async def test_cancelled_close_still_closes() -> None:
     assert lib.closed
     assert not lib.in_call
     await assert_engine_accepts_a_new_stream(engine)
+
+
+# --- several sessions at once ---------------------------------------------------
+
+
+def varied(seed: int, s: float) -> NDArray[np.float32]:
+    """Speech-like audio whose every window differs, with pauses and a quiet
+    lead-in, so a transcript of window positions and contents is specific to
+    it."""
+    rng = np.random.default_rng(seed)
+    parts = [noise(rng.uniform(0.2, 0.9), -60.0, seed)]
+    while sum(len(p) for p in parts) < seconds(s):
+        parts.append(speech_like(rng.uniform(0.3, 2.5), level=rng.uniform(0.05, 0.5)))
+        parts.append(silence(rng.choice([0.1, 0.25, 0.6, 1.5, 3.0])))
+    return np.concatenate(parts)[: seconds(s)]
+
+
+async def stream_paced(
+    session: STTStreamSession, audio: NDArray[np.float32], chunk: int, speed: float = 20.0
+) -> Any:
+    """Stream ``audio`` at ``speed`` times real time and finalize."""
+    for i in range(0, len(audio), chunk):
+        await session.add_audio(audio[i : i + chunk])
+        await asyncio.sleep(chunk / STT_SAMPLE_RATE / speed)
+    return await session.finalize()
+
+
+async def alone(audio: NDArray[np.float32], chunk: int) -> tuple[Any, FakeLibrary]:
+    engine = FakeEngine()
+    async with await engine.stream("en") as session:
+        transcript = await stream_paced(session, audio, chunk)
+    return transcript, engine.libraries[0]
+
+
+async def test_interleaved_sessions_each_transcribe_as_if_alone() -> None:
+    cases = [(1, CHUNK), (2, WYOMING_CHUNK), (3, 700)]
+    clips = [(varied(seed, 14.0), chunk) for seed, chunk in cases]
+    expected = [await alone(audio, chunk) for audio, chunk in clips]
+    journal: list[tuple[int, int, bool]] = []
+    engine = FakeEngine(delay_s=0.004, journal=journal)
+    sessions = [await engine.stream("en") for _ in clips]
+    transcripts = await asyncio.gather(
+        *(stream_paced(s, audio, chunk) for s, (audio, chunk) in zip(sessions, clips, strict=True))
+    )
+    for session in sessions:
+        await session.close()
+    for (want, solo), got, lib in zip(expected, transcripts, engine.libraries, strict=True):
+        assert got == want
+        assert lib.encoded == solo.encoded
+        assert all(np.array_equal(a, b) for a, b in zip(lib.windows, solo.windows, strict=True))
+    order = [session for session, _, _ in journal]
+    switches = sum(a != b for a, b in itertools.pairwise(order))
+    assert switches > len(order) / 3, "the sessions' calls interleave"
+    assert engine._sessions == set()
+
+
+async def test_sessions_behind_take_turns() -> None:
+    """Two sessions that each got a burst at once share the thread call by
+    call, not burst by burst."""
+    journal: list[tuple[int, int, bool]] = []
+    engine = FakeEngine(delay_s=0.005, journal=journal)
+    sessions = [await engine.stream("en") for _ in range(2)]
+    for session in sessions:
+        await session.add_audio(speech_like(10 * PASS_S))
+    for session in sessions:
+        await consumed(session)
+    order = [session for session, _, _ in journal]
+    assert len(order) == 20
+    runs = [len(list(group)) for _, group in itertools.groupby(order)]
+    assert max(runs) <= 2, f"turns, not bursts: {order}"
+    for session in sessions:
+        await session.close()
+
+
+async def until(predicate: Callable[[], bool], within: float = 5.0) -> None:
+    """Poll ``predicate`` until it is true."""
+    deadline = time.perf_counter() + within
+    while not predicate():
+        assert time.perf_counter() < deadline, "condition not met in time"
+        await asyncio.sleep(0.001)
+
+
+async def until_called(lib: FakeLibrary, calls: int) -> None:
+    await until(lambda: lib.calls >= calls)
+
+
+async def test_the_call_at_a_pause_goes_before_other_sessions_calls() -> None:
+    journal: list[tuple[int, int, bool]] = []
+    engine = FakeEngine(delay_s=0.02, journal=journal)
+    busy = await engine.stream("en")
+    quiet = await engine.stream("en")
+    await quiet.add_audio(speech_like(0.5))
+    await busy.add_audio(speech_like(MAX_BACKLOG_S - 1))  # behind: urgent, back to back
+    await until_called(engine.libraries[0], 2)
+    before = len(journal)
+    await quiet.add_audio(silence(0.1))  # a pause: the call the client waits on
+    await until_called(engine.libraries[1], 1)
+    assert [session for session, _, _ in journal[before:]] in ([1], [0, 1])
+    assert journal[-1][2], "and it holds the GPU lock"
+    for session in (busy, quiet):
+        await session.close()
+
+
+async def test_finalize_runs_the_rest_right_after_the_call_in_flight() -> None:
+    """No other session's call starts between the session's call in flight at
+    ``finalize`` and the rest of its work, though they wait at the same rank."""
+    journal: list[tuple[int, int, bool]] = []
+    engine = FakeEngine(delay_s=0.03, journal=journal)
+    other = await engine.stream("en")
+    session = await engine.stream("en")
+    await other.add_audio(speech_like(MAX_BACKLOG_S - 1))
+    await until_called(engine.libraries[0], 1)
+    await session.add_audio(speech_like(4 * PASS_S + 0.3))  # behind too: equal rank
+    lib = engine.libraries[1]
+    await until(lambda: lib.in_call)
+    done = lib.calls  # its calls finished before the one in flight
+    transcript = await session.finalize()
+    mine = [i for i, (s, _, _) in enumerate(journal) if s == 1][done:]
+    assert len(mine) == 5 - done
+    assert mine == list(range(mine[0], mine[0] + len(mine))), journal
+    assert transcript.text == " ".join(f"p{i * PASS}" for i in range(5))
+    for s in (other, session):
+        await s.close()
+
+
+async def test_a_session_that_disconnects_mid_stream_leaves_the_others_intact() -> None:
+    audio = varied(4, 10.0)
+    want, _ = await alone(audio, CHUNK)
+    engine = FakeEngine(delay_s=0.01)
+    gone = await engine.stream("en")
+    stays = await engine.stream("en")
+    await gone.add_audio(speech_like(MAX_BACKLOG_S - 1))
+    task = asyncio.create_task(stream_paced(stays, audio, CHUNK))
+    await until_called(engine.libraries[0], 3)
+    started, release = threading.Event(), threading.Event()
+
+    def block() -> None:
+        started.set()
+        release.wait(5)
+
+    blocker = asyncio.create_task(engine._thread.run(block))
+    await asyncio.to_thread(started.wait, 2)
+    # its next call waits behind the blocker
+    await until(lambda: any(call.withdrawable for call in engine._thread._waiting))
+    calls = engine.libraries[0].calls
+    closing = asyncio.create_task(gone.close())  # the client went away
+    await asyncio.sleep(0.01)
+    release.set()
+    await asyncio.gather(blocker, closing)
+    assert engine.libraries[0].calls == calls, "its queued call never ran"
+    assert await task == want
+    assert engine.libraries[0].closed
+    assert engine._sessions == {stays}
+    await stays.close()
+    await assert_engine_accepts_a_new_stream(engine)
+
+
+async def test_a_session_failure_leaves_the_others_intact() -> None:
+    audio = varied(5, 6.0)
+    want, _ = await alone(audio, CHUNK)
+    engine = FakeEngine()
+    failing = await engine.stream("en")
+    engine.libraries[0].fail_on = 1
+    fine = await engine.stream("en")
+    await failing.add_audio(speech_like(2 * PASS_S))
+    assert await stream_paced(fine, audio, CHUNK) == want
+    with pytest.raises(RuntimeError, match="encoder exploded"):
+        await failing.finalize()
+    await failing.close()
+    await fine.close()
+
+
+class _FakeEncoder:
+    def __init__(self) -> None:
+        self.modes: list[str] = []
+
+    def set_attention_model(self, mode: str, context: Any = None) -> None:
+        self.modes.append(mode)
+
+
+def _fake_model(seen: list[tuple[int, bool]]) -> Any:
+    """A model whose streams record, per call, the thread and whether the GPU
+    lock was held."""
+    from voiced import gpu
+
+    class Stream:
+        mel_buffer: Any = None
+        cache: list[Any] = []
+        audio_buffer: Any = None
+        decoder_hidden: Any = None
+        last_token: Any = None
+        finalized_tokens: list[Any] = []
+        draft_tokens: list[Any] = []
+        decoding_config = SimpleNamespace(sentence=None)
+
+        def __enter__(self) -> Stream:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def add_audio(self, audio: Any) -> None:
+            seen.append((threading.get_ident(), gpu.stt_running()))
+            self.mel_buffer = np.zeros((1, len(audio) // 160 + 1))
+
+    def transcribe_stream(context_size: Any, keep_original_attention: bool) -> Stream:
+        assert keep_original_attention, "the engine sets the attention mode, once"
+        return Stream()
+
+    return SimpleNamespace(
+        preprocessor_config=SimpleNamespace(hop_length=160),
+        encoder_config=SimpleNamespace(subsampling_factor=8),
+        encoder=_FakeEncoder(),
+        transcribe_stream=transcribe_stream,
+    )
+
+
+@pytest.mark.model
+async def test_several_sessions_share_one_gpu_lock_holder_and_one_attention_switch(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every session's calls run on the engine's one thread, the only holder of
+    the GPU lock (``voiced.gpu``), and hold it exactly when urgent; local
+    attention is switched on once and back once the last session closes."""
+    pytest.importorskip("parakeet_mlx")
+    from voiced import gpu
+
+    monkeypatch.setattr(gpu, "lock_path", lambda: tmp_path / gpu.LOCK_NAME)
+    monkeypatch.setattr(gpu, "_fds", {})
+    seen: list[tuple[int, bool]] = []
+    urgent: list[bool] = []
+    model = _fake_model(seen)
+
+    class Engine(ParakeetEngine):
+        def _new_library(self, model: Any) -> _Library:
+            lib = super()._new_library(model)
+            encode = lib.encode
+
+            def spy(window: NDArray[np.float32], start: int, flag: bool) -> None:
+                urgent.append(flag)
+                encode(window, start, flag)
+
+            lib.encode = spy  # type: ignore[method-assign]
+            return lib
+
+        def _new_detector(self) -> Endpointer:
+            return energy_speech()
+
+    engine = Engine()
+    engine._model = model
+    engine._attention = parakeet._Attention(model)
+    try:
+        sessions = [await engine.stream("en") for _ in range(3)]
+        assert model.encoder.modes == []
+        await sessions[0].add_audio(speech_like(URGENT_BACKLOG_S + 2 * PASS_S))  # behind
+        audio = np.concatenate([speech_like(1.0), silence(0.3), speech_like(1.3)])
+        await asyncio.gather(*(stream_paced(s, audio, CHUNK) for s in sessions[1:]))
+        await sessions[0].finalize()
+        assert model.encoder.modes == ["rel_pos_local_attn"]
+        for session in sessions[:2]:
+            await session.close()
+        assert model.encoder.modes == ["rel_pos_local_attn"], "one session is still open"
+        await sessions[2].close()
+        assert model.encoder.modes == ["rel_pos_local_attn", "rel_pos"]
+    finally:
+        for fd in gpu._fds.values():
+            os.close(fd)
+    assert len({thread for thread, _ in seen}) == 1
+    assert [held for _, held in seen] == urgent
+    assert True in urgent and False in urgent
+    assert not gpu.stt_running()
 
 
 # --- real model -------------------------------------------------------------
@@ -1110,7 +1430,8 @@ async def test_undone_calls_leave_the_real_stream_exact(
     clip = trimmed(with_pauses(speech, gap_ms))
 
     def run() -> tuple[str, str, int]:
-        lib = parakeet._LibraryStream(engine._model)
+        assert engine._attention is not None
+        lib = parakeet._LibraryStream(engine._model, engine._attention)
         planned = _StepRunner(lib, _Planner(Endpointer(silence_ms=0)))
         windows: list[tuple[NDArray[np.float32], int]] = []
         encode = lib.encode
@@ -1122,13 +1443,13 @@ async def test_undone_calls_leave_the_real_stream_exact(
         lib.encode = spy  # type: ignore[method-assign]
         try:
             for chunk in chunked(clip, WYOMING_CHUNK):
-                planned.feed(chunk)
-            result = planned.flush()
+                feed(planned, chunk)
+            result = flush(planned)
         finally:
             planned.close()
         # what the state holds: the last call made at each grid position
         kept = {start: window for window, start in windows}
-        straight = parakeet._LibraryStream(engine._model)
+        straight = parakeet._LibraryStream(engine._model, engine._attention)
         try:
             for start, window in sorted(kept.items()):
                 straight.encode(window, start, urgent=False)
@@ -1320,3 +1641,106 @@ async def test_peak_memory_while_serving(
     )
     assert peak_gb < 3.0
     assert cached_gb < 0.1
+
+
+# --- real model, several sessions at once -----------------------------------
+
+
+@pytest.mark.model
+async def test_concurrent_streams_each_transcribe_as_if_alone(
+    engine: ParakeetEngine,
+    speech: NDArray[np.float32],
+    speech_with_trailing_silence: NDArray[np.float32],
+) -> None:
+    """Interleaved on one model, every session's transcript, segments
+    included, is the one it gets alone: the stream states share only the
+    weights."""
+    other = trimmed(speech_with_trailing_silence)
+    clips = [
+        (np.concatenate([silence(0.3), speech, silence(SILENCE_WINDOW_S)]), WYOMING_CHUNK),
+        (np.concatenate([silence(0.55), utterance(other, speech), silence(0.1)]), CHUNK),
+        (np.concatenate([silence(0.1), utterance(speech, other, speech)]), WYOMING_CHUNK),
+    ]
+    solo = [(await timed_finalize(engine, clip, chunk))[1] for clip, chunk in clips]
+
+    async def run(clip: NDArray[np.float32], chunk: int, lead_s: float) -> Any:
+        await asyncio.sleep(lead_s)
+        return (await timed_finalize(engine, clip, chunk))[1]
+
+    together = await asyncio.gather(
+        *(run(clip, chunk, 0.37 * i) for i, (clip, chunk) in enumerate(clips))
+    )
+    for alone_t, together_t in zip(solo, together, strict=True):
+        print(f"together: {together_t.text!r}")
+        assert together_t == alone_t
+    assert engine._sessions == set()
+    assert attention_class(engine) == "RelPositionMultiHeadAttention"
+    transcript = await engine.transcribe(AudioInput(speech), "en")
+    assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+
+
+@pytest.mark.model
+async def test_attention_stays_local_until_the_last_stream_closes(
+    engine: ParakeetEngine, speech: NDArray[np.float32]
+) -> None:
+    first = await engine.stream("en")
+    second = await engine.stream("en")
+    await first.add_audio(speech[: 2 * PASS])
+    await second.add_audio(speech[: 2 * PASS])
+    await asyncio.sleep(0.5)
+    await first.close()
+    assert attention_class(engine) == "RelPositionMultiHeadLocalAttention"
+    await second.add_audio(speech[2 * PASS :])
+    transcript = await second.finalize()
+    assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+    await second.close()
+    assert attention_class(engine) == "RelPositionMultiHeadAttention"
+
+
+async def concurrent_finalizes(
+    engine: ParakeetEngine,
+    clip: NDArray[np.float32],
+    streams: int,
+    trailing_s: float,
+    seconds_: float,
+) -> list[float]:
+    """``streams`` clients, each speaking ``clip`` again and again in real time
+    (64 ms chunks, a random lead-in so the ends fall at every phase of the
+    others' calls, ``trailing_s`` of silence), finalizing each time."""
+    latencies: list[float] = []
+    until = time.perf_counter() + seconds_
+
+    async def client(seed: int) -> None:
+        rng = np.random.default_rng(seed)
+        while time.perf_counter() < until:
+            audio = np.concatenate([silence(rng.uniform(0, 0.62)), clip, silence(trailing_s)])
+            finalize_s, transcript = await timed_finalize(engine, audio, WYOMING_CHUNK)
+            latencies.append(finalize_s)
+            assert_transcribed(transcript.text, EXPECTED, EXPECTED_WORDS)
+            await asyncio.sleep(rng.uniform(0, 0.8))
+
+    await asyncio.gather(*(client(seed) for seed in range(streams)))
+    return latencies
+
+
+@pytest.mark.model
+async def test_finalize_within_target_with_the_default_streams(
+    engine: ParakeetEngine, speech: NDArray[np.float32]
+) -> None:
+    """``stt.streams`` clients at once, ends after the endpointer's silence
+    window: every finalize within the 150 ms of ADR 0008 (ADR 0020)."""
+    latencies = await concurrent_finalizes(engine, speech, STT_STREAMS, SILENCE_WINDOW_S, 45.0)
+    report(f"finalize, {STT_STREAMS} streams, {SILENCE_WINDOW_S * 1000:.0f} ms window", latencies)
+    assert max(latencies) < FINALIZE_WORST_S
+
+
+@pytest.mark.model
+async def test_push_to_talk_finalize_with_the_default_streams(
+    engine: ParakeetEngine, speech: NDArray[np.float32]
+) -> None:
+    """No trailing silence: the median stays the one-stream cost, and at worst
+    a finalize also waits for one other session's call (ADR 0020)."""
+    latencies = await concurrent_finalizes(engine, speech, STT_STREAMS, 0.0, 45.0)
+    report(f"push-to-talk finalize, {STT_STREAMS} streams", latencies)
+    assert statistics.median(latencies) < FINALIZE_WORST_S
+    assert max(latencies) < 2 * FINALIZE_WORST_S
