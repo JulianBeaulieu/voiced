@@ -220,7 +220,7 @@ Other numbers:
 
 ## Concurrent sessions
 
-Superseded by ADR 0020, which serves `stt.streams` sessions at once (3 by
+Superseded by ADR 0020, which serves `stt.streams` sessions at once (2 by
 default) and records the measurements; what follows is the one-at-a-time
 design it replaced.
 
