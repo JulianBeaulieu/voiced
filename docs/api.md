@@ -190,11 +190,16 @@ the close reason:
 | 1011 | The engine failed. `/health` turns `degraded`. |
 | 1013 | The inference queue is full; retry later. |
 
-The connection holds one inference slot for its whole life, so `queue_depth`
-also limits concurrent streams. A session carries at most `stt.max_upload_mb`
-worth of 16-bit 16 kHz audio (about 26 minutes at the default) and lasts at
-most that long plus `server.session_idle_s`. One frame may be up to 16 MiB,
-uvicorn's limit.
+The connection holds one inference slot for its whole life. Up to
+`stt.streams` sessions (default 2) are transcribed at once, WebSocket and
+Wyoming together. Setting `stt.streams` above `queue_depth` is an error, and
+the service opens no more than the engine can interleave (its `max_streams`: 6
+for parakeet, 1 for an engine that declares nothing). The next session waits
+for one of them to end while its audio is held, and a batch transcription
+waits until none is open (ADR 0020). `queue_depth` bounds the sessions open or
+waiting. A session carries at most `stt.max_upload_mb` worth of 16-bit 16 kHz
+audio (about 26 minutes at the default) and lasts at most that long plus
+`server.session_idle_s`. One frame may be up to 16 MiB, uvicorn's limit.
 
 ```python
 import asyncio
@@ -460,7 +465,8 @@ the exception. It retries 500 and 503 automatically, honouring
 
 Each service runs one inference at a time and queues the rest, up to
 `queue_depth` (default 8) waiting or running; beyond that, requests fail at
-once with `503`. A WebSocket stream holds its place for the whole session.
+once with `503`. The exception is STT streaming: up to `stt.streams` sessions
+(default 2) run at once and share the engine (ADR 0020). A WebSocket stream holds its place for the whole session.
 HTTP speech holds it only while synthesizing, not while the client
 downloads. Wyoming requests share the same queue. How the queue works is
 described in [architecture.md](architecture.md#inference-queue).

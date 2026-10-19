@@ -132,11 +132,20 @@ is cut off after the write timeout ([ADR 0007](decisions/0007-http-api.md)).
 ## Inference queue
 
 MLX runs one kernel stream per process and model objects are not
-thread-safe, so each service runs exactly one inference at a time. The queue
-behind `inference()` is an `asyncio.Lock` with a counter in front of it:
+thread-safe, so each service runs its inference through one bounded FIFO
+queue, `voiced.queue.InferenceQueue`:
 
 - `async with queue.slot():` holds the GPU for the block. `inference()` is
   its only caller.
+- A slot is exclusive by default: one holder at a time. A stream session
+  (`Operation.STREAM`) takes a shared slot instead: up to `max_shared` such
+  holders run at once, and the engine interleaves their work on its model
+  thread ([ADR 0020](decisions/0020-concurrent-stt-streams.md)). For STT
+  that is `stt.streams` (default 2), at most `queue_depth` and the engine's
+  `max_streams` (1 unless the engine declares more; Parakeet does). An
+  exclusive holder, such as a batch transcription, waits until no shared
+  holder is left. Admission stays FIFO, so neither kind overtakes the
+  other.
 - `depth` counts requests waiting or running. When it reaches `capacity`
   (config `queue_depth`, default 8 per service), `slot()` raises
   `QueueFull` at once instead of waiting.

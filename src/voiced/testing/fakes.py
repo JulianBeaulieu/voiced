@@ -82,6 +82,7 @@ class FakeSTTEngine(STTEngine):
     model_id = "fake/stt"
     languages = ["en"]
     license = "MIT"
+    max_streams = 8  # its sessions share nothing
 
     def __init__(
         self,

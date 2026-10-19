@@ -95,11 +95,13 @@ async def bounded(aw: Awaitable[T], timeout_s: float) -> T:
 async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[None]:
     """Hold ``ctx.queue``'s slot for the block and record how it ended.
 
-    Raises :class:`QueueFull` immediately if the queue is at capacity.
+    A stream session shares the slot with the queue's other stream sessions
+    (``stt.streams``, ADR 0020); anything else holds it alone. Raises
+    :class:`QueueFull` immediately if the queue is at capacity.
     """
     started = time.perf_counter()
     try:
-        async with ctx.queue.slot():
+        async with ctx.queue.slot(shared=operation is Operation.STREAM):
             started = time.perf_counter()
             yield
     except Exception as exc:

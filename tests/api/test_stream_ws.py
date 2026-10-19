@@ -177,6 +177,24 @@ def test_configured_languages_are_enforced(settings: Settings) -> None:
         assert exc.value.code == 1008 and "'en' is not served" in exc.value.reason
 
 
+@pytest.mark.parametrize(("streams", "engine_max", "shared"), [(1, 8, 1), (2, 8, 2), (2, 1, 1)])
+def test_streams_share_the_queue_up_to_what_the_engine_interleaves(
+    settings: Settings, streams: int, engine_max: int, shared: int
+) -> None:
+    settings.stt.streams = streams  # queue_depth is 2 in the test settings
+    engine = FakeSTTEngine()
+    engine.max_streams = engine_max
+    app = build_stt_app(settings, engine)
+    assert app.state.ctx.queue.max_shared == shared
+    assert app.state.ctx.queue.capacity == 2
+
+
+def test_an_engine_that_declares_nothing_gets_one_stream_at_a_time() -> None:
+    from voiced.engines.base import STTEngine
+
+    assert STTEngine.max_streams == 1
+
+
 def test_queue_full_closes_with_1013(settings: Settings) -> None:
     app = build_stt_app(settings, FakeSTTEngine())  # queue_depth is 2 in the test settings
     with sync_client(app) as client:

@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -112,6 +112,10 @@ _STT_RATE = 16_000
 _PCM16_BYTES = 2
 
 
+STT_STREAMS = 2
+"""Stream sessions within the finalize target for Parakeet on an M1 Max (ADR 0020)."""
+
+
 class STTConfig(_Section):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
@@ -120,7 +124,24 @@ class STTConfig(_Section):
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
+    # Stream sessions served at once; the next waits. See open_streams.
+    streams: int = Field(default=STT_STREAMS, ge=1)
     max_upload_mb: int = Field(default=50, ge=1)
+
+    @model_validator(mode="after")
+    def _streams_fit_the_queue(self) -> STTConfig:
+        # Only a value someone set: the default must not make a smaller
+        # queue_depth invalid.
+        if "streams" in self.model_fields_set and self.streams > self.queue_depth:
+            raise ValueError(
+                f"streams ({self.streams}) is more than queue_depth ({self.queue_depth})"
+            )
+        return self
+
+    def open_streams(self, engine_max: int) -> int:
+        """Stream sessions the service opens at once: ``streams``, at most
+        ``queue_depth`` and what the engine can interleave (its ``max_streams``)."""
+        return min(self.streams, self.queue_depth, engine_max)
 
     @property
     def max_audio_s(self) -> float:

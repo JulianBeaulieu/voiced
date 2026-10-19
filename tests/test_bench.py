@@ -137,3 +137,38 @@ def test_first_audio_while_another_client_streams(
     after = len(streamed)
     threading.Event().wait(0.05)
     assert len(streamed) == after  # the streaming client stopped
+
+
+def test_concurrent_finalize_runs_the_clients_at_once(
+    bench: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row's clients overlap, each sends its utterances, and every
+    finalize is reported (ADR 0020)."""
+    import threading
+
+    import numpy as np
+
+    lock = threading.Lock()
+    inside = 0
+    most = 0
+    leads: list[int] = []
+
+    def stream_and_finalize(
+        ws_url: str, api_key: str, stream: bytes, *rest: Any
+    ) -> tuple[str, float]:
+        nonlocal inside, most
+        with lock:
+            inside += 1
+            most = max(most, inside)
+            leads.append(len(stream))
+        threading.Event().wait(0.02)
+        with lock:
+            inside -= 1
+        return "text", 7.0
+
+    monkeypatch.setattr(bench, "stream_and_finalize", stream_and_finalize)
+    monkeypatch.setattr(bench.time, "sleep", lambda s: threading.Event().wait(0.001))
+    out = bench.concurrent_finalize_ms("ws://stt", "", np.zeros(160, "<i2"), 16_000, 3, 4, 0.2)
+    assert out == [7.0] * 12
+    assert most == 3
+    assert len(set(leads)) == 12, "every utterance ends at another phase"

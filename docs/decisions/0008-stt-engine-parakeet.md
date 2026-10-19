@@ -106,9 +106,10 @@ Streaming is three pieces in `voiced.engines.parakeet`:
     before the next speech frame, the same lead-in as at speech start. A long
     pause keeps at most one pass of audio meanwhile.
   - *Speculative final call.* When the last 32 ms frame is not speech (Silero's
-    per-frame decision, `Endpointer.last_speech_s`) and less than a pass is
-    buffered, the planner checkpoints the stream and encodes the buffer at
-    once, zero-padded to a pass. The buffer is kept: if speech resumes, or the
+    per-frame decision, `Endpointer.last_speech_s`), the planner checkpoints
+    the stream and encodes the buffer up to the end of that frame at once,
+    zero-padded to a pass. (Until ADR 0020 it encoded everything fed so far,
+    so the call depended on where the last chunk ended.) The buffer is kept: if speech resumes, or the
     pause (measured from the last speech frame) outgrows `HOLD_MAX_S` (2.5 s),
     the checkpoint is restored and the grid goes on as if there had been no
     pause, so the padding never becomes
@@ -131,10 +132,11 @@ Every MLX call of the engine, `load()` included, runs on the engine's own
 `voiced.threads.ModelThread` (fact 6): one thread for the engine's life, with
 `run_blocking`'s rule that a cancelled caller waits for the call to finish.
 
-The engine refuses a second session or a batch call while a session is open
-(attention mode is global), and restores full attention in `close()`, which
-waits for a running call even when cancelled. A failed encoder call is raised
-from the next `add_audio` or `finalize`.
+The engine refuses a batch call while a session is open (attention mode is
+global), and restores full attention when the last session's `close()` runs,
+which waits for a running call even when cancelled. A failed encoder call is
+raised from the next `add_audio` or `finalize`. Until ADR 0020 it also
+refused a second session; several now stream at once.
 
 Batch `transcribe()` builds the log-mel from the numpy input directly
 (`get_logmel` + `generate`, in 20 s chunks past 20 s; see Consequences), and returns an empty transcript when no 32 ms
@@ -218,7 +220,11 @@ Other numbers:
 
 ## Concurrent sessions
 
-Streams run one at a time. The engine has one session open at most (entering
+Superseded by ADR 0020, which serves `stt.streams` sessions at once (3 by
+default) and records the measurements; what follows is the one-at-a-time
+design it replaced.
+
+Streams ran one at a time. The engine has one session open at most (entering
 the library's stream context switches the model's attention mode globally),
 and a Wyoming or WebSocket session holds the service's only inference slot
 from its first audio until its transcript (ADR 0005). Two satellites talking
@@ -263,10 +269,11 @@ waits for the first utterance and the second's catch-up and fails once
 utterances pass about 31 s. A WebSocket client waits in the queue
 (`stt.queue_depth`).
 
-A session that is behind is fed to the model thread at most `FEED_MAX_S`
-(2 s) per call, so a waiting `add_audio` (and with it the transport's
-partials) and `close` wait for one call of about three passes, not for the
-whole backlog.
+A session that was behind was fed to the model thread at most 2 s
+(`FEED_MAX_S`) per call, so a waiting `add_audio` (and with it the
+transport's partials) and `close` waited for one call of about three passes,
+not for the whole backlog. ADR 0020 replaced it with one encoder call per
+model-thread call.
 
 ## Constants
 
@@ -278,7 +285,6 @@ whole backlog.
 | `HOLD_MAX_S` | 2.5 s | bounds how long a pause is held before the grid resumes |
 | `BATCH_CHUNK_S`, `BATCH_OVERLAP_S` | 20 s, 4 s | bound batch memory (see Consequences) |
 | `MAX_BACKLOG_S` | 30 s | bounds memory for a session that is behind; `add_audio` waits past it (the backlog can exceed it by what the planner holds) |
-| `FEED_MAX_S` | 2 s | most audio per model-thread call, so waiting `add_audio` and `close` are not held for a whole backlog |
 | `SILENCE_FLOOR_DBFS` | -60 | batch only: skip near-silent input |
 | `LIBRARY_MIN_SAMPLES` | 257 | batch only, defensive (fact 3) |
 | `WARMUP_S` | 1.0 s | warm-up input length; not tuned |

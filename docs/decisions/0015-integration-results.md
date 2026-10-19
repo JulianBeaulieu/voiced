@@ -231,6 +231,16 @@ Notes on the rows:
 
 ## Known misses
 
+- **Push-to-talk finalize while other streams are open (ADR 0020).** With
+  two or more sessions streaming at once, 0 ms finalize keeps its median
+  (116 to 121 ms) but reaches 226 to 281 ms at worst on the development
+  machine: the tail waits for another session's encoder call that has just
+  started, which cannot be preempted (Mac Studio, two clients: worst 220 to
+  221 ms). After the endpointer's window the default two streams stay
+  within target (worst 69 ms here, 103 to 110 ms on the Mac Studio). With
+  `stt.streams = 3`, rarely one waits for both other sessions' calls and
+  takes 162 to 186 ms (2 of about 260 model-tier finalizes, 1 of 192 on the
+  Studio; ADR 0020).
 - **Push-to-talk finalize median.** With 0 ms of trailing silence the median
   is about 114 ms against the 50 ms median goal, and the worst of 32 has
   reached 165 ms in an earlier run on the same machine. Cause: the tail must be

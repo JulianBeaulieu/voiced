@@ -4,10 +4,12 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from voiced.config import (
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENGINE_ENV,
+    STT_STREAMS,
     Settings,
     apply_engine_environment,
     load_settings,
@@ -24,6 +26,7 @@ def test_defaults(settings: Settings) -> None:
     assert Settings().tts.wyoming_port == 10200
     assert settings.tts.default_voice == "af_heart"
     assert settings.stt.vad_silence_ms == 200
+    assert Settings().stt.streams == STT_STREAMS
     assert settings.stt.languages == ["en"]
     assert settings.launchd.label_prefix == DEFAULT_LAUNCHD_LABEL_PREFIX
     assert settings.launchd.label("stt") == "io.github.julianbeaulieu.voiced.stt"
@@ -141,3 +144,24 @@ def test_no_notice_when_the_shell_agrees_with_the_config(
     cfg.write_text('[tts]\nespeak_library = "/x/libespeak-ng.dylib"\n')
     monkeypatch.setenv("VOICED_ESPEAK_LIBRARY", "/x/libespeak-ng.dylib")
     assert apply_engine_environment(load_settings(cfg)) == []
+
+
+def test_streams_set_above_queue_depth_is_an_error(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("[stt]\nqueue_depth = 2\nstreams = 3\n")
+    with pytest.raises(ValidationError, match="more than queue_depth"):
+        load_settings(cfg)
+
+
+def test_the_default_streams_never_make_a_small_queue_invalid(tmp_path: Path) -> None:
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("[stt]\nqueue_depth = 1\n")
+    stt = load_settings(cfg).stt
+    assert stt.streams == STT_STREAMS
+    assert stt.open_streams(engine_max=8) == 1
+
+
+def test_open_streams_is_bounded_by_the_engine() -> None:
+    stt = Settings().stt
+    assert stt.open_streams(engine_max=1) == 1  # an engine that cannot interleave
+    assert stt.open_streams(engine_max=8) == STT_STREAMS

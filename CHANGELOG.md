@@ -8,6 +8,23 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Several live speech-to-text streams are transcribed at once: up to
+  `stt.streams` (default 2) WebSocket and Wyoming sessions share the
+  service, so two satellites talking together no longer queue behind each
+  other (ADR 0020). Each session has its own stream state over the one
+  loaded model (36 MB each; the weights are shared), and its encoder calls
+  take turns on the engine's one model thread. The calls a client waits on
+  go first, then sessions that are behind, then the rest. With two clients
+  at once, finalize after the endpointer's 200 ms window was worst 69 ms on
+  an M1 Max and 103 to 110 ms on the Mac Studio. `stt.streams = 3` serves
+  a third at once; its finalize stays within 150 ms at the 95th percentile,
+  but rarely one waits for both other sessions' calls and takes 162 to
+  186 ms. A session past `stt.streams` waits for one to end, as every
+  second session did before, and a batch transcription waits until no stream is open. `stt.streams`
+  above `queue_depth` is a configuration error. An STT engine declares how
+  many sessions it can interleave (`STTEngine.max_streams`, 1 by default,
+  6 for Parakeet), and the service never opens more. `scripts/bench.py`
+  has a row for `--streams` clients at once.
 - A release workflow: pushing a `v*` tag builds the voiced wheel and sdist
   and the menu bar app as a zip and a DMG with sha256 sums, signs and
   notarizes the app when the Developer ID secrets are set (an ad hoc build,
@@ -169,6 +186,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- What the Parakeet planner encoded could depend on where the audio was cut,
+  not only on the audio: the call at a pause encoded everything fed so far
+  (up to a frame past the last judged one, so sometimes more than a pass),
+  and after a long pause the grid could restart at a point set by where a
+  chunk ended. Each was rare with a client's fixed chunk size; with several
+  streams the amount planned at once depends on timing, so a session could
+  keep different windows than alone. Decisions are now taken after each
+  judged 32 ms frame from judged positions only (ADR 0020).
+- A streaming STT session could fail with `IndexError` when a pause outgrew
+  2.5 s after a speech frame that reached just past the start of the
+  planner's buffer (`_has_speech` and `_skip_to_speech` disagreed by half a
+  frame).
 - A push-to-talk finalize while Kokoro synthesized in the other service took
   up to 1.4 times as long in the median and 1.6 times at worst (Mac Studio: median
   152 to 177 / worst 201 to 221 ms against 123 to 125 / 131 to 134 alone):
@@ -244,6 +273,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Push-to-talk finalize (no trailing silence) while other streams are open
+  is median unchanged but worst 226 to 281 ms from two streams on, over the
+  150 ms target (ADR 0015, Known misses): the tail can wait for another
+  session's encoder call that has just started. Alone it is as before. Set
+  `stt.streams = 1` where most clients are push-to-talk and need the 150 ms
+  worst case.
 - ffmpeg comes from the `imageio-ffmpeg` wheel, a core dependency (a static
   ffmpeg 7.1, GPL-2.0-or-later), preferred over one on `PATH`; `brew install
   ffmpeg` is no longer needed. `voiced doctor` names the ffmpeg in use and

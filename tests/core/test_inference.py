@@ -308,3 +308,28 @@ async def test_utterance_budget_leaves_other_timeouts_alone() -> None:
     with pytest.raises(TimeoutError):
         async with UtteranceBudget(_budget_settings(30)):
             raise TimeoutError
+
+
+async def test_stream_sessions_share_the_slot_and_a_transcription_holds_it_alone(
+    ctx: ServiceContext,
+) -> None:
+    ctx.queue = InferenceQueue(3, max_shared=2)
+    inside: set[str] = set()
+    seen: list[set[str]] = []
+    gate = asyncio.Event()
+
+    async def hold(name: str, operation: Operation) -> None:
+        async with inference(ctx, operation):
+            inside.add(name)
+            seen.append(set(inside))
+            await gate.wait()
+            inside.discard(name)
+
+    first = asyncio.create_task(hold("stream 1", Operation.STREAM))
+    second = asyncio.create_task(hold("stream 2", Operation.STREAM))
+    batch = asyncio.create_task(hold("batch", Operation.TRANSCRIBE))
+    await asyncio.sleep(0.01)
+    assert inside == {"stream 1", "stream 2"}
+    gate.set()
+    await asyncio.gather(first, second, batch)
+    assert seen[-1] == {"batch"}
