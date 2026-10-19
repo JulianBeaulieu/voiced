@@ -1,0 +1,322 @@
+name: release
+
+# Builds a release (ADR 0018, "Signing and release CI"): the voiced wheel and
+# sdist, and voiced.app as a zip and a DMG, with sha256 sums. Pushing a `v*`
+# tag also creates a draft GitHub release for it, which a person publishes,
+# and leaves the Homebrew formula and cask for the tag as an artifact for the
+# tap. `workflow_dispatch` is a dry run: the same build, uploaded as workflow
+# artifacts only, never a release. Started on a tag ref it signs and notarizes
+# like the tag push; started on a branch it never does.
+#
+# The app is signed with the Developer ID and notarized only when the build
+# runs for a tag and the signing secrets are there (menubar/Scripts/SIGNING.md
+# names them; keep them as secrets of the `release` environment, which only
+# `v*` tags may deploy to, with a required reviewer, and a tag ruleset lets
+# only the owner create `v*` tags). Otherwise it is the ad hoc build bundle.sh makes,
+# and the asset names and the job summary say so. There is no pull_request
+# trigger, so a fork can never start this workflow against this repository.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    # The cheap checks first: the tag names pyproject's version, and the
+    # CHANGELOG has a section for it, the release notes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(python3 scripts/release.py version)"
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::tag $REF_NAME does not match version $version in pyproject.toml (expected v$version)"
+              exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # PEP 440 pre-releases (1.0.0a1, 1.0.0rc1) and dev releases.
+          if [[ "$version" =~ (a|b|rc|dev)[0-9]*$ ]]; then prerelease=true; else prerelease=false; fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/notes"
+          if ! python3 scripts/release.py notes "$VERSION" > "$RUNNER_TEMP/notes/notes.md"; then
+              if [ "$REF_TYPE" = tag ]; then
+                  echo "::error::CHANGELOG.md has no section for $VERSION; move Unreleased under it before tagging"
+                  exit 1
+              fi
+              echo "::warning::CHANGELOG.md has no section for $VERSION; the dry run uses Unreleased"
+              python3 scripts/release.py notes Unreleased > "$RUNNER_TEMP/notes/notes.md"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes/notes.md
+          if-no-files-found: error
+
+  build:
+    needs: prepare
+    # macos-15 ships Xcode 16, the first with Swift 6 (as in ci.yml).
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    # The signing secrets live in this environment; only tag builds use it.
+    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      APP: menubar/build/voiced.app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Output directory
+        run: echo "DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+
+      - name: Signing credentials
+        # Only whether they are all there; nothing here prints a value.
+        id: signing
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          signed=false
+          if [ "$REF_TYPE" != tag ]; then
+              reason="not a tag build"
+          elif [ -z "$P12" ] || [ -z "$P12_PASSWORD" ] || [ -z "$TEAM_ID" ]; then
+              reason="no Developer ID certificate, password and team ID in the secrets"
+          elif [ -z "$KEY_P8" ] || [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ]; then
+              reason="no App Store Connect API key in the secrets"
+          else
+              signed=true
+          fi
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+          if [ "$signed" = true ]; then
+              echo "Signing with the Developer ID and notarizing"
+          else
+              echo "::warning::Ad hoc build, not signed with a Developer ID or notarized: $reason"
+          fi
+
+      - name: Bundle
+        run: menubar/Scripts/bundle.sh
+
+      - name: Wheel and sdist
+        # The wheel is the one in the bundle, so the release asset and what the
+        # app installs are the same file. The sdist is built from the same
+        # checkout with the bundle's uv and the hashed build backend.
+        env:
+          UV_NO_CONFIG: "1"
+        run: |
+          mkdir -p "$DIST"
+          wheels=("$APP"/Contents/Resources/voiced-*.whl)
+          wheel="$(basename "${wheels[0]}")"
+          if [ "${#wheels[@]}" -ne 1 ] || [ "$wheel" != "voiced-$VERSION-py3-none-any.whl" ]; then
+              echo "::error::the bundle carries ${wheels[*]}, expected voiced-$VERSION-py3-none-any.whl"
+              exit 1
+          fi
+          cp "${wheels[0]}" "$DIST/"
+          "$APP/Contents/Helpers/uv" build --sdist --python "$(tr -d '[:space:]' < menubar/app-python-version)" \
+              --build-constraints src/voiced/build-requirements.lock --require-hashes --out-dir "$DIST" .
+          [ -f "$DIST/voiced-$VERSION.tar.gz" ] || { echo "::error::no voiced-$VERSION.tar.gz was built"; exit 1; }
+
+      - name: Sign, notarize and package
+        # menubar/Scripts/sign.sh, the script SIGNING.md runs by hand.
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SIGN_KEYCHAIN: ${{ runner.temp }}/voiced-signing.keychain-db
+        run: menubar/Scripts/sign.sh "$APP" "$DIST" "voiced-$VERSION-macos"
+
+      - name: Package ad hoc
+        if: steps.signing.outputs.signed != 'true'
+        run: menubar/Scripts/sign.sh --adhoc "$APP" "$DIST" "voiced-$VERSION-macos-adhoc"
+
+      - name: Remove the keychain
+        # sign.sh deletes it on exit; this covers a job cancelled mid-step.
+        if: always() && steps.signing.outputs.signed == 'true'
+        env:
+          SIGN_KEYCHAIN: ${{ runner.temp }}/voiced-signing.keychain-db
+        run: security delete-keychain "$SIGN_KEYCHAIN" 2>/dev/null || true
+
+      - name: Checksums
+        run: |
+          cd "$DIST"
+          shasum -a 256 -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Summary
+        if: always()
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          {
+              echo "## voiced $VERSION"
+              echo
+              if [ "$SIGNED" = true ]; then
+                  echo "voiced.app is signed with the Developer ID, notarized and stapled."
+              else
+                  echo "> [!WARNING]"
+                  echo "> **Ad hoc build.** voiced.app is not signed with a Developer ID and not notarized:"
+                  echo "> Gatekeeper rejects it when it is downloaded. Its assets are named \`-adhoc\`."
+              fi
+              echo
+              if [ "$EVENT" = workflow_dispatch ]; then
+                  echo "Dry run: the files are this run's \`dist\` artifact; no release was created."
+                  echo
+              fi
+              if [ -s "$DIST/SHA256SUMS" ]; then
+                  echo '```'
+                  cat "$DIST/SHA256SUMS"
+                  echo '```'
+              fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
+  homebrew:
+    # The formula and the cask for the tag, for the owner to copy to the tap
+    # (packaging/homebrew/README.md). Nothing is pushed anywhere.
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SIGNED: ${{ needs.build.outputs.signed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - name: Formula and cask
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          out="$RUNNER_TEMP/homebrew"
+          mkdir -p "$out/Formula" "$out/Casks"
+          if [ "$SIGNED" = true ]; then zip="voiced-$VERSION-macos.zip"; adhoc=(); else zip="voiced-$VERSION-macos-adhoc.zip"; adhoc=(--adhoc); fi
+          zip_sha256="$(cd "$RUNNER_TEMP/dist" && awk -v f="$zip" '$2 == f { print $1 }' SHA256SUMS)"
+          [ -n "$zip_sha256" ] || { echo "::error::$zip is not in SHA256SUMS"; exit 1; }
+          python3 scripts/release.py cask --version "$VERSION" --sha256 "$zip_sha256" "${adhoc[@]}" \
+              > "$out/Casks/voiced.rb"
+
+          # The formula builds from the tag's source archive, which GitHub
+          # makes once the tag is pushed.
+          if [ "$REF_TYPE" = tag ]; then
+              url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/archive/refs/tags/$REF_NAME.tar.gz"
+              curl --fail --silent --show-error --location --retry 3 -o "$RUNNER_TEMP/source.tar.gz" "$url"
+              source_sha256="$(sha256sum "$RUNNER_TEMP/source.tar.gz" | cut -d ' ' -f 1)"
+              python3 scripts/release.py formula --url "$url" --sha256 "$source_sha256" > "$out/Formula/voiced.rb"
+              formula="\`url\` $url, \`sha256\` $source_sha256"
+          else
+              formula="not generated: a dry run from a branch has no tag archive"
+          fi
+          {
+              echo "## Homebrew"
+              echo
+              echo "- Formula: $formula"
+              echo "- Cask: \`sha256\` $zip_sha256 for $zip"
+              if [ "$SIGNED" != true ]; then
+                  echo "- The cask points at the ad hoc build; do not copy it to the tap."
+              fi
+              echo
+              echo "The files are this run's \`homebrew\` artifact; packaging/homebrew/README.md says how to update the tap."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew
+          path: ${{ runner.temp }}/homebrew/
+          if-no-files-found: error
+
+  release:
+    # The draft release for a pushed tag. The only job that can write.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the draft release and upload its assets
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      SIGNED: ${{ needs.build.outputs.signed }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes
+      - name: Draft release
+        run: |
+          notes="$RUNNER_TEMP/notes/notes.md"
+          if [ "$SIGNED" != true ]; then
+              {
+                  echo "> [!WARNING]"
+                  echo "> This build of voiced.app is ad hoc signed, not signed with a Developer ID or notarized."
+                  echo
+                  cat "$RUNNER_TEMP/notes/notes.md"
+              } > "$RUNNER_TEMP/notes.md"
+              notes="$RUNNER_TEMP/notes.md"
+          fi
+          files=("$RUNNER_TEMP"/dist/*)
+          flags=()
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+
+          if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "::error::a release for $TAG exists already; delete it if it is a draft, then re-run this job"
+              exit 1
+          fi
+          gh release create "$TAG" --draft --verify-tag --title "voiced $VERSION" \
+              --notes-file "$notes" "${flags[@]}" "${files[@]}"
+          echo "Draft release: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
