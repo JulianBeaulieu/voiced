@@ -29,9 +29,33 @@ brew uninstall voiced && brew untap "$USER/voiced-local"
 the `head` line of the copy at it (commit first; Homebrew clones it):
 `head "file:///path/to/checkout", branch: "my-branch", using: :git`.
 
-At a release: set `version` in `pyproject.toml`, tag, uncomment `url` and
-`sha256` in the formula with the tag's archive and its checksum
-(`curl -sL <url> | shasum -a 256`), then copy the file to the tap. The
-formula installs `src/voiced/requirements.lock` and builds with
-`src/voiced/build-requirements.lock` from that tag, so there are no
-dependency versions to update in it.
+`cask/voiced.rb` is the cask for the menu bar app, the tap's
+`Casks/voiced.rb`. Its `version` and `sha256` are stand-ins; the release
+workflow fills them in.
+
+At a release (CONTRIBUTING.md, "Cutting a release"), the release workflow
+leaves a `homebrew` artifact on the tag's run: `Formula/voiced.rb` with `url`
+and `sha256` set to the tag's source archive, and `Casks/voiced.rb` with the
+version and the zip's checksum. Nothing pushes to the tap; after publishing
+the draft release:
+
+```sh
+gh run download <run id> --repo JulianBeaulieu/voiced --name homebrew --dir homebrew
+git clone https://github.com/JulianBeaulieu/homebrew-voiced && cd homebrew-voiced
+mkdir -p Formula Casks
+cp ../homebrew/Formula/voiced.rb Formula/
+cp ../homebrew/Casks/voiced.rb Casks/       # only for a signed, notarized release
+brew style Formula/voiced.rb Casks/voiced.rb
+git add Formula Casks && git commit -m "voiced <version>" && git push
+brew tap julianbeaulieu/voiced && brew update
+brew audit --strict --online julianbeaulieu/voiced/voiced
+brew audit --strict --online --cask julianbeaulieu/voiced/voiced
+```
+
+A cask that begins `# AD HOC BUILD` came from a run without the signing
+secrets; Gatekeeper rejects that download, so it stays out of the tap (ADR
+0017, "The end-user path"). The formula installs `src/voiced/requirements.lock`
+and builds with `src/voiced/build-requirements.lock` from the tag, so there
+are no dependency versions to update in it. Once the tap has a tagged
+formula, copy the generated file back over `voiced.rb` here, so the two stay
+the same.

@@ -125,16 +125,13 @@ lock="$work/wheel/voiced/requirements.lock"
 "$work/tools/bin/python" -E -s "$repo_dir/scripts/app_manifest.py" --wheel "$wheel" --lock "$lock" \
     --models "$work/model-pins.json" --uv-lock "$repo_dir/uv.lock" > "$work/install-manifest.json"
 
-# What's new: the CHANGELOG section for this version, else the Unreleased one.
-section() {
-    awk -v heading="$1" '
-        /^## / { if (found) exit; title = $0; sub(/^## \[?/, "", title); sub(/\]?( .*)?$/, "", title)
-                 if (title == heading) { found = 1; next } }
-        found' "$repo_dir/CHANGELOG.md"
+# What's new: the CHANGELOG section for this version, else the Unreleased one, read by the
+# same parser the release workflow takes the release notes from.
+changelog_section() { "$work/tools/bin/python" -I "$repo_dir/scripts/release.py" notes "$1" 2>/dev/null; }
+notes="$(changelog_section "$pep440")" || notes="$(changelog_section Unreleased)" || {
+    echo "bundle.sh: CHANGELOG.md has no section for $pep440 or Unreleased" >&2
+    exit 1
 }
-notes="$(section "$pep440")"
-[ -n "$notes" ] || notes="$(section Unreleased)"
-[ -n "$notes" ] || { echo "bundle.sh: CHANGELOG.md has no section for $pep440 or Unreleased" >&2; exit 1; }
 
 swift build -c "$configuration" --package-path "$package_dir" --product voiced-menubar
 bin_dir="$(swift build -c "$configuration" --package-path "$package_dir" --show-bin-path)"
@@ -146,7 +143,7 @@ install -m 755 "$uv" "$app/Contents/Helpers/uv"
 resources="$app/Contents/Resources"
 cp "$wheel" "$lock" "$work/install-manifest.json" "$repo_dir/NOTICE" "$resources/"
 cp "$uv_license" "$resources/uv-LICENSE"
-printf '# What'\''s new in voiced %s\n%s\n' "$pep440" "$notes" > "$resources/WhatsNew.md"
+printf '# What'\''s new in voiced %s\n\n%s\n' "$pep440" "$notes" > "$resources/WhatsNew.md"
 
 # The icon is drawn from an SF Symbol by make-icon.swift, its source.
 iconset="$work/AppIcon.iconset"

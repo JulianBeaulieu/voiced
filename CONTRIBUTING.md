@@ -172,12 +172,47 @@ changed (`README.md`, `docs/`, `config.example.toml`, `CHANGELOG.md`).
 Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for anything
 a user would notice.
 
-## Releasing
+## Cutting a release
 
-Maintainers only. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
-the installed package metadata), move the Unreleased section of the changelog under the new version with the
-date, tag `v<version>`, and build with `uv build`. Then fill in `url` and
-`sha256` in `packaging/homebrew/voiced.rb` for the tag and copy it to the tap
-([packaging/homebrew/README.md](packaging/homebrew/README.md)).
+Maintainers only. `.github/workflows/release.yml` builds everything from the
+tag. Before the first signed release, do "Setting it up, once" in
+[SIGNING.md](menubar/Scripts/SIGNING.md). Two of its steps are required, not
+optional: the `release` environment with a required reviewer, and the tag
+ruleset that lets only the owner create `v*` tags. Without them anyone with
+write access could tag a commit and have it signed with the owner's
+Developer ID.
+
+1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
+   the installed package metadata) and run `uv lock`.
+2. In `CHANGELOG.md`, move the Unreleased entries under
+   `## [<version>] - <date>` and leave an empty Unreleased section. That
+   section is the release notes, and the app's "What's new".
+3. Open a pull request with the two changes and merge it.
+4. Tag the merge commit and push the tag:
+
+   ```sh
+   git switch main && git pull
+   git tag -a v<version> -m "voiced <version>"
+   git push origin v<version>
+   ```
+
+   The workflow fails early if the tag is not `v` plus the version in
+   `pyproject.toml`, or the CHANGELOG has no section for it. Approve the
+   `release` deployment when the run asks (Actions > the run > Review
+   deployments).
+5. Check the draft release it creates: the notes, the wheel, the sdist,
+   `voiced-<version>-macos.zip` and `.dmg`, and `SHA256SUMS`. Assets named
+   `-adhoc` mean the signing secrets were missing; the job summary says so.
+   Download the zip and open the app once: Gatekeeper should not complain.
+   To rebuild, delete the draft first; the workflow refuses a tag that
+   already has a release.
+6. Publish the draft.
+7. Update the tap from the run's `homebrew` artifact, as
+   [packaging/homebrew/README.md](packaging/homebrew/README.md) describes.
+
+To try the workflow without releasing, start it by hand (Actions > release >
+Run workflow). On a branch it builds the same files ad hoc; on a tag ref it
+signs and notarizes them. Either way they are the run's `dist` and
+`homebrew` artifacts, and no release is created.
 
 <!-- TODO(release): verify the publish step once the package is on PyPI -->

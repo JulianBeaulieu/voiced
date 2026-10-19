@@ -780,8 +780,8 @@ above on its next launch and offers "Update voiced".
 One manually started workflow builds a release from a tag and creates a
 draft GitHub release:
 
-1. Repository secrets hold the Developer ID Application certificate
-   (base64 `.p12` and its password) and an App Store Connect API key
+1. Secrets of a `release` environment hold the Developer ID Application
+   certificate (base64 `.p12` and its password) and an App Store Connect API key
    (`.p8`, key ID, issuer ID). The API key is used rather than an Apple ID
    and app-specific password: it is scoped, revocable and not a person's
    login.
@@ -800,6 +800,20 @@ draft GitHub release:
    notarized; at about 16 MB zipped the app is in the usual range there.
 
 `menubar/Scripts/SIGNING.md` gains these steps.
+
+As built (`.github/workflows/release.yml`), pushing a `v*` tag starts it
+rather than a manual start: the tag is already the deliberate step, and
+`workflow_dispatch` stays as a dry run that builds the same files and
+creates no release (ad hoc on a branch, signed on a tag ref). The secrets sit in a `release` environment that
+only `v*` tags may use, with a required reviewer, and a tag ruleset limits
+who may create `v*` tags: the environment alone limits which ref deploys,
+not who pushes it. A run from a branch cannot read the secrets. Without
+them a tag build still completes, ad hoc, with `-adhoc` in the asset names and a
+warning in the job summary and the notes. The signing itself is
+`menubar/Scripts/sign.sh`, which SIGNING.md also runs by hand. The release's
+wheel is the one inside the app, and the formula's `url` and `sha256` and
+the cask (`packaging/homebrew/cask/voiced.rb`) come out as a workflow
+artifact; the owner copies them to the tap.
 
 ## Where the logic lives, and the change to ADR 0014
 
