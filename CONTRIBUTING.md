@@ -112,19 +112,44 @@ under 300 KB each, free of personal content. Never commit model weights.
   `voiced.inference.inference()`; see
   [ADR 0005](docs/decisions/0005-shared-inference-and-audio-primitives.md).
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
-  the `stt` or `tts` extras; test and lint tools in the `dev` group. After
-  `uv lock`, regenerate the two locks every install path uses (ADR 0017); a
-  test fails while they differ from `uv.lock`:
-
-  ```sh
-  uv export --frozen --no-dev --extra stt --extra tts --no-emit-project --no-header -o src/voiced/requirements.lock
-  uv export --frozen --only-group build --no-emit-project --no-header -o src/voiced/build-requirements.lock
-  ```
+  the `stt` or `tts` extras; test and lint tools in the `dev` group. Then
+  run `uv run python scripts/refresh_locks.py` (see
+  [Updating a dependency](#updating-a-dependency)).
 - Documentation that describes behaviour which has not landed yet carries an
   HTML comment `<!-- TODO(release): ... -->` on its own line. The canonical
   list of open items is
   `grep -rn 'TODO(release)' README.md CONTRIBUTING.md CHANGELOG.md docs`;
   resolve the item and delete the comment in the same change.
+
+## Updating a dependency
+
+`uv.lock` is the one source of the dependency versions. Three files are
+generated from it and committed: the two locks every install path uses,
+`src/voiced/requirements.lock` and `src/voiced/build-requirements.lock`
+(ADR 0017, "One lock for all paths"), and `NOTICE`. Tests fail while any of
+them says something other than `uv.lock`, and name this command, which
+runs `uv lock` and rewrites all three (NOTICE asks PyPI for licences):
+
+```sh
+uv run python scripts/refresh_locks.py
+```
+
+Dependabot's pull requests for the `uv` ecosystem change only
+`pyproject.toml` and `uv.lock`, so their CI fails until someone runs it.
+To land one, check out its branch, run the command, commit and push:
+
+```sh
+gh pr checkout <number>
+uv run python scripts/refresh_locks.py
+git commit -am "chore(deps): regenerate the shipped locks and NOTICE"
+git push
+```
+
+To update a package by hand instead, `uv lock --upgrade-package <name>`
+(or edit its pin in `pyproject.toml`), then the same command. A new
+package whose licence PyPI does not name as an SPDX expression stops
+`scripts/notice.py`; read its source and add it to `LICENCE_OVERRIDES`
+there.
 
 ## Adding an engine
 
