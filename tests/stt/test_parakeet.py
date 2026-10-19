@@ -678,6 +678,7 @@ async def test_session_calls_are_urgent_once_the_client_waits() -> None:
         for _ in range(round(PASS_S * 10) + 3):
             await session.add_audio(speech_like(0.1))
             await asyncio.sleep(0.005)
+        await consumed(session)
         assert lib.urgent == [False]
         await session.finalize()  # the rest of the speech, without a pause
     assert lib.urgent == [False, True]
@@ -693,6 +694,7 @@ async def test_session_calls_are_urgent_once_the_client_waits() -> None:
         for _ in range(round(PASS_S * 10)):  # caught up: streaming again
             await session.add_audio(speech_like(0.1))
             await asyncio.sleep(0.005)
+        await consumed(session)
         assert lib.urgent == [True] * 3 + [False] * 3
         await session.finalize()
 
