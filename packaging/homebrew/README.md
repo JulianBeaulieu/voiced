@@ -42,10 +42,14 @@ the draft release:
 ```sh
 gh run download <run id> --repo JulianBeaulieu/voiced --name homebrew --dir homebrew
 git clone https://github.com/JulianBeaulieu/homebrew-voiced && cd homebrew-voiced
+mkdir -p Formula Casks
 cp ../homebrew/Formula/voiced.rb Formula/
 cp ../homebrew/Casks/voiced.rb Casks/       # only for a signed, notarized release
 brew style Formula/voiced.rb Casks/voiced.rb
-git commit -am "voiced <version>" && git push
+git add Formula Casks && git commit -m "voiced <version>" && git push
+brew tap julianbeaulieu/voiced && brew update
+brew audit --strict --online julianbeaulieu/voiced/voiced
+brew audit --strict --online --cask julianbeaulieu/voiced/voiced
 ```
 
 A cask that begins `# AD HOC BUILD` came from a run without the signing

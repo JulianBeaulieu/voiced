@@ -5,12 +5,14 @@ name: release
 # tag also creates a draft GitHub release for it, which a person publishes,
 # and leaves the Homebrew formula and cask for the tag as an artifact for the
 # tap. `workflow_dispatch` is a dry run: the same build, uploaded as workflow
-# artifacts only, never a release.
+# artifacts only, never a release. Started on a tag ref it signs and notarizes
+# like the tag push; started on a branch it never does.
 #
 # The app is signed with the Developer ID and notarized only when the build
 # runs for a tag and the signing secrets are there (menubar/Scripts/SIGNING.md
 # names them; keep them as secrets of the `release` environment, which only
-# `v*` tags may deploy to). Otherwise it is the ad hoc build bundle.sh makes,
+# `v*` tags may deploy to, with a required reviewer, and a tag ruleset lets
+# only the owner create `v*` tags). Otherwise it is the ad hoc build bundle.sh makes,
 # and the asset names and the job summary say so. There is no pull_request
 # trigger, so a fork can never start this workflow against this repository.
 
@@ -107,26 +109,20 @@ jobs:
           KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
           KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
         run: |
           signed=false
-          reason="no Developer ID certificate, password and team ID in the secrets"
           if [ "$REF_TYPE" != tag ]; then
               reason="not a tag build"
-          elif [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] && [ -n "$TEAM_ID" ]; then
-              if [ -n "$KEY_P8" ] && [ -n "$KEY_ID" ] && [ -n "$ISSUER_ID" ]; then
-                  signed=true notary=api-key
-              elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ]; then
-                  signed=true notary=apple-id
-              else
-                  reason="no notary credentials in the secrets"
-              fi
+          elif [ -z "$P12" ] || [ -z "$P12_PASSWORD" ] || [ -z "$TEAM_ID" ]; then
+              reason="no Developer ID certificate, password and team ID in the secrets"
+          elif [ -z "$KEY_P8" ] || [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ]; then
+              reason="no App Store Connect API key in the secrets"
+          else
+              signed=true
           fi
           echo "signed=$signed" >> "$GITHUB_OUTPUT"
-          echo "notary=${notary:-}" >> "$GITHUB_OUTPUT"
           if [ "$signed" = true ]; then
-              echo "Signing with the Developer ID, notarizing with the $notary credentials"
+              echo "Signing with the Developer ID and notarizing"
           else
               echo "::warning::Ad hoc build, not signed with a Developer ID or notarized: $reason"
           fi
@@ -153,142 +149,29 @@ jobs:
               --build-constraints src/voiced/build-requirements.lock --require-hashes --out-dir "$DIST" .
           [ -f "$DIST/voiced-$VERSION.tar.gz" ] || { echo "::error::no voiced-$VERSION.tar.gz was built"; exit 1; }
 
-      - name: Import the Developer ID certificate
-        if: steps.signing.outputs.signed == 'true'
-        id: keychain
-        env:
-          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-        run: |
-          umask 077
-          keychain="$RUNNER_TEMP/voiced-signing.keychain-db"
-          keychain_password="$(uuidgen)"
-          echo "::add-mask::$keychain_password"
-          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -f pkcs12 \
-              -P "$P12_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/certificate.p12"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
-              -k "$keychain_password" "$keychain" > /dev/null
-          # codesign looks the identity up in the search list: this keychain first.
-          searched=()
-          while IFS= read -r line; do
-              line="${line#"${line%%[![:space:]]*}"}"
-              searched+=("${line//\"/}")
-          done < <(security list-keychains -d user)
-          security list-keychains -d user -s "$keychain" "${searched[@]}"
-          # The Developer ID Application identity of the team, by its SHA-1 hash.
-          identity="$(security find-identity -v -p codesigning "$keychain" |
-              awk -v team="($TEAM_ID)\"" '/"Developer ID Application: / && index($0, team) { print $2; exit }')"
-          if [ -z "$identity" ]; then
-              echo "::error::the certificate holds no Developer ID Application identity for the team"
-              exit 1
-          fi
-          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
-          echo "identity=$identity" >> "$GITHUB_OUTPUT"
-
-      - name: Notary credentials
+      - name: Sign, notarize and package
+        # menubar/Scripts/sign.sh, the script SIGNING.md runs by hand.
         if: steps.signing.outputs.signed == 'true'
         env:
-          NOTARY: ${{ steps.signing.outputs.notary }}
-          KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
-          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-        run: |
-          # The API key goes in a file only this job reads; the other kind is
-          # passed to notarytool from the secrets, below.
-          if [ "$NOTARY" = api-key ]; then
-              umask 077
-              mkdir -p "$RUNNER_TEMP/notary"
-              # The .p8 as downloaded, or base64 encoded.
-              if printf '%s' "$KEY_P8" | grep -q -- '-----BEGIN PRIVATE KEY-----'; then
-                  printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/notary/AuthKey_$KEY_ID.p8"
-              else
-                  printf '%s' "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary/AuthKey_$KEY_ID.p8"
-              fi
-          fi
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SIGN_KEYCHAIN: ${{ runner.temp }}/voiced-signing.keychain-db
+        run: menubar/Scripts/sign.sh "$APP" "$DIST" "voiced-$VERSION-macos"
 
-      - name: Sign, notarize and staple the app
-        if: steps.signing.outputs.signed == 'true'
-        env:
-          IDENTITY: ${{ steps.keychain.outputs.identity }}
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
-          NOTARY: ${{ steps.signing.outputs.notary }}
-          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
-        run: |
-          # Hardened runtime and a secure timestamp, inside out: the bundled uv
-          # first, then the app, which seals it. No entitlements: the app needs
-          # none (SIGNING.md), and uv runs Python as a separate process.
-          sign() { codesign --force --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$IDENTITY" "$@"; }
-          sign "$APP/Contents/Helpers/uv"
-          sign "$APP"
-          codesign --verify --strict --deep --verbose=2 "$APP"
+      - name: Package ad hoc
+        if: steps.signing.outputs.signed != 'true'
+        run: menubar/Scripts/sign.sh --adhoc "$APP" "$DIST" "voiced-$VERSION-macos-adhoc"
 
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
-          .github/scripts/notarize.sh "$RUNNER_TEMP/notarize.zip"
-          xcrun stapler staple "$APP"
-          xcrun stapler validate "$APP"
-          spctl --assess --type execute -vv "$APP" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
-          grep -q "source=Notarized Developer ID" "$RUNNER_TEMP/spctl.txt"
-
-      - name: Package
-        id: package
-        env:
-          SIGNED: ${{ steps.signing.outputs.signed }}
-        run: |
-          # The ad hoc assets carry it in their name.
-          if [ "$SIGNED" = true ]; then base="voiced-$VERSION-macos"; else base="voiced-$VERSION-macos-adhoc"; fi
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "$DIST/$base.zip"
-
-          # The DMG: the app and a link to /Applications. hdiutil on hosted
-          # runners sometimes fails with "Resource busy"; try again.
-          staging="$RUNNER_TEMP/dmg"
-          rm -rf "$staging" && mkdir -p "$staging"
-          ditto "$APP" "$staging/voiced.app"
-          ln -s /Applications "$staging/Applications"
-          for attempt in 1 2 3 4 5; do
-              if hdiutil create -volname "voiced $VERSION" -srcfolder "$staging" -fs HFS+ \
-                  -format UDZO -ov "$DIST/$base.dmg"; then
-                  break
-              fi
-              [ "$attempt" -lt 5 ] || exit 1
-              sleep $((attempt * 5))
-          done
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-
-      - name: Sign, notarize and staple the DMG
-        if: steps.signing.outputs.signed == 'true'
-        env:
-          DMG: ${{ runner.temp }}/dist/${{ steps.package.outputs.base }}.dmg
-          IDENTITY: ${{ steps.keychain.outputs.identity }}
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
-          NOTARY: ${{ steps.signing.outputs.notary }}
-          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
-          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
-          TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-          APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
-        run: |
-          codesign --force --timestamp --keychain "$KEYCHAIN" --sign "$IDENTITY" "$DMG"
-          .github/scripts/notarize.sh "$DMG"
-          xcrun stapler staple "$DMG"
-          xcrun stapler validate "$DMG"
-          spctl --assess --type open --context context:primary-signature -vv "$DMG"
-
-      - name: Remove the keychain and the API key
+      - name: Remove the keychain
+        # sign.sh deletes it on exit; this covers a job cancelled mid-step.
         if: always() && steps.signing.outputs.signed == 'true'
         env:
-          KEYCHAIN: ${{ steps.keychain.outputs.keychain }}
-        run: |
-          rm -rf "$RUNNER_TEMP/notary" "$RUNNER_TEMP/certificate.p12"
-          if [ -n "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+          SIGN_KEYCHAIN: ${{ runner.temp }}/voiced-signing.keychain-db
+        run: security delete-keychain "$SIGN_KEYCHAIN" 2>/dev/null || true
 
       - name: Checksums
         run: |
@@ -430,20 +313,10 @@ jobs:
           flags=()
           [ "$PRERELEASE" = true ] && flags+=(--prerelease)
 
-          # A re-run updates the draft it made; a published release is never touched.
-          if draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
-              if [ "$draft" != true ]; then
-                  echo "::error::release $TAG is already published; not changing it"
-                  exit 1
-              fi
-              keep=" $(printf '%s ' "${files[@]##*/}")"
-              gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r asset; do
-                  case "$keep" in *" $asset "*) ;; *) gh release delete-asset "$TAG" "$asset" --yes ;; esac
-              done
-              gh release edit "$TAG" --title "voiced $VERSION" --notes-file "$notes" "${flags[@]}"
-              gh release upload "$TAG" --clobber "${files[@]}"
-          else
-              gh release create "$TAG" --draft --verify-tag --title "voiced $VERSION" \
-                  --notes-file "$notes" "${flags[@]}" "${files[@]}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "::error::a release for $TAG exists already; delete it if it is a draft, then re-run this job"
+              exit 1
           fi
+          gh release create "$TAG" --draft --verify-tag --title "voiced $VERSION" \
+              --notes-file "$notes" "${flags[@]}" "${files[@]}"
           echo "Draft release: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
