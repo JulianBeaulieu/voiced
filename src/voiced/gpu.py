@@ -10,7 +10,8 @@ The two services agree through an advisory lock on one file per user
 (:func:`lock_path`), not through a socket or a server: the STT holds it
 exclusively for each encoder call (:func:`stt_turn`), and the TTS engine,
 before it submits each piece of a sentence to the GPU, waits while the lock is
-held (:class:`Yielder`), up to :data:`MAX_WAIT_S` per sentence. The kernel
+held (:class:`Yielder`), up to :data:`FIRST_SENTENCE_WAIT_S` for the first
+sentence of a reply and :data:`SENTENCE_WAIT_S` for each later one. The kernel
 drops the lock when its holder exits, so a crashed or killed STT never leaves
 synthesis waiting, and a TTS that never looks costs the STT nothing.
 
@@ -39,14 +40,30 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-__all__ = ["LOCK_NAME", "MAX_WAIT_S", "TAKE_S", "Yielder", "lock_path", "stt_running", "stt_turn"]
+__all__ = [
+    "FIRST_SENTENCE_WAIT_S",
+    "LOCK_NAME",
+    "SENTENCE_WAIT_S",
+    "TAKE_S",
+    "Yielder",
+    "lock_path",
+    "stt_running",
+    "stt_turn",
+]
 
 LOCK_NAME = "voiced-gpu.lock"
-MAX_WAIT_S = 0.3
-"""Most a sentence waits for STT encoder calls in all. One call takes 100 to
-200 ms, so this covers the call running when the sentence starts and most of
-the next; a session catching up on a backlog runs calls back to back and must
-not stop synthesis for seconds."""
+FIRST_SENTENCE_WAIT_S = 0.045
+"""Most the first sentence of a reply waits for STT encoder calls in all: its
+first audio is what a listener hears. On the Mac Studio, first audio while
+another client streamed to the STT was 149 ms at worst without the gate, and
+the submission points cost 5 ms alone, so 45 ms of waiting keeps the worst
+case within the 200 ms target (ADR 0019)."""
+SENTENCE_WAIT_S = 0.3
+"""Most each later sentence waits in all; their audio is synthesized ahead of
+playback. One encoder call takes 100 to 200 ms, so this covers the call
+running when the sentence starts and most of the next; a session catching up
+on a backlog runs calls back to back and must not stop synthesis for
+seconds."""
 POLL_S = 0.001
 TAKE_S = 0.005
 """Most the STT tries to take the lock before running a call without it. A
@@ -158,7 +175,7 @@ class Yielder:
     """Waits for STT encoder calls before each piece of one sentence's GPU
     work, within a budget for the whole sentence. One per sentence."""
 
-    def __init__(self, budget_s: float = MAX_WAIT_S) -> None:
+    def __init__(self, budget_s: float = SENTENCE_WAIT_S) -> None:
         self._budget_s = budget_s
         self.waited_s = 0.0
 

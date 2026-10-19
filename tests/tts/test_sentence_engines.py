@@ -13,7 +13,7 @@ import pytest
 
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded, UnknownVoice
 from voiced.engines.kokoro import KokoroEngine
-from voiced.engines.sentence import SentenceTTSEngine
+from voiced.engines.sentence import FIRST_OF_REPLY, SentenceTTSEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.queue import InferenceQueue
 
@@ -49,6 +49,27 @@ def _stub_loaded(
     monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
     monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
     return calls
+
+
+async def test_only_the_sentence_that_starts_the_reply_is_first(
+    engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``FIRST_OF_REPLY`` is set, in the worker thread, for the first sentence
+    that has audio; a silent one before it does not count (ADR 0019)."""
+    engine, voice = engine_and_voice
+    seen: list[tuple[str, bool]] = []
+
+    def fake_synth(sentence: str, voice: str, speed: float) -> bytes:
+        seen.append((sentence, FIRST_OF_REPLY.get()))
+        return b"" if sentence.startswith("Quiet") else bytes(480)
+
+    engine._model = object()
+    monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
+    monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
+    chunks = [c async for c in engine.synthesize("Quiet one. Loud two. Loud three.", voice)]
+    assert len(chunks) == 2
+    assert [first for _, first in seen] == [True, True, False]
+    assert not FIRST_OF_REPLY.get()
 
 
 async def test_methods_require_load(engine_and_voice: tuple[SentenceTTSEngine, str]) -> None:
