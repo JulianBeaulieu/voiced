@@ -147,12 +147,38 @@ changed (`README.md`, `docs/`, `config.example.toml`, `CHANGELOG.md`).
 Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for anything
 a user would notice.
 
-## Releasing
+## Cutting a release
 
-Maintainers only. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
-the installed package metadata), move the Unreleased section of the changelog under the new version with the
-date, tag `v<version>`, and build with `uv build`. Then fill in `url` and
-`sha256` in `packaging/homebrew/voiced.rb` for the tag and copy it to the tap
-([packaging/homebrew/README.md](packaging/homebrew/README.md)).
+Maintainers only. `.github/workflows/release.yml` builds everything from the
+tag; see [SIGNING.md](menubar/Scripts/SIGNING.md) for the secrets it signs
+with.
+
+1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
+   the installed package metadata) and run `uv lock`.
+2. In `CHANGELOG.md`, move the Unreleased entries under
+   `## [<version>] - <date>` and leave an empty Unreleased section. That
+   section is the release notes, and the app's "What's new".
+3. Open a pull request with the two changes and merge it.
+4. Tag the merge commit and push the tag:
+
+   ```sh
+   git switch main && git pull
+   git tag -a v<version> -m "voiced <version>"
+   git push origin v<version>
+   ```
+
+   The workflow fails early if the tag is not `v` plus the version in
+   `pyproject.toml`, or the CHANGELOG has no section for it.
+5. Check the draft release it creates: the notes, the wheel, the sdist,
+   `voiced-<version>-macos.zip` and `.dmg`, and `SHA256SUMS`. Assets named
+   `-adhoc` mean the signing secrets were missing; the job summary says so.
+   Download the zip and open the app once: Gatekeeper should not complain.
+6. Publish the draft.
+7. Update the tap from the run's `homebrew` artifact, as
+   [packaging/homebrew/README.md](packaging/homebrew/README.md) describes.
+
+To try the workflow without releasing, start it by hand (Actions > release >
+Run workflow) on a branch: it builds the same files, ad hoc, as the run's
+`dist` and `homebrew` artifacts, and creates no release.
 
 <!-- TODO(release): verify the publish step once the package is on PyPI -->

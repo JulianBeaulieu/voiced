@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A release workflow: pushing a `v*` tag builds the voiced wheel and sdist
+  and the menu bar app as a zip and a DMG with sha256 sums, signs and
+  notarizes the app when the Developer ID secrets are set (an ad hoc build,
+  named `-adhoc`, otherwise), and creates a draft GitHub release with the
+  CHANGELOG section as its notes. The Homebrew formula's `url` and `sha256`
+  and a cask for the app come out as an artifact for the tap.
+  CONTRIBUTING.md has the steps for cutting a release.
 - The menu bar app updates, rolls back, repairs and uninstalls an install
   it made (ADR 0018, Lifecycle). Update builds a new environment beside the
   current one and asks for an administrator only when

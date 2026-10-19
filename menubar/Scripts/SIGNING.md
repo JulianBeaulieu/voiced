@@ -57,53 +57,45 @@ tools.
 
 ## In CI
 
-A release job on a macOS runner does the same with secrets. Suggested
-secrets, all set by the maintainer in the repository settings:
+`.github/workflows/release.yml` does the same on a macOS runner when a `v*`
+tag is pushed (CONTRIBUTING.md, "Cutting a release"). It signs and notarizes
+only when every secret it needs is set; otherwise it builds the ad hoc bundle
+and names its assets `voiced-<version>-macos-adhoc.zip` and `.dmg`. A
+`workflow_dispatch` run from a branch is always ad hoc and never creates a
+release.
+
+The secrets, set by the maintainer:
 
 | Secret | Contents |
 |---|---|
-| `MACOS_CERTIFICATE_P12` | The Developer ID Application certificate and private key, exported from Keychain Access as `.p12`, base64 encoded |
+| `MACOS_CERTIFICATE_P12` | The Developer ID Application certificate and its private key, exported from Keychain Access as `.p12`, base64 encoded (`base64 -i cert.p12 \| pbcopy`) |
 | `MACOS_CERTIFICATE_PASSWORD` | The password chosen at export |
-| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: Your Name (TEAMID1234)` |
-| `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_PASSWORD` | Apple ID, team id and app-specific password for `notarytool`; or an App Store Connect API key (`NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`) with `notarytool --key` |
+| `NOTARY_TEAM_ID` | The team ID, the ten characters in parentheses in the identity's name; the workflow picks the Developer ID Application identity of this team from the certificate |
+| `NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | An App Store Connect API key with the Developer role (Users and Access > Integrations > Team Keys): the downloaded `AuthKey_<id>.p8` as is or base64 encoded, its key ID, and the issuer ID. Preferred: scoped, revocable and not a person's login |
+| `NOTARY_APPLE_ID`, `NOTARY_PASSWORD` | Instead of the API key: an Apple ID and an app-specific password for it |
 
-The steps:
+Keep them as secrets of a `release` environment (Settings > Environments >
+New environment), with deployment restricted to selected tags matching `v*`.
+Only tag builds use that environment, so a run from a branch, even one
+started by someone who can edit the workflow there, cannot read them. A tag
+ruleset that limits who may create `v*` tags closes the remaining gap. The
+workflow has no `pull_request` trigger, so forks never run it here.
 
-```yaml
-- name: Import the signing certificate
-  env:
-    P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-    P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-  run: |
-    keychain="$RUNNER_TEMP/signing.keychain-db"
-    keychain_password="$(uuidgen)"
-    echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-    security create-keychain -p "$keychain_password" "$keychain"
-    security set-keychain-settings -lut 21600 "$keychain"
-    security unlock-keychain -p "$keychain_password" "$keychain"
-    security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
-    security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain"
-    security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-    rm "$RUNNER_TEMP/cert.p12"
-- name: Build, sign, notarize
-  env:
-    IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-    APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-    TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
-    PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
-  run: |
-    menubar/Scripts/bundle.sh
-    codesign --force --options runtime --timestamp --sign "$IDENTITY" menubar/build/voiced.app
-    ditto -c -k --keepParent menubar/build/voiced.app voiced.zip
-    xcrun notarytool submit voiced.zip --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
-        --password "$PASSWORD" --wait
-    xcrun stapler staple menubar/build/voiced.app
-    ditto -c -k --keepParent menubar/build/voiced.app voiced-menubar.zip
-- name: Remove the keychain
-  if: always()
-  run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
-```
+What the job does with them:
 
-Run it only on tags or `workflow_dispatch`, never on pull requests: workflows
-triggered from forks do not get secrets, and a signing job should not run on
-code that has not been merged.
+1. Imports the `.p12` into a temporary keychain with a random password
+   (`security import -T /usr/bin/codesign`, `set-key-partition-list`), puts
+   it first in the search list and finds the team's "Developer ID
+   Application" identity with `security find-identity`.
+2. Signs inside out with `codesign --force --options runtime --timestamp`:
+   `Contents/Helpers/uv`, then the app. No entitlements.
+3. Zips the app, `xcrun notarytool submit --wait` (`.github/scripts/notarize.sh`,
+   which prints the notary log when the verdict is not Accepted), then
+   `xcrun stapler staple` and `spctl --assess`, which must say
+   "Notarized Developer ID".
+4. Zips the stapled app for the release, builds the DMG from it, signs the
+   DMG, notarizes and staples that too.
+5. Deletes the keychain and the API key file, also when a step failed.
+
+Secrets reach only the steps that use them, through `env`, never on a
+command line the log shows.

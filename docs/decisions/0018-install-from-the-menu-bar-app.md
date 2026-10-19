@@ -801,6 +801,18 @@ draft GitHub release:
 
 `menubar/Scripts/SIGNING.md` gains these steps.
 
+As built (`.github/workflows/release.yml`), pushing a `v*` tag starts it
+rather than a manual start: the tag is already the deliberate step, and
+`workflow_dispatch` stays as a dry run that builds the same files ad hoc
+and creates no release. The secrets sit in a `release` environment that
+only `v*` tags may use, so a run from a branch cannot read them. Without
+them a tag build still completes, ad hoc, with `-adhoc` in the asset names
+and a warning in the job summary and the notes. An Apple ID with an
+app-specific password is accepted when no API key is set. The release's
+wheel is the one inside the app, and the formula's `url` and `sha256` and
+the cask (`packaging/homebrew/cask/voiced.rb`) come out as a workflow
+artifact; the owner copies them to the tap.
+
 ## Where the logic lives, and the change to ADR 0014
 
 Swift orchestrates and Python keeps the knowledge. The app runs three kinds
