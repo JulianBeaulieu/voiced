@@ -92,18 +92,17 @@ uses [Semantic Versioning](https://semver.org/).
   state directory, `~/.voiced/bin/voiced` a link to the active environment,
   and `install.json` records it and `previous`, the environment the active
   one replaced, which pruning keeps and the app rolls back to (null for
-  none). `voiced install` links the environment it
-  runs from (Homebrew's keg through `opt`), or with `--source <checkout>`
-  builds a fresh one into `~/.voiced/envs/` on a uv-managed Python in
-  `~/.voiced/python`, and checks that it imports the engines before linking.
-  Switching between Homebrew and a checkout is `voiced install` plus
-  `voiced restart all`, with no root step; a `~/.voiced` from before 0.1.0
-  (a venv) is adopted and replaced on the first switch
-  (`voiced install --source <checkout>`). A state directory that is not
-  voiced's or holds files that are not, a venv of your own included, is
-  refused and never deleted.
-  Installs and uninstalls hold a lock on the state directory, and a failed
-  install changes nothing.
+  none). `voiced install` links the environment it runs from (Homebrew's
+  keg through `opt`), or with `--source <checkout>` builds a fresh one into
+  `~/.voiced/envs/` on a uv-managed Python in `~/.voiced/python`, and checks
+  that it imports the engines before linking. Switching between Homebrew
+  and a checkout is `voiced install` plus `voiced restart all`, with no
+  root step; a `~/.voiced` from before 0.1.0 (a venv) is adopted and
+  replaced on the first switch (`voiced install --source <checkout>`). A
+  state directory that is not voiced's, or that holds files that are not
+  (a venv of your own included), is refused and never deleted. Installs and
+  uninstalls hold a lock on the state directory, and a failed install
+  changes nothing.
 - Every install path installs `src/voiced/requirements.lock` (`uv export` of
   `uv.lock`, shipped in the package) with `--require-hashes --no-deps`, and
   builds voiced with the hashed build backend in
@@ -159,7 +158,11 @@ uses [Semantic Versioning](https://semver.org/).
   transcripts and a finalize within milliseconds of the end of speech, and
   Silero VAD through `pysilero-vad` (a core dependency) in `voiced.vad`.
   Known limits: partials trail by about 0.7 s, and a pause of about one
-  second can repeat a short word in a streamed transcript.
+  second can repeat a short word in a streamed transcript. Known miss:
+  push-to-talk finalize (no trailing silence) has a median of about 114 ms
+  against the 50 ms goal, since the tail is encoded after `end`; clients
+  that can should stream 200 ms of silence before `end` (ADR 0008,
+  ADR 0015).
 - Soprano-80M text-to-speech engine (#8), opt-in: one voice, ignores
   `speed`, first audio in about 150 to 220 ms, with a repetition penalty and
   a per-sentence length bound against runaway generation. `scipy`, in the
@@ -180,7 +183,12 @@ uses [Semantic Versioning](https://semver.org/).
   the speech-to-LLM-to-speech loop against live servers (ADR 0015).
 - `/metrics.json` reports `memory.footprint_bytes` (the physical footprint,
   which includes MLX's GPU buffers) and `memory.mlx` (active, cached and peak
-  allocation); the status page shows the footprint.
+  allocation); the status page shows the footprint. Known miss: the idle
+  footprint after use is 2.21 GB, within the 3 GB budget, but both engines
+  peak above their idle allocation while they work, and if the two
+  services' MLX peaks coincide their footprints would add to about 4.9 GB
+  against the 3 GB budget. That is an estimate from the separate peaks, not
+  a measurement (ADR 0015).
 - Documentation: README with quickstart, architecture diagram, benchmarks
   and troubleshooting; API reference; Home Assistant guide; architecture and
   operations guides; ADR index; contributing guide; issue and pull request
@@ -215,8 +223,8 @@ uses [Semantic Versioning](https://semver.org/).
   reaches 239 to 243 ms at worst (p95 158 to 200; 149 to 156 at worst
   without the lock) against its 200 ms target, when a reply starts during
   the other client's urgent tail; the STT is given the GPU there. Kokoro
-  first audio alone is about 7 ms later than without the lock (median 92
-  to 93 against 85 to 86 ms).
+  first audio alone is about 7 ms later, since every sentence is submitted
+  block by block (median 92 to 93 against 85 to 86 ms).
 - A streamed Wyoming session that failed closed the connection right after
   its `Error`: an STT session on `server_busy` after waiting for the slot,
   the utterance limit, a format change mid-stream or the wall-clock bound,
@@ -259,8 +267,8 @@ uses [Semantic Versioning](https://semver.org/).
   the client's `end` message or Wyoming `AudioStop` does.
 - `voiced doctor` reports the service environment's Python, including a
   broken link into a removed uv Python, and warns when the config file is
-  readable by other accounts. `voiced status` says how to install the daemons when none
-  are installed.
+  readable by other accounts. `voiced status` says how to install the
+  daemons when none are installed.
 - The engine catalogue child process does not import modules from the
   watchdog's working directory.
 - Wyoming failures are logged, with a traceback, like HTTP ones.
@@ -286,8 +294,8 @@ uses [Semantic Versioning](https://semver.org/).
   cache `[install] hf_home` names.
 - The `tts` extra needs `huggingface-hub` 1.1 or later.
 - `voiced install` does not write plists or `install-daemons.sh` to
-  `~/.config/voiced/launchd/`; it removes what earlier versions left there
-  and prints one line,
+  `~/.config/voiced/launchd/`; it removes what installs before 0.1.0 left
+  there and prints one line,
   `sudo /bin/bash <environment>/.../voiced/launchd/voiced-privileged.sh install <user>`,
   which runs the privileged script the menu bar app runs (ADR 0018).
   `voiced uninstall` prints the same with `uninstall`. The `--staging-dir`
@@ -311,7 +319,7 @@ uses [Semantic Versioning](https://semver.org/).
 - `voiced install --source` runs uv with `UV_NO_CONFIG=1`, so a `uv.toml`
   of yours cannot change what is installed.
 - `voiced uninstall` removes only what the install layout owns, keeping the
-  rest; earlier versions deleted a directory with `pyvenv.cfg` whole.
+  rest; before 0.1.0 a directory with `pyvenv.cfg` was deleted whole.
 - `voiced install --source` takes a checkout path (not a pip requirement)
   and needs uv; `--no-uv` is gone, and `--state-dir` replaces `--venv` (the
   old name still works). `[install] python` is a version.
@@ -323,15 +331,15 @@ uses [Semantic Versioning](https://semver.org/).
   `>=0.5.8,<0.5.10`, the releases the engines were checked against.
 - Uploads that decode to more than about 26 minutes (1562 s) of audio get
   413: the decoded audio is bounded by `stt.max_upload_mb` read as 16-bit
-  16 kHz samples (1562 s at the default 50). A 30-minute mp3, which earlier
-  versions transcribed, is refused. Raise `max_upload_mb` to transcribe
+  16 kHz samples (1562 s at the default 50). A 30-minute mp3, which was
+  transcribed before 0.1.0, is refused. Raise `max_upload_mb` to transcribe
   longer recordings (it bounds Wyoming utterances and WebSocket streams the
   same way).
 
 ### Security
 
-- Root does not copy files the user's account can write. In earlier
-  versions the CLI's generated `install-daemons.sh` copied plists staged in
+- Root does not copy files the user's account can write. Before 0.1.0
+  the CLI's generated `install-daemons.sh` copied plists staged in
   `~/.config/voiced/launchd/` into `/Library/LaunchDaemons` unchecked, so
   any process of the user's could rewrite one after the script was read
   and get a program run as root at boot; its `uninstall-daemons.sh` removed
@@ -344,7 +352,7 @@ uses [Semantic Versioning](https://semver.org/).
   example, from a Homebrew another admin owns). The Metal probe's script
   uses the fixed label prefix and touches its result file only as the user.
 - The LaunchDaemon plists do not set `StandardOutPath` or
-  `StandardErrorPath`, as earlier versions' did: launchd may open those
+  `StandardErrorPath`, as they did before 0.1.0: launchd may open those
   files as root in the user-owned log directory, so a symlink planted there
   could make root create or append to any file. The daemons open
   `<service>.stdout.log` and `.stderr.log` themselves, as the user, refuse
@@ -377,3 +385,4 @@ uses [Semantic Versioning](https://semver.org/).
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.1.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.0

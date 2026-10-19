@@ -320,7 +320,7 @@ changes the plists, run the root step `voiced install` prints as well.
 ### Homebrew
 
 ```sh
-brew upgrade --fetch-HEAD voiced   # until v0.1.0; then brew upgrade voiced
+brew upgrade voiced
 voiced restart all
 voiced status
 ```
@@ -382,7 +382,7 @@ Run `voiced install` from the one you are switching to, then
 
 ```sh
 # to Homebrew
-brew install --HEAD julianbeaulieu/voiced/voiced
+brew install julianbeaulieu/voiced/voiced
 $(brew --prefix)/bin/voiced install
 voiced restart all
 
