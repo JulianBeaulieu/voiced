@@ -27,6 +27,11 @@ It prints a Markdown table. What each row measures:
   ``--alignments`` lead offsets of 20 ms, for 64 ms and 100 ms chunks; then
   once more with the TTS server synthesizing continuously, so both models
   contend for the one GPU;
+* first audio while another client speaks: the first-audio request, sent at
+  a random point (0.2 to 0.6 s after the last reply) while a second client
+  streams the clip over the WebSocket in real time, again and again, so
+  synthesis can start during an STT encoder call, which goes first (ADR 0019).
+  Three times ``--trials`` requests, since the worst case is the point;
 * batch transcription: the ``--wav`` clip tiled to about 10 s, uploaded as WAV
   with the ``openai`` client, until the response;
 * memory: read from each service's ``/metrics.json`` 1 s after a long reply
@@ -54,6 +59,7 @@ import argparse
 import io
 import json
 import os
+import random
 import re
 import statistics
 import sys
@@ -260,6 +266,41 @@ def tts_busy(url: str, api_key: str, voice: str) -> Iterator[None]:
     time.sleep(0.5)  # let the first synthesis reach the GPU
     try:
         yield
+    finally:
+        stop.set()
+        thread.join(timeout=60)
+
+
+def first_audio_while_streaming_ms(
+    tts_url: str,
+    ws_url: str,
+    api_key: str,
+    voice: str,
+    samples: NDArray[np.int16],
+    rate: int,
+    trials: int,
+) -> list[float]:
+    """First audio while another client streams ``samples`` (plus 0.3 s of
+    silence) to the STT in real time, back to back, for the duration."""
+    stream = np.concatenate([samples, np.zeros(round(0.3 * rate), dtype="<i2")]).tobytes()
+    stop = threading.Event()
+
+    def talk() -> None:
+        while not stop.is_set():
+            stream_and_finalize(ws_url, api_key, stream, rate, 1024)
+
+    client = _openai(tts_url, api_key)
+    first_audio_ms(client, voice, FIRST_AUDIO_TEXT)  # warm
+    gaps = random.Random(0)
+    thread = threading.Thread(target=talk, daemon=True)
+    thread.start()
+    time.sleep(1.0)  # let the first encoder calls start
+    try:
+        latencies = []
+        for _ in range(trials):
+            time.sleep(gaps.uniform(0.2, 0.6))
+            latencies.append(first_audio_ms(client, voice, FIRST_AUDIO_TEXT))
+        return latencies
     finally:
         stop.set()
         thread.join(timeout=60)
@@ -474,6 +515,12 @@ def main(argv: list[str] | None = None) -> int:
                     "<= 150 ms worst",
                 )
             )
+    speaking = first_audio_while_streaming_ms(
+        args.tts_url, ws_url, key, kokoro_voice, samples, rate, 3 * args.trials
+    )
+    rows.append(
+        Row("Kokoro first audio while another client streams to STT", fmt_ms(speaking), "<= 200 ms")
+    )
 
     ten = batch_transcription_ms(args.stt_url, key, wav_container(ten_second, rate), args.trials)
     rows.append(

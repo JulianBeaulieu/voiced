@@ -157,13 +157,14 @@ worst 399 ms once; it was not isolated.
 
 The price is on the TTS side. Kokoro first audio while another client
 streams speech to the STT in real time (n=30, request at a random point of
-the stream): main median 107 / p95 137 / worst 139 ms, this change 117 /
+the stream; `scripts/bench.py` now has this row): main median 107 / p95 137 / worst 139 ms, this change 117 /
 196 / 233 ms. A reply whose first sentence starts during an encoder call
 waits for the rest of it. In the same runs, alone: main 102 / 118 / 126 ms,
 this change 117 / 124 / 127 ms.
 
 Needs re-measuring on the Mac Studio (the target machine): the contention
-rows and Kokoro first audio while the STT streams.
+rows and the new "Kokoro first audio while another client streams to STT"
+row of `scripts/bench.py`.
 
 ## Alternatives considered
 

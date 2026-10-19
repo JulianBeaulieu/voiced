@@ -98,3 +98,42 @@ def test_table_names_the_auth_mode_but_never_the_key(
     assert "auth: key" in capsys.readouterr().out
     bench.print_table([bench.Row("m", "v")], authenticated=False)
     assert "auth: none" in capsys.readouterr().out
+
+
+def test_first_audio_while_another_client_streams(
+    bench: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row measures first audio while a second client streams to the STT
+    the whole time, and stops that client afterwards (ADR 0019)."""
+    import threading
+
+    import numpy as np
+
+    streamed: list[str] = []
+    measured: list[str] = []
+    talking = threading.Event()
+
+    def stream_and_finalize(ws_url: str, api_key: str, *rest: Any) -> tuple[str, float]:
+        talking.set()
+        streamed.append(ws_url)
+        threading.Event().wait(0.001)
+        return "text", 1.0
+
+    def first_audio_ms(client: Any, voice: str, text: str) -> float:
+        assert talking.is_set() or not measured  # the warm-up may come first
+        measured.append(voice)
+        return 50.0
+
+    monkeypatch.setattr(bench, "stream_and_finalize", stream_and_finalize)
+    monkeypatch.setattr(bench, "first_audio_ms", first_audio_ms)
+    monkeypatch.setattr(bench, "_openai", lambda url, key: object())
+    monkeypatch.setattr(bench.time, "sleep", lambda s: threading.Event().wait(0.002))
+    out = bench.first_audio_while_streaming_ms(
+        "http://tts", "ws://stt/stream", "", "af_heart", np.zeros(160, "<i2"), 16_000, 5
+    )
+    assert out == [50.0] * 5
+    assert len(measured) == 6  # one warm-up
+    assert streamed and set(streamed) == {"ws://stt/stream"}
+    after = len(streamed)
+    threading.Event().wait(0.05)
+    assert len(streamed) == after  # the streaming client stopped
