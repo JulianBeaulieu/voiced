@@ -247,9 +247,9 @@ Notes on the rows:
   the two services. **Closed by ADR 0019** (Kokoro waits while an STT
   encoder call runs): on the Mac Studio the row is median 124 to 127 /
   worst 141 to 148 ms, within the 150 ms worst case (see
-  [With the GPU gate](#with-the-gpu-gate)). That was measured with one wait
-  budget for every sentence; the first sentence's smaller budget that
-  followed costs this row some of it, so the Studio is re-measured with it.
+  [With the GPU gate](#with-the-gpu-gate)). That was measured with every
+  encoder call taking the lock; the gate now takes it only for the calls a
+  client waits on (ADR 0019), so the Studio is re-measured with that.
 - **Transient memory while serving.** The idle footprint after use is
   2.21 GB, within the 3 GB budget, but both engines peak above their idle
   allocation while they work: Kokoro's MLX allocation reaches 2.16 GB during
@@ -359,9 +359,9 @@ system domain and macOS 27 did not change the result.
 ADR 0019 (STT encoder calls go first; Kokoro waits between blocks), measured
 on the Studio as an A/B against main 6e6012d, alternating, two rounds,
 installed LaunchDaemons, `scripts/bench.py` defaults; each cell is the range
-over both rounds. This is the gate with one 300 ms wait budget for every
-sentence (3d522c3); ADR 0019 has the full table and the first sentence's
-smaller budget that followed.
+over both rounds. This is the gate as first built (3d522c3: every encoder
+call took the lock, one 300 ms wait budget for every sentence); ADR 0019 has
+the full table and what followed.
 
 | Metric | main | With the gate | Target |
 |---|---|---|---|
@@ -372,8 +372,9 @@ smaller budget that followed.
 | Kokoro first audio while another client streams to STT | median 116 / worst 148 to 149 ms | median 127 to 129 / worst 252 to 265 ms | <= 200 ms |
 
 The STT miss is closed. First audio while another client speaks went over
-its target with one budget; ADR 0019 gives the first sentence of a reply a
-45 ms budget for it.
+its target; ADR 0019 now takes the lock only for the encoder calls a client
+waits on (the tail of an utterance, or a session that is behind), which
+leaves the GPU to a reply that starts while someone is still speaking.
 
 Self-healing, with the installed LaunchDaemons on 48e1f20:
 

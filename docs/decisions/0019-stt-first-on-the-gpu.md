@@ -51,14 +51,23 @@ median of the tail encode:
 
 ## Decision
 
-The STT's streaming encoder calls go first: the TTS stops sending work to the
-GPU while one runs.
+The STT's streaming encoder calls that a client waits on go first: the TTS
+stops sending work to the GPU while one runs.
 
 - **The signal is an advisory lock** (`flock`) on `voiced-gpu.lock` in the
   user's temporary directory (`confstr`, not `$TMPDIR`, which launchd jobs do
-  not have). The STT holds it exclusively for every encoder call of a stream
-  (`voiced.gpu.stt_turn` around `StreamingParakeet.add_audio`): regular passes,
-  the speculative call and the last call. It never blocks on it: it tries
+  not have). The STT holds it exclusively (`voiced.gpu.stt_turn` around
+  `StreamingParakeet.add_audio`) for the encoder calls a client waits on,
+  one predicate (`_StepRunner.urgent`): the speculative call at a pause,
+  whose result is the transcript at the end of speech; every call after
+  `finalize`; and every call of a session more than 1.6 s of audio behind
+  (`URGENT_BACKLOG_S`, two passes; one that keeps up holds under one pass
+  plus the chunks that arrive during a call). Regular passes while the
+  speaker talks and the encoder keeps up do not take it: the encoder runs
+  several times faster than real time, so a slower pass is caught up before
+  anyone waits for it, and a reply synthesized meanwhile keeps the GPU. See
+  [Only the calls a client waits on](#only-the-calls-a-client-waits-on).
+  It never blocks on the lock: it tries
   without blocking for up to 5 ms (a TTS probe holds it shared for
   microseconds), and if another process still holds it (an old instance
   during a restart, a second copy started by hand) the call runs without
@@ -75,15 +84,10 @@ GPU while one runs.
   `async_eval` chain, all still queued in front of an encoder call that
   starts; bounded at one, the GPU sits idle while MLX encodes the next
   block. Kokoro also checks the lock before each sentence.
-- **The wait is budgeted per sentence.** The sentence that starts a reply
-  (the first with audio) waits at most 45 ms in all
-  (`voiced.gpu.FIRST_SENTENCE_WAIT_S`): its first audio is what a listener
-  hears. Each later sentence, synthesized ahead of playback, waits at most
-  300 ms (`SENTENCE_WAIT_S`), so a session catching up on a backlog, which
-  runs encoder calls back to back, slows synthesis but cannot stop it. The
-  sentence engine marks the first sentence (`FIRST_OF_REPLY`, a context
-  variable carried into the worker thread). There is no setting for
-  either. See [Mac Studio](#mac-studio) for how 45 ms was chosen.
+- **The wait is budgeted per sentence.** A sentence waits at most 300 ms in
+  all (`voiced.gpu.MAX_WAIT_S`), so a session catching up on a backlog,
+  which runs urgent encoder calls back to back, slows synthesis but cannot
+  stop it. There is no setting for it.
 - **Failure is open.** The kernel drops the lock when the STT process exits,
   however it exits. If the file cannot be opened or locked, belongs to
   another user, or is held by another process, either side logs one warning
@@ -134,8 +138,9 @@ showed the extra time inside the last encoder call (99 to 166 ms, against
 104 to 134 ms alone), not in a regular call queued before it.
 
 `scripts/bench.py` with its defaults against LaunchAgents on the
-development machine, main (049c8be) and this change alternating, two rounds
-each (each cell is the range over both):
+development machine, main (049c8be) and the gate as first built (every
+encoder call of a stream took the lock; one 300 ms budget per sentence)
+alternating, two rounds each (each cell is the range over both):
 
 | Metric | main | This change | Target |
 |---|---|---|---|
@@ -167,15 +172,15 @@ the stream; `scripts/bench.py` now has this row), with one 300 ms budget
 for every sentence: main median 107 / p95 137 / worst 139 ms, this change
 117 / 196 / 233 ms. A reply whose first sentence starts during an encoder
 call waited for the rest of it. In the same runs, alone: main 102 / 118 /
-126 ms, this change 117 / 124 / 127 ms. That led to the first sentence's
-smaller budget (below).
+126 ms, this change 117 / 124 / 127 ms. Two fixes for that were measured on
+the Studio (below).
 
 ## Mac Studio
 
 The target machine (M1 Max, 24-core GPU, 32 GB, macOS 27), installed
 LaunchDaemons, `scripts/bench.py` with its defaults, main (6e6012d) and this
-change with one 300 ms budget for every sentence (3d522c3), alternating, two
-rounds each:
+the gate as first built (3d522c3: every encoder call took the lock, one
+300 ms budget for every sentence), alternating, two rounds each:
 
 | Metric | main | One 300 ms budget | Target |
 |---|---|---|---|
@@ -196,37 +201,50 @@ to 177 / 201 to 221 on main, and the alone rows did not change. The cost
 was first audio while another client speaks, worst 252 to 265 ms against
 the 200 ms target.
 
-**Choosing the first sentence's budget.** Without waiting, first audio
-while another client streams was 148 to 149 ms at worst on the Studio
-(main). The submission points cost 5 ms by themselves (first audio alone 86
-against 91 ms median). A wait adds to first audio at most what it waits, so
-the first sentence may wait 200 - 149 - 5 = 46 ms and stay within the
-target at worst; `FIRST_SENTENCE_WAIT_S` is 45 ms. Once it is spent, the
-first sentence shares the GPU as on main. Later sentences keep 300 ms: their
-audio is synthesized while the first plays.
+**A smaller budget for a reply's first sentence (replaced).** Without
+waiting, first audio while another client streams was 148 to 149 ms at
+worst on the Studio (main), and the submission points cost 5 ms by
+themselves (first audio alone 86 against 91 ms median), so a first sentence
+waiting at most 200 - 149 - 5 = 46 ms stays within the target. With the
+first sentence of a reply at 45 ms and later ones at 300 ms (66a257c), on
+the Studio against main (1145f82), alternating, two rounds: first audio
+while another client streams was worst 186 to 191 ms, within target, but
+push-to-talk finalize while Kokoro synthesizes went back to worst 181 to
+210 ms (median 130 to 132). The two budgets pull against each other: the
+contention rows keep Kokoro synthesizing four-sentence replies back to
+back, so one sentence in four is a reply's first and gives up waiting after
+45 ms. The development machine showed the same (finalize worst 169 to 214
+ms, first audio 190 to 214 ms). Neither budget met both targets.
 
-With the split budget, on the development machine under LaunchAgents
-(main 1145f82 against this change, alternating, two rounds, `scripts/bench.py`
-defaults):
+## Only the calls a client waits on
 
-| Metric | main | Split budget | Target |
+Both misses came from the same over-claim: the STT took the GPU for every
+encoder call, including the regular passes while someone is still
+speaking, which nobody waits on. Taking it only for the calls a client
+waits on (Decision) lets a reply that starts mid-utterance synthesize as on
+main, and keeps the priority for the tail, where finalize waits. One 300 ms
+budget for every sentence again.
+
+`scripts/bench.py` with its defaults against LaunchAgents on the development
+machine, main (1145f82) and this change (a442e7e) alternating, two rounds
+each:
+
+| Metric | main | Urgent calls only | Target |
 |---|---|---|---|
-| Kokoro first audio | median 87 / worst 88 to 92 ms | median 95 to 97 / worst 97 to 99 ms | <= 200 ms |
-| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 122 to 124 / worst 134 to 139 ms | median 122 to 123 / worst 140 to 142 ms | <= 150 ms worst |
-| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 2 to 138 / worst 72 to 204 ms | median 2 / worst 17 to 66 ms | <= 150 ms worst |
-| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 176 to 295 / p95 208 to 367 / worst 223 to 370 ms | median 130 to 142 / p95 157 to 196 / worst 169 to 214 ms | <= 150 ms worst |
-| Kokoro first audio while another client streams to STT | median 105 / p95 149 to 150 / worst 159 to 170 ms | median 121 to 122 / p95 178 to 181 / worst 190 to 214 ms | <= 200 ms |
+| Kokoro first audio | median 87 / p95 88 / worst 88 ms | median 95 to 96 / p95 98 to 105 / worst 99 to 107 ms | <= 200 ms |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence | median 123 to 124 / p95 130 to 131 / worst 134 ms | median 120 to 125 / p95 133 / worst 136 to 137 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 200 ms trailing silence, Kokoro synthesizing | median 2 / p95 47 to 65 / worst 55 to 80 ms | median 2 / p95 3 to 7 / worst 4 to 12 ms | <= 150 ms worst |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, Kokoro synthesizing | median 171 to 175 / p95 209 to 214 / worst 214 ms | median 120 to 121 / p95 141 to 146 / worst 141 to 157 ms | <= 150 ms worst |
+| Kokoro first audio while another client streams to STT | median 106 to 109 / p95 129 to 139 / worst 152 to 158 ms | median 118 to 121 / p95 156 to 158 / worst 167 to 185 ms | <= 200 ms |
+| Batch transcription, 10.1 s clip | median 223 to 246 / worst 239 to 277 ms | median 242 to 243 / worst 276 to 279 ms | <= 300 ms |
 
-The two budgets pull against each other. The contention rows keep Kokoro
-synthesizing four-sentence replies back to back, so one sentence in four is
-a reply's first and gives up waiting after 45 ms: push-to-talk finalize
-there went from worst 153 to 160 ms with one budget (earlier runs, same
-machine) to 169 to 214 ms. First audio while another client speaks went
-from 233 ms to 190 to 214 ms; this machine's no-wait worst (159 to 170 ms)
-is higher than the Studio's (149 ms), so 45 ms does not fit under 200 ms
-here in every run. One main run was slow throughout the contention rows
-(median 295 ms), as happened once before; it was not isolated. The Studio,
-where the budget was derived, decides.
+On this machine it is the best of the three on both rows: push-to-talk
+finalize while Kokoro synthesizes worst 141 to 157 ms (one budget: 153 to
+160; split: 169 to 214), and first audio while another client streams worst
+167 to 185 ms (one budget: 233; split: 190 to 214). First audio there is
+still 15 to 27 ms over main at worst: a request that lands on the tail of
+the other client's utterance waits for it. The Studio A/B on this change
+decides.
 
 ## Alternatives considered
 
@@ -257,16 +275,16 @@ where the budget was derived, decides.
 
 ## Consequences
 
-- A reply's first audio can start up to 45 ms later when it coincides with
-  an STT encoder call; a later sentence waits up to 300 ms. Both cases are
-  two satellites at once, one speaking while the other's reply is
-  synthesized. An encoder call that starts while a reply's first sentence
-  has used up its 45 ms shares the GPU with that sentence as on main (one
-  sentence, about 100 ms of work). Kokoro is far
-  faster than real time, so a pause later in a reply is absorbed by the
-  audio already sent.
-- Synthesis slows by about the encoder's share of the GPU while someone
-  speaks (one call of 100 to 150 ms per 0.8 s pass).
+- A sentence can wait up to 300 ms when it coincides with the end of
+  another client's utterance (the call at the pause and the last calls,
+  about 100 to 150 ms each) or with a session catching up on a backlog.
+  Both cases are two satellites at once, one finishing speaking while the
+  other's reply is synthesized. Kokoro is far faster than real time, so a
+  pause later in a reply is absorbed by the audio already sent.
+- Regular passes while someone speaks share the GPU with synthesis as on
+  main, about 1.4 times slower each. The stream catches up while the
+  speaker talks; a session that falls more than `URGENT_BACKLOG_S` behind
+  takes the lock until it is back.
 - Kokoro depends on two more mlx-audio internals, the residual block
   classes; the mlx-audio pin (pyproject, which names them) is what they were
   checked against. If they move, Kokoro still runs but loses the priority.
