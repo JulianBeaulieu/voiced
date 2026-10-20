@@ -30,6 +30,7 @@ body:
         - HTTP API
         - Wyoming / Home Assistant
         - Installer, launchd, watchdog, CLI
+        - Menu bar app
         - Status page
         - Docs
         - Other

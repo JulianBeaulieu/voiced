@@ -25,8 +25,14 @@ added integration stores the address.
 
 ## 1. Expose voiced on your network
 
+Read the security note in the
+[README](../README.md#security-note-on-bind) first: the Wyoming protocol has
+no authentication, so only do this on a trusted network.
+
 By default voiced listens on `127.0.0.1` and Home Assistant on another
-machine cannot reach it. In `~/.config/voiced/config.toml`:
+machine cannot reach it. In the menu bar app, open **Settings**,
+**Network**, set **Listen on** to **Local network** and accept the restart
+the app offers. Without the app, in `~/.config/voiced/config.toml`:
 
 ```toml
 [server]
@@ -39,10 +45,6 @@ they start, so this needs no root:
 ```sh
 voiced restart all
 ```
-
-Read the security note in the
-[README](../README.md#security-note-on-bind) first: the Wyoming protocol has
-no authentication, so only do this on a trusted network.
 
 Check from any other machine on the network by opening
 `http://<mac-ip>:8880/health` in a browser. You should see a JSON document

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Run `voiced doctor` first; it answers most of the questions below. Replace hostnames and addresses with placeholders before pasting anything.
+        Run `voiced doctor` first; it answers most of the questions below. With the menu bar app the command is `~/.voiced/bin/voiced`. Replace hostnames and addresses with placeholders before pasting anything. Report security vulnerabilities privately instead: https://github.com/JulianBeaulieu/voiced/security/advisories/new
   - type: textarea
     id: what
     attributes:
@@ -34,9 +34,20 @@ body:
         - Wyoming / Home Assistant
         - Installer, launchd, watchdog
         - CLI (doctor, status, logs)
+        - Menu bar app
         - Status page
         - Docs
         - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installed with
+      options:
+        - Menu bar app (Homebrew cask or DMG)
+        - Homebrew formula
+        - From a checkout
     validations:
       required: true
   - type: input
@@ -57,6 +68,7 @@ body:
     id: doctor
     attributes:
       label: voiced doctor output
+      description: Output of `voiced doctor`.
       render: text
   - type: textarea
     id: config

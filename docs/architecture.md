@@ -268,7 +268,8 @@ different rate resamples before yielding.
 
 An engine is a separate package. It implements one of the two classes,
 declares an entry point, and the user installs it into the same environment
-as voiced.
+as voiced: the one `~/.voiced/bin/voiced` links to. An update of voiced
+builds a new environment, so install the engine again after one.
 
 `my_package/piper.py`:
 

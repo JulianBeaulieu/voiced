@@ -23,8 +23,13 @@ watchdog. It opens no network connection outside the installer: no
 analytics, no update checks.
 Opening the status page hands the URL voiced reports to your browser.
 
-Requirements: macOS 14 or newer, Swift 6 (Xcode 16 or newer, or the matching
-command line tools). No third-party packages.
+It needs macOS 14 or newer on Apple Silicon. Install it with
+`brew install --cask julianbeaulieu/voiced/voiced`, or download the DMG
+from the [release page](https://github.com/JulianBeaulieu/voiced/releases/latest);
+the released app is signed and notarized, so macOS only asks once whether
+to open an app downloaded from the internet. The rest of this page is for
+working on the app. Building it needs Swift 6 (Xcode 16 or newer, or the
+matching command line tools) and no third-party packages.
 
 ## The icon
 
@@ -76,8 +81,9 @@ would not match any commit; `--dirty` builds one anyway. `--debug` builds the
 app in debug configuration, for the development override below.
 
 The bundle is ad-hoc signed, uv first and then the app, which has no
-identity and is not notarized; [Scripts/SIGNING.md](Scripts/SIGNING.md)
-lists what signing and notarizing for distribution takes.
+identity and is not notarized. Releases are signed and notarized by
+`Scripts/sign.sh` in the release workflow;
+[Scripts/SIGNING.md](Scripts/SIGNING.md) has the details.
 
 ```sh
 menubar/Scripts/bundle.sh

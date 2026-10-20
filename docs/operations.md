@@ -5,6 +5,10 @@ stt or tts process; "daemon" means the launchd job that keeps it running.
 
 ## Commands
 
+The formula puts `voiced` on your `PATH`. An install made by the menu bar
+app does not: run the commands as `~/.voiced/bin/voiced`, or add
+`~/.voiced/bin` to your `PATH`.
+
 | Command | What it does |
 |---|---|
 | `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the four service ports are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and prints the one root step (below). Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`). Waits while another install or uninstall holds the state directory; changes nothing the daemons use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
@@ -63,6 +67,55 @@ ffmpeg, memory, the four ports (and which process holds them), FileVault,
 whether the daemons are installed and loaded, Metal from the service
 environment, and the last `--metal-probe` result. It exits non-zero only on
 a failed check, not on a warning.
+
+## Installing from a checkout
+
+For development, or to run `main`. You need
+[uv](https://docs.astral.sh/uv/). The `tts` extra brings its own espeak-ng;
+Homebrew's is optional, as the fallback or for the `[tts] espeak_library`
+override:
+
+```sh
+brew install uv            # skip if `uv --version` already works
+brew install espeak-ng     # optional
+```
+
+Then:
+
+```sh
+git clone https://github.com/JulianBeaulieu/voiced ~/voiced
+uv tool install --python 3.12 ~/voiced
+uv tool update-shell
+```
+
+`--python 3.12` matters: without it uv uses its default interpreter, which
+can be one voiced does not support (it needs 3.11 to 3.13). With 3.10 the
+install fails with "requirements are unsatisfiable"; with 3.14 it can
+succeed on a Python voiced is not tested on, which `voiced doctor` then
+reports as a failure. `uv tool install` puts the `voiced` command in
+`~/.local/bin`, which is often not on your `PATH` yet; `uv tool
+update-shell` adds it to your shell's startup file (`~/.zshenv` for the
+default zsh). Open a new terminal, then:
+
+```sh
+voiced install --source ~/voiced
+```
+
+`uv tool install` gives you the `voiced` command but not the engines;
+`--source` makes `voiced install` build the service environment, with the
+engines, from your checkout into `~/.voiced/envs/`, every package at the
+version and hash in the checkout's lock, on a Python 3.12 that uv downloads
+into `~/.voiced/python`. It then points `~/.voiced/bin/voiced` at that
+environment, downloads the models into the Hugging Face cache, and prints
+the root step above. A warning about `HF_TOKEN` along the way is harmless:
+the models are public and need no Hugging Face account.
+`voiced install --source ~/voiced --dry-run` shows everything it would do
+without writing anything.
+
+To build the menu bar app from the same checkout, run
+`~/voiced/menubar/Scripts/bundle.sh` and open
+`~/voiced/menubar/build/voiced.app`. It needs Swift 6 (Xcode 16 or newer);
+see [menubar/README.md](../menubar/README.md).
 
 ## launchd
 
@@ -317,6 +370,14 @@ nor restarts anything, and refuses `voiced restart` (it exits non-zero
 with the reason), for up to 30 minutes.
 `voiced restart all` does it at once. If the changelog says a release
 changes the plists, run the root step `voiced install` prints as well.
+
+### The menu bar app
+
+The app does not update itself. Get the new version with
+`brew upgrade --cask voiced`, or download it from the
+[release page](https://github.com/JulianBeaulieu/voiced/releases/latest)
+and replace the copy in Applications. On its next launch the app sees that
+the services run an older voiced and offers **Update voiced**.
 
 ### Homebrew
 

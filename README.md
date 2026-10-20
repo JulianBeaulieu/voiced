@@ -1,94 +1,71 @@
 # voiced
 
+[![Release](https://img.shields.io/github/v/release/JulianBeaulieu/voiced)](https://github.com/JulianBeaulieu/voiced/releases/latest)
+[![CI](https://github.com/JulianBeaulieu/voiced/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JulianBeaulieu/voiced/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/JulianBeaulieu/voiced)](LICENSE)
+
 Run speech-to-text and text-to-speech on your Mac for Home Assistant voice
 control or any app that speaks the OpenAI audio API. Models stay loaded on
-the Apple Silicon GPU, so spoken replies start in about 100 ms with the
-default voice. voiced runs as two
-services, one for each direction, under launchd plus a watchdog: they start
-at boot without anyone logging in and restart themselves after a crash or a
-hang. Home Assistant talks to it over
-Wyoming, the protocol its Assist pipelines use for local speech services.
+the Apple Silicon GPU, so with the default voice the first audio of a reply
+arrives about 100 ms after the request. voiced runs as two services, one for
+each direction, under launchd plus a watchdog: they start at boot without
+anyone logging in and restart themselves after a crash or a hang. Home
+Assistant talks to it over Wyoming, the protocol its Assist pipelines use
+for local speech services.
 
-**Status:** pre-alpha. Speech-to-text with Parakeet TDT 0.6B v3,
-text-to-speech with Kokoro-82M and the optional Soprano-80M voice, the HTTP
-API, the Wyoming listeners, the installer, the watchdog and `voiced doctor`
-are in place. Nothing has been released yet, and the numbers below come from
-one machine. Expect breaking changes.
+voiced 0.1.0 is the first release. It transcribes with Parakeet TDT 0.6B v3
+and speaks with Kokoro-82M, or with the optional Soprano-80M. The numbers
+below come from two machines, both named under [Benchmarks](#benchmarks).
+The HTTP and Wyoming API and the config file are stable; see
+[CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
+listed in [CHANGELOG.md](CHANGELOG.md).
 
-## Quickstart
+## Install
 
-Requirements: an Apple Silicon Mac, macOS 14 or newer,
-[Homebrew](https://brew.sh) and [uv](https://docs.astral.sh/uv/).
+You need an Apple Silicon Mac with macOS 14 or newer. The first install
+downloads about 4.5 GB, mostly models, and takes several minutes.
 
-There are three ways to install, and all three set up the same
-`~/.voiced` and the same launchd plists
-([ADR 0017](docs/decisions/0017-homebrew-packaging.md)):
-
-- **The menu bar app, from a Homebrew cask**, for most people:
-  `brew install --cask julianbeaulieu/voiced/voiced`, then open voiced.app;
-  the app installs the services itself.
-- **The Homebrew formula**, for headless Macs and terminal use:
-  `brew install julianbeaulieu/voiced/voiced`, then `voiced install`. Both
-  come from the [tap](https://github.com/JulianBeaulieu/homebrew-voiced).
-  To try a formula change from a local tap, see
-  [packaging/homebrew/README.md](packaging/homebrew/README.md).
-- **From a checkout**, for development or to run `main`:
+Most people want the menu bar app, from [Homebrew](https://brew.sh):
 
 ```sh
-brew install espeak-ng    # optional: the tts extra brings its own espeak-ng
-brew install uv    # skip if `uv --version` already works
+brew install --cask julianbeaulieu/voiced/voiced
 ```
 
-Then:
+Open voiced.app. It asks for an administrator password once and installs
+the services. The menu bar icon then shows whether both services are up.
+The app also restarts them, opens the logs and changes the common settings;
+see [menubar/README.md](menubar/README.md). Moving
+the app to the Trash leaves the services running: to remove voiced, use
+Settings > About > Uninstall voiced in the app.
+
+Using Home Assistant? Continue with
+[docs/home-assistant.md](docs/home-assistant.md).
+
+Without Homebrew, download the DMG from the
+[release page](https://github.com/JulianBeaulieu/voiced/releases/latest),
+drag voiced.app to Applications and open it. Apple has notarized the app,
+so macOS only asks once whether to open an app downloaded from the
+internet.
+
+For a headless Mac or terminal use, install the formula instead:
 
 ```sh
-git clone https://github.com/JulianBeaulieu/voiced ~/voiced
-uv tool install --python 3.12 ~/voiced
-uv tool update-shell
+brew install julianbeaulieu/voiced/voiced
+voiced install
 ```
 
-`--python 3.12` matters: without it uv uses its default interpreter, which
-can be one voiced does not support (it needs 3.11 to 3.13). With 3.10 the
-install fails with "requirements are unsatisfiable"; with 3.14 it can
-succeed on a Python voiced is not tested on, which `voiced doctor` then
-reports as a failure. `uv tool install` puts the
-`voiced` command in `~/.local/bin`, which is often not on your `PATH` yet;
-`uv tool update-shell` adds it to your shell's startup file (`~/.zshenv` for
-the default zsh). Open a new terminal, then:
+`voiced install` downloads the models and prints one command to run with
+`sudo`, the only step that needs root;
+[docs/operations.md](docs/operations.md#commands) says what it does. Both
+the cask and the formula come from the
+[tap](https://github.com/JulianBeaulieu/homebrew-voiced).
+
+Check the services from the terminal. The formula puts `voiced` on your
+`PATH`; after an install by the app, the command is `~/.voiced/bin/voiced`.
 
 ```sh
-voiced install --source ~/voiced
-```
-
-`uv tool install` gives you the `voiced` command but not the engines;
-`--source` makes `voiced install` build the service environment, with the
-engines, from your checkout into `~/.voiced/envs/`, every package at the
-version and hash in the checkout's lock, on a Python 3.12 that uv
-downloads into `~/.voiced/python`. It then points `~/.voiced/bin/voiced`
-at that environment, downloads the models into the
-Hugging Face cache, and prints the one command you run as root. The models
-are about 2.7 GB; with the Python
-environment and uv's cache, plan for about 4.5 GB of disk and several minutes
-on the first install. A warning about `HF_TOKEN` along the way is harmless:
-the models are public and need no Hugging Face account. Run the printed
-command; it looks like this, with the path of the environment voiced runs
-from:
-
-```sh
-sudo /bin/bash ~/.voiced/envs/<id>/lib/python3.12/site-packages/voiced/launchd/voiced-privileged.sh install <you>
-```
-
-That script is the one the menu bar app runs as root too. Given only your
-user name, it writes the three plists into `/Library/LaunchDaemons` from
-fixed values (the daemons run as your user, `UserName`, and run
-`~/.voiced/bin/voiced`), then loads them. `voiced install` prints the line
-only if that file and every folder on the way to it belong to you or root
-and no other account can change them, by permissions or ACL (a Homebrew
-another admin owns does not qualify). Read it first if you like. voiced never runs anything as root
-itself. Then:
-
-```sh
-voiced status
+voiced status                  # formula
+~/.voiced/bin/voiced status    # app
 ```
 
 Both services report `ok` once their model is warm, a few seconds after the
@@ -104,19 +81,11 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
   -F file=@hello.wav -F model=parakeet
 ```
 
-`voiced install --source ~/voiced --dry-run` shows everything it would do
-without writing anything. To remove voiced again, see `voiced uninstall` in
-[docs/operations.md](docs/operations.md#commands).
-
-For a menu bar icon that shows whether both services are up, restarts them,
-opens the logs and changes the common settings, build the menu bar app from
-the same checkout with `~/voiced/menubar/Scripts/bundle.sh` and open
-`~/voiced/menubar/build/voiced.app`. It needs Swift 6 (Xcode 16 or newer)
-until there is a signed release, and it talks only to the watchdog's local
-control socket, never to the network. See
-[menubar/README.md](menubar/README.md). Moving the app to the Trash leaves
-the services running: to remove an install the app made, use Settings >
-About > Uninstall voiced first.
+To remove a formula install, run `voiced uninstall`
+([docs/operations.md](docs/operations.md#commands)). All three ways of
+installing set up the same `~/.voiced` and the same launchd services
+([ADR 0017](docs/decisions/0017-homebrew-packaging.md)), so you can switch
+between them.
 
 ## What you get
 
@@ -194,7 +163,8 @@ Two services, one package. Each service is one process that loads one
 model, serves it over HTTP and Wyoming from the same event loop, and
 serializes GPU work through a bounded queue. launchd restarts a service that
 exits; the watchdog restarts one that is alive but stuck. Engines are
-entry-point plugins behind a frozen interface. Details, including the audio
+entry-point plugins behind a
+[stable interface](CONTRIBUTING.md#what-is-stable). Details, including the audio
 conventions and how to add an engine, are in
 [docs/architecture.md](docs/architecture.md).
 
@@ -225,8 +195,8 @@ Mac itself. Home Assistant on another machine needs `bind = "0.0.0.0"`, which
 exposes the services to your whole network:
 
 - The HTTP API has no authentication unless `api_key` is set. Set it before
-  you bind to the LAN. `/health`, `/` and `/metrics.json` stay open either
-  way. They show latencies, error counts and recent error messages; with
+  you bind to the LAN. `/health`, `/`, `/metrics.json` and `/docs` stay open
+  either way. The first three show latencies, error counts and recent error messages; with
   `api_key` set the error messages are left out, since they can echo what a
   client sent. Without a key, a web page you open can also send requests to
   the services on your own Mac.
@@ -274,7 +244,7 @@ startup with the remedies if none works. With `[tts] espeak_library` set
 and `espeak_data` unset, the wheel's espeak-ng data files are used. Anyone
 redistributing a tts environment redistributes these GPL-3 packages with
 it: shipping a built tts environment (a venv, an app bundle, an image)
-means meeting the GPL-3 terms for it. The voiced source itself stays MIT.
+means meeting the GPL-3 terms for it.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
 package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
@@ -316,8 +286,8 @@ default_voice = "default"
 ```
 
 Then run `~/.voiced/bin/voiced install`, which downloads the model (from
-the service environment, so nothing is rebuilt), and `voiced restart all`. Know its limits before you
-switch. Its first audio takes about 150 to
+the service environment, so nothing is rebuilt), and `voiced restart all`.
+Know its limits before you switch. Its first audio takes about 150 to
 220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
 accepted and ignored. It has one voice, `default`. It sometimes runs on past
 the end of a sentence; voiced cuts each sentence at a length bound with a
@@ -328,7 +298,7 @@ word, most often on one- and two-word replies. The details are in
 ## Benchmarks
 
 Apple M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
-alone in its process. These are pre-release measurements from one machine.
+alone in its process. The end-to-end table further down adds a Mac Studio.
 "First audio" is the time to the first PCM chunk.
 
 | Metric | Measured | Source |
@@ -346,10 +316,11 @@ alone in its process. These are pre-release measurements from one machine.
 | Parakeet memory: after load, serving peak, load peak | 1.28 GB, 2.46 GB, 3.6 to 4.1 GB | Parakeet engine, 2026-10-14 |
 
 Parakeet's figures are MLX allocations; its load peak happens once, while
-the fp32 weights are cast to bf16, and is over the 3 GB budget for both
-services while serving. Known limits of streaming transcription: partial
-transcripts trail the speaker by about 0.7 s, and a pause of about one second
-inside an utterance can repeat a short word ("set the the thermostat").
+the fp32 weights are cast to bf16, and is over the 3 GB the two services aim
+to stay under together while serving. Known limits of streaming
+transcription: partial transcripts trail the speaker by about 0.7 s, and a
+pause of about one second inside an utterance can repeat a short word ("set
+the the thermostat").
 Batch transcription is not affected. The measurements are in
 [ADR 0008](docs/decisions/0008-stt-engine-parakeet.md).
 
@@ -367,7 +338,8 @@ process. Method, the complete table and the known misses are in
   client that sends `end` at the last word sees about 114 ms median instead,
   worst up to 165 ms and 192 ms while TTS synthesizes (on the Studio 146 to
   149 ms median, 170 ms worst, and 510 ms worst while TTS synthesizes); that
-  misses the 50 ms median goal.
+  misses the project's 50 ms median target
+  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)).
 - Memory: the physical footprint (what Activity Monitor counts, GPU buffers
   included), idle after a long reply, with the MLX peak reached while serving.
 
@@ -410,7 +382,6 @@ daemons and Metal access, including from a real daemon context with
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
-| Both services down after `uv python uninstall` or deleting `~/.local/share/uv` | Only an environment built before ADR 0017: its `python` links into uv's Python installations (newer ones use `~/.voiced/python`). `voiced doctor` reports the broken link; run `voiced install --source ~/voiced` again. |
 | Services stopped after `brew uninstall voiced` | `~/.voiced/bin/voiced` points at the removed formula, so launchd no longer starts them. Reinstall it, or finish removing voiced: [docs/operations.md](docs/operations.md#homebrew). |
 | A service restarts every 10 s after a reboot, log shows `LocalEntryNotFoundError` | The models are not in the Hugging Face cache and there is no network. It recovers by itself once the download can happen. With the models cached, a service starts without network. |
 
@@ -424,6 +395,28 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 [Adding an engine](docs/architecture.md#adding-an-engine). Requests go in the
 [issue tracker](https://github.com/JulianBeaulieu/voiced/issues).
 
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the setup,
+the checks and how a change gets merged.
+
+- Bugs and feature requests go in
+  [issues](https://github.com/JulianBeaulieu/voiced/issues). Questions go in
+  [Discussions](https://github.com/JulianBeaulieu/voiced/discussions).
+- Small fixes can go straight to a pull request. Start larger changes with an
+  issue, so the approach is agreed before the work.
+- A new model or language is an engine, and engines are plugins: see
+  [Adding an engine](docs/architecture.md#adding-an-engine).
+- To run `main` from a checkout, see
+  [Installing from a checkout](docs/operations.md#installing-from-a-checkout).
+
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Report vulnerabilities privately, not in a public issue.
+[SECURITY.md](SECURITY.md) says how and what is in scope.
+
 ## Documentation
 
 | Document | Contents |
@@ -431,10 +424,12 @@ engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
 | [docs/api.md](docs/api.md) | HTTP, WebSocket and Wyoming reference with curl and Python examples |
 | [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, optional Ollama conversation agent |
 | [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
-| [docs/operations.md](docs/operations.md) | Commands, launchd, watchdog, control channel, logs, FileVault, memory, updating |
+| [docs/operations.md](docs/operations.md) | Commands, installing from a checkout, launchd, watchdog, control channel, logs, FileVault, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
 | [menubar/README.md](menubar/README.md) | The macOS menu bar app: building, running it against the fake control server |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, tests, conventions |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, development setup, tests, conventions |
+| [SECURITY.md](SECURITY.md) | Supported versions, reporting a vulnerability, threat model |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | The Contributor Covenant, and how to report a problem |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ## License
