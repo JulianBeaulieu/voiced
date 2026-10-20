@@ -161,19 +161,19 @@ async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> 
     assert texts["de_anna"] == "3,5 Euro."
 
 
-async def test_unknown_voice_is_400(
-    openai_tts: openai.AsyncOpenAI, tts_client: AsyncClient
+async def test_an_unknown_voice_gets_the_configured_one(
+    openai_tts: openai.AsyncOpenAI, tts_client: AsyncClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    with pytest.raises(openai.BadRequestError) as exc:
-        await openai_tts.audio.speech.create(model="tts-1", voice="nobody", input="Hi.")
-    assert exc.value.body == {  # type: ignore[comparison-overlap]
-        "message": "UnknownVoice: voice 'nobody' is not served; see /v1/audio/voices",
-        "type": "invalid_request_error",
-    }
-    health = (await tts_client.get("/health")).json()
-    assert health["status"] == "ok"  # client error, not an engine failure
-    # Checked before the slot is taken: request validation, not inference (ADR 0005).
-    assert (await tts_client.get("/metrics.json")).json()["metrics"]["operations"] == {}
+    """An OpenAI client's ``alloy``, or Home Assistant's voice of the engine
+    before a switch, is spoken in ``tts.default_voice`` with a warning
+    (ADR 0022), not refused."""
+    speech = await openai_tts.audio.speech.create(model="tts-1", voice="nobody", input="Hi.")
+    assert len(speech.content) > 0
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert "voice 'nobody' is not served by fake; using 'af_heart' (see /v1/audio/voices)" in (
+        warnings
+    )
+    assert (await tts_client.get("/health")).json()["status"] == "ok"
 
 
 async def test_input_too_long_is_413(openai_tts: openai.AsyncOpenAI, settings: Settings) -> None:
@@ -472,7 +472,8 @@ async def test_voices_and_models_follow_configured_languages(settings: Settings)
         assert (await c.get("/v1/audio/voices")).json()["data"] == []
         (model,) = (await c.get("/v1/models")).json()["data"]
         assert model["languages"] == []
-        # The engine knows af_heart, but English is not configured.
+        # The engine knows af_heart, but English is not configured: with no
+        # voice served there is nothing to fall back to.
         r = await c.post("/v1/audio/speech", json={"input": "Hi.", "voice": "af_heart"})
         assert r.status_code == 400
         assert r.json()["error"]["message"] == (

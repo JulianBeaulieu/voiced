@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("voiced.watchdog")
 
-Kind = Literal["ok", "starting", "degraded", "unreachable", "error", "stalled"]
+Kind = Literal["ok", "starting", "degraded", "unreachable", "error", "stalled", "missing_model"]
 Action = Literal["none", "restart", "cooldown"]
 
 
@@ -130,6 +130,7 @@ class ServiceState:
     busy_since: float | None = None
     last_completion: float | None = None
     not_loaded_reported: bool = False
+    missing_reported: bool = False
 
     def in_grace(self, now: float, startup_grace_s: float) -> bool:
         """Is an ``unreachable`` poll at ``now`` still the startup window?"""
@@ -203,6 +204,8 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
       uptime is below ``startup_grace_s``; beyond that the load is hung.
     * ``degraded`` (answers, last inference failed) starts a timer; longer
       than ``degraded_window_s`` restarts.
+    * ``missing_model`` (answers; the model is not downloaded) is left
+      alone: a restart cannot download it. Reported once per process.
     * ``unreachable``, ``error`` and ``stalled`` otherwise count as failures;
       ``failures_before_restart`` consecutive ones restart.
     * A service that launchd does not have loaded (after ``voiced stop``) is
@@ -216,6 +219,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.failures = 0
         state.busy_since = None
         state.last_pid = obs.pid
+        state.missing_reported = False
     loaded = obs.payload is not None and obs.payload.get("model_loaded") is True
     if obs.kind == "ok" or (loaded and obs.kind != "starting"):
         state.answered = True
@@ -230,6 +234,12 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.awaiting_recovery = False
         state.not_loaded_reported = False
         return Decision("none", "healthy again" if recovered else "healthy", recovered)
+
+    if obs.kind == "missing_model":
+        state.failures = 0
+        state.degraded_since = None
+        quiet, state.missing_reported = state.missing_reported, True
+        return Decision("none", f"model not downloaded, not restarting: {obs.detail}", quiet=quiet)
 
     if obs.loaded is False:
         state.failures = 0
@@ -334,6 +344,9 @@ def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation
         return Observation("starting", "model loading", uptime_s, payload)
     if status == "degraded":
         return Observation("degraded", str(payload.get("last_error") or ""), uptime_s, payload)
+    if status == "missing_model":
+        detail = str(payload.get("last_error") or payload.get("model") or "")
+        return Observation("missing_model", detail, uptime_s, payload)
     return Observation("error", f"HTTP {code}, status={status!r}", uptime_s, payload)
 
 

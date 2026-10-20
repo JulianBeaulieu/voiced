@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from voiced.cli import PORT_IN_USE_EXIT
+from voiced.cli import ENGINE_REFUSED_EXIT, PORT_IN_USE_EXIT
 
 # Interpreter start-up and imports only: the check runs before the app (and
 # the engine) is built, so there is nothing to wait for.
@@ -104,3 +104,57 @@ def test_main_sets_the_engine_environment_from_the_config_before_serving(
     assert cli.main(["serve", "tts"]) == PORT_IN_USE_EXIT
     assert seen == [(str(tmp_path / "hf"), None)]
     assert "voiced: ignoring VOICED_ESPEAK_LIBRARY" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("engine", "model", "says"),
+    [
+        ("phonon", "gradium/phonon-40m-fr", "is not in voiced's model catalogue"),
+        ("nope", "org/m", "unknown tts engine 'nope'"),
+    ],
+)
+def test_serve_says_in_one_line_why_the_engine_cannot_be_built(
+    engine: str, model: str, says: str, tmp_path: os.PathLike[str]
+) -> None:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VOICED_")}
+    env |= {
+        "VOICED_CONFIG": os.path.join(tmp_path, "missing.toml"),
+        "VOICED_SERVER__ZEROCONF": "false",
+        "VOICED_SERVER__BIND": "127.0.0.1",
+        "VOICED_SERVER__LOG_DIR": os.path.join(tmp_path, "logs"),
+        "VOICED_TTS__ENGINE": engine,
+        "VOICED_TTS__MODEL": model,
+        "VOICED_TTS__HTTP_PORT": str(_free_port()),
+        "VOICED_TTS__WYOMING_PORT": str(_free_port()),
+    }
+    proc = subprocess.run(
+        [sys.executable, "-m", "voiced.cli", "serve", "tts"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == ENGINE_REFUSED_EXIT, proc.stderr
+    assert "Traceback" not in proc.stderr
+    assert (
+        [line for line in proc.stderr.splitlines() if line.startswith("voiced serve")]
+        == [line for line in proc.stderr.splitlines() if says in line]
+        != []
+    )
+
+
+def test_serve_runs_the_services_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """They load from the cache and never download a model (ADR 0022)."""
+    from voiced import cli
+    from voiced.config import Settings
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")  # restored after the test
+    seen: list[str | None] = []
+
+    def bind(settings: Settings, service: str) -> socket.socket:
+        seen.append(os.environ.get("HF_HUB_OFFLINE"))
+        raise cli.PortInUse("HTTP", "127.0.0.1", 1)
+
+    monkeypatch.setattr(cli, "bind_service_ports", bind)
+    assert cli.cmd_serve(Settings(), "tts") == PORT_IN_USE_EXIT
+    assert seen == ["1"]

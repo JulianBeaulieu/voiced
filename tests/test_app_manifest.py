@@ -186,5 +186,6 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
     pins.write_text(out.stdout)
     assert app_manifest.models(pins) == models.manifest()["models"]
     assert [(m["repo"], m["revision"], m["bytes"]) for m in app_manifest.models(pins)] == [
-        (p.repo, p.revision, p.bytes) for p in models.PINS
+        (p.repo, p.revision, p.bytes)
+        for p in (models.lock()[models.default_model(e).repo] for e in ("parakeet", "kokoro"))
     ]

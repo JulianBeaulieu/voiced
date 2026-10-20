@@ -12,9 +12,11 @@ Every format streams. ``pcm`` is raw int16 little-endian mono at 24 kHz.
 sentence is synthesized. ``mp3`` and ``opus`` (Ogg) are encoded by ffmpeg
 through a pipe while the engine is still producing audio.
 
-``voice`` must be one of ``/v1/audio/voices``, the engine's voices whose
-language is configured; anything else, including a ``tts.default_voice``
-outside the configured languages, is 400 ``UnknownVoice``.
+``voice`` should be one of ``/v1/audio/voices``, the engine's voices whose
+language is configured; anything else (an OpenAI client's ``alloy``, the
+voice of the engine before a switch) is spoken in ``tts.default_voice``, or
+the first served voice, with a warning in the log (ADR 0022). Only when no
+voice is served at all is it 400 ``UnknownVoice``.
 
 The engine runs inside ``inference()`` in its own task, and the response
 body reads its chunks from a queue. The route primes the body with one

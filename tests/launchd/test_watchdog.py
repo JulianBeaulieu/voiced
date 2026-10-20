@@ -206,6 +206,24 @@ def test_unloaded_service_is_never_restarted_and_reported_once() -> None:
     assert decide(state, stopped, T0 + 61, POLICY).reason.endswith("not restarting")
 
 
+def test_a_missing_model_is_never_restarted_and_reported_once_per_process() -> None:
+    """A restart cannot download it (ADR 0022), however long it lasts."""
+    state = fresh()
+    missing = Observation(
+        "missing_model", "org/m is not downloaded", 900, {"status": "missing_model"}, True, 500
+    )
+    first = decide(state, missing, T0, POLICY)
+    assert first == Decision(
+        "none", "model not downloaded, not restarting: org/m is not downloaded"
+    )
+    for t in range(1, 500, 50):
+        d = decide(state, missing, T0 + t, POLICY)
+        assert d.action == "none" and d.quiet
+    assert state.failures == 0
+    restarted = Observation("missing_model", "x", 1, {"status": "missing_model"}, True, 501)
+    assert decide(state, restarted, T0 + 600, POLICY).quiet is False  # a new process
+
+
 def test_recovery_resets_the_counter() -> None:
     state = fresh()
     decide(state, down(), T0, POLICY)
@@ -543,6 +561,14 @@ def test_poll_health_degraded(server: str) -> None:
     obs = poll_health(f"{server}/health", timeout_s=1)
     assert obs.kind == "degraded"
     assert obs.detail == "RuntimeError: x"
+
+
+def test_poll_health_missing_model(server: str) -> None:
+    body = _health("missing_model", model_loaded=False, last_error="ModelNotDownloaded: m")
+    _Handler.responses = {"/health": (503, body)}
+    obs = poll_health(f"{server}/health", timeout_s=1)
+    assert obs.kind == "missing_model"
+    assert obs.detail == "ModelNotDownloaded: m"
 
 
 def test_poll_health_timeout(server: str) -> None:

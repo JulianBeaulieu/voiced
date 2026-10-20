@@ -60,7 +60,7 @@ from voiced.layout import (
     sha256_file,
     write_manifest,
 )
-from voiced.models import pin, pinned_revisions
+from voiced.models import locked, pinned_revisions
 
 GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
@@ -598,8 +598,8 @@ def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path
     assert sorted(x.name for x in staging.iterdir()) == ["mine.plist"]
 
 
-KOKORO = pin("mlx-community/Kokoro-82M-bf16")
-PARAKEET = pin("mlx-community/parakeet-tdt-0.6b-v3")
+KOKORO = locked("mlx-community/Kokoro-82M-bf16")
+PARAKEET = locked("mlx-community/parakeet-tdt-0.6b-v3")
 FOREIGN_REVISION = "f" * 40
 
 
@@ -682,7 +682,7 @@ def test_remove_models_without_a_cache(settings: Settings, tmp_path: Path) -> No
 
 
 # What each release pinned. Re-pinning a model moves its old revision to
-# Pin.previous, so uninstall still removes what an earlier release fetched;
+# the lock's previous, so uninstall still removes what an earlier release fetched;
 # add each release's pins here.
 RELEASED_PINS = {
     "v0.1.0": {
@@ -750,8 +750,8 @@ def test_remove_models_removes_the_optional_pins_too(settings: Settings, tmp_pat
     whichever engine the config names; another revision stays."""
     settings.install.hf_home = tmp_path / "hf"
     hub = tmp_path / "hf" / "hub"
-    optional = [pin(repo) for repo in ("gradium/phonon-31m-en", "gradium/phonon-voices")]
-    optional.append(pin("gradium/phonon-40m-en"))
+    optional = [locked(repo) for repo in ("gradium/phonon-31m-en", "gradium/phonon-voices")]
+    optional.append(locked("gradium/phonon-40m-en"))
     for k, pinned in enumerate(optional):
         assert pinned is not None
         hf.add_revision(hub, pinned.repo, pinned.revision, {"f": bytes([k]) * 100})

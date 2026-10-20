@@ -45,6 +45,7 @@ def test_reporting_names_the_running_step_and_reraises() -> None:
         raise KeyboardInterrupt
     assert _events(out.getvalue())[-1] == {
         "event": "error",
+        "code": "failed",
         "step": "models",
         "message": "KeyboardInterrupt",
     }
@@ -129,6 +130,7 @@ def test_a_failed_step_ends_with_its_error(
     assert (events[-2]["step"], events[-2]["state"]) == ("models", "start")
     assert events[-1] == {
         "event": "error",
+        "code": "failed",
         "step": "models",
         "message": "model download failed (exit 1)",
     }
@@ -143,7 +145,12 @@ def test_an_unexpected_exception_still_ends_with_an_error(
     with pytest.raises(OSError):
         run(models)
     last = _events(capsys.readouterr().out)[-1]
-    assert last == {"event": "error", "step": "models", "message": "No space left on device"}
+    assert last == {
+        "event": "error",
+        "code": "failed",
+        "step": "models",
+        "message": "No space left on device",
+    }
 
 
 @pytest.mark.usefixtures("running_env")
@@ -199,7 +206,12 @@ def test_sigterm_ends_with_an_error_and_exit_143(
         run(models)
     assert info.value.code == 143
     last = _events(capsys.readouterr().out)[-1]
-    assert last == {"event": "error", "step": "models", "message": "terminated (SIGTERM)"}
+    assert last == {
+        "event": "error",
+        "code": "failed",
+        "step": "models",
+        "message": "terminated (SIGTERM)",
+    }
     assert signal.getsignal(signal.SIGTERM) == before  # restored after the install
 
 
@@ -220,7 +232,12 @@ def test_sigterm_right_after_hello_still_ends_with_an_error(
     assert info.value.code == 143
     events = _events(capsys.readouterr().out)
     assert [e["event"] for e in events] == ["hello", "error"]
-    assert events[1] == {"event": "error", "step": None, "message": "terminated (SIGTERM)"}
+    assert events[1] == {
+        "event": "error",
+        "code": "failed",
+        "step": None,
+        "message": "terminated (SIGTERM)",
+    }
 
 
 # The model download's own lines ---------------------------------------------
@@ -277,6 +294,7 @@ def test_a_failed_download_names_the_model_and_its_cache(
     assert run(models) == 1
     assert _events(capsys.readouterr().out)[-1] == {
         "event": "error",
+        "code": "failed",
         "step": "models",
         "message": "model download failed (exit 1)",
         "repo": "org/b",
@@ -298,6 +316,7 @@ def test_a_models_error_before_any_model_names_none(
     assert run(models) == 1
     assert _events(capsys.readouterr().out)[-1] == {
         "event": "error",
+        "code": "failed",
         "step": "models",
         "message": "model download failed (exit 1)",
     }
@@ -311,7 +330,12 @@ def test_only_a_models_error_names_the_model() -> None:
     progress.step("models", "done", "download")
     progress.step("link", "start", "link")
     progress.error("boom")
-    assert _events(out.getvalue())[-1] == {"event": "error", "step": "link", "message": "boom"}
+    assert _events(out.getvalue())[-1] == {
+        "event": "error",
+        "code": "failed",
+        "step": "link",
+        "message": "boom",
+    }
 
 
 @pytest.mark.parametrize(

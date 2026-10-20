@@ -2,7 +2,7 @@
 
 ``serve`` and ``config`` live here; the lifecycle commands (install, start,
 stop, restart, status, settings, logs, uninstall, doctor, watchdog) are in
-``voiced.cli_lifecycle``.
+``voiced.cli_lifecycle``, and ``models`` in ``voiced.cli_models``.
 
     VOICED_TTS__ENGINE=fake voiced serve tts
 """
@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
+from voiced.cli_models import add_models_parser, run_models
 from voiced.config import Settings, apply_engine_environment, config_path, load_settings
 from voiced.launchd.ports import bind_port
 from voiced.launchd.progress import Progress
@@ -41,6 +42,13 @@ clean stop into a SIGKILL.
 
 PORT_IN_USE_EXIT = 3
 """``serve`` exit code when a configured port is already bound."""
+
+ENGINE_REFUSED_EXIT = 2
+"""``serve`` exit code when the configured engine is not installed or refuses its model."""
+
+HUB_OFFLINE = "HF_HUB_OFFLINE"
+"""Set for the services: they load models from the cache and never download
+one (``voiced models download`` and ``voiced install`` do; ADR 0022)."""
 
 LIFECYCLE = (
     "install",
@@ -116,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     add_lifecycle_parsers(sub)
+    add_models_parser(sub)
 
     serve = sub.add_parser("serve", help="run one service in the foreground")
     serve.add_argument("service", choices=("stt", "tts"))
@@ -127,13 +136,19 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(settings: Settings, service: str) -> int:
     import uvicorn
 
+    os.environ[HUB_OFFLINE] = "1"  # before huggingface_hub is imported, which reads it once
     try:
         http_socket = bind_service_ports(settings, service)
     except PortInUse as exc:
         print(f"voiced serve {service}: {exc}", file=sys.stderr)
         return PORT_IN_USE_EXIT
     with http_socket:
-        app = build_service_app(settings, service)
+        try:
+            app = build_service_app(settings, service)
+        except (LookupError, ValueError) as exc:  # UnknownEngine, a model the engine refuses
+            log.error("%s: %s", service, exc)
+            print(f"voiced serve {service}: {exc}", file=sys.stderr)
+            return ENGINE_REFUSED_EXIT
         raise_open_file_limit()  # after logging is configured, before any connection
         request_foreground_role()
         uvicorn.Server(uvicorn_config(app, settings)).run(sockets=[http_socket])
@@ -249,7 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
         message = f"config error at {config_path()}: {exc}"
         print(message, file=sys.stderr)
-        if args.command == "install" and args.json_progress:
+        if getattr(args, "json_progress", False):  # install, models download
             Progress(sys.stdout).fail_before_start(message)
         return 2
     follow_log_dir(settings.server.log_dir)
@@ -257,6 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"voiced: {notice}", file=sys.stderr)
     if args.command in LIFECYCLE:
         return run_lifecycle(args, settings)
+    if args.command == "models":
+        return run_models(args, settings)
     if args.command == "serve":
         return cmd_serve(settings, args.service)
     if args.command == "config":

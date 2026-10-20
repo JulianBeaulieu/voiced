@@ -42,6 +42,7 @@ from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
 from voiced.inference import classify
 from voiced.metrics import Outcome
+from voiced.models import ModelNotDownloaded, hub_missing_model
 from voiced.queue import InferenceQueue, QueueFull
 
 __all__ = ["create_stt_app", "create_tts_app"]
@@ -57,6 +58,9 @@ _HTTP: dict[Outcome, tuple[int, str]] = {
     Outcome.FAILURE: (status.HTTP_500_INTERNAL_SERVER_ERROR, "server_error"),
 }
 
+MODEL_NOT_DOWNLOADED = "model_not_downloaded"
+"""The error type for work sent while the model is not downloaded."""
+
 exit_process: Callable[[int], NoReturn] = os._exit
 """Ends the process without waiting for threads. Replaced in tests."""
 
@@ -69,13 +73,21 @@ async def _load(ctx: ServiceContext) -> None:
     """Load the engine in the background; the process exits 1 if that fails.
 
     Serving ``starting`` forever would hide the failure from launchd, which
-    only restarts a process that exits.
+    only restarts a process that exits. A model that is not downloaded is
+    the exception: restarting cannot fetch it (the services never
+    download), so the process stays up with ``missing_model`` health and
+    the watchdog leaves it alone (ADR 0022).
     """
     started = time.perf_counter()
     log.info("loading %s engine %s (%s)", ctx.service, ctx.engine.name, ctx.engine.model_id)
     try:
         await ctx.engine.load()
-    except Exception:
+    except Exception as exc:
+        missing = hub_missing_model(exc, ctx.engine.model_id)
+        if missing is not None:
+            log.error("%s: %s", ctx.service, missing)
+            ctx.health.mark_missing(missing)
+            return
         log.exception("%s engine failed to load; exiting", ctx.service)
         logging.shutdown()
         exit_process(1)
@@ -154,6 +166,15 @@ def _build(ctx: ServiceContext) -> FastAPI:
     async def _api_error(conn: HTTPConnection, exc: APIError) -> Response | None:
         return await _error(conn, exc.status, exc.message, exc.type)
 
+    @app.exception_handler(ModelNotDownloaded)
+    async def _missing(conn: HTTPConnection, exc: Exception) -> Response | None:
+        # 503 like a loading model, but without Retry-After: a retry cannot
+        # help until someone downloads the model.
+        message = f"{type(exc).__name__}: {exc}"
+        return await _error(
+            conn, status.HTTP_503_SERVICE_UNAVAILABLE, message, MODEL_NOT_DOWNLOADED
+        )
+
     @app.exception_handler(QueueFull)
     @app.exception_handler(EngineError)
     async def _classified(conn: HTTPConnection, exc: Exception) -> Response | None:
@@ -199,10 +220,12 @@ def _build(ctx: ServiceContext) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse, tags=["service"])
     async def health(ctx: Ctx) -> JSONResponse:
-        """Service health. 503 while the model is loading, 200 otherwise.
+        """Service health. 503 while the model is loading or not downloaded,
+        200 otherwise.
 
         ``status`` is ``degraded`` if the last inference failed; the watchdog
-        decides what to do with that.
+        decides what to do with that. ``missing_model``: the configured model
+        is not downloaded, and ``last_error`` names it.
         """
         snapshot = ctx.public_health()
         code = status.HTTP_200_OK if snapshot.model_loaded else status.HTTP_503_SERVICE_UNAVAILABLE

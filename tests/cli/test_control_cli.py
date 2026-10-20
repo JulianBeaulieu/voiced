@@ -77,6 +77,7 @@ def test_settings_set_without_socket(settings: Settings, cfg: Path) -> None:
     assert out == ["Nothing changed."]
 
 
+@pytest.mark.usefixtures("models_downloaded")
 def test_settings_set_engine_takes_its_model(settings: Settings, cfg: Path) -> None:
     out: list[str] = []
     assert lc.cmd_settings(settings_args("set", "tts.engine=soprano"), settings, out.append) == 0

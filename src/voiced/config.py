@@ -24,6 +24,8 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from voiced.models import DEFAULT_ENGINES, default_model
+
 ENV_PREFIX = "VOICED_"
 ENV_CONFIG_PATH = "VOICED_CONFIG"
 DEFAULT_CONFIG_PATH = Path("~/.config/voiced/config.toml")
@@ -119,8 +121,8 @@ STT_STREAMS = 2
 class STTConfig(_Section):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
-    engine: str = "parakeet"
-    model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    engine: str = DEFAULT_ENGINES["stt"]
+    model: str = default_model(DEFAULT_ENGINES["stt"]).repo
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
@@ -153,8 +155,8 @@ class STTConfig(_Section):
 class TTSConfig(_Section):
     http_port: int = Field(default=8880, ge=1, le=65535)
     wyoming_port: int = Field(default=10200, ge=1, le=65535)
-    engine: str = "kokoro"
-    model: str = "mlx-community/Kokoro-82M-bf16"
+    engine: str = DEFAULT_ENGINES["tts"]
+    model: str = default_model(DEFAULT_ENGINES["tts"]).repo
     default_voice: str = "af_heart"
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     speed: float = Field(default=1.0, gt=0)

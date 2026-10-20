@@ -14,13 +14,19 @@ can add one without changes to voiced:
 The entry point name is what goes in ``engine = "..."`` in the config. Engines
 registered in-process with :func:`register_stt_engine` (mainly for tests) take
 precedence over entry points of the same name.
+
+:func:`create_engine` builds the engine a config names: the configured
+model, and that model's licence from ``voiced.models.CATALOGUE`` (Phonon's
+40M models are CC-BY-NC-4.0, its 31M Apache-2.0), so ``/health``,
+``/v1/models`` and Wyoming's ``Describe`` name the licence of what is loaded.
 """
 
 from __future__ import annotations
 
 from importlib.metadata import entry_points
-from typing import TypeVar
+from typing import Literal, TypeVar
 
+from voiced import models
 from voiced.engines.base import STTEngine, TTSEngine
 
 STT_ENTRY_POINT_GROUP = "voiced.stt_engines"
@@ -84,3 +90,26 @@ def register_stt_engine(name: str, cls: type[STTEngine]) -> None:
 
 def register_tts_engine(name: str, cls: type[TTSEngine]) -> None:
     _local_tts[name] = cls
+
+
+def create_stt_engine(name: str, model: str) -> STTEngine:
+    """An unloaded ``name`` engine for ``model`` (:func:`with_license`).
+    Raises :class:`UnknownEngine`, and whatever the engine raises for a
+    model it refuses (``ValueError``)."""
+    return with_license(get_stt_engine(name)(model))
+
+
+def create_tts_engine(name: str, model: str) -> TTSEngine:
+    return with_license(get_tts_engine(name)(model))
+
+
+def create_engine(kind: Literal["stt", "tts"], name: str, model: str) -> STTEngine | TTSEngine:
+    return create_stt_engine(name, model) if kind == "stt" else create_tts_engine(name, model)
+
+
+def with_license(engine: _E) -> _E:
+    """``engine`` with its model's licence when the catalogue knows the model."""
+    license = models.license_of(engine.model_id)
+    if license is not None:
+        engine.license = license
+    return engine

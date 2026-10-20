@@ -8,7 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-HealthStatus = Literal["starting", "ok", "degraded"]
+from voiced.models import ModelNotDownloaded
+
+HealthStatus = Literal["starting", "ok", "degraded", "missing_model"]
 
 
 class HealthResponse(BaseModel):
@@ -35,6 +37,9 @@ class HealthState:
     ``voiced.context.ServiceContext`` owns it, ``voiced.inference.inference``
     updates it after each inference, and ``/health`` serializes it. ``status`` is derived:
 
+    * ``missing_model`` if the load found the model not downloaded: the
+      process stays up and serves nothing until it is downloaded and the
+      service restarted (ADR 0022),
     * ``starting`` until the engine's ``load()`` has finished,
     * ``degraded`` if the most recent inference raised,
     * ``ok`` otherwise.
@@ -53,10 +58,16 @@ class HealthState:
     last_error_type: str | None = None
     """The exception class name of ``last_error``, kept apart so it can be
     shown without the message (``ServiceContext.public_health``)."""
+    missing: ModelNotDownloaded | None = None
+    """What the load found missing, if it did."""
 
     def mark_loaded(self) -> None:
         self.model_loaded = True
         self.last_error = self.last_error_type = None
+
+    def mark_missing(self, missing: ModelNotDownloaded) -> None:
+        self.missing = missing
+        self.record_error(missing)
 
     def record_success(self, duration_ms: float) -> None:
         self.last_inference_at = time.time()
@@ -69,6 +80,8 @@ class HealthState:
 
     @property
     def status(self) -> HealthStatus:
+        if self.missing is not None:
+            return "missing_model"
         if not self.model_loaded:
             return "starting"
         if self.last_error is not None:

@@ -31,7 +31,8 @@ def test_kokoro_and_phonon_catalogues_without_mlx_or_ptts() -> None:
     assert "af_heart" in voices and "bf_emma" in voices
     assert not any(v.startswith("jf_") for v in voices)
     assert tts["phonon"]["voices"][:2] == ["default", "Zoey"]
-    assert tts["phonon"]["models"] == ["gradium/phonon-31m-en"]
+    # The catalogue's models, the default first.
+    assert tts["phonon"]["models"] == ["gradium/phonon-31m-en", "gradium/phonon-40m-en"]
     assert json.loads(out[1]) == []
 
 

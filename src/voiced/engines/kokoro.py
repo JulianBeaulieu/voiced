@@ -51,6 +51,7 @@ from voiced.audio import float32_to_pcm16
 from voiced.config import ENV_ESPEAK_DATA, ENV_ESPEAK_LIBRARY
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
+from voiced.models import default_model
 from voiced.text.sentences import cut_to_length
 
 log = logging.getLogger(__name__)
@@ -271,21 +272,15 @@ def espeak_data_path(candidate: EspeakCandidate) -> str | None:
 
 class KokoroEngine(SentenceTTSEngine):
     name = "kokoro"
-    model_id = "mlx-community/Kokoro-82M-bf16"
+    model_id = default_model("kokoro").repo
     languages = ["en-US", "en-GB"]
-    license = "Apache-2.0"
+    license = default_model("kokoro").license
 
     @classmethod
     def catalogue_voices(cls) -> list[Voice]:
         """The static voice table for ``languages``; no weights are read
         (``voiced.engines.catalogue``)."""
         return kokoro_voices(cls.languages)
-
-    @classmethod
-    def download_patterns(cls) -> list[str]:
-        """The config and the weights, with the voice packs in ``voices/``
-        (``voiced.models``); not the sample WAVs or the ``.pt`` copies."""
-        return ["config.json", "*.safetensors"]
 
     def __init__(self, model_id: str | None = None, *, warmup: bool = True) -> None:
         super().__init__(model_id)
@@ -304,16 +299,19 @@ class KokoroEngine(SentenceTTSEngine):
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
-        from voiced.models import pinned_revision, snapshot
+        from voiced.models import locked, snapshot
 
-        patterns = self.download_patterns()
-        # Both at the pinned revision, from the cache voiced install filled.
+        # Both at the pinned revision, from the cache; never downloaded here.
         # load_model takes the repo id: mlx-audio tells a Kokoro model by
         # its name, which a snapshot directory does not always carry. Its
-        # resolve of the same revision and patterns is a cache hit.
-        root = snapshot(self.model_id, patterns)
+        # resolve of the same revision and patterns is a cache hit (the
+        # services run with HF_HUB_OFFLINE).
+        root = snapshot(self.model_id, check_only=True)
+        entry = locked(self.model_id)
         model = load_model(
-            self.model_id, revision=pinned_revision(self.model_id), allow_patterns=patterns
+            self.model_id,
+            revision=entry.revision if entry else None,
+            allow_patterns=list(entry.patterns) if entry else None,
         )
         _install_yield_points()
         rate = int(model.sample_rate)

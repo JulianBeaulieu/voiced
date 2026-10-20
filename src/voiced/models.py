@@ -1,85 +1,401 @@
-"""The default models, pinned per release, and their download (ADR 0018).
+"""The models voiced knows, pinned per release, and their download (ADR 0022).
 
-:data:`PINS` is the one place a default model's revision is set: the engines
-load that revision, ``voiced install`` downloads it, and the app's
-``install-manifest.json`` is written from it::
+Two parts, in the relation of ``pyproject.toml`` to ``uv.lock``:
 
-    python -m voiced.models            # {"models": [{"repo", "revision", "bytes"}, ...]}
+* :data:`CATALOGUE`, written by hand: each engine voiced ships, its models
+  (the first is the default) and the repositories every model of it needs
+  (``shared``), each with its licence, whether it is gated, and the files
+  the engine loads (``patterns``).
+* ``models.lock.json`` beside this module, written by ``python -m
+  voiced.models pin [REPO ...]`` (a maintainer's command, which needs the
+  network): per repository the commit, the patterns it was resolved with,
+  each file's size and sha256, and ``previous``, the revisions earlier
+  releases pinned, so uninstall still knows them. A test fails, naming the
+  command, when the two disagree.
 
-``bytes`` is the size of the files the engine's ``download_patterns()``
-names at that revision, so a model repository changing upstream changes
-nothing installed. A model that is not pinned (one the config names) loads
-its ``main`` revision, as before.
+Every catalogued engine loads its model from :func:`snapshot` with
+``check_only``: the services never download (they run with
+``HF_HUB_OFFLINE``), and a missing file is :class:`ModelNotDownloaded`. A
+model the catalogue does not know loads its ``main`` revision, as before.
 
-:data:`OPTIONAL_PINS` fixes the revision of models an engine loads that
-are not installed by default (Phonon's, ADR 0021): the engine loads that
-revision and ``download`` fetches it when the config names it, but the
-manifest leaves it out.
-
-An engine may declare a ``download_patterns()`` classmethod returning the
-Hugging Face file patterns it loads, and an ``extra_downloads()`` classmethod
-naming other repositories it loads from, each with its patterns. Like
-``catalogue_voices`` they are not part of the frozen interface in
-``voiced.engines.base``: an engine without them downloads in its own
-``load()``.
-
-``python -m voiced.models download --config FILE [--report]`` is the
-models step of ``voiced install``, run in the new environment: it fetches
-each configured model and loads each engine once. With ``--report`` it also
-writes :data:`voiced.launchd.progress.DOWNLOAD_PREFIX` lines that the
-installer turns into ``download`` events.
+``python -m voiced.models`` prints the default models as JSON (the app's
+``install-manifest.json`` is written from it); ``python -m voiced.models
+download --config FILE [--report]`` is the models step of ``voiced
+install``, run in the new environment: it fetches each configured model and
+loads each engine once. With ``--report`` it also writes
+:data:`voiced.launchd.progress.DOWNLOAD_PREFIX` lines that the installer
+turns into ``download`` events.
 
 Standard library only at import (the app's bundle script runs this from the
-unpacked wheel); the download imports the engines and ``huggingface_hub``.
+unpacked wheel, and the watchdog checks settings with it); the download and
+the cache scans import ``huggingface_hub``.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
 import importlib
 import json
+import os
 import sys
+import tempfile
 import threading
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 
+# The catalogue -----------------------------------------------------------
+
 
 @dataclass(frozen=True)
-class Pin:
+class Model:
+    """A Hugging Face model repository and the files voiced loads from it."""
+
+    repo: str
+    license: str
+    patterns: tuple[str, ...]
+    gated: bool = False  # needs a token and acceptance of its terms
+
+    @property
+    def url(self) -> str:
+        return f"https://huggingface.co/{self.repo}"
+
+
+@dataclass(frozen=True)
+class Engine:
+    """``name`` is the entry point name ``engine =`` uses in the config;
+    ``kind`` its registry group. ``shared`` repositories are downloaded with
+    any of its models and deleted with the last."""
+
+    name: str
+    kind: Literal["stt", "tts"]
+    models: tuple[Model, ...]
+    shared: tuple[Model, ...] = ()
+
+
+PHONON = ("config.json", "tokenizer.json", "model.q8.gguf", "default-voice.safetensors")
+"""Phonon's config, tokenizer, q8 weights and default voice; not the other weight formats."""
+
+PHONON_VOICES = (
+    "NbpkqMVS3CJeq2j8",
+    "NIWIOv5vTi5eRMj8",
+    "vjFyp2BcCyTlUmYb",
+    "4SZHfMpw-p46Ywgs",
+    "bXwrkHhURL1VFJdG",
+    "nGzMHMPAWGaJFHOo",
+    "LMDIYE0Oa377Qh6Z",
+    "40QrMVgAxFiUnP9f",
+    "0zLApsZfVLLNaEGl",
+    "_6Aslh2DxfmnRLmP",
+    "qIxlZ7Ei8KvWlyQH",
+    "d9XCyhjo4JhkHF1d",
+    "6PWnV0Nq4wu7RVBT",
+    "GgfEkEJtxZR7gnpy",
+    "uem82D50GRv2Dwma",
+    "y9bQqIDnyxwqK01t",
+    "gDT1nz7Ie36ZhL-C",
+    "m9MxpY6IUGXtWp76",
+    "X6NceqF285Gr04gb",
+    "YyKcxPG7iIgS3jsK",
+    "zUCxzrOrugTSis03",
+    "JOW0vchyswkQUMDS",
+    "dME3IWyZBvmh1n1q",
+    "Zn7g6NxLqXlJb7Qi",
+    "gfP44RlHwr2kEwk7",
+    "xPDpsV3F592srkjA",
+    "nOykTmcH9ydsGGIc",
+    "lX3LavMNdlIbgEHH",
+    "dGyGDKo2osj7h3s7",
+    "cXoIXJ2llS8S0WOW",
+    "GXaSqMEmOg12OIYb",
+    "xO8xQo3BrB8FuI6J",
+    "cYtsRSxV5q9IMehn",
+    "gSgG5Tor0GPEnqzC",
+    "NIWoEurJHMJjyUTe",
+    "y2eiKxtQo2B67deU",
+    "QXNr0SvkukLB4wPq",
+)
+"""The English presets of ``gradium/phonon-voices`` that Phonon loads, by file
+id (``voiced.engines.phonon`` names them; a test keeps the two in step)."""
+
+CATALOGUE: tuple[Engine, ...] = (
+    Engine(
+        "parakeet",
+        "stt",
+        # What parakeet-mlx's from_pretrained reads.
+        models=(
+            Model(
+                "mlx-community/parakeet-tdt-0.6b-v3",
+                "CC-BY-4.0",
+                ("config.json", "model.safetensors"),
+            ),
+        ),
+    ),
+    Engine(
+        "kokoro",
+        "tts",
+        # The config and the weights, with the voice packs in voices/; not
+        # the sample WAVs or the .pt copies.
+        models=(
+            Model("mlx-community/Kokoro-82M-bf16", "Apache-2.0", ("config.json", "*.safetensors")),
+        ),
+    ),
+    Engine(
+        "soprano",
+        "tts",
+        # The configs, the tokenizer and the weights; not the README.
+        models=(
+            Model("mlx-community/Soprano-80M-bf16", "Apache-2.0", ("*.json", "*.safetensors")),
+        ),
+    ),
+    Engine(
+        "phonon",
+        "tts",
+        models=(
+            Model("gradium/phonon-31m-en", "Apache-2.0", PHONON),
+            # Non-commercial, gated. Of the 40M checkpoints, the English one.
+            Model("gradium/phonon-40m-en", "CC-BY-NC-4.0", PHONON, gated=True),
+        ),
+        # The voice catalogue and its presets (ADR 0021).
+        shared=(
+            Model(
+                "gradium/phonon-voices",
+                "Apache-2.0",
+                ("voices.jsonl", *(f"voices/{v}.safetensors" for v in PHONON_VOICES)),
+            ),
+        ),
+    ),
+)
+
+DEFAULT_ENGINES: dict[str, str] = {"stt": "parakeet", "tts": "kokoro"}
+"""The engines a new config runs (``voiced.config``'s defaults)."""
+
+
+def engine(name: str) -> Engine | None:
+    return next((e for e in CATALOGUE if e.name == name), None)
+
+
+def default_model(engine_name: str) -> Model:
+    """The first model of a catalogued engine (KeyError if there is none)."""
+    found = engine(engine_name)
+    if found is None:
+        raise KeyError(engine_name)
+    return found.models[0]
+
+
+def find(repo: str) -> tuple[Engine, Model] | None:
+    """The catalogued model ``repo`` and its engine; None for a shared
+    repository or one the catalogue does not know."""
+    for e in CATALOGUE:
+        for m in e.models:
+            if m.repo == repo:
+                return e, m
+    return None
+
+
+def repositories() -> list[Model]:
+    """Every catalogued repository, models and shared ones, once each."""
+    seen: dict[str, Model] = {}
+    for e in CATALOGUE:
+        for m in (*e.models, *e.shared):
+            seen.setdefault(m.repo, m)
+    return list(seen.values())
+
+
+def required(repo: str) -> list[str]:
+    """What a load of ``repo`` needs: the model, then its engine's shared repositories."""
+    found = find(repo)
+    return [repo, *(s.repo for s in found[0].shared)] if found is not None else [repo]
+
+
+def license_of(repo: str) -> str | None:
+    found = find(repo)
+    return found[1].license if found is not None else None
+
+
+# The lock ----------------------------------------------------------------
+
+LOCK_FILE = Path(__file__).with_name("models.lock.json")
+PIN_COMMAND = "python -m voiced.models pin"
+
+
+@dataclass(frozen=True)
+class LockedFile:
+    bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class Locked:
+    """One repository in ``models.lock.json``."""
+
     repo: str
     revision: str  # a commit SHA
-    bytes: int  # the files download_patterns() names at that revision
-    # The revisions earlier releases pinned, newest first: re-pinning moves
-    # the old revision here, so uninstall still knows it is voiced's.
-    previous: tuple[str, ...] = ()
+    patterns: tuple[str, ...]
+    files: dict[str, LockedFile]
+    previous: tuple[str, ...] = ()  # earlier pins, oldest first
+
+    @property
+    def bytes(self) -> int:
+        return sum(f.bytes for f in self.files.values())
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "revision": self.revision,
+            "patterns": list(self.patterns),
+            "files": {
+                name: {"bytes": f.bytes, "sha256": f.sha256}
+                for name, f in sorted(self.files.items())
+            },
+            "previous": list(self.previous),
+        }
 
 
-PINS: tuple[Pin, ...] = (
-    # config.json and model.safetensors
-    Pin(
-        "mlx-community/parakeet-tdt-0.6b-v3", "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", 2508532829
-    ),
-    # config.json, kokoro-v1_0.safetensors and the 54 voices/*.safetensors
-    Pin("mlx-community/Kokoro-82M-bf16", "a71e4d38b236d968966a2002c4c895dbd12b1c3c", 355322783),
-)
+def read_lock(path: Path = LOCK_FILE) -> dict[str, Locked]:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return {
+        repo: Locked(
+            repo,
+            entry["revision"],
+            tuple(entry["patterns"]),
+            {name: LockedFile(f["bytes"], f["sha256"]) for name, f in entry["files"].items()},
+            tuple(entry.get("previous", ())),
+        )
+        for repo, entry in data.get("repos", {}).items()
+    }
 
-OPTIONAL_PINS: tuple[Pin, ...] = (
-    # config.json, tokenizer.json, model.q8.gguf and default-voice.safetensors,
-    # at the revisions ptts 0.4.0 names as its defaults
-    Pin("gradium/phonon-31m-en", "8c64b55ec301728e2d1695bfea87a08a267d0c2d", 65049306),
-    # voices.jsonl and the 37 English voices/*.safetensors. On a bump, run
-    # tests/tts/test_phonon.py::test_the_voice_table_is_the_pinned_catalogue
-    # (model tier): the engine's voice table must match the new voices.jsonl.
-    Pin("gradium/phonon-voices", "da6c9ec0d47be8df5c87c730a3aa97187f3229c3", 9510439),
-    # The 40M checkpoints voiced supports: CC-BY-NC-4.0, gated on the Hub
-    Pin("gradium/phonon-40m-en", "9b95393286eaeeebf1330b2ae90a14a2074c415d", 75090522),
-    Pin("gradium/phonon-40m-multilingual", "1267486cbcb55d2eaa61ba521c2ed8e4d22923c2", 75090344),
-)
+
+def write_lock(lock: dict[str, Locked], path: Path = LOCK_FILE) -> None:
+    data = {
+        "comment": f"Written by `{PIN_COMMAND}`; see voiced/models.py.",
+        "repos": {repo: lock[repo].to_json() for repo in sorted(lock)},
+    }
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+@functools.cache
+def lock() -> dict[str, Locked]:
+    """The shipped lock, read once."""
+    return read_lock()
+
+
+def locked(repo: str) -> Locked | None:
+    return lock().get(repo)
+
+
+def pinned_revision(repo: str) -> str | None:
+    """``repo``'s pinned commit, or None (its ``main``)."""
+    entry = locked(repo)
+    return entry.revision if entry is not None else None
+
+
+def pinned_revisions() -> set[tuple[str, str]]:
+    """Every ``(repo, revision)`` voiced pins or pinned, which is what
+    voiced may delete from the cache."""
+    return {(e.repo, rev) for e in lock().values() for rev in (e.revision, *e.previous)}
+
+
+def manifest() -> dict[str, Any]:
+    """The default engines' models, which ``voiced install`` downloads."""
+    repos = [r for name in DEFAULT_ENGINES.values() for r in required(default_model(name).repo)]
+    return {
+        "models": [
+            {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
+            for e in (lock()[r] for r in repos)
+        ]
+    }
+
+
+# The cache on disk (standard library) ------------------------------------
+
+
+def hub_dir(hf_home: Path | None) -> Path:
+    """The Hugging Face cache under ``[install] hf_home``, or the default one."""
+    return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
+
+
+def repo_folder(repo: str) -> str:
+    """A model repository's folder in the Hugging Face cache."""
+    return f"models--{repo.replace('/', '--')}"
+
+
+def snapshot_dir(hub: Path, repo: str, revision: str) -> Path:
+    return hub / repo_folder(repo) / "snapshots" / revision
+
+
+def missing_files(hub: Path, entry: Locked, revision: str | None = None) -> list[str]:
+    """The locked files of ``entry`` (at ``revision``, its pin by default)
+    that the cache at ``hub`` lacks: each is a link into the blob store,
+    checked by ``stat``, so a broken link is missing too."""
+    root = snapshot_dir(hub, entry.repo, revision or entry.revision)
+    missing = []
+    for name in entry.files:
+        try:
+            os.stat(root / name)
+        except OSError:
+            missing.append(name)
+    return missing
+
+
+def not_downloaded(hub: Path, repo: str) -> list[str]:
+    """The repositories a load of the catalogued model ``repo`` needs that
+    are not complete at their pins; empty for a model outside the catalogue."""
+    if find(repo) is None:
+        return []
+    return [r for r in required(repo) if (e := locked(r)) is None or missing_files(hub, e)]
+
+
+class ModelNotDownloaded(LookupError):
+    """A model's files are not in the cache. ``revision`` is None for a
+    model outside the catalogue, which loads ``main``."""
+
+    def __init__(self, repo: str, revision: str | None = None) -> None:
+        self.repo = repo
+        self.revision = revision
+        self.command = f"voiced models download {repo}"
+        at = f" at revision {revision}" if revision else ""
+        super().__init__(f"{repo} is not downloaded{at}; run {self.command}")
+
+
+def hub_missing_model(exc: BaseException, repo: str) -> ModelNotDownloaded | None:
+    """``exc``, or what caused it, as :class:`ModelNotDownloaded`: that
+    itself, or the hub's offline and not-found errors (``repo`` is the
+    model the engine was loading). None for any other failure."""
+    try:
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            LocalEntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+        )
+
+        hub_errors: tuple[type[BaseException], ...] = (
+            LocalEntryNotFoundError,
+            RepositoryNotFoundError,
+            RevisionNotFoundError,
+            EntryNotFoundError,
+        )
+    except ImportError:
+        hub_errors = ()
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ModelNotDownloaded):
+            return current
+        if isinstance(current, hub_errors):
+            return ModelNotDownloaded(repo, pinned_revision(repo))
+        current = current.__cause__ or current.__context__
+    return None
+
+
+# Downloading ---------------------------------------------------------------
 
 REPORT_INTERVAL_S = 0.25
 """At most four byte reports a second."""
@@ -87,39 +403,6 @@ REPORT_INTERVAL_S = 0.25
 BYTES_BAR = "huggingface_hub.snapshot_download"
 """The name ``snapshot_download`` gives its bar of bytes written to disk
 (its other byte bar counts network bytes, which deduplication makes fewer)."""
-
-
-def pin(repo: str) -> Pin | None:
-    return next((p for p in (*PINS, *OPTIONAL_PINS) if p.repo == repo), None)
-
-
-def pinned_revision(repo: str) -> str | None:
-    """``repo``'s pinned commit, or None (its ``main``)."""
-    pinned = pin(repo)
-    return pinned.revision if pinned is not None else None
-
-
-def pinned_revisions() -> set[tuple[str, str]]:
-    """Every ``(repo, revision)`` voiced pins or pinned, which is what
-    ``voiced uninstall --remove-models`` may delete."""
-    return {(p.repo, rev) for p in (*PINS, *OPTIONAL_PINS) for rev in (p.revision, *p.previous)}
-
-
-def manifest() -> dict[str, Any]:
-    return {"models": [{"repo": p.repo, "revision": p.revision, "bytes": p.bytes} for p in PINS]}
-
-
-def download_patterns(engine: type) -> list[str] | None:
-    """The files ``engine`` loads, or None when it does not say."""
-    declared = getattr(engine, "download_patterns", None)
-    return list(declared()) if callable(declared) else None
-
-
-def extra_downloads(engine: type) -> dict[str, list[str]]:
-    """Other repositories ``engine`` loads from, with their file patterns."""
-    declared = getattr(engine, "extra_downloads", None)
-    return dict(declared()) if callable(declared) else {}
-
 
 Write = Callable[[str], None]
 
@@ -183,18 +466,25 @@ def _counting_tqdm(report: ByteReport) -> type:
     return Counting
 
 
-def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = None) -> Path:
+def snapshot(repo: str, *, check_only: bool = False, write: Write | None = None) -> Path:
     """The local directory of ``repo`` at its pinned revision (``main`` if
-    not pinned), downloading what ``patterns`` name that is not cached. An
-    existing directory is a local model and is returned as it is. With
-    ``write``, the download's progress goes there (:class:`ByteReport`)."""
+    not pinned). An existing directory is a local model and is returned as
+    it is.
+
+    ``check_only`` (how the engines load): nothing is fetched, and a locked
+    file missing from the cache, or a model outside the catalogue not cached
+    at all, raises :class:`ModelNotDownloaded`. Otherwise what the lock's
+    patterns name (everything, unpinned) that is not cached is downloaded;
+    with ``write``, the download's progress goes there (:class:`ByteReport`)."""
     local = Path(repo).expanduser()
     if local.is_dir():
         return local
+    if check_only:
+        return _cached(repo)
     from huggingface_hub.errors import GatedRepoError
 
     try:
-        return _snapshot(repo, patterns, write)
+        return _download(repo, write)
     except GatedRepoError as exc:
         raise RuntimeError(
             f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then "
@@ -203,12 +493,29 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
         ) from exc
 
 
-def _snapshot(repo: str, patterns: list[str] | None, write: Write | None) -> Path:
+def _cached(repo: str) -> Path:
+    entry = locked(repo)
+    if entry is None:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import LocalEntryNotFoundError
+
+        try:
+            return Path(snapshot_download(repo, local_files_only=True))
+        except LocalEntryNotFoundError as exc:
+            raise ModelNotDownloaded(repo) from exc
+    hub = Path(cache_dir())
+    if missing_files(hub, entry):
+        raise ModelNotDownloaded(repo, entry.revision)
+    return snapshot_dir(hub, repo, entry.revision)
+
+
+def _download(repo: str, write: Write | None) -> Path:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import DryRunError
 
-    pinned = pin(repo)
-    revision = pinned.revision if pinned is not None else None
+    entry = locked(repo)
+    revision = entry.revision if entry is not None else None
+    patterns = list(entry.patterns) if entry is not None else None
     report = None
     if write is not None:
         start = {"kind": "model", "repo": repo, "revision": revision, "path": cache_dir()}
@@ -223,7 +530,7 @@ def _snapshot(repo: str, patterns: list[str] | None, write: Write | None) -> Pat
         if files is not None:
             size = sum(f.file_size or 0 for f in files)
             cached = sum(f.file_size or 0 for f in files if not f.will_download)
-            total = pinned.bytes if pinned is not None else size
+            total = entry.bytes if entry is not None else size
             report = ByteReport(repo, cached, size, total, write)
             report.add(0)
     path = snapshot_download(
@@ -235,6 +542,9 @@ def _snapshot(repo: str, patterns: list[str] | None, write: Write | None) -> Pat
     if report is not None:
         report.finish()
     return Path(path)
+
+
+# The cache through huggingface_hub ---------------------------------------
 
 
 @dataclass(frozen=True, order=True)
@@ -277,9 +587,7 @@ def cached_revisions(hub: Path, repos: set[str]) -> CacheScan:
     )
     # The scan leaves a repository it cannot read out of info.repos.
     read = {repo.repo_id for repo in info.repos if repo.repo_type == "model"}
-    broken = sorted(
-        repo for repo in repos - read if (hub / f"models--{repo.replace('/', '--')}").is_dir()
-    )
+    broken = sorted(repo for repo in repos - read if (hub / repo_folder(repo)).is_dir())
     return CacheScan(revisions, broken)
 
 
@@ -325,53 +633,164 @@ def cache_dir() -> str:
     return str(constants.HF_HUB_CACHE)
 
 
+# The models step -------------------------------------------------------------
+
+
 def download(config: Path, write: Write | None) -> None:
     """The models step: each configured model, then each engine loaded once.
-    An engine without ``download_patterns()`` downloads in its ``load()``;
-    a model whose engine is not installed is fetched whole."""
+    The engine is built first, so a model it refuses fails before anything
+    is fetched. A catalogued engine's model is fetched at its pin with its
+    shared repositories, any other model of a catalogued engine whole at
+    ``main``; a plugin engine downloads in its own ``load()``, and a model
+    whose engine is not installed is fetched whole."""
     import asyncio
 
     from voiced.config import load_settings
-    from voiced.engines.registry import UnknownEngine, get_stt_engine, get_tts_engine
+    from voiced.engines.registry import UnknownEngine, create_engine
 
     settings = load_settings(config)
     print(f"Hugging Face cache: {cache_dir()}", flush=True)
-    jobs: tuple[tuple[str, str, str, Callable[[str], Any]], ...] = (
-        ("stt", settings.stt.engine, settings.stt.model, get_stt_engine),
-        ("tts", settings.tts.engine, settings.tts.model, get_tts_engine),
+    jobs: tuple[tuple[Literal["stt", "tts"], str, str], ...] = (
+        ("stt", settings.stt.engine, settings.stt.model),
+        ("tts", settings.tts.engine, settings.tts.model),
     )
-    for service, engine_name, model, getter in jobs:
+    for kind, engine_name, model in jobs:
         revision = pinned_revision(model)
         at = f" revision={revision}" if revision is not None else ""
-        print(f"{service}: engine={engine_name} model={model}{at}", flush=True)
+        print(f"{kind}: engine={engine_name} model={model}{at}", flush=True)
         try:
-            cls = getter(engine_name)
+            built = create_engine(kind, engine_name, model)
         except UnknownEngine as exc:
             print(f"  {exc}; downloading weights only", flush=True)
-            snapshot(model, None, write=write)
+            snapshot(model, write=write)
             continue
-        patterns = download_patterns(cls)
-        if patterns is not None:
-            snapshot(model, patterns, write=write)
-        for repo, extra in extra_downloads(cls).items():
-            snapshot(repo, extra, write=write)
-        engine = cls(model)
-        asyncio.run(engine.load())
-        print(f"  loaded {engine.name} ({engine.model_id})", flush=True)
+        if engine(engine_name) is not None:
+            for repo in required(model):
+                snapshot(repo, write=write)
+        asyncio.run(built.load())
+        print(f"  loaded {built.name} ({built.model_id})", flush=True)
+
+
+# Pinning (a maintainer's command) -----------------------------------------
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@dataclass
+class HubFiles:
+    """What the hub says of a repository at a revision: its commit and the
+    files the patterns name, with their sizes and, for LFS and Xet files,
+    their sha256."""
+
+    commit: str
+    files: dict[str, tuple[int, str | None]] = field(default_factory=dict)
+
+
+def hub_files(repo: str, revision: str, patterns: Sequence[str]) -> HubFiles:
+    from huggingface_hub import HfApi
+    from huggingface_hub.utils import filter_repo_objects  # type: ignore[attr-defined]
+
+    info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+    siblings = {f.rfilename: f for f in info.siblings or []}
+    wanted = filter_repo_objects(sorted(siblings), allow_patterns=list(patterns))
+    found = HubFiles(str(info.sha))
+    for name in wanted:
+        f = siblings[name]
+        found.files[name] = (int(f.size or 0), f.lfs.sha256 if f.lfs else None)
+    return found
+
+
+def fetch_sha256(repo: str, revision: str, name: str) -> str:
+    """Hash a small file the hub carries only a git sha1 for, downloaded
+    into a scratch cache (not the user's)."""
+    from huggingface_hub import hf_hub_download
+
+    with tempfile.TemporaryDirectory() as scratch:
+        return _sha256(Path(hf_hub_download(repo, name, revision=revision, cache_dir=scratch)))
+
+
+def pin_repo(
+    model: Model,
+    current: Locked | None,
+    revision: str | None,
+    *,
+    files: Callable[[str, str, Sequence[str]], HubFiles] = hub_files,
+    sha256: Callable[[str, str, str], str] = fetch_sha256,
+) -> Locked:
+    """``model`` locked at ``revision`` (default: its current pin, else
+    ``main``), resolved to a commit with the catalogue's patterns. A
+    replaced revision is added to ``previous``."""
+    wanted = revision or (current.revision if current is not None else "main")
+    hub = files(model.repo, wanted, model.patterns)
+    if not hub.files:
+        raise SystemExit(f"{model.repo}@{wanted}: the patterns {model.patterns} name no file")
+    locked_files = {
+        name: LockedFile(size, digest or sha256(model.repo, hub.commit, name))
+        for name, (size, digest) in hub.files.items()
+    }
+    previous = list(current.previous) if current is not None else []
+    if current is not None and current.revision != hub.commit:
+        previous.append(current.revision)
+    return Locked(model.repo, hub.commit, model.patterns, locked_files, tuple(previous))
+
+
+def stale(lock: dict[str, Locked]) -> list[str]:
+    """Catalogued repositories the lock lacks or locked with other patterns."""
+    return [
+        m.repo
+        for m in repositories()
+        if (e := lock.get(m.repo)) is None or e.patterns != m.patterns
+    ]
+
+
+def pin(repos: Iterable[str], revision: str | None = None, path: Path = LOCK_FILE) -> list[str]:
+    """Update the lock at ``path`` for ``repos`` (none: every stale one,
+    and repositories the catalogue dropped are removed). Returns what changed."""
+    named = list(repos)
+    current = read_lock(path)
+    catalogued = {m.repo: m for m in repositories()}
+    targets = named or stale(current)
+    unknown = [r for r in targets if r not in catalogued]
+    if unknown:
+        raise SystemExit(f"not in the catalogue: {', '.join(unknown)}; add it to CATALOGUE first")
+    changed = []
+    for repo in targets:
+        current[repo] = pin_repo(catalogued[repo], current.get(repo), revision)
+        changed.append(repo)
+    if not named:
+        for repo in sorted(set(current) - set(catalogued)):
+            del current[repo]
+            changed.append(repo)
+    write_lock(current, path)
+    return changed
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m voiced.models",
-        description="Print the pinned default models as JSON, or download the configured ones.",
+        description="Print the default models as JSON, download the configured ones, or pin.",
     )
     sub = parser.add_subparsers(dest="command")
     fetch = sub.add_parser("download", help="download the configured models and load each once")
     fetch.add_argument("--config", type=Path, required=True)
     fetch.add_argument("--report", action="store_true", help="write byte progress lines")
+    pins = sub.add_parser("pin", help="lock catalogued repositories (needs the network)")
+    pins.add_argument("repos", nargs="*", help="default: every one the lock lacks or has stale")
+    pins.add_argument("--revision", help="branch, tag or commit (default: the pin, else main)")
     args = parser.parse_args(argv)
     if args.command == "download":
         download(args.config, (lambda line: print(line, flush=True)) if args.report else None)
+        return 0
+    if args.command == "pin":
+        for repo in pin(args.repos, args.revision):
+            entry = read_lock().get(repo)
+            print(f"{repo} {entry.revision if entry else 'removed'}")
         return 0
     json.dump(manifest(), sys.stdout)
     sys.stdout.write("\n")

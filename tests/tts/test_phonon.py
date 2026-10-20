@@ -29,7 +29,7 @@ from voiced.engines.phonon import (
     VOICES_REPO,
     PhononEngine,
 )
-from voiced.engines.registry import get_tts_engine
+from voiced.engines.registry import create_tts_engine, get_tts_engine
 
 PIECES = [np.full(1920, 0.5, dtype=np.float32), np.full(3840, -0.25, dtype=np.float32)]
 """What the stand-in decodes for every sentence: two pieces, 80 and 160 ms."""
@@ -39,16 +39,29 @@ def test_registered_with_its_model_and_licence() -> None:
     assert get_tts_engine("phonon") is PhononEngine
     assert PhononEngine().license == "Apache-2.0"
     assert PhononEngine("local/path").model_id == "local/path"
-    for model in ("gradium/phonon-40m-en", "gradium/phonon-40m-multilingual"):
-        assert PhononEngine(model).license == "CC-BY-NC-4.0"
+    # The licence of the configured model, from the catalogue (the registry sets it).
+    assert create_tts_engine("phonon", "gradium/phonon-40m-en").license == "CC-BY-NC-4.0"
+    assert create_tts_engine("phonon", "gradium/phonon-31m-en").license == "Apache-2.0"
     assert PhononEngine.license == "Apache-2.0"  # the class default is untouched
 
 
-@pytest.mark.parametrize("language", ["fr", "de", "es", "pt"])
-def test_the_other_40m_models_are_refused(language: str) -> None:
-    """They are not pinned and do not speak English."""
-    with pytest.raises(ValueError, match="only gradium/phonon-40m-en and"):
-        PhononEngine(f"gradium/phonon-40m-{language}")
+@pytest.mark.parametrize("variant", ["fr", "de", "es", "pt", "multilingual"])
+def test_the_other_40m_models_are_refused(variant: str) -> None:
+    """Only the catalogued 40M model loads; the message names the model."""
+    model = f"gradium/phonon-40m-{variant}"
+    with pytest.raises(ValueError) as exc:
+        PhononEngine(model)
+    assert str(exc.value) == (
+        f"{model} is not in voiced's model catalogue; of the Phonon 40M models it lists "
+        "gradium/phonon-40m-en"
+    )
+
+
+def test_the_catalogue_downloads_the_voices_the_engine_loads() -> None:
+    """The voices' patterns in voiced.models are the presets' files, no more."""
+    (voices,) = models.engine("phonon").shared  # type: ignore[union-attr]
+    assert voices.repo == VOICES_REPO
+    assert voices.patterns == ("voices.jsonl", *VOICE_FILES.values())
 
 
 def test_the_module_imports_without_ptts() -> None:
@@ -122,7 +135,7 @@ def fake_ptts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[_FakeTTS]
     module.TTS = tts
     module.set_num_threads = lambda n: setattr(module, "threads", n)
     monkeypatch.setitem(sys.modules, "ptts", module)
-    monkeypatch.setattr(models, "snapshot", lambda repo, patterns: tmp_path / repo)
+    monkeypatch.setattr(models, "snapshot", lambda repo, check_only=False: tmp_path / repo)
     return built
 
 
@@ -221,7 +234,7 @@ async def test_an_unknown_voice_never_reaches_phonon(fake_ptts: list[_FakeTTS]) 
 @pytest.mark.model
 def test_the_voice_table_is_the_pinned_catalogue() -> None:
     """The English rows of voices.jsonl at the pinned revision."""
-    path = models.snapshot(VOICES_REPO, ["voices.jsonl"]) / "voices.jsonl"
+    path = models.snapshot(VOICES_REPO) / "voices.jsonl"
     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     english = [r for r in rows if r["language"] == "en"]
     assert {r["name"]: r["filename"] for r in english} == VOICE_FILES

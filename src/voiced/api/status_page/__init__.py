@@ -40,6 +40,7 @@ from voiced.settings_store import (
     ConfigFileError,
     FileStamp,
     InvalidSetting,
+    ModelMissing,
     apply_settings,
     change_view,
     file_stamp,
@@ -201,6 +202,10 @@ async def settings_json(request: Request, ctx: Ctx) -> dict[str, Any]:
 def _apply(changes: dict[str, object], path: Path) -> dict[str, Any]:
     try:
         change = apply_settings(changes, path, engines=engines_list)
+    except ModelMissing as exc:
+        raise APIError(
+            status.HTTP_409_CONFLICT, f"{exc.field}: {exc.message}", "model_not_downloaded"
+        ) from None
     except InvalidSetting as exc:
         raise APIError(
             status.HTTP_400_BAD_REQUEST, f"{exc.field}: {exc.message}", "invalid_setting"

@@ -115,12 +115,14 @@ class Progress:
     def done(self) -> None:
         self.emit("done")
 
-    def error(self, message: str) -> None:
+    def error(self, message: str, code: str = "failed") -> None:
         """``step`` is None when no step was running. A models-step error
         names the model it was on, for the app's manual fallback and its
-        Show in Finder."""
-        extra = self.fetching if self.step_id == "models" else {}
-        self.emit("error", step=self.step_id, message=message, **extra)
+        Show in Finder. ``code`` says what went wrong for the app to act on
+        (``voiced models download``'s, ADR 0022); the installer's is
+        ``failed``. A model download's error names its model too."""
+        extra = self.fetching if self.step_id in ("models", None) else {}
+        self.emit("error", step=self.step_id, code=code, message=message, **extra)
 
     def fail_before_start(self, message: str) -> None:
         """For a failure before the install could start (a config file that
