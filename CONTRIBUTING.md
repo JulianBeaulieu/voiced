@@ -7,8 +7,9 @@ but the engine interfaces are frozen and the conventions below are stable.
 
 Requirements: [uv](https://docs.astral.sh/uv/), Python 3.11 to 3.13 (uv
 installs 3.12 from `.python-version` if needed). The MLX engines need an
-Apple Silicon Mac plus `brew install espeak-ng`; everything else runs
-anywhere.
+Apple Silicon Mac; Kokoro uses the espeak-ng that the `tts` extra
+installs (Homebrew's `espeak-ng` is an optional fallback). Everything else
+runs anywhere.
 
 ```sh
 git clone https://github.com/JulianBeaulieu/voiced

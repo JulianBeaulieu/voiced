@@ -86,7 +86,7 @@ DAEMON_CONFIG = Path(".config/voiced/config.toml")
 LEGACY_STAGING = "launchd"
 LEGACY_SCRIPTS = ("install-daemons.sh", "uninstall-daemons.sh", "metal-probe.sh")
 
-# Homebrew (both architectures) first so espeak-ng and ffmpeg are found, then
+# Homebrew (both architectures) first so a brewed ffmpeg is found, then
 # the system paths. The state directory's bin is prepended per plan.
 BASE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 DEFAULT_PYTHON_VERSION = "3.12"

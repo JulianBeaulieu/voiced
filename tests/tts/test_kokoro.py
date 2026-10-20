@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -21,14 +22,18 @@ from voiced.engines.base import EngineNotLoaded
 from voiced.engines.kokoro import (
     ENV_ESPEAK_DATA,
     ENV_ESPEAK_LIBRARY,
-    ESPEAK_INSTALL_HINT,
+    ESPEAK_COPIES,
+    ESPEAK_DATA_FILES,
+    ESPEAK_REMEDY,
     HOMEBREW_PREFIXES,
     MAX_ESPEAK_DATA_PATH,
+    EspeakCandidate,
     EspeakNotFound,
     KokoroEngine,
-    _espeak_data,
+    _bundled_espeak,
     _short_espeak_copy,
     espeak_candidates,
+    espeak_data_path,
     kokoro_voices,
 )
 from voiced.text import normalize
@@ -99,6 +104,41 @@ def test_other_languages_can_be_enabled_from_the_table() -> None:
 # -- espeak discovery --------------------------------------------------------
 
 
+def _data_dir(path: Path, content: bytes = b"phonemes") -> Path:
+    """An espeak-ng data directory with every file English needs."""
+    (path / "voices").mkdir(parents=True)
+    for name in ESPEAK_DATA_FILES:
+        (path / name).write_bytes(content)
+    return path
+
+
+def _fake_wheel(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An espeakng-loader wheel at ``root``: its library and data directory."""
+    _data_dir(root / "espeak-ng-data")
+    (root / "libespeak-ng.dylib").touch()
+    wheel = EspeakCandidate(
+        str(root / "libespeak-ng.dylib"), str(root / "espeak-ng-data"), "wheel", "1.0"
+    )
+    monkeypatch.setattr("voiced.engines.kokoro._bundled_espeak", lambda: wheel)
+    return root
+
+
+def _keg(root: Path) -> Path:
+    (root / "lib").mkdir(parents=True)
+    (root / "lib" / "libespeak-ng.dylib").touch()
+    return root
+
+
+def _wheel_candidate(data: Path) -> EspeakCandidate:
+    return EspeakCandidate("libespeak-ng.dylib", str(data), "wheel", "1.0")
+
+
+@pytest.fixture
+def no_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("voiced.engines.kokoro._bundled_espeak", lambda: None)
+
+
+@pytest.mark.usefixtures("no_wheel")
 def test_override_is_the_only_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     lib = tmp_path / "libespeak-ng.dylib"
     lib.touch()
@@ -106,9 +146,9 @@ def test_override_is_the_only_candidate(tmp_path: Path, monkeypatch: pytest.Monk
     data.mkdir()
     monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
     monkeypatch.setenv(ENV_ESPEAK_DATA, str(data))
-    assert espeak_candidates() == [(str(lib), str(data))]
+    assert espeak_candidates() == [EspeakCandidate(str(lib), str(data), "override")]
     monkeypatch.delenv(ENV_ESPEAK_DATA)
-    assert espeak_candidates() == [(str(lib), None)]
+    assert espeak_candidates() == [EspeakCandidate(str(lib), None, "override")]
 
 
 def test_missing_override_is_an_error_naming_the_path(
@@ -126,37 +166,119 @@ def test_missing_override_is_an_error_naming_the_path(
         espeak_candidates()
 
 
+def test_override_wins_over_the_wheel_and_homebrew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    wheel = _fake_wheel(tmp_path / "wheel", monkeypatch)
+    keg = _keg(tmp_path / "keg")
+    monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", (str(keg),))
+    assert [(c.library, c.source) for c in espeak_candidates()] == [
+        (str(wheel / "libespeak-ng.dylib"), "wheel"),
+        (f"{keg}/lib/libespeak-ng.dylib", "homebrew"),
+    ]
+    lib = tmp_path / "override.dylib"
+    lib.touch()
+    monkeypatch.setenv(ENV_ESPEAK_LIBRARY, str(lib))
+    # Without espeak_data the override reads the wheel's data, through the clone.
+    assert espeak_candidates() == [
+        EspeakCandidate(str(lib), str(wheel / "espeak-ng-data"), "override", "1.0")
+    ]
+
+
+def test_wheel_library_comes_first_with_a_short_data_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no Homebrew keg the wheel's library is the one candidate, and its
+    data is the short clone, not the path inside the environment."""
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", ("/nonexistent/prefix",))
+    wheel = _fake_wheel(_long_dir(tmp_path / "venv", MAX_ESPEAK_DATA_PATH + 10), monkeypatch)
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: tmp_path / "cache")
+    [candidate] = espeak_candidates()
+    assert candidate == EspeakCandidate(
+        str(wheel / "libespeak-ng.dylib"), str(wheel / "espeak-ng-data"), "wheel", "1.0"
+    )
+    clone = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
+    assert espeak_data_path(candidate) == str(clone)
+    assert not clone.exists()  # finding copies nothing
+
+
+def test_wheel_without_its_library_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    wheel = _fake_wheel(tmp_path / "wheel", monkeypatch)
+    (wheel / "libespeak-ng.dylib").unlink()
+    keg = _keg(tmp_path / "keg")
+    monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", (str(keg),))
+    assert [c.source for c in espeak_candidates()] == ["homebrew"]
+
+
+def test_wheel_that_does_not_say_where_it_is_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An espeakng-loader without get_library_path, or whose data is missing."""
+
+    def missing() -> str:
+        raise RuntimeError("data path not exists")
+
+    monkeypatch.setitem(sys.modules, "espeakng_loader", types.SimpleNamespace())
+    assert _bundled_espeak() is None
+    loader = types.SimpleNamespace(get_library_path=lambda: "lib.dylib", get_data_path=missing)
+    monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+    assert _bundled_espeak() is None
+
+
+def test_real_wheel_library_is_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """espeakng-loader as locked: its library is where get_library_path() says."""
+    pytest.importorskip("espeakng_loader")
+    monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
+    monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", ())
+    [candidate] = espeak_candidates()
+    library = Path(candidate.library)
+    assert library.name == "libespeak-ng.dylib" and library.is_file()
+    assert library.parent.name == "espeakng_loader" and candidate.source == "wheel"
+
+
+@pytest.mark.usefixtures("no_wheel")
 def test_homebrew_candidates_only_when_installed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(ENV_ESPEAK_LIBRARY, raising=False)
     monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", ("/nonexistent/prefix",))
     assert espeak_candidates() == []
     installed = [p for p in HOMEBREW_PREFIXES if Path(f"{p}/lib/libespeak-ng.dylib").is_file()]
     monkeypatch.setattr("voiced.engines.kokoro.HOMEBREW_PREFIXES", HOMEBREW_PREFIXES)
-    assert [lib for lib, _ in espeak_candidates()] == [
+    assert [c.library for c in espeak_candidates()] == [
         f"{p}/lib/libespeak-ng.dylib" for p in installed
     ]
 
 
-async def test_load_without_espeak_names_the_brew_command(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_load_without_espeak_names_the_remedies(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("kokoro_onnx")
     monkeypatch.setattr("voiced.engines.kokoro.espeak_candidates", lambda: [])
     engine = KokoroEngine()
-    with pytest.raises(EspeakNotFound, match=ESPEAK_INSTALL_HINT):
+    with pytest.raises(EspeakNotFound) as info:
         await engine.load()
+    assert str(info.value).endswith(f"found {ESPEAK_COPIES}. {ESPEAK_REMEDY}")
+    assert "brew install espeak-ng" in ESPEAK_REMEDY and "Repair" in ESPEAK_REMEDY
     with pytest.raises(EngineNotLoaded):
         await engine.voices()
 
 
-async def test_load_with_broken_espeak_names_the_brew_command(
+async def test_load_with_broken_espeak_names_the_remedies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pytest.importorskip("kokoro_onnx")
     bogus = tmp_path / "libespeak-ng.dylib"
     bogus.write_bytes(b"not a library")
-    monkeypatch.setattr("voiced.engines.kokoro.espeak_candidates", lambda: [(str(bogus), None)])
-    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: tmp_path / "cache")
-    with pytest.raises(EspeakNotFound, match=ESPEAK_INSTALL_HINT):
+    monkeypatch.setattr(
+        "voiced.engines.kokoro.espeak_candidates",
+        lambda: [EspeakCandidate(str(bogus), None, "override")],
+    )
+    with pytest.raises(EspeakNotFound) as info:
         await KokoroEngine().load()
+    assert f"no copy it tried works ({bogus}: cannot load the library: " in str(info.value)
+    assert str(info.value).endswith(ESPEAK_REMEDY)
 
 
 # -- espeak-ng data path -------------------------------------------------------
@@ -176,51 +298,73 @@ def _long_dir(root: Path, size: int) -> Path:
 def bundled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fake espeakng-loader wheel's data at a path longer than espeak-ng
     accepts, and a short user cache directory."""
-    data = _long_dir(tmp_path / "venv", MAX_ESPEAK_DATA_PATH + 10) / "espeak-ng-data"
-    (data / "voices").mkdir(parents=True)
-    (data / "phontab").write_bytes(b"phonemes")
-    monkeypatch.setattr("voiced.engines.kokoro._bundled_espeak", lambda: (str(data), "1.0"))
+    data = _data_dir(_long_dir(tmp_path / "venv", MAX_ESPEAK_DATA_PATH + 10) / "espeak-ng-data")
     monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: tmp_path / "cache")
     return data
 
 
+def _clone(source: Path, version: str = "1.0") -> Path:
+    """Clone ``source`` where :func:`espeak_data_path` puts the wheel's data
+    of ``version``, as load does, and return that path."""
+    candidate = EspeakCandidate("libespeak-ng.dylib", str(source), "wheel", version)
+    target = Path(espeak_data_path(candidate) or "")
+    _short_espeak_copy(str(source), target)
+    return target
+
+
 def test_bundled_data_is_cloned_to_the_user_cache(bundled: Path, tmp_path: Path) -> None:
     expected = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
-    assert _espeak_data(None) == str(expected)
+    assert _clone(bundled) == expected
     assert (expected / "phontab").read_bytes() == b"phonemes"
     assert (expected / "voices").is_dir()
-    assert os.listdir(tmp_path / "cache" / "voiced") == ["espeak-ng-data-1.0"]
+    assert sorted(os.listdir(tmp_path / "cache" / "voiced")) == [".lock", "espeak-ng-data-1.0"]
 
 
 def test_clone_is_reused_and_never_replaced(bundled: Path, tmp_path: Path) -> None:
-    first = Path(_short_espeak_copy(str(bundled), "1.0"))
+    first = _clone(bundled)
     (first / "marker").touch()
-    assert _short_espeak_copy(str(bundled), "1.0") == str(first)
+    assert _clone(bundled) == first
     assert (first / "marker").exists()
     # A wheel upgrade gets its own directory; the old one stays for running services.
     (bundled / "phontab").write_bytes(b"upgraded")
-    second = Path(_short_espeak_copy(str(bundled), "1.1"))
+    second = _clone(bundled, "1.1")
     assert second != first
     assert (second / "phontab").read_bytes() == b"upgraded"
     assert (first / "marker").exists()
 
 
-def test_purged_clone_is_made_again(bundled: Path) -> None:
-    target = Path(_short_espeak_copy(str(bundled), "1.0"))
-    (target / "phontab").unlink()  # the system purged part of the cache
-    assert _short_espeak_copy(str(bundled), "1.0") == str(target)
-    assert (target / "phontab").read_bytes() == b"phonemes"
+@pytest.mark.parametrize("purged", ESPEAK_DATA_FILES)
+def test_partly_purged_clone_is_made_again(bundled: Path, purged: str) -> None:
+    """espeak-ng exits the process on a missing data file, so a clone that
+    lost any one of them is not reused."""
+    target = _clone(bundled)
+    (target / purged).unlink()  # the system purged part of the cache
+    assert _clone(bundled) == target
+    assert all((target / name).read_bytes() == b"phonemes" for name in ESPEAK_DATA_FILES)
 
 
 def test_concurrent_clones_all_succeed(bundled: Path, tmp_path: Path) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(8) as pool:
-        paths = list(pool.map(lambda _: _short_espeak_copy(str(bundled), "1.0"), range(32)))
+        paths = list(pool.map(lambda _: _clone(bundled), range(32)))
     target = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
-    assert set(paths) == {str(target)}
+    assert set(paths) == {target}
     assert (target / "phontab").read_bytes() == b"phonemes"
-    assert os.listdir(target.parent) == [target.name]
+    assert sorted(os.listdir(target.parent)) == [".lock", target.name]
+
+
+def test_concurrent_repairs_of_a_purged_clone_all_succeed(bundled: Path) -> None:
+    """Several loads find the same incomplete clone: one repairs it, the
+    others wait and reuse that copy, and none fails or moves it aside."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    target = _clone(bundled)
+    for _ in range(5):
+        (target / "phondata").unlink()
+        with ThreadPoolExecutor(8) as pool:
+            assert set(pool.map(lambda _: _clone(bundled), range(16))) == {target}
+        assert (target / "phondata").read_bytes() == b"phonemes"
 
 
 def test_stale_staging_is_removed(bundled: Path, tmp_path: Path) -> None:
@@ -231,7 +375,7 @@ def test_stale_staging_is_removed(bundled: Path, tmp_path: Path) -> None:
     fresh.mkdir()
     old = time.time() - 2 * 3600
     os.utime(stale, (old, old))
-    _short_espeak_copy(str(bundled), "1.0")
+    _clone(bundled)
     assert not stale.exists()
     assert fresh.exists()
 
@@ -239,8 +383,23 @@ def test_stale_staging_is_removed(bundled: Path, tmp_path: Path) -> None:
 def test_copy_failure_names_the_target(bundled: Path, tmp_path: Path) -> None:
     (tmp_path / "cache").mkdir()
     (tmp_path / "cache" / "voiced").write_text("not a directory")
+    target = tmp_path / "cache" / "voiced" / "espeak-ng-data-1.0"
     with pytest.raises(EspeakNotFound, match=r"could not copy espeak-ng data to .*voiced"):
-        _espeak_data(None)
+        _short_espeak_copy(str(bundled), target)
+    # Found before load tries: the nearest existing parent is not a directory.
+    with pytest.raises(EspeakNotFound, match=r"cannot copy espeak-ng data to .*voiced"):
+        espeak_data_path(_wheel_candidate(bundled))
+
+
+def test_unwritable_cache_is_refused_without_copying(bundled: Path, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cache.chmod(0o500)
+    try:
+        with pytest.raises(EspeakNotFound, match=r"cannot copy espeak-ng data to .*not writable"):
+            espeak_data_path(_wheel_candidate(bundled))
+    finally:
+        cache.chmod(0o700)
 
 
 def test_no_user_cache_dir_keeps_the_wheel_path(
@@ -248,7 +407,7 @@ def test_no_user_cache_dir_keeps_the_wheel_path(
 ) -> None:
     monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: None)
     with pytest.raises(EspeakNotFound, match=str(bundled)):
-        _espeak_data(None)
+        espeak_data_path(_wheel_candidate(bundled))
 
 
 def test_long_clone_path_is_refused(
@@ -256,23 +415,27 @@ def test_long_clone_path_is_refused(
 ) -> None:
     cache = _long_dir(tmp_path / "longcache", MAX_ESPEAK_DATA_PATH)
     monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: cache)
-    with pytest.raises(EspeakNotFound, match=f"{MAX_ESPEAK_DATA_PATH} bytes or less"):
-        _espeak_data(None)
+    with pytest.raises(EspeakNotFound, match=f"longer than the {MAX_ESPEAK_DATA_PATH}"):
+        espeak_data_path(_wheel_candidate(bundled))
+    assert not (cache / "voiced").exists()  # refused before copying
 
 
 def test_explicit_data_path_is_checked(bundled: Path, tmp_path: Path) -> None:
-    with pytest.raises(EspeakNotFound, match=ESPEAK_INSTALL_HINT):
-        _espeak_data(str(bundled))
+    def keg(data: Path | str) -> EspeakCandidate:
+        return EspeakCandidate("libespeak-ng.dylib", str(data), "homebrew")
+
+    with pytest.raises(EspeakNotFound, match=f"longer than the {MAX_ESPEAK_DATA_PATH}"):
+        espeak_data_path(keg(bundled))
     short = tmp_path / "short-data"
     short.mkdir()
-    assert _espeak_data(str(short)) == str(short)
+    assert espeak_data_path(keg(short)) == str(short)
     # The limit is in bytes, not characters.
     edge = Path(os.path.realpath(tmp_path)) / "é"
     edge = edge / ("x" * (MAX_ESPEAK_DATA_PATH - len(str(edge).encode()) - 1))
     assert len(str(edge).encode()) == MAX_ESPEAK_DATA_PATH
-    assert _espeak_data(str(edge)) == str(edge)
+    assert espeak_data_path(keg(edge)) == str(edge)
     with pytest.raises(EspeakNotFound):
-        _espeak_data(str(edge) + "x")
+        espeak_data_path(keg(str(edge) + "x"))
 
 
 async def test_load_reports_the_long_path_instead_of_exiting(
@@ -282,11 +445,51 @@ async def test_load_reports_the_long_path_instead_of_exiting(
     library = tmp_path / "libespeak-ng.dylib"
     library.touch()
     monkeypatch.setattr(
-        "voiced.engines.kokoro.espeak_candidates", lambda: [(str(library), str(bundled))]
+        "voiced.engines.kokoro.espeak_candidates",
+        lambda: [EspeakCandidate(str(library), str(bundled), "override")],
     )
     with pytest.raises(EspeakNotFound, match=f"{bundled}.*{MAX_ESPEAK_DATA_PATH}") as info:
         await KokoroEngine().load()
-    assert "not installed" not in str(info.value)
+    assert "found neither" not in str(info.value)
+
+
+def test_load_falls_back_to_homebrew_when_the_wheel_data_cannot_be_used(
+    bundled: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A library that does not load is skipped before the tokenizer, which
+    would quietly run a system-wide espeak-ng instead; the wheel's data cannot
+    be cloned (no user cache directory, so its long path is refused): the
+    Homebrew keg after both is loaded."""
+    tokenizer = pytest.importorskip("kokoro_onnx.tokenizer")
+    from voiced.engines.kokoro import _load_espeak
+
+    class FakeTokenizer:
+        def __init__(self, config: Any) -> None:
+            self.config = config
+
+        def phonemize(self, text: str, lang: str) -> str:
+            return "hello"
+
+    def cdll(path: str) -> None:
+        if path == "broken.dylib":
+            raise OSError("slice is not valid mach-o file")
+
+    monkeypatch.setattr(tokenizer, "Tokenizer", FakeTokenizer)
+    monkeypatch.setattr("voiced.engines.kokoro.ctypes.CDLL", cdll)
+    monkeypatch.setattr("voiced.engines.kokoro._user_cache_dir", lambda: None)
+    keg_data = tmp_path / "keg-data"
+    keg_data.mkdir()
+    monkeypatch.setattr(
+        "voiced.engines.kokoro.espeak_candidates",
+        lambda: [
+            EspeakCandidate("broken.dylib", str(keg_data), "override"),
+            _wheel_candidate(bundled),
+            EspeakCandidate("keg.dylib", str(keg_data), "homebrew"),
+        ],
+    )
+    loaded = _load_espeak()
+    assert loaded.config.lib_path == "keg.dylib"
+    assert loaded.config.data_path == str(keg_data)
 
 
 # -- Kokoro-specific contract (shared ones: test_sentence_engines.py) ---------

@@ -35,7 +35,7 @@ There are three ways to install, and all three set up the same
 - **From a checkout**, for development or to run `main`:
 
 ```sh
-brew install espeak-ng
+brew install espeak-ng    # optional: the tts extra brings its own espeak-ng
 brew install uv    # skip if `uv --version` already works
 ```
 
@@ -262,19 +262,19 @@ weights. It says nothing about the transcripts you produce.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
-espeak-ng at run time as a shared library from Homebrew
-(`brew install espeak-ng`), or from the path in `[tts] espeak_library`, and
-fails at startup with the install command if neither works. The `tts` extra
-also pulls in, as dependencies of `kokoro-onnx`, the `phonemizer` package
-(GPL-3.0-or-later), which the Kokoro engine imports, through
-`kokoro_onnx.tokenizer`, to drive espeak-ng in the tts process, and the
-`espeakng-loader` wheel, which carries its own GPL-3 copy of espeak-ng. voiced
-loads the Homebrew library rather than the wheel's copy; with
-`[tts] espeak_library` set and `espeak_data` unset, the wheel's
-espeak-ng data files are used. Anyone redistributing a tts environment
-redistributes these GPL-3 packages with it: shipping a built tts environment
-(a venv, an app bundle, an image) means meeting the GPL-3 terms for it. The
-voiced source itself stays MIT.
+espeak-ng at run time as a shared library. The `tts` extra pulls in, as
+dependencies of `kokoro-onnx`, the `phonemizer` package (GPL-3.0-or-later),
+which the Kokoro engine imports, through `kokoro_onnx.tokenizer`, to drive
+espeak-ng in the tts process, and the `espeakng-loader` wheel, which carries
+its own GPL-3 copy of espeak-ng. voiced loads that wheel's copy, so every
+install runs the version in the lock and needs nothing from Homebrew; if it
+does not work, Homebrew's (`brew install espeak-ng`) is tried next, and the
+path in `[tts] espeak_library` replaces both when set. The engine fails at
+startup with the remedies if none works. With `[tts] espeak_library` set
+and `espeak_data` unset, the wheel's espeak-ng data files are used. Anyone
+redistributing a tts environment redistributes these GPL-3 packages with
+it: shipping a built tts environment (a venv, an app bundle, an image)
+means meeting the GPL-3 terms for it. The voiced source itself stays MIT.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
 package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
@@ -399,7 +399,7 @@ daemons and Metal access, including from a real daemon context with
 | `/health` says `"degraded"` | The last inference failed. The error is in `last_error` and on the status page; the watchdog restarts the service if it stays degraded for two minutes. |
 | HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
 | HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |
-| tts exits at startup with `EspeakNotFound` | espeak-ng is missing: `brew install espeak-ng`. If Homebrew's old `espeak` formula is installed, `brew unlink espeak` first. |
+| tts exits at startup with `EspeakNotFound` | Neither the espeak-ng in voiced's environment nor Homebrew's works; the message names each copy tried. Run `voiced doctor`, reinstall voiced, or `brew install espeak-ng` (if Homebrew's old `espeak` formula is installed, `brew unlink espeak` first). |
 | HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg, which comes with voiced's `imageio-ffmpeg` dependency: reinstall voiced. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
 | Soprano clips the last word; the log shows `soprano: runaway generation` | The model ran past the sentence and was cut at its length bound. Expected now and then, mostly on one- and two-word replies; Kokoro does not do this. |
