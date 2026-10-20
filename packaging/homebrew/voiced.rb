@@ -1,7 +1,7 @@
-# Homebrew formula for voiced. Lives in this repository for review and is
-# copied to the tap (github.com/JulianBeaulieu/homebrew-voiced, Formula/) after
-# it lands. See docs/decisions/0017-homebrew-packaging.md for why it is built
-# this way.
+# Homebrew formula for voiced. Lives in this repository for review; for each tag
+# the release workflow sets `url` and `sha256`, and the result goes to the tap's
+# Formula/ (see README.md). See docs/decisions/0017-homebrew-packaging.md for
+# why it is built this way.
 class Voiced < Formula
   include Language::Python::Virtualenv
 
@@ -57,10 +57,10 @@ class Voiced < Formula
       install <you>` line: the only step that needs root, the same script the
       menu bar app runs. Then `voiced status`.
 
-      Upgrade with `brew upgrade voiced`; once it has removed the old version,
-      the watchdog moves the services to the new one. With
-      HOMEBREW_NO_INSTALL_CLEANUP set, run `voiced restart all` after the
-      upgrade instead.
+      Upgrade with `brew upgrade voiced` (for a `--HEAD` install, `brew upgrade
+      --fetch-HEAD voiced`); once it has removed the old version, the watchdog
+      moves the services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set,
+      run `voiced restart all` after the upgrade instead.
 
       Before `brew uninstall voiced`, run `voiced uninstall` and the sudo step
       it prints; otherwise launchd stops the daemons, since their program is
