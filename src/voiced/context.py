@@ -94,8 +94,8 @@ class ServiceContext:
                 return tag
         return engine_tags[0]
 
-    async def check_voice(self, voice: str | None, *, listed_by: str) -> str:
-        """Resolve a client's voice to one this service serves.
+    async def check_voice(self, voice: str | None, *, listed_by: str) -> Voice:
+        """Resolve a client's voice to the :class:`Voice` this service serves.
 
         ``None`` means ``tts.default_voice``. The voice must be one of
         :meth:`voices`, the engine's voices in the configured languages: an
@@ -104,10 +104,11 @@ class ServiceContext:
         the client can find the served voices.
         """
         chosen = voice or self.settings.tts.default_voice
-        if chosen not in {v.id for v in await self.voices()}:
-            source = "" if voice else " (tts.default_voice)"
-            raise UnknownVoice(f"voice {chosen!r}{source} is not served; see {listed_by}")
-        return chosen
+        for served in await self.voices():
+            if served.id == chosen:
+                return served
+        source = "" if voice else " (tts.default_voice)"
+        raise UnknownVoice(f"voice {chosen!r}{source} is not served; see {listed_by}")
 
     def check_loaded(self) -> None:
         """Raise :class:`EngineNotLoaded` until ``load()`` has finished.

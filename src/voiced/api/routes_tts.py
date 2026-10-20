@@ -123,11 +123,11 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
 
     voice = await ctx.check_voice(body.voice, listed_by="/v1/audio/voices")
     speed = body.speed if body.speed is not None else settings.speed
-    text = normalize(body.input)
+    text = normalize(body.input, language=voice.language)
 
     # Prime the body so QueueFull and a pre-audio EngineError surface as
     # 503 / 400 through the app's handlers instead of a broken stream.
-    pcm = _synthesize(ctx, text, voice, speed)
+    pcm = _synthesize(ctx, text, voice.id, speed)
     await anext(pcm)
     stream: AsyncIterator[bytes] = pcm
     if fmt == "wav":

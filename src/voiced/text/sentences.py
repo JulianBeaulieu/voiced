@@ -7,6 +7,10 @@ common abbreviations, decimals, quotes and closing brackets, and falls back to
 clause and word boundaries for sentences longer than ``max_len`` characters so
 no chunk ever exceeds what the models accept.
 
+The rules are the same for every language, so the splitter takes none. The
+abbreviation list is English; in another language a word on it can only keep
+two sentences together, the cheaper mistake (ADR 0023).
+
 Pure Python, no model, no dependencies.
 """
 
@@ -78,8 +82,14 @@ _ABBREVIATIONS = frozenset(
 )
 
 # Candidate boundary: terminal punctuation, optional closing quotes or
-# brackets, then whitespace. Group 1 is everything up to the whitespace.
-_BOUNDARY = re.compile(r"([.!?\u2026]+[\"'\u201d\u2019)\]]*)\s+")
+# brackets, then whitespace. Group 1 is everything up to the whitespace. The
+# Arabic question mark and the Devanagari danda are written with a space
+# after, like ".", "!" and "?"; the CJK full stop, exclamation and question
+# marks are not, so they need no whitespace to end a sentence.
+_BOUNDARY = re.compile(
+    r"([.!?\u2026\u061f\u0964]+[\"'\u201d\u2019)\]]*(?=\s)"
+    r"|[\u3002\uff01\uff1f]+[\"'\u201d\u2019)\]]*)\s*"
+)
 
 # Where to cut an over-long sentence, in order of preference.
 _CLAUSE_BREAK = re.compile(r"[,;:\u2014]\s+|\s+-\s+|\s+\u2013\s+")
@@ -93,10 +103,11 @@ def split_sentences(text: str, *, max_len: int = DEFAULT_MAX_LEN) -> list[str]:
     stable; ``max_len`` is keyword-only so callers never depend on its position.
 
     Paragraph breaks (newlines) always split. Inside a paragraph, a sentence
-    ends at ``.``, ``!``, ``?`` or an ellipsis followed by whitespace, unless
-    the period belongs to a known abbreviation, an initial (``J. R. R.``) or a
-    number (``3.14``, ``1. item``). An ellipsis only ends a sentence when the
-    next word is capitalised. Sentences longer than ``max_len`` are cut at the
+    ends at ``。``, ``！`` or ``？``, and at ``.``, ``!``, ``?``, ``؟``, ``।`` or
+    an ellipsis followed by whitespace, unless the period belongs to a known
+    abbreviation, an initial (``J. R. R.``) or a number (``3.14``,
+    ``1. item``). An ellipsis only ends a sentence when the next word is
+    capitalised. Sentences longer than ``max_len`` are cut at the
     last clause boundary before the limit, then at the last space, then hard.
 
     Returns stripped, non-empty strings; an empty or blank input gives ``[]``.

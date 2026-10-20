@@ -91,6 +91,24 @@ def test_max_len_must_be_positive() -> None:
         split_sentences("x", max_len=0)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("下雨了。我们走吧！你来吗？", ["下雨了。", "我们走吧！", "你来吗？"]),
+        ("下雨了。 我们走吧。", ["下雨了。", "我们走吧。"]),
+        ("他说：“下雨了。”我们走吧。", ["他说：“下雨了。”", "我们走吧。"]),
+        ("هل تمطر؟ نعم، إنها تمطر.", ["هل تمطر؟", "نعم، إنها تمطر."]),
+        ("बारिश हो रही है। चलो चलते हैं।", ["बारिश हो रही है।", "चलो चलते हैं।"]),
+        (
+            "Dr. Smith said hi. 小雨。Then he left. هل تمطر؟ Yes.",
+            ["Dr. Smith said hi.", "小雨。", "Then he left.", "هل تمطر؟", "Yes."],
+        ),
+    ],
+)
+def test_cjk_arabic_and_devanagari_terminators(text: str, expected: list[str]) -> None:
+    assert split_sentences(text) == expected
+
+
 def test_no_empty_chunks() -> None:
     assert split_sentences(". . . ! ? ") == [".", ".", ".", "!", "?"]
     assert all(s.strip() for s in split_sentences("a.  \n\n  b.  ."))

@@ -24,6 +24,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Text for a voice in a language other than English is no longer spelled
+  as English: digits stay digits ("Ich habe 20 Euro", not "twenty Euro";
+  "3,5", not "three,five"), and English abbreviations and symbols are left
+  alone. Sentences now also end at `。`, `！`, `？`, `؟` and `।`, so a
+  Chinese, Arabic or Hindi paragraph streams sentence by sentence, and no
+  `.` is added after them.
 - `voiced uninstall --remove-models` (and the app's Uninstall with Models
   ticked) now frees the models' disk space. It removed each model's folder
   in the Hugging Face cache, but with `huggingface_hub` 2.x that folder

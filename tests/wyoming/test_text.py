@@ -34,3 +34,10 @@ def test_accumulator_keeps_the_raw_tail_between_chunks() -> None:
     assert acc.add("Hello there. How ") == ["Hello there."]
     assert acc.add("are you? Fine") == ["How are you?"]
     assert acc.finish() == ["Fine"]
+
+
+def test_accumulator_releases_cjk_sentences_without_spaces() -> None:
+    acc = SentenceAccumulator()
+    assert acc.add("下雨了。我们") == ["下雨了。"]
+    assert acc.add("走吧！你来吗？") == ["我们走吧！"]
+    assert acc.finish() == ["你来吗？"]

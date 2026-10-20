@@ -52,6 +52,7 @@ from voiced.engines.base import (
     TTS_SAMPLE_WIDTH,
     EngineError,
     PCMChunk,
+    Voice,
 )
 from voiced.inference import inference
 from voiced.metrics import Operation
@@ -68,7 +69,7 @@ _SYNTHESIS_EVENTS = (Synthesize, SynthesizeStart, SynthesizeChunk, SynthesizeSto
 
 @dataclass
 class _Stream:
-    voice: str
+    voice: Voice
     sentences: asyncio.Queue[str | None] = field(default_factory=asyncio.Queue)
     accumulator: SentenceAccumulator = field(default_factory=SentenceAccumulator)
     worker: asyncio.Task[None] | None = None
@@ -139,8 +140,8 @@ class TTSEventHandler(VoicedEventHandler):
         log.debug("tts %s: ignoring %s", self.peer, event.type)
         return True
 
-    async def _resolve(self, voice: SynthesizeVoice | None) -> str:
-        """Pick the engine voice id. Home Assistant only ever sends ``name``
+    async def _resolve(self, voice: SynthesizeVoice | None) -> Voice:
+        """Pick the engine voice. Home Assistant only ever sends ``name``
         (``wyoming/tts.py`` has no language field for synthesis), so an explicit
         name wins and everything else falls back to the configured default.
 
@@ -191,12 +192,12 @@ class TTSEventHandler(VoicedEventHandler):
                     await self._ensure_audio_start()
                     await self.write_event(AudioChunk(**_AUDIO_FORMAT, audio=chunk.data).event())
 
-    async def _synthesize_once(self, raw_text: str, voice: str) -> None:
-        text = normalize(raw_text)
-        log.info("tts %s: synthesize %d chars with %s", self.peer, len(text), voice)
+    async def _synthesize_once(self, raw_text: str, voice: Voice) -> None:
+        text = normalize(raw_text, language=voice.language)
+        log.info("tts %s: synthesize %d chars with %s", self.peer, len(text), voice.id)
         self._audio_started = False
         if text:
-            await self._speak(text, voice)
+            await self._speak(text, voice.id)
         await self._end_audio()
 
     async def _worker(self, stream: _Stream) -> None:
@@ -205,10 +206,10 @@ class TTSEventHandler(VoicedEventHandler):
         drops the rest of the stream."""
         try:
             while (sentence := await stream.sentences.get()) is not None:
-                text = normalize(sentence)
+                text = normalize(sentence, language=stream.voice.language)
                 if not text:
                     continue
-                await self._speak(text, stream.voice)
+                await self._speak(text, stream.voice.id)
         except Exception as exc:
             # A broken stream always ends, whatever the outcome; report()'s
             # keep-open answer only applies to request/response events.

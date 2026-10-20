@@ -204,8 +204,43 @@ def test_year_to_words(year: int, words: str) -> None:
 
 def test_language_parameter() -> None:
     assert normalize("5 cats", language="en-GB") == "five cats."
-    with pytest.raises(ValueError, match="de"):
-        normalize("5 Katzen", language="de")
+    assert normalize("5 cats", language="en_US") == "five cats."
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "expected"),
+    [
+        # Digits stay digits outside English; the engine reads them in its language.
+        ("Ich habe 20 Euro", "de", "Ich habe 20 Euro."),
+        ("3,5", "de-DE", "3,5."),
+        (
+            "Am 2026-10-14 um 8:14 kostet es $5 & 45%.",
+            "de",
+            "Am 2026-10-14 um 8:14 kostet es $5 & 45%.",
+        ),
+        ("Der CO2-Wert, z.B. heute.", "de", "Der CO2-Wert, z.B. heute."),
+        # The language-neutral cleanup still applies.
+        ("**Hallo** \u2014 Welt\U0001f600", "de", "Hallo, Welt."),
+        # No period after a sentence-final CJK, Arabic or Devanagari mark.
+        ("小雨。", "zh", "小雨。"),
+        ("下雨了吗？", "zh-CN", "下雨了吗？"),
+        ("太好了！", "ja", "太好了！"),
+        ("هل تمطر؟", "ar", "هل تمطر؟"),
+        ("बारिश हो रही है।", "hi", "बारिश हो रही है।"),
+        ("小雨", "zh", "小雨."),
+    ],
+)
+def test_other_languages_keep_digits_and_their_terminators(
+    text: str, language: str, expected: str
+) -> None:
+    assert normalize(text, language=language) == expected
+    assert normalize(expected, language=language) == expected
+
+
+def test_mixed_script_follows_the_voice_language() -> None:
+    text = "It costs 20 euros. 小雨。"
+    assert normalize(text) == "It costs twenty euros. 小雨。"
+    assert normalize(text, language="zh") == "It costs 20 euros. 小雨。"
 
 
 def test_output_has_no_digits_for_plain_prose() -> None:

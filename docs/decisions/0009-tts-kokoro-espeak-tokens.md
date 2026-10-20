@@ -50,6 +50,9 @@ and raises for anything else), and for Japanese and Chinese a check that
 espeak-ng's phoneme inventory matches what the model was trained on (misaki
 uses different G2Ps for them).
 
+Changed 2026-10-20 (ADR 0023): `normalize` takes the voice's language and
+accepts any; only English has rules that spell numbers and symbols as words.
+
 ## espeak-ng and the GPL
 
 The Kokoro-82M weights are Apache-2.0. They are not committed to this
