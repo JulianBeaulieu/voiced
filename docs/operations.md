@@ -450,6 +450,7 @@ reboots need a person. voiced does not change this setting.
 | tts | Chatterbox Turbo 4-bit (opt-in) | 0.89 GB footprint after a long reply (fp16: 2.99 GB) |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 | stt | Qwen3-ASR 0.6B with the aligner (opt-in) | 2.29 GB after load, 3.75 GB serving peak on a 30 s turn |
+| stt | Moonshine Small (opt-in, on the CPU) | 330 MB footprint (1.32 GB resident, mostly the memory-mapped model) after use; Tiny 177 MB and Medium 789 MB resident after load |
 
 All figures were measured on an M1 Max, each engine in its own process,
 when the engine was added: resident set size, or MLX allocations where

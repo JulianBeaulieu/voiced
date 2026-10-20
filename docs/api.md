@@ -413,6 +413,25 @@ configured model's: with Phonon it is `Apache-2.0` for the default
 }
 ```
 
+With Moonshine the stt service lists, for example:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "moonshine-ai/moonshine-streaming-small",
+      "object": "model",
+      "owned_by": "voiced",
+      "engine": "moonshine",
+      "task": "transcription",
+      "languages": ["en"],
+      "license": "MIT"
+    }
+  ]
+}
+```
+
 ```python
 from openai import OpenAI
 

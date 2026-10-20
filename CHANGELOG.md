@@ -77,6 +77,11 @@ uses [Semantic Versioning](https://semver.org/).
   Qwen3-ForcedAligner in 11. It does not stream: a live stream is
   transcribed when it ends, without partials. `voiced models download`
   fetches a model with the aligner.
+- Moonshine speech-to-text engine, opt-in, English, macOS 15 and later:
+  `engine = "moonshine"`, `model = "moonshine-ai/moonshine-streaming-small"`
+  (MIT), or `-tiny` or `-medium`. It runs on the CPU, leaving the GPU to
+  text-to-speech; partials arrive every half second and the transcript on the
+  client's end signal. `voiced models download` fetches each model.
 
 ### Changed
 

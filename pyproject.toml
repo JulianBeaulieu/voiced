@@ -71,7 +71,7 @@ tts = [
 # pinned to the minor release the engine was checked against (stream(),
 # add_voice(), voice_catalog= and its default model and voice revisions).
 phonon = ["ptts>=0.4,<0.5", "huggingface-hub>=1.1"]
-# Moonshine on the CPU (ADR 0024): moonshine-voice bundles ONNX Runtime. Its only
+# Moonshine on the CPU (ADR 0026): moonshine-voice bundles ONNX Runtime. Its only
 # wheel is for macOS 15 and later (Darwin 24), so the marker lets a macOS 14
 # install skip it; the engine then says so at load. Pinned to the release the
 # engine was checked against: Stream.stop() completes the open line, and on a

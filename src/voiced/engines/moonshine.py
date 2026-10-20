@@ -4,7 +4,7 @@ not the default.
 Moonshine's streaming models (Tiny 34M, Small 123M, Medium 245M) encode audio
 as it arrives and decode the open line every half second, in ONNX Runtime on
 the CPU (``moonshine-voice`` bundles it; Core ML is off upstream). This engine
-(see ``docs/decisions/0024-stt-moonshine.md``):
+(see ``docs/decisions/0026-stt-moonshine.md``):
 
 * streams through the runtime's own :class:`Stream`: ``add_audio`` passes the
   samples to the stream on the engine's :class:`ModelThread` and waits for
@@ -21,7 +21,7 @@ the CPU (``moonshine-voice`` bundles it; Core ML is off upstream). This engine
 
 Word timestamps are off: streamed lines report broken word times (every word
 after the first few at the line's start), and batch word times need a second
-decoder (82 MB for Small) and cost about 20 ms per finalize (ADR 0024).
+decoder (82 MB for Small) and cost about 20 ms per finalize (ADR 0026).
 
 Everything that imports ``moonshine_voice`` runs inside ``load()``, so this
 module imports (the entry-point registry does so) without the ``moonshine``

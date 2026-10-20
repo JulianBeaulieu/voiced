@@ -142,7 +142,7 @@ async def test_streaming_rejects_a_bad_sample_rate(stt_service: LiveService) -> 
 
 
 # Moonshine runs a last decoding pass after ``end`` on the CPU: about 100 to
-# 200 ms on an M1 Max (ADR 0024, known misses). One run is held to this
+# 200 ms on an M1 Max (ADR 0026, known misses). One run is held to this
 # ceiling, which only catches a regression.
 MOONSHINE_FINALIZE_CEILING_S = 0.5
 

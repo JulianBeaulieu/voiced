@@ -53,10 +53,13 @@ http_port = 8881
 # Wyoming protocol listener used by Home Assistant.
 wyoming_port = 10300
 # Engine plugin name (see `voiced doctor` for the installed list).
-# parakeet (default) or qwen3-asr. qwen3-asr is for files and its 30
-# languages: model "mlx-community/Qwen3-ASR-0.6B-8bit" (or the 1.7B), with
-# the languages to serve in `languages`; it does not stream, so a live
-# stream is transcribed when it ends (ADR 0027).
+# parakeet (default), qwen3-asr or moonshine; change engine and model
+# together. qwen3-asr is for files and its 30 languages: model
+# "mlx-community/Qwen3-ASR-0.6B-8bit" (or the 1.7B), with the languages to
+# serve in `languages`; it does not stream, so a live stream is transcribed
+# when it ends (ADR 0027).
+# Moonshine runs on the CPU, English only, on macOS 15 and later: model
+# "moonshine-ai/moonshine-streaming-small" (MIT), or -tiny or -medium.
 engine = "parakeet"
 model = "mlx-community/parakeet-tdt-0.6b-v3"
 # Languages advertised to clients. Must be a subset of what the engine supports.

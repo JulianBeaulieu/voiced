@@ -413,7 +413,7 @@ def test_streams_in_real_time_and_finalizes_on_the_end_signal(
     partials, text, finalize_s = asyncio.run(run())
     assert any(partials) and partials[0] == ""
     assert word_accuracy(text, REFERENCE) >= 0.8, text
-    assert finalize_s < 1.0  # ADR 0024 has the measured numbers
+    assert finalize_s < 1.0  # ADR 0026 has the measured numbers
 
 
 @pytest.mark.model

@@ -160,8 +160,13 @@ under 300 KB each, free of personal content. Never commit model weights.
   `voiced.inference.inference()`; see
   [ADR 0005](docs/decisions/0005-shared-inference-and-audio-primitives.md).
 - Runtime dependencies go in `[project] dependencies`; MLX-only packages in
-  the `stt` or `tts` extras; test and lint tools in the `dev` group. Then
-  run `uv run python scripts/refresh_locks.py` (see
+  the `stt` or `tts` extras; an engine whose runtime is a package of its own
+  in an extra named after the engine (`phonon`, `moonshine`), with a PEP 508
+  marker when its wheels cover only some Macs (`moonshine-voice` has wheels
+  for macOS 15 and later: `platform_release >= "24"`, and macOS 15 is in
+  `DARWIN` in `scripts/lock_target.py`, so NOTICE and the app's download size
+  count it); test and lint tools in the `dev` group. Then run
+  `uv run python scripts/refresh_locks.py` (see
   [Updating a dependency](#updating-a-dependency)).
 - Documentation that describes behaviour which has not landed yet carries an
   HTML comment `<!-- TODO(release): ... -->` on its own line. The canonical
