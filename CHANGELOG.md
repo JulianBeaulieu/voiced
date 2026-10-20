@@ -6,6 +6,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- `GET /openapi.json` on the TTS service no longer returns 500,
+  so `/docs` shows the API.
+
 ## [0.1.0] - 2026-10-19
 
 ### Added
