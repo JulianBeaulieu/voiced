@@ -12,9 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from tests import hf_cache_support as hf
 from voiced import cli_lifecycle as lc
 from voiced.config import Settings
 from voiced.launchd.control import CommandResult
+from voiced.models import pin
 from voiced.watchdog import Observation
 
 RUNNING = "system/x = {\n\tstate = running\n\tpid = 42\n\tlast exit code = 0\n}"
@@ -257,19 +259,26 @@ def test_uninstall_dry_then_real(
     )
     settings.server.log_dir.mkdir()
     settings.install.hf_home = tmp_path / "hf"
-    model_dir = tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16"
-    model_dir.mkdir(parents=True)
+    kokoro = pin("mlx-community/Kokoro-82M-bf16")
+    assert kokoro is not None
+    weights = b"w" * 2000
+    hub = tmp_path / "hf" / "hub"
+    hf.add_revision(hub, kokoro.repo, kokoro.revision, {"kokoro.safetensors": weights})
     fake = FakeLaunchctl({})
     out: list[str] = []
 
     assert lc.cmd_uninstall(_uninstall_args(remove_models=True), settings, fake, out.append) == 0
-    assert settings.install.venv_dir.exists() and model_dir.exists()
+    assert settings.install.venv_dir.exists() and hf.store_path(hub, weights).exists()
     assert any("Would remove" in line for line in out)
+    assert f"  {kokoro.repo} revision {kokoro.revision}" in out
+    assert "Removing those models frees 2.0 KB (2,000 bytes)." in out
 
     args = _uninstall_args(yes=True, remove_models=True, remove_logs=True)
     assert lc.cmd_uninstall(args, settings, fake, out.append) == 0
     assert not settings.install.venv_dir.exists()
-    assert not model_dir.exists()
+    assert not hf.repo_dir(hub, kokoro.repo).exists()
+    assert not hf.store_path(hub, weights).exists()
+    assert f"freed 2.0 KB (2,000 bytes) of models in {hub}" in out
     assert not settings.server.log_dir.exists()
     assert (tmp_path / "cfg" / "config.toml").exists()  # --remove-config not given
 

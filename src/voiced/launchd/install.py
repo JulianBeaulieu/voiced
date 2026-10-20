@@ -71,6 +71,13 @@ from voiced.layout import (
     stable_environment,
     write_manifest,
 )
+from voiced.models import (
+    CachedRevision,
+    cached_revisions,
+    delete_revisions,
+    pinned_revisions,
+    size_text,
+)
 
 Service = DaemonName
 METAL_PROBE_FILE = "metal-probe.json"
@@ -1014,11 +1021,92 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     return None
 
 
-def hf_cache_dirs(settings: Settings, hf_home: Path | None) -> list[Path]:
-    """Hugging Face cache directories for the configured models."""
-    hub = (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
-    models = (settings.stt.model, settings.tts.model)
-    return [hub / f"models--{m.replace('/', '--')}" for m in models]
+def repo_folder(repo: str) -> str:
+    """A model repository's folder in the Hugging Face cache."""
+    return f"models--{repo.replace('/', '--')}"
+
+
+def hf_hub(hf_home: Path | None) -> Path:
+    """The Hugging Face cache the services use (``[install] hf_home``)."""
+    return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
+
+
+@dataclass(frozen=True)
+class ModelTargets:
+    """What ``--remove-models`` deletes from the cache at ``hub``: the
+    revisions voiced pinned (:func:`voiced.models.pinned_revisions`), never
+    another revision (other tools share the cache), and the bytes that
+    frees. ``unpinned``: repositories the config names that voiced does not
+    pin, which are kept. ``broken``: voiced's repositories the cache scan
+    could not read. ``refused``: why nothing can be deleted."""
+
+    hub: Path
+    revisions: list[CachedRevision] = field(default_factory=list)
+    freed: int = 0
+    unpinned: list[str] = field(default_factory=list)
+    broken: list[str] = field(default_factory=list)
+    refused: str | None = None
+
+    def notes(self) -> list[str]:
+        """What is left alone, and why; the dry run and the removal both say it."""
+        if self.refused is not None:
+            return [f"not removing models from {self.hub}: {self.refused}"]
+        remove = f"(`hf cache rm --cache-dir {q(self.hub)} model/{{}}` removes it)"
+        notes = [
+            f"kept {repo}: voiced does not pin its revision, so it may be another tool's "
+            + remove.format(repo)
+            for repo in self.unpinned
+        ]
+        notes += [
+            f"cannot remove {repo}: the cache scan could not read it; run `voiced install` "
+            f"again to finish the download, or `rm -r {q(self.hub / repo_folder(repo))}`"
+            for repo in self.broken
+        ]
+        return notes
+
+
+def model_targets(plan: InstallPlan, settings: Settings) -> ModelTargets:
+    """The revisions voiced pinned, this release's and earlier ones, that
+    the cache holds."""
+    hub = hf_hub(plan.hf_home)
+    pins = pinned_revisions()
+    pinned_repos = {repo for repo, _ in pins}
+    try:
+        scan = cached_revisions(hub, pinned_repos | {settings.stt.model, settings.tts.model})
+        revisions = [c for c in scan.revisions if (c.repo, c.revision) in pins]
+        freed = delete_revisions(hub, revisions, dry_run=True) if revisions else 0
+    except ImportError:
+        return ModelTargets(hub, refused="huggingface_hub is not installed here")
+    return ModelTargets(
+        hub,
+        revisions=revisions,
+        freed=freed,
+        unpinned=sorted({c.repo for c in scan.revisions if c.repo not in pinned_repos}),
+        broken=[repo for repo in scan.broken if repo in pinned_repos],
+    )
+
+
+def revision_line(revision: CachedRevision) -> str:
+    """``repo revision sha``, and the branches pointing at it: another tool
+    that downloaded ``main`` shares a pinned revision when ``main`` is it."""
+    line = f"{revision.repo} revision {revision.revision}"
+    if revision.refs:
+        names = ", ".join(f"`{ref}`" for ref in revision.refs)
+        line += f" (also {names}, which other tools may use)"
+    return line
+
+
+def remove_models(models: ModelTargets, say: Say) -> int:
+    """Delete ``models.revisions``; returns how many revisions were removed."""
+    for note in models.notes():
+        say(note)
+    if models.refused is not None or not models.revisions:
+        return 0
+    freed = delete_revisions(models.hub, models.revisions)
+    for revision in models.revisions:
+        say(f"removed {revision_line(revision)}")
+    say(f"freed {size_text(freed)} ({freed:,} bytes) of models in {models.hub}")
+    return len(models.revisions)
 
 
 @dataclass(frozen=True)
@@ -1031,6 +1119,7 @@ class UninstallTargets:
     # Why the state directory is left alone (it is not voiced's), or None.
     refused: str | None = None
     manifest: Manifest | None = None
+    models: ModelTargets | None = None  # with --remove-models
 
     def all(self) -> list[Path]:
         return [*self.trees, *self.files]
@@ -1065,7 +1154,12 @@ def state_targets(state_dir: Path) -> UninstallTargets:
 
 
 def uninstall_targets(
-    plan: InstallPlan, settings: Settings, *, logs: bool, models: bool, config: bool
+    plan: InstallPlan,
+    settings: Settings,
+    *,
+    logs: bool,
+    models: bool,
+    config: bool,
 ) -> UninstallTargets:
     """What ``uninstall`` deletes.
 
@@ -1085,20 +1179,29 @@ def uninstall_targets(
             files += sorted(plan.log_dir.glob(f"{name}.log.*"))  # rotated app logs
         files.append(plan.log_dir / METAL_PROBE_FILE)
         prune.append(plan.log_dir)
-    if models:
-        trees += hf_cache_dirs(settings, plan.hf_home)
+    found_models = model_targets(plan, settings) if models else None
     if config:
         files += [plan.config_file, plan.config_file.parent / "metal-probe.sh"]
         files += plan.legacy_staged_files()
         prune.append(plan.legacy_staging_dir)
-    return UninstallTargets(trees, files, prune, refused=state.refused, manifest=state.manifest)
+    return UninstallTargets(
+        trees,
+        files,
+        prune,
+        refused=state.refused,
+        manifest=state.manifest,
+        models=found_models,
+    )
 
 
 def remove_targets(targets: UninstallTargets, plan: InstallPlan, say: Say) -> int:
-    """Delete the targets with the safety rules; returns how many were removed."""
+    """Delete the targets with the safety rules; returns how many paths and
+    model revisions were removed (0: there was nothing to remove)."""
     removed = 0
     if targets.refused is not None:
         say(f"refusing to touch {plan.state_dir}: {targets.refused}")
+    if targets.models is not None:
+        removed += remove_models(targets.models, say)
     for tree in targets.trees:
         if not tree.exists() and not tree.is_symlink():
             continue

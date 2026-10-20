@@ -47,6 +47,9 @@ class Pin:
     repo: str
     revision: str  # a commit SHA
     bytes: int  # the files download_patterns() names at that revision
+    # The revisions earlier releases pinned, newest first: re-pinning moves
+    # the old revision here, so uninstall still knows it is voiced's.
+    previous: tuple[str, ...] = ()
 
 
 PINS: tuple[Pin, ...] = (
@@ -74,6 +77,12 @@ def pinned_revision(repo: str) -> str | None:
     """``repo``'s pinned commit, or None (its ``main``)."""
     pinned = pin(repo)
     return pinned.revision if pinned is not None else None
+
+
+def pinned_revisions() -> set[tuple[str, str]]:
+    """Every ``(repo, revision)`` voiced pins or pinned, which is what
+    ``voiced uninstall --remove-models`` may delete."""
+    return {(p.repo, rev) for p in PINS for rev in (p.revision, *p.previous)}
 
 
 def manifest() -> dict[str, Any]:
@@ -187,6 +196,87 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
     if report is not None:
         report.finish()
     return Path(path)
+
+
+@dataclass(frozen=True, order=True)
+class CachedRevision:
+    """One revision of a model repository in the Hugging Face cache."""
+
+    repo: str
+    revision: str
+    bytes: int  # on disk, following the links into the shared blob store
+    refs: tuple[str, ...] = ()  # the branches and tags that point at it, such as "main"
+
+
+@dataclass(frozen=True)
+class CacheScan:
+    """``revisions``: what the cache holds of the repositories asked for.
+    ``broken``: those of them whose folder is there but which the scan
+    could not read (a download interrupted before any snapshot, say), so
+    nothing of them can be deleted through the library."""
+
+    revisions: list[CachedRevision]
+    broken: list[str]
+
+
+def cached_revisions(hub: Path, repos: set[str]) -> CacheScan:
+    """The revisions of ``repos`` (model repositories) that the cache at
+    ``hub`` holds, and those of ``repos`` it could not read; nothing when
+    there is no cache there."""
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.errors import CacheNotFound
+
+    try:
+        info = scan_cache_dir(hub)
+    except CacheNotFound:
+        return CacheScan([], [])
+    revisions = sorted(
+        CachedRevision(repo.repo_id, rev.commit_hash, rev.size_on_disk, tuple(sorted(rev.refs)))
+        for repo in info.repos
+        if repo.repo_type == "model" and repo.repo_id in repos
+        for rev in repo.revisions
+    )
+    # The scan leaves a repository it cannot read out of info.repos.
+    read = {repo.repo_id for repo in info.repos if repo.repo_type == "model"}
+    broken = sorted(
+        repo for repo in repos - read if (hub / f"models--{repo.replace('/', '--')}").is_dir()
+    )
+    return CacheScan(revisions, broken)
+
+
+def delete_revisions(
+    hub: Path, revisions: Sequence[CachedRevision], *, dry_run: bool = False
+) -> int:
+    """Delete ``revisions`` from the cache at ``hub`` and return the bytes
+    freed (with ``dry_run``, that would be freed, deleting nothing).
+    Through ``huggingface_hub``: a repository folder holds links into the
+    cache-wide blob store, so removing the folder would leave the bytes
+    behind. The library removes each revision's snapshot and refs and the
+    blobs no other revision or repository uses; other revisions of the same
+    repository stay. Only the named repositories are considered, so a
+    revision hash another repository shares is not touched there."""
+    import dataclasses
+
+    from huggingface_hub import scan_cache_dir
+
+    info = scan_cache_dir(hub)
+    repos = {r.repo for r in revisions}
+    mine = dataclasses.replace(
+        info,
+        repos=frozenset(r for r in info.repos if r.repo_type == "model" and r.repo_id in repos),
+    )
+    strategy = mine.delete_revisions(*(r.revision for r in revisions))
+    if not dry_run:
+        strategy.execute()
+    return int(strategy.expected_freed_size)
+
+
+def size_text(n: int) -> str:
+    """``n`` bytes in decimal units, as the Hugging Face tools show them."""
+    for unit, scale in (("GB", 10**9), ("MB", 10**6), ("KB", 10**3)):
+        if n >= scale:
+            return f"{n / scale:.1f} {unit}"
+    return f"{n} bytes"
 
 
 def cache_dir() -> str:
