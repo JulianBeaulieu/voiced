@@ -175,7 +175,7 @@ a user would notice.
 ## Cutting a release
 
 Maintainers only. `.github/workflows/release.yml` builds everything from the
-tag. Before the first signed release, do "Setting it up, once" in
+tag. Signing relies on "Setting it up, once" in
 [SIGNING.md](menubar/Scripts/SIGNING.md). Two of its steps are required, not
 optional: the `release` environment with a required reviewer, and the tag
 ruleset that lets only the owner create `v*` tags. Without them anyone with

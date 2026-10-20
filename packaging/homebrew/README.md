@@ -56,6 +56,5 @@ A cask that begins `# AD HOC BUILD` came from a run without the signing
 secrets; Gatekeeper rejects that download, so it stays out of the tap (ADR
 0017, "The end-user path"). The formula installs `src/voiced/requirements.lock`
 and builds with `src/voiced/build-requirements.lock` from the tag, so there
-are no dependency versions to update in it. Once the tap has a tagged
-formula, copy the generated file back over `voiced.rb` here, so the two stay
-the same.
+are no dependency versions to update in it. After each release, copy the
+generated file back over `voiced.rb` here, so the two stay the same.

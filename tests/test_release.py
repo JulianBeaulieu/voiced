@@ -80,6 +80,28 @@ def test_formula_replaces_the_lines_of_an_earlier_tag(release: ModuleType, tmp_p
     assert re.findall(r'^  sha256 "(.*)"$', text, re.MULTILINE) == ["cd" * 32]
 
 
+def test_formula_replaces_the_first_release_comment(release: ModuleType, tmp_path: Path) -> None:
+    untagged = tmp_path / "voiced.rb"
+    untagged.write_text(
+        "class Voiced < Formula\n"
+        '  homepage "https://github.com/JulianBeaulieu/voiced"\n'
+        '  head "https://github.com/JulianBeaulieu/voiced.git", branch: "main"\n'
+        "\n"
+        "  # FIRST RELEASE: no tag yet.\n"
+        "  #\n"
+        f'  #   url "{URL}"\n'
+        f'  #   sha256 "{"0" * 64}"\n'
+        "\n"
+        '  depends_on "uv" => :build\n'
+        "end\n"
+    )
+    text = release.formula(URL, SHA, untagged)
+    assert "FIRST RELEASE" not in text
+    assert re.findall(r'^  url "(.*)"$', text, re.MULTILINE) == [URL]
+    assert re.findall(r'^  sha256 "(.*)"$', text, re.MULTILINE) == [SHA]
+    assert "\n\n\n" not in text
+
+
 def test_cask_sets_version_and_sha256(release: ModuleType) -> None:
     text = release.cask("1.2.0", SHA)
     assert re.findall(r'^  version "(.*)"$', text, re.MULTILINE) == ["1.2.0"]
