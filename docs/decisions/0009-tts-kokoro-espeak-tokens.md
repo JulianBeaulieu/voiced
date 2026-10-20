@@ -76,10 +76,9 @@ bundles its own espeak-ng; the engine does not look for it, but it is used
 when `VOICED_ESPEAK_LIBRARY` names its library, and its data directory is
 what the tokenizer reads whenever `VOICED_ESPEAK_DATA` is not set.
 
-Changed 2026-10-20 (ADR 0018, "espeak-ng: the wheel's copy, cloned to a
-short path"): without the override, the engine now tries the wheel's
-library first, with its data cloned to a short path as below, and the
-Homebrew keg second. The override is still the only candidate when set.
+Changed 2026-10-20: the wheel's library now comes first and the keg
+second, so no install needs espeak-ng installed separately; see ADR 0018,
+"espeak-ng: the wheel's copy, cloned to a short path".
 
 ### The wheel's espeak-ng and long paths
 

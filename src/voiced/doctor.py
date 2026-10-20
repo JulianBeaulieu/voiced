@@ -31,11 +31,12 @@ from voiced.config import (
 from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import ControlError, request
 from voiced.engines.kokoro import (
-    ENV_ESPEAK_LIBRARY,
-    ESPEAK_INSTALL_HINT,
+    ESPEAK_COPIES,
+    ESPEAK_REMEDY,
     EspeakNotFound,
     KokoroEngine,
     espeak_candidates,
+    espeak_data_path,
 )
 from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import Runner, plist_path, print_service, run_command
@@ -234,41 +235,50 @@ def check_config_file(path: Path) -> Check:
 
 
 def check_espeak(required: bool = True) -> Check:
-    """Does the Kokoro engine find an espeak-ng library?
+    """Does the Kokoro engine find an espeak-ng library it can load?
 
     Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`)
-    and reports the copy it tries first: ``[tts] espeak_library`` when set
+    and data path check (:func:`~voiced.engines.kokoro.espeak_data_path`), and
+    reports the first copy load would accept: ``[tts] espeak_library`` when set
     (``VOICED_ESPEAK_LIBRARY``), else the ``espeakng-loader`` wheel's in this
     environment, else the Homebrew keg, which is found whether or not it is
-    linked. An ``espeak-ng`` binary on ``PATH`` is irrelevant: the engine loads
-    the library. ``required`` is whether the configured TTS engine needs it;
-    if not, any problem is only a warning. The library is found, not loaded:
-    the engine's phonemizer self-test runs only in the service.
+    linked. Copies skipped on the way are named. An ``espeak-ng`` binary on
+    ``PATH`` is irrelevant: the engine loads the library. ``required`` is
+    whether the configured TTS engine needs it; if not, any problem is only a
+    warning. Nothing is copied or loaded: the engine's phonemizer self-test
+    runs only in the service.
     """
     name = "espeak-ng"
     result: Result = "fail" if required else "warn"
+    skipped: list[str] = []
     try:
-        found = espeak_candidates()
+        candidates = espeak_candidates()
     except EspeakNotFound as exc:
         return Check(name, result, str(exc))
-    if found:
-        library, data = found[0]
-        if library == os.environ.get(ENV_ESPEAK_LIBRARY):
-            detail = f"found {library} ([tts] espeak_library)"
-        elif data is None:  # only the wheel's comes without its data path
-            detail = f"found {library} (espeakng-loader wheel; data copied to a short path)"
-        else:
-            detail = f"found {library} (Homebrew)"
+    for candidate in candidates:
+        try:
+            data = espeak_data_path(candidate)
+        except EspeakNotFound as exc:
+            skipped.append(f"{candidate.library}: {exc}")
+            continue
+        label = _ESPEAK_SOURCES[candidate.source]
+        detail = f"found {candidate.library} ({label})"
         if data:
             detail += f", data {data}"
+        if skipped:
+            detail += f"; skipped {'; '.join(skipped)}"
         return Check(name, "pass", detail)
-    return Check(
-        name,
-        result,
-        "library not found (no espeakng-loader wheel in this environment, no "
-        f"Homebrew keg); Kokoro needs it: reinstall voiced with its tts extra, or "
-        f"{ESPEAK_INSTALL_HINT} (or set [tts] espeak_library to libespeak-ng.dylib)",
-    )
+    if skipped:
+        return Check(name, result, f"no usable copy ({'; '.join(skipped)}). {ESPEAK_REMEDY}")
+    missing = f"library not found: neither {ESPEAK_COPIES}; Kokoro needs it."
+    return Check(name, result, f"{missing} {ESPEAK_REMEDY}")
+
+
+_ESPEAK_SOURCES = {
+    "override": "[tts] espeak_library",
+    "wheel": "espeakng-loader wheel",
+    "homebrew": "Homebrew",
+}
 
 
 def check_ffmpeg(

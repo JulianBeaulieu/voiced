@@ -270,11 +270,11 @@ its own GPL-3 copy of espeak-ng. voiced loads that wheel's copy, so every
 install runs the version in the lock and needs nothing from Homebrew; if it
 does not work, Homebrew's (`brew install espeak-ng`) is tried next, and the
 path in `[tts] espeak_library` replaces both when set. The engine fails at
-startup with the install command if none works. With `[tts] espeak_library`
-set and `espeak_data` unset, the wheel's espeak-ng data files are used. Anyone redistributing a tts environment
-redistributes these GPL-3 packages with it: shipping a built tts environment
-(a venv, an app bundle, an image) means meeting the GPL-3 terms for it. The
-voiced source itself stays MIT.
+startup with the remedies if none works. With `[tts] espeak_library` set
+and `espeak_data` unset, the wheel's espeak-ng data files are used. Anyone
+redistributing a tts environment redistributes these GPL-3 packages with
+it: shipping a built tts environment (a venv, an app bundle, an image)
+means meeting the GPL-3 terms for it. The voiced source itself stays MIT.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
 package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`

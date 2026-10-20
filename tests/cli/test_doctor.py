@@ -75,23 +75,51 @@ def no_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kokoro, "_bundled_espeak", lambda: None)
 
 
+def _wheel(monkeypatch: pytest.MonkeyPatch, root: Path, data: Path) -> Path:
+    """An espeakng-loader wheel with its library under ``root`` and its data at ``data``."""
+    library = root / "espeakng_loader" / "libespeak-ng.dylib"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"")
+    wheel = kokoro._Wheel(str(library), str(data), "0.2.4")
+    monkeypatch.setattr(kokoro, "_bundled_espeak", lambda: wheel)
+    return library
+
+
 def test_espeak_wheel_passes_without_homebrew(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The wheel's library is what Kokoro tries first, so it passes with no keg."""
-    library = tmp_path / "espeakng_loader" / "libespeak-ng.dylib"
-    library.parent.mkdir()
-    library.write_bytes(b"")
-    monkeypatch.setattr(
-        kokoro, "_bundled_espeak", lambda: (str(library), str(tmp_path / "data"), "0.2.4")
-    )
+    """The wheel's library is what Kokoro tries first, so it passes with no
+    keg, and the data named is the short clone load would use (not made here)."""
+    library = _wheel(monkeypatch, tmp_path, tmp_path / "data")
+    monkeypatch.setattr(kokoro, "_user_cache_dir", lambda: tmp_path / "cache")
     monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
     check = doctor.check_espeak()
+    clone = tmp_path / "cache" / "voiced" / "espeak-ng-data-0.2.4"
     assert check == doctor.Check(
-        "espeak-ng",
-        "pass",
-        f"found {library} (espeakng-loader wheel; data copied to a short path)",
+        "espeak-ng", "pass", f"found {library} (espeakng-loader wheel), data {clone}"
     )
+    assert not clone.exists()
+
+
+def test_espeak_wheel_load_would_refuse_is_not_a_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No user cache directory and a wheel at a path longer than espeak-ng
+    accepts: load skips it, so doctor reports the keg, or fails without one."""
+    long = tmp_path / ("d" * 80) / ("d" * 80) / "espeak-ng-data"
+    library = _wheel(monkeypatch, tmp_path, long)
+    monkeypatch.setattr(kokoro, "_user_cache_dir", lambda: None)
+    monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
+    check = doctor.check_espeak()
+    assert check.result == "fail"
+    assert f"{library}: espeak-ng data path" in check.detail
+    assert check.detail.endswith(kokoro.ESPEAK_REMEDY)
+    keg = _keg(tmp_path / "opt" / "espeak-ng")
+    monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(keg),))
+    check = doctor.check_espeak()
+    assert check.result == "pass"
+    assert check.detail.startswith(f"found {keg}/lib/libespeak-ng.dylib (Homebrew)")
+    assert f"; skipped {library}: espeak-ng data path" in check.detail
 
 
 @pytest.mark.usefixtures("no_wheel")
@@ -117,6 +145,7 @@ def test_espeak_missing_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert doctor.check_espeak(required=False).result == "warn"
 
 
+@pytest.mark.usefixtures("no_wheel")
 def test_espeak_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     lib = tmp_path / "libespeak-ng.dylib"
     lib.write_bytes(b"")
