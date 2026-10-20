@@ -8,7 +8,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- `GET /openapi.json` on the TTS service no longer returns 500, so `/docs` shows the API.
+- `GET /openapi.json` on the TTS service no longer returns 500,
+  so `/docs` shows the API.
 
 ## [0.1.0] - 2026-10-19
 
