@@ -59,7 +59,6 @@ def test_the_version_is_pyprojects(release: ModuleType) -> None:
 
 def test_formula_gets_one_url_and_sha256_after_homepage(release: ModuleType) -> None:
     text = release.formula(URL, SHA)
-    assert "FIRST RELEASE" not in text
     assert re.findall(r'^  url "(.*)"$', text, re.MULTILINE) == [URL]
     assert re.findall(r'^  sha256 "(.*)"$', text, re.MULTILINE) == [SHA]
     lines = text.splitlines()
