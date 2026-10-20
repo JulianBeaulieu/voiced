@@ -51,8 +51,8 @@ THREADS = 4
 """``ptts``'s CPU thread pool. Its default is every core, efficiency cores
 included, beside the STT's own CPU work; ADR 0021 has the measurement."""
 _PHONON = next(e for e in CATALOGUE if e.name == "phonon")
-VOICES_REPO = _PHONON.shared[0].repo
-MODELS_40M = tuple(m.repo for m in _PHONON.models if "phonon-40m" in m.repo)
+VOICES_REPO = _PHONON.shared[0].id
+MODELS_40M = tuple(m.id for m in _PHONON.models if "phonon-40m" in m.id)
 """The 40M checkpoints in the catalogue; the engine refuses any other."""
 
 DEFAULT_VOICE = Voice(id="default", name="Default", language="en", gender=None)
@@ -112,7 +112,7 @@ PHONON_VOICES: list[Voice] = [
 
 class PhononEngine(SentenceTTSEngine):
     name = "phonon"
-    model_id = default_model("phonon").repo
+    model_id = default_model("phonon").id
     languages = ["en-US", "en-GB"]
     license = default_model("phonon").license
 

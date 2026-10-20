@@ -1,7 +1,8 @@
 {
   "comment": "Written by `python -m voiced.models pin`; see voiced/models.py.",
-  "repos": {
+  "models": {
     "gradium/phonon-31m-en": {
+      "repo": "gradium/phonon-31m-en",
       "revision": "8c64b55ec301728e2d1695bfea87a08a267d0c2d",
       "patterns": [
         "config.json",
@@ -30,6 +31,7 @@
       "previous": []
     },
     "gradium/phonon-40m-en": {
+      "repo": "gradium/phonon-40m-en",
       "revision": "9b95393286eaeeebf1330b2ae90a14a2074c415d",
       "patterns": [
         "config.json",
@@ -58,6 +60,7 @@
       "previous": []
     },
     "gradium/phonon-voices": {
+      "repo": "gradium/phonon-voices",
       "revision": "da6c9ec0d47be8df5c87c730a3aa97187f3229c3",
       "patterns": [
         "voices.jsonl",
@@ -256,6 +259,7 @@
       "previous": []
     },
     "mlx-community/Kokoro-82M-bf16": {
+      "repo": "mlx-community/Kokoro-82M-bf16",
       "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
       "patterns": [
         "config.json",
@@ -490,6 +494,7 @@
       "previous": []
     },
     "mlx-community/Soprano-80M-bf16": {
+      "repo": "mlx-community/Soprano-80M-bf16",
       "revision": "b7da048eff3dfd556409a44b78b9c61a9dd4ccfa",
       "patterns": [
         "*.json",
@@ -524,6 +529,7 @@
       "previous": []
     },
     "mlx-community/parakeet-tdt-0.6b-v3": {
+      "repo": "mlx-community/parakeet-tdt-0.6b-v3",
       "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
       "patterns": [
         "config.json",

@@ -88,7 +88,7 @@ def sentence_bound(sentence: str, token_seconds: float) -> SentenceBound:
 
 class SopranoEngine(SentenceTTSEngine):
     name = "soprano"
-    model_id = default_model("soprano").repo
+    model_id = default_model("soprano").id
     languages = ["en-US"]
     license = default_model("soprano").license
 
@@ -140,7 +140,7 @@ def _load_model(model_id: str) -> Any:
     snapshot(model_id, check_only=True)
     entry = locked(model_id)
     model = load_model(
-        model_id,
+        entry.repo if entry else model_id,
         revision=entry.revision if entry else None,
         allow_patterns=list(entry.patterns) if entry else None,
     )

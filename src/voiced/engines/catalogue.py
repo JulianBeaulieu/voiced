@@ -71,7 +71,7 @@ def catalogue_voices(cls: type[TTSEngine]) -> list[Voice]:
 def engine_models(name: str, cls: type[STTEngine] | type[TTSEngine]) -> list[str]:
     catalogued = models.engine(name)
     if catalogued is not None:
-        return [m.repo for m in catalogued.models]
+        return [m.id for m in catalogued.models]
     model = getattr(cls, "model_id", None)
     return [model] if isinstance(model, str) and model else []
 

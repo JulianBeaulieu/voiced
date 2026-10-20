@@ -229,6 +229,32 @@ changed the document, take either side and run
 `uv run python scripts/bench_engine.py render`; a test fails while the
 document and the result files differ.
 
+## Adding or moving a model
+
+The models voiced runs are listed by hand in `CATALOGUE` in
+`src/voiced/models.py`: the engine's entry point name, then each model's
+repository, licence (from its model card), whether it is gated, and the
+file patterns the engine loads; the first model is the default, and
+`shared` names models every model of the engine needs. A model is known by
+its repository, which is what the config's `model` holds; when several
+models are folders of one repository, give each an `id` and patterns for
+its folder. The revisions,
+files, sizes and hashes are in `src/voiced/models.lock.json`, which you
+never edit by hand:
+
+```sh
+uv run python -m voiced.models pin                        # every repository added or with new patterns
+uv run python -m voiced.models pin <repo> --revision main # move a model to its current main
+```
+
+`pin` resolves the revision to a commit through the Hugging Face API,
+records each file's size and sha256 (hashing the small files it has to
+download), and keeps a replaced revision in `previous`, so uninstall still
+deletes what an earlier release downloaded. A gated model needs a token
+that has accepted its terms. `tests/core/test_models.py` fails, naming the
+command, until the catalogue and the lock agree. Then run the engine's
+model tests (`VOICED_MODEL_TESTS=1`) against the new pin.
+
 ## Cutting a release
 
 Maintainers only. `.github/workflows/release.yml` builds everything from the

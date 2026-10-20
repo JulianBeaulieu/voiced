@@ -257,7 +257,7 @@ since the status line has already been sent:
 
 | Status | `type` | When |
 |---|---|---|
-| 400 | `invalid_request_error` | Empty `input`, a bad field, or a voice that is not served (`UnknownVoice` in the message), including a `tts.default_voice` outside the configured languages. |
+| 400 | `invalid_request_error` | Empty `input`, a bad field, or a voice when the service serves none in the configured languages (`UnknownVoice` in the message). Any other voice that is not served is spoken in `tts.default_voice` (or the first served voice) with a warning in the log, so an OpenAI client's `alloy` or Home Assistant's voice of the previous engine still gets audio. |
 | 413 | `payload_too_large` | `input` is longer than `tts.max_input_chars`. |
 | 500 | `ffmpeg_missing` | `mp3` or `opus` requested and ffmpeg is not installed. |
 | 503 | `server_busy` | The inference queue is full, or the model is loading. |
@@ -368,7 +368,7 @@ curl -s http://127.0.0.1:8880/v1/models
 The stt service reports `"task": "transcription"`. `license` is the
 configured model's: with Phonon it is `Apache-2.0` for the default
 `gradium/phonon-31m-en` and `CC-BY-NC-4.0` (non-commercial) for
-`gradium/phonon-40m-en` and `gradium/phonon-40m-multilingual`:
+`gradium/phonon-40m-en`:
 
 ```json
 {
@@ -398,8 +398,10 @@ for model in tts.models.list():
 ## GET /health
 
 No authentication. `200` once the model is loaded and warm, `503` with
-`"status": "starting"` before that; the body is the same document either
-way. The services bind their ports before loading the model, so a loading
+`"status": "starting"` before that, or `"status": "missing_model"` when the
+configured model is not downloaded (the services never download one; the
+process stays up and `last_error` names the `voiced models download`
+command); the body is the same document either way. The services bind their ports before loading the model, so a loading
 service answers `starting` rather than refusing connections. The watchdog
 polls this.
 
@@ -426,7 +428,7 @@ curl -s http://127.0.0.1:8880/health
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. |
+| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. `missing_model` is newer than 0.1.1 (ADR 0022); clients should treat a status they do not know as not ready. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
@@ -491,6 +493,7 @@ the message with the exception name (`UnknownVoice`, `UnsupportedLanguage`,
 | 500 | `server_error` | The engine failed, or an unexpected error in the server. An engine failure turns `/health` `degraded`. |
 | 500 | `ffmpeg_missing` | ffmpeg is needed and not installed. |
 | 503 | `server_busy` | The inference queue is full, or the model is still loading. Carries `Retry-After: 1`. |
+| 503 | `model_not_downloaded` | The configured model is not downloaded (`/health` says `missing_model`). No `Retry-After`: retrying does not help until it is downloaded and the service restarted. |
 
 The `openai` client raises `openai.BadRequestError` for 400,
 `openai.AuthenticationError` for 401, `openai.InternalServerError` for 500

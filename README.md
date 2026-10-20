@@ -221,9 +221,15 @@ exposes the services to your whole network:
 
 ## Models and licenses
 
-Weights are not vendored. Each engine downloads its model from Hugging Face
-into the local cache, during `voiced install` or on first start. Silero VAD
-is the exception: it ships inside the `pysilero-vad` wheel.
+Weights are not vendored. They come from Hugging Face into the local cache,
+each at the revision voiced pins: `voiced install` fetches the configured
+models, and `voiced models download <repo>` any other (`voiced models list`
+shows them all, with their licence, size and state). The services never
+download; a service whose model is missing stays up and reports
+`missing_model` with the command that fetches it. `voiced models delete
+<repo>` removes a model voiced pins and nothing else in the cache, which
+other tools share ([docs/operations.md](docs/operations.md#models)). Silero
+VAD is the exception: it ships inside the `pysilero-vad` wheel.
 
 | Model | Role | Default | License |
 |---|---|---|---|
@@ -231,7 +237,7 @@ is the exception: it ships inside the `pysilero-vad` wheel.
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
-| [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English and [multilingual](https://huggingface.co/gradium/phonon-40m-multilingual) | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
+| [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
@@ -291,18 +297,14 @@ not in the app, the cask or any release asset (ADR 0018, "Licences").
 
 ### Using Soprano
 
-Soprano-80M is installed with the `tts` extra but is opt-in. To use it, set
-all three keys under `[tts]` in `~/.config/voiced/config.toml`:
+Soprano-80M is installed with the `tts` extra but is opt-in. Download it,
+then switch to it (`settings set` picks the engine's model and voice):
 
-```toml
-[tts]
-engine = "soprano"
-model = "mlx-community/Soprano-80M-bf16"
-default_voice = "default"
+```sh
+~/.voiced/bin/voiced models download mlx-community/Soprano-80M-bf16
+~/.voiced/bin/voiced settings set tts.engine=soprano
+~/.voiced/bin/voiced restart tts
 ```
-
-Then run `~/.voiced/bin/voiced install`, which downloads the model (from
-the service environment, so nothing is rebuilt), and `voiced restart all`.
 Know its limits before you switch. Its first audio varies more than
 Kokoro's from run to run (it samples its tokens); the current numbers are in
 [docs/benchmarks.md](docs/benchmarks.md). It has no rate control, so `speed` is
@@ -316,30 +318,27 @@ word, most often on one- and two-word replies. The details are in
 
 Phonon is a small text-to-speech model that runs on the CPU, so it leaves
 the GPU to speech-to-text. It is installed with voiced but is opt-in. To use
-it, set all three keys under `[tts]`:
+it, download the model and its voices (about 75 MB) and switch to it:
 
-```toml
-[tts]
-engine = "phonon"
-model = "gradium/phonon-31m-en"
-default_voice = "default"
+```sh
+~/.voiced/bin/voiced models download gradium/phonon-31m-en
+~/.voiced/bin/voiced settings set tts.engine=phonon
+~/.voiced/bin/voiced restart tts
 ```
 
 `default` is the model's own voice. The other 37 are Gradium's English
 presets, named as Gradium names them (`Easton`, `Maeve`, `The Snow Queen`);
-`/v1/audio/voices` and the menu bar app list them. Then run
-`~/.voiced/bin/voiced install`, which downloads the model and the voices
-(about 75 MB), and `voiced restart all`. Like Soprano, it has no rate
+`/v1/audio/voices` and the menu bar app list them. Like Soprano, it has no rate
 control, so `speed` is accepted and ignored. Voice cloning needs Gradium's
 hosted service and is not supported.
 
-The larger `gradium/phonon-40m-en` and `gradium/phonon-40m-multilingual`
-work the same way, as `model`, under their non-commercial licence; the
-other Phonon 40M models do not speak English and are refused. They are
-gated: accept the terms on the model's Hugging Face page while signed in,
-then, as the user the services run as, run `hf auth login` with `HF_HOME`
-set to the Hugging Face home the services use (`[install] hf_home`, or
-`~/.cache/huggingface` when unset), so the token lands where they read it.
+The larger `gradium/phonon-40m-en` works the same way (`tts.model=` in the
+`settings set`), under its non-commercial licence; the other Phonon 40M
+models are not in voiced's catalogue and are refused. It is gated: accept
+the terms on the model's Hugging Face page while signed in, then run `hf
+auth login` with `HF_HOME` set to the Hugging Face home voiced uses
+(`[install] hf_home`, or `~/.cache/huggingface` when unset) before `voiced
+models download gradium/phonon-40m-en`.
 The details are in [ADR 0021](docs/decisions/0021-tts-phonon.md).
 
 ## Benchmarks
@@ -386,7 +385,8 @@ daemons and Metal access, including from a real daemon context with
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `/health` returns 503 with `"status": "starting"`, `/v1` returns 503 `server_busy` | The model is still loading. The first start downloads it and can take minutes; watch `voiced logs`. |
+| `/health` returns 503 with `"status": "starting"`, `/v1` returns 503 `server_busy` | The model is still loading, which takes seconds; watch `voiced logs`. |
+| `/health` returns 503 with `"status": "missing_model"`, `/v1` returns 503 `model_not_downloaded` | The configured model is not in the Hugging Face cache (a hand-edited config, a cache another tool cleared). `last_error` and `voiced doctor` name the command: `voiced models download <repo>`, then `voiced restart`. The watchdog leaves the service alone meanwhile. |
 | `/health` says `"degraded"` | The last inference failed. The error is in `last_error` and on the status page; the watchdog restarts the service if it stays degraded for two minutes. |
 | HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
 | HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |
@@ -394,7 +394,7 @@ daemons and Metal access, including from a real daemon context with
 | HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg, which comes with voiced's `imageio-ffmpeg` dependency: reinstall voiced. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
 | Soprano clips the last word; the log shows `soprano: runaway generation` | The model ran past the sentence and was cut at its length bound. Expected now and then, mostly on one- and two-word replies; Kokoro does not do this. |
-| tts exits at startup with `gradium/phonon-40m-... is gated` | The configured Phonon 40M model needs its licence accepted and a Hugging Face token where the services read it; the message says how. See [Using Phonon](#using-phonon). |
+| `voiced models download gradium/phonon-40m-en` fails with `is gated` | The model needs its licence accepted and a Hugging Face token; the message says how. See [Using Phonon](#using-phonon). |
 | Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
@@ -403,7 +403,7 @@ daemons and Metal access, including from a real daemon context with
 | Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
 | Services stopped after `brew uninstall voiced` | `~/.voiced/bin/voiced` points at the removed formula, so launchd no longer starts them. Reinstall it, or finish removing voiced: [docs/operations.md](docs/operations.md#homebrew). |
-| A service restarts every 10 s after a reboot, log shows `LocalEntryNotFoundError` | The models are not in the Hugging Face cache and there is no network. It recovers by itself once the download can happen. With the models cached, a service starts without network. |
+| `voiced settings set` says `is not downloaded` | voiced refuses to switch to a model that is not in the cache; run the `voiced models download` it names first. |
 
 Logs live under `~/Library/Logs/voiced/`. More in
 [docs/operations.md](docs/operations.md).

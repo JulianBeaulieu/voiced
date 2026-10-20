@@ -122,7 +122,7 @@ class STTConfig(_Section):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
     engine: str = DEFAULT_ENGINES["stt"]
-    model: str = default_model(DEFAULT_ENGINES["stt"]).repo
+    model: str = default_model(DEFAULT_ENGINES["stt"]).id
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     vad_silence_ms: int = Field(default=200, ge=0)
     queue_depth: int = Field(default=8, ge=1)
@@ -156,7 +156,7 @@ class TTSConfig(_Section):
     http_port: int = Field(default=8880, ge=1, le=65535)
     wyoming_port: int = Field(default=10200, ge=1, le=65535)
     engine: str = DEFAULT_ENGINES["tts"]
-    model: str = default_model(DEFAULT_ENGINES["tts"]).repo
+    model: str = default_model(DEFAULT_ENGINES["tts"]).id
     default_voice: str = "af_heart"
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
     speed: float = Field(default=1.0, gt=0)

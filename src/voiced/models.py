@@ -3,15 +3,18 @@
 Two parts, in the relation of ``pyproject.toml`` to ``uv.lock``:
 
 * :data:`CATALOGUE`, written by hand: each engine voiced ships, its models
-  (the first is the default) and the repositories every model of it needs
-  (``shared``), each with its licence, whether it is gated, and the files
-  the engine loads (``patterns``).
+  (the first is the default) and the models every model of it needs
+  (``shared``), each with its Hugging Face repository, licence, whether it
+  is gated, and the files the engine loads (``patterns``). A model is known
+  by its ``id``, what ``stt.model`` and ``tts.model`` hold: its repository,
+  unless several models are folders of one repository, when each has an
+  ``id`` of its own.
 * ``models.lock.json`` beside this module, written by ``python -m
-  voiced.models pin [REPO ...]`` (a maintainer's command, which needs the
-  network): per repository the commit, the patterns it was resolved with,
-  each file's size and sha256, and ``previous``, the revisions earlier
-  releases pinned, so uninstall still knows them. A test fails, naming the
-  command, when the two disagree.
+  voiced.models pin [MODEL ...]`` (a maintainer's command, which needs the
+  network): per model its repository, the commit, the patterns it was
+  resolved with, each file's size and sha256, and ``previous``, the
+  revisions earlier releases pinned, so uninstall still knows them. A test
+  fails, naming the command, when the two disagree.
 
 Every catalogued engine loads its model from :func:`snapshot` with
 ``check_only``: the services never download (they run with
@@ -55,12 +58,19 @@ from voiced.launchd.progress import DOWNLOAD_PREFIX
 
 @dataclass(frozen=True)
 class Model:
-    """A Hugging Face model repository and the files voiced loads from it."""
+    """A model: the files voiced loads from a Hugging Face repository.
+    ``id`` defaults to the repository; models that share one repository
+    (a folder each) need ids of their own."""
 
     repo: str
     license: str
     patterns: tuple[str, ...]
     gated: bool = False  # needs a token and acceptance of its terms
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            object.__setattr__(self, "id", self.repo)
 
     @property
     def url(self) -> str:
@@ -70,8 +80,8 @@ class Model:
 @dataclass(frozen=True)
 class Engine:
     """``name`` is the entry point name ``engine =`` uses in the config;
-    ``kind`` its registry group. ``shared`` repositories are downloaded with
-    any of its models and deleted with the last."""
+    ``kind`` its registry group. ``shared`` models are downloaded with any
+    of its models and deleted with the last."""
 
     name: str
     kind: Literal["stt", "tts"]
@@ -189,33 +199,33 @@ def default_model(engine_name: str) -> Model:
     return found.models[0]
 
 
-def find(repo: str) -> tuple[Engine, Model] | None:
-    """The catalogued model ``repo`` and its engine; None for a shared
-    repository or one the catalogue does not know."""
+def find(model_id: str) -> tuple[Engine, Model] | None:
+    """The catalogued model ``model_id`` and its engine; None for a shared
+    model or one the catalogue does not know."""
     for e in CATALOGUE:
         for m in e.models:
-            if m.repo == repo:
+            if m.id == model_id:
                 return e, m
     return None
 
 
-def repositories() -> list[Model]:
-    """Every catalogued repository, models and shared ones, once each."""
+def catalogued() -> list[Model]:
+    """Every catalogued model, shared ones included, once each."""
     seen: dict[str, Model] = {}
     for e in CATALOGUE:
         for m in (*e.models, *e.shared):
-            seen.setdefault(m.repo, m)
+            seen.setdefault(m.id, m)
     return list(seen.values())
 
 
-def required(repo: str) -> list[str]:
-    """What a load of ``repo`` needs: the model, then its engine's shared repositories."""
-    found = find(repo)
-    return [repo, *(s.repo for s in found[0].shared)] if found is not None else [repo]
+def required(model_id: str) -> list[str]:
+    """What a load of ``model_id`` needs: the model, then its engine's shared models."""
+    found = find(model_id)
+    return [model_id, *(s.id for s in found[0].shared)] if found is not None else [model_id]
 
 
-def license_of(repo: str) -> str | None:
-    found = find(repo)
+def license_of(model_id: str) -> str | None:
+    found = find(model_id)
     return found[1].license if found is not None else None
 
 
@@ -233,8 +243,9 @@ class LockedFile:
 
 @dataclass(frozen=True)
 class Locked:
-    """One repository in ``models.lock.json``."""
+    """One model in ``models.lock.json``."""
 
+    id: str
     repo: str
     revision: str  # a commit SHA
     patterns: tuple[str, ...]
@@ -247,6 +258,7 @@ class Locked:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "repo": self.repo,
             "revision": self.revision,
             "patterns": list(self.patterns),
             "files": {
@@ -260,21 +272,22 @@ class Locked:
 def read_lock(path: Path = LOCK_FILE) -> dict[str, Locked]:
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     return {
-        repo: Locked(
-            repo,
+        model_id: Locked(
+            model_id,
+            entry["repo"],
             entry["revision"],
             tuple(entry["patterns"]),
             {name: LockedFile(f["bytes"], f["sha256"]) for name, f in entry["files"].items()},
             tuple(entry.get("previous", ())),
         )
-        for repo, entry in data.get("repos", {}).items()
+        for model_id, entry in data.get("models", {}).items()
     }
 
 
 def write_lock(lock: dict[str, Locked], path: Path = LOCK_FILE) -> None:
     data = {
         "comment": f"Written by `{PIN_COMMAND}`; see voiced/models.py.",
-        "repos": {repo: lock[repo].to_json() for repo in sorted(lock)},
+        "models": {model_id: lock[model_id].to_json() for model_id in sorted(lock)},
     }
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -285,13 +298,13 @@ def lock() -> dict[str, Locked]:
     return read_lock()
 
 
-def locked(repo: str) -> Locked | None:
-    return lock().get(repo)
+def locked(model_id: str) -> Locked | None:
+    return lock().get(model_id)
 
 
-def pinned_revision(repo: str) -> str | None:
-    """``repo``'s pinned commit, or None (its ``main``)."""
-    entry = locked(repo)
+def pinned_revision(model_id: str) -> str | None:
+    """``model_id``'s pinned commit, or None (its ``main``)."""
+    entry = locked(model_id)
     return entry.revision if entry is not None else None
 
 
@@ -303,11 +316,11 @@ def pinned_revisions() -> set[tuple[str, str]]:
 
 def manifest() -> dict[str, Any]:
     """The default engines' models, which ``voiced install`` downloads."""
-    repos = [r for name in DEFAULT_ENGINES.values() for r in required(default_model(name).repo)]
+    ids = [m for name in DEFAULT_ENGINES.values() for m in required(default_model(name).id)]
     return {
         "models": [
             {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
-            for e in (lock()[r] for r in repos)
+            for e in (lock()[m] for m in ids)
         ]
     }
 
@@ -343,16 +356,17 @@ def missing_files(hub: Path, entry: Locked, revision: str | None = None) -> list
     return missing
 
 
-def not_downloaded(hub: Path, repo: str) -> list[str]:
-    """The repositories a load of the catalogued model ``repo`` needs that
-    are not complete at their pins; empty for a model outside the catalogue."""
-    if find(repo) is None:
+def not_downloaded(hub: Path, model_id: str) -> list[str]:
+    """The models a load of the catalogued ``model_id`` needs that are not
+    complete at their pins; empty for a model outside the catalogue."""
+    if find(model_id) is None:
         return []
-    return [r for r in required(repo) if (e := locked(r)) is None or missing_files(hub, e)]
+    return [m for m in required(model_id) if (e := locked(m)) is None or missing_files(hub, e)]
 
 
 class ModelNotDownloaded(LookupError):
-    """A model's files are not in the cache. ``revision`` is None for a
+    """A model's files are not in the cache. ``repo`` is the model's id
+    (its repository for every model so far); ``revision`` is None for a
     model outside the catalogue, which loads ``main``."""
 
     def __init__(self, repo: str, revision: str | None = None) -> None:
@@ -466,25 +480,27 @@ def _counting_tqdm(report: ByteReport) -> type:
     return Counting
 
 
-def snapshot(repo: str, *, check_only: bool = False, write: Write | None = None) -> Path:
-    """The local directory of ``repo`` at its pinned revision (``main`` if
-    not pinned). An existing directory is a local model and is returned as
-    it is.
+def snapshot(model_id: str, *, check_only: bool = False, write: Write | None = None) -> Path:
+    """The local snapshot of ``model_id``'s repository at its pinned revision
+    (a model outside the catalogue: the repository ``model_id`` at ``main``).
+    An existing directory is a local model and is returned as it is.
 
     ``check_only`` (how the engines load): nothing is fetched, and a locked
     file missing from the cache, or a model outside the catalogue not cached
     at all, raises :class:`ModelNotDownloaded`. Otherwise what the lock's
     patterns name (everything, unpinned) that is not cached is downloaded;
     with ``write``, the download's progress goes there (:class:`ByteReport`)."""
-    local = Path(repo).expanduser()
+    local = Path(model_id).expanduser()
     if local.is_dir():
         return local
     if check_only:
-        return _cached(repo)
+        return _cached(model_id)
     from huggingface_hub.errors import GatedRepoError
 
+    entry = locked(model_id)
+    repo = entry.repo if entry is not None else model_id
     try:
-        return _download(repo, write)
+        return _download(model_id, write)
     except GatedRepoError as exc:
         raise RuntimeError(
             f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then "
@@ -493,32 +509,34 @@ def snapshot(repo: str, *, check_only: bool = False, write: Write | None = None)
         ) from exc
 
 
-def _cached(repo: str) -> Path:
-    entry = locked(repo)
+def _cached(model_id: str) -> Path:
+    entry = locked(model_id)
     if entry is None:
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
 
         try:
-            return Path(snapshot_download(repo, local_files_only=True))
+            return Path(snapshot_download(model_id, local_files_only=True))
         except LocalEntryNotFoundError as exc:
-            raise ModelNotDownloaded(repo) from exc
+            raise ModelNotDownloaded(model_id) from exc
     hub = Path(cache_dir())
     if missing_files(hub, entry):
-        raise ModelNotDownloaded(repo, entry.revision)
-    return snapshot_dir(hub, repo, entry.revision)
+        raise ModelNotDownloaded(model_id, entry.revision)
+    return snapshot_dir(hub, entry.repo, entry.revision)
 
 
-def _download(repo: str, write: Write | None) -> Path:
+def _download(model_id: str, write: Write | None) -> Path:
+    """Progress lines name the model by its id."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import DryRunError
 
-    entry = locked(repo)
+    entry = locked(model_id)
+    repo = entry.repo if entry is not None else model_id
     revision = entry.revision if entry is not None else None
     patterns = list(entry.patterns) if entry is not None else None
     report = None
     if write is not None:
-        start = {"kind": "model", "repo": repo, "revision": revision, "path": cache_dir()}
+        start = {"kind": "model", "repo": model_id, "revision": revision, "path": cache_dir()}
         write(DOWNLOAD_PREFIX + json.dumps(start))
         # What is cached already, so a resumed download starts at those bytes.
         try:
@@ -531,7 +549,7 @@ def _download(repo: str, write: Write | None) -> Path:
             size = sum(f.file_size or 0 for f in files)
             cached = sum(f.file_size or 0 for f in files if not f.will_download)
             total = entry.bytes if entry is not None else size
-            report = ByteReport(repo, cached, size, total, write)
+            report = ByteReport(model_id, cached, size, total, write)
             report.add(0)
     path = snapshot_download(
         repo,
@@ -665,8 +683,8 @@ def download(config: Path, write: Write | None) -> None:
             snapshot(model, write=write)
             continue
         if engine(engine_name) is not None:
-            for repo in required(model):
-                snapshot(repo, write=write)
+            for needed in required(model):
+                snapshot(needed, write=write)
         asyncio.run(built.load())
         print(f"  loaded {built.name} ({built.model_id})", flush=True)
 
@@ -723,9 +741,9 @@ def pin_repo(
     files: Callable[[str, str, Sequence[str]], HubFiles] = hub_files,
     sha256: Callable[[str, str, str], str] = fetch_sha256,
 ) -> Locked:
-    """``model`` locked at ``revision`` (default: its current pin, else
-    ``main``), resolved to a commit with the catalogue's patterns. A
-    replaced revision is added to ``previous``."""
+    """``model`` locked at ``revision`` of its repository (default: its
+    current pin, else ``main``), resolved to a commit with the catalogue's
+    patterns. A replaced revision is added to ``previous``."""
     wanted = revision or (current.revision if current is not None else "main")
     hub = files(model.repo, wanted, model.patterns)
     if not hub.files:
@@ -737,36 +755,37 @@ def pin_repo(
     previous = list(current.previous) if current is not None else []
     if current is not None and current.revision != hub.commit:
         previous.append(current.revision)
-    return Locked(model.repo, hub.commit, model.patterns, locked_files, tuple(previous))
+    return Locked(model.id, model.repo, hub.commit, model.patterns, locked_files, tuple(previous))
 
 
 def stale(lock: dict[str, Locked]) -> list[str]:
-    """Catalogued repositories the lock lacks or locked with other patterns."""
+    """Catalogued models the lock lacks or locked from another repository
+    or with other patterns."""
     return [
-        m.repo
-        for m in repositories()
-        if (e := lock.get(m.repo)) is None or e.patterns != m.patterns
+        m.id
+        for m in catalogued()
+        if (e := lock.get(m.id)) is None or (e.repo, e.patterns) != (m.repo, m.patterns)
     ]
 
 
-def pin(repos: Iterable[str], revision: str | None = None, path: Path = LOCK_FILE) -> list[str]:
-    """Update the lock at ``path`` for ``repos`` (none: every stale one,
-    and repositories the catalogue dropped are removed). Returns what changed."""
-    named = list(repos)
+def pin(models: Iterable[str], revision: str | None = None, path: Path = LOCK_FILE) -> list[str]:
+    """Update the lock at ``path`` for ``models`` (none: every stale one,
+    and models the catalogue dropped are removed). Returns what changed."""
+    named = list(models)
     current = read_lock(path)
-    catalogued = {m.repo: m for m in repositories()}
+    known = {m.id: m for m in catalogued()}
     targets = named or stale(current)
-    unknown = [r for r in targets if r not in catalogued]
+    unknown = [m for m in targets if m not in known]
     if unknown:
         raise SystemExit(f"not in the catalogue: {', '.join(unknown)}; add it to CATALOGUE first")
     changed = []
-    for repo in targets:
-        current[repo] = pin_repo(catalogued[repo], current.get(repo), revision)
-        changed.append(repo)
+    for model_id in targets:
+        current[model_id] = pin_repo(known[model_id], current.get(model_id), revision)
+        changed.append(model_id)
     if not named:
-        for repo in sorted(set(current) - set(catalogued)):
-            del current[repo]
-            changed.append(repo)
+        for model_id in sorted(set(current) - set(known)):
+            del current[model_id]
+            changed.append(model_id)
     write_lock(current, path)
     return changed
 
@@ -780,17 +799,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     fetch = sub.add_parser("download", help="download the configured models and load each once")
     fetch.add_argument("--config", type=Path, required=True)
     fetch.add_argument("--report", action="store_true", help="write byte progress lines")
-    pins = sub.add_parser("pin", help="lock catalogued repositories (needs the network)")
-    pins.add_argument("repos", nargs="*", help="default: every one the lock lacks or has stale")
+    pins = sub.add_parser("pin", help="lock catalogued models (needs the network)")
+    pins.add_argument("models", nargs="*", help="default: every one the lock lacks or has stale")
     pins.add_argument("--revision", help="branch, tag or commit (default: the pin, else main)")
     args = parser.parse_args(argv)
     if args.command == "download":
         download(args.config, (lambda line: print(line, flush=True)) if args.report else None)
         return 0
     if args.command == "pin":
-        for repo in pin(args.repos, args.revision):
-            entry = read_lock().get(repo)
-            print(f"{repo} {entry.revision if entry else 'removed'}")
+        for model_id in pin(args.models, args.revision):
+            entry = read_lock().get(model_id)
+            print(f"{model_id} {entry.revision if entry else 'removed'}")
         return 0
     json.dump(manifest(), sys.stdout)
     sys.stdout.write("\n")

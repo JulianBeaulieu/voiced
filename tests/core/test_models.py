@@ -29,15 +29,15 @@ from voiced.launchd.progress import DOWNLOAD_PREFIX
 
 def test_the_catalogue_and_the_lock_agree() -> None:
     """The one check that the hand-written catalogue and the generated lock
-    name the same repositories with the same patterns."""
+    name the same models, from the same repositories with the same patterns."""
     lock = models.read_lock()
-    catalogued = {m.repo: m.patterns for m in models.repositories()}
+    catalogued = {m.id: (m.repo, m.patterns) for m in models.catalogued()}
     stale = models.stale(lock)
     dropped = sorted(set(lock) - set(catalogued))
     fix = f"run {models.PIN_COMMAND} {' '.join(stale)}".rstrip()
     assert not stale, f"the lock lacks or has other patterns for {stale}: {fix}"
     assert not dropped, f"the lock has {dropped}, which the catalogue dropped: {fix}"
-    assert {repo: e.patterns for repo, e in lock.items()} == catalogued
+    assert {i: (e.repo, e.patterns) for i, e in lock.items()} == catalogued
 
 
 def test_every_locked_file_has_a_size_and_a_sha256() -> None:
@@ -101,6 +101,13 @@ def test_the_registry_sets_the_configured_models_licence() -> None:
     assert engine.license == "CC-BY-NC-4.0"
     # Outside the catalogue the engine's own licence stays.
     assert registry.create_tts_engine("kokoro", "someone/kokoro-fork").license == "Apache-2.0"
+
+
+def test_models_that_share_a_repository_are_known_by_their_ids() -> None:
+    """Several models may be folders of one repository: each has an id."""
+    small = models.Model("org/assets", "MIT", ("small/*",), id="org/assets-small")
+    assert (small.id, small.repo) == ("org/assets-small", "org/assets")
+    assert models.Model("org/m", "MIT", ("*",)).id == "org/m"
 
 
 def test_a_shared_repository_comes_with_every_model_of_its_engine() -> None:
@@ -378,6 +385,7 @@ def test_pin_resolves_a_revision_and_hashes_the_small_files() -> None:
     assert hashed == ["config.json"]  # the hub has the sha256 of the LFS file
     assert entry == models.Locked(
         "org/m",
+        "org/m",
         SHA,
         model.patterns,
         {
@@ -390,7 +398,7 @@ def test_pin_resolves_a_revision_and_hashes_the_small_files() -> None:
 
 def test_re_pinning_keeps_the_revision_unless_asked_and_accumulates_previous() -> None:
     model = models.Model("org/m", "MIT", ("*",))
-    current = models.Locked("org/m", SHA, ("*",), {}, ("0" * 40,))
+    current = models.Locked("org/m", "org/m", SHA, ("*",), {}, ("0" * 40,))
     files = _files(SHA)
     same = models.pin_repo(model, current, None, files=files, sha256=lambda *a: "d" * 64)
     assert files.asked == [SHA] and same.previous == ("0" * 40,)  # type: ignore[attr-defined]
@@ -403,15 +411,17 @@ def test_pin_without_repositories_fixes_what_is_stale(
 ) -> None:
     lock = tmp_path / "models.lock.json"
     shipped = models.read_lock()
-    gone = models.Locked("org/dropped", SHA, ("*",), {"f": models.LockedFile(1, "e" * 64)})
-    stale = models.Locked(KOKORO, SHA, ("other",), {"f": models.LockedFile(1, "e" * 64)})
+    gone = models.Locked(
+        "org/dropped", "org/dropped", SHA, ("*",), {"f": models.LockedFile(1, "e" * 64)}
+    )
+    stale = models.Locked(KOKORO, KOKORO, SHA, ("other",), {"f": models.LockedFile(1, "e" * 64)})
     models.write_lock({**shipped, KOKORO: stale, "org/dropped": gone}, lock)
     asked: list[tuple[str, str | None]] = []
 
     def fake_pin(model: models.Model, current: models.Locked | None, revision: str | None) -> Any:
-        asked.append((model.repo, revision))
+        asked.append((model.id, revision))
         return models.Locked(
-            model.repo, NEWER, model.patterns, {"f": models.LockedFile(1, "e" * 64)}
+            model.id, model.repo, NEWER, model.patterns, {"f": models.LockedFile(1, "e" * 64)}
         )
 
     monkeypatch.setattr(models, "pin_repo", fake_pin)

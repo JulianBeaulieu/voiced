@@ -1,6 +1,6 @@
 # 0022: Models and engines on demand from the app
 
-Date: 2026-10-20. Status: proposed.
+Date: 2026-10-20. Status: accepted (implementation notes at the end).
 
 ## Context
 
@@ -397,3 +397,52 @@ Later, each when needed:
 - Several downloads at once; voice previews; pruning older locked revisions
   once no kept environment pins them.
 - Per-engine packages or environments, with the first torch engine.
+
+## Implementation notes (2026-10-20)
+
+The first cut is in two parts: the catalogue, the lock, `voiced models`,
+offline services, `missing_model` and the settings checks first; the app's
+model rows (section 5) in a second change that reads `voiced models list
+--json` and runs `download --json-progress` and `delete --yes --json`, whose
+shapes are in `docs/operations.md`. Where the code differs from the text
+above:
+
+- `Engine` carries its `kind` (`stt` or `tts`). The catalogue is read by
+  code that must not import the engines (the config defaults, the watchdog's
+  settings check, the bundle script), and a test checks it against the
+  registry group. The config's default models come from the catalogue
+  (`DEFAULT_ENGINES` and the first model of each), so they have one home.
+- The field is `license`, as on the engines and in `/v1/models`.
+- Models are keyed by an id, what `stt.model` and `tts.model` hold, not by
+  repository: an id defaults to the repository, and models that are
+  folders of one repository (Moonshine's sizes, a coming engine) each get
+  their own id and patterns. The lock is keyed by id and records the
+  repository; `voiced models` takes ids. A revision is deleted whole, so
+  `delete` refuses one that another downloaded model shares.
+- The engines' class attributes come from the catalogue's default model as
+  described; the per-model licence is set in one place,
+  `registry.create_stt_engine` and `create_tts_engine`, which the services
+  and the models step use, rather than in each app module.
+- `gradium/phonon-40m-multilingual` is not catalogued: its terms were not
+  granted to the account that pins, so its files could not be hashed. The
+  engine refuses it as it refuses the other 40M variants, naming it as not
+  in the catalogue. Pinning it later is one catalogue line and one `pin`.
+- Phonon's voices are pinned as the 37 English presets the engine loads
+  (patterns naming each file), not `voices/*`: each file is its own request,
+  and all 102 took 78 s here against about 30 s for the 38.
+- `pin` keeps a repository's locked revision unless `--revision` is given,
+  so a pattern change does not move a model; without arguments it fixes
+  every repository that is new or has new patterns and drops what the
+  catalogue removed.
+- `voiced models download` runs in the CLI's own process (it is the
+  environment's `voiced`), and its byte reports go through the installer's
+  `Progress`, so the events are the installer's. A shared repository is not
+  downloaded or deleted alone. `delete` refuses the model in use with the
+  code `in_use`, and the status page form answers `model_not_downloaded`
+  with 409.
+- `check_loaded` raises `ModelNotDownloaded`, which `classify` counts as
+  busy (a Wyoming client gets the busy `error` event); HTTP maps it to 503
+  `model_not_downloaded` without `Retry-After`.
+- A plugin engine the catalogue does not know still downloads in its own
+  `load()` during the models step; a catalogued engine with a model outside
+  the catalogue fetches that model whole at `main`.

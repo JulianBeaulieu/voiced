@@ -321,7 +321,7 @@ def test_the_40m_model_with_a_token() -> None:
 
     if get_token() is None:
         pytest.skip("no Hugging Face token")
-    engine = PhononEngine("gradium/phonon-40m-en")
+    engine = create_tts_engine("phonon", "gradium/phonon-40m-en")  # the licence of its model
 
     async def speak() -> bytes:
         await engine.load()

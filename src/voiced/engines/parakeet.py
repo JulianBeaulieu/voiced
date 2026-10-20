@@ -172,7 +172,7 @@ class _Rank(IntEnum):
 
 class ParakeetEngine(STTEngine):
     name = "parakeet"
-    model_id = default_model("parakeet").repo
+    model_id = default_model("parakeet").id
     languages = list(PARAKEET_V3_LANGUAGES)
     license = default_model("parakeet").license
     max_streams = 6

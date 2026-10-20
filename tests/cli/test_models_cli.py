@@ -33,7 +33,7 @@ def cache(hub: Path, repo: str, revision: str | None = None, ref: str | None = N
 
 
 def by_repo(view: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {m["repo"]: m for e in view["engines"] for m in (*e["models"], *e["shared"])}
+    return {m["id"]: m for e in view["engines"] for m in (*e["models"], *e["shared"])}
 
 
 # list ------------------------------------------------------------------------
@@ -67,7 +67,7 @@ def test_an_older_locked_revision_is_an_update(
     settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = models.lock()[P31]
-    moved = models.Locked(P31, "f" * 40, entry.patterns, entry.files, (entry.revision,))
+    moved = models.Locked(P31, P31, "f" * 40, entry.patterns, entry.files, (entry.revision,))
     monkeypatch.setitem(models.lock(), P31, moved)
     cache(model_cache, P31, revision=entry.revision)  # at the old pin
     out: list[str] = []
@@ -194,7 +194,7 @@ def test_error_codes_for_the_network_and_anything_else() -> None:
 
 
 def delete_args(repo: str, **kwargs: Any) -> argparse.Namespace:
-    return argparse.Namespace(repo=repo, previous=False, yes=True, json=True, **kwargs)
+    return argparse.Namespace(model=repo, previous=False, yes=True, json=True, **kwargs)
 
 
 def test_delete_refuses_the_model_in_use_and_what_voiced_does_not_pin(
@@ -240,7 +240,7 @@ def test_delete_previous_keeps_the_pin_even_in_use(
     monkeypatch.setitem(
         models.lock(),
         KOKORO,
-        models.Locked(KOKORO, entry.revision, entry.patterns, entry.files, (OLD,)),
+        models.Locked(KOKORO, KOKORO, entry.revision, entry.patterns, entry.files, (OLD,)),
     )
     cache(model_cache, KOKORO)
     cache(model_cache, KOKORO, revision=OLD)
@@ -254,7 +254,7 @@ def test_delete_previous_keeps_the_pin_even_in_use(
 
 def test_delete_asks_first_without_yes(settings: Settings, model_cache: Path) -> None:
     cache(model_cache, P31)
-    args = argparse.Namespace(repo=P31, previous=False, yes=False, json=False)
+    args = argparse.Namespace(model=P31, previous=False, yes=False, json=False)
     out: list[str] = []
     assert cli_models.cmd_delete(args, settings, out.append, ask=lambda q: "n") == 1
     assert out[0].startswith(f"Delete {P31}? This frees ")
@@ -264,3 +264,36 @@ def test_delete_asks_first_without_yes(settings: Settings, model_cache: Path) ->
     assert out[-1] == "nothing deleted"
     assert cli_models.cmd_delete(args, settings, out.append, ask=lambda q: "y") == 0
     assert out[-1].startswith(f"deleted {P31}, freed ")
+
+
+def test_a_revision_another_downloaded_model_shares_is_not_deleted(
+    settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two sizes as folders of one repository: huggingface_hub deletes a
+    revision whole, so deleting one while the other is downloaded is refused."""
+    small = models.Model("org/assets", "MIT", ("small/*",), id="org/assets-small")
+    base = models.Model("org/assets", "MIT", ("base/*",), id="org/assets-base")
+    engine = models.Engine("assets", "stt", models=(small, base))
+    monkeypatch.setattr(models, "CATALOGUE", (*models.CATALOGUE, engine))
+    for m, name in ((small, "small/w"), (base, "base/w")):
+        entry = models.Locked(m.id, m.repo, SHA, m.patterns, {name: models.LockedFile(1, "e" * 64)})
+        monkeypatch.setitem(models.lock(), m.id, entry)
+    hf.add_revision(model_cache, "org/assets", SHA, {"small/w": b"s", "base/w": b"b"})
+    out: list[str] = []
+    assert cli_models.cmd_delete(delete_args(small.id), settings, out.append) == 1
+    assert json.loads(out[0])["error"]["message"] == (
+        f"org/assets-small shares org/assets at {SHA[:12]} with org/assets-base, which is "
+        "downloaded; voiced deletes a revision whole, so delete org/assets-base too or keep both"
+    )
+    rows = by_repo(json.loads(_listed(settings)))
+    assert rows["org/assets-small"]["downloaded"] and rows["org/assets-base"]["downloaded"]
+    assert rows["org/assets-small"]["repo"] == "org/assets"
+
+
+SHA = "a" * 40
+
+
+def _listed(settings: Settings) -> str:
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    return out[0]

@@ -272,7 +272,7 @@ def espeak_data_path(candidate: EspeakCandidate) -> str | None:
 
 class KokoroEngine(SentenceTTSEngine):
     name = "kokoro"
-    model_id = default_model("kokoro").repo
+    model_id = default_model("kokoro").id
     languages = ["en-US", "en-GB"]
     license = default_model("kokoro").license
 
@@ -309,7 +309,7 @@ class KokoroEngine(SentenceTTSEngine):
         root = snapshot(self.model_id, check_only=True)
         entry = locked(self.model_id)
         model = load_model(
-            self.model_id,
+            entry.repo if entry else self.model_id,
             revision=entry.revision if entry else None,
             allow_patterns=list(entry.patterns) if entry else None,
         )
