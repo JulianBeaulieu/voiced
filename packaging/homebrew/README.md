@@ -2,7 +2,8 @@
 
 `voiced.rb` is the formula for the
 [JulianBeaulieu/homebrew-voiced](https://github.com/JulianBeaulieu/homebrew-voiced)
-tap. It is reviewed here and copied to the tap's `Formula/` by hand; the
+tap. It is reviewed here, and for each tag the release workflow sets its
+`url` and `sha256` and the result goes to the tap's `Formula/` (below); the
 reasons for its shape are in
 [ADR 0017](../../docs/decisions/0017-homebrew-packaging.md).
 
@@ -56,6 +57,7 @@ A cask that begins `# AD HOC BUILD` came from a run without the signing
 secrets; Gatekeeper rejects that download, so it stays out of the tap (ADR
 0017, "The end-user path"). The formula installs `src/voiced/requirements.lock`
 and builds with `src/voiced/build-requirements.lock` from the tag, so there
-are no dependency versions to update in it. Once the tap has a tagged
-formula, copy the generated file back over `voiced.rb` here, so the two stay
-the same.
+are no dependency versions to update in it. The `url` and `sha256` in
+`voiced.rb` here name the last tag it was written against; the release
+workflow replaces them for each tag, and the tap's copy is the one that
+counts.

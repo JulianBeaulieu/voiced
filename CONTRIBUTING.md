@@ -175,12 +175,12 @@ a user would notice.
 ## Cutting a release
 
 Maintainers only. `.github/workflows/release.yml` builds everything from the
-tag. Before the first signed release, do "Setting it up, once" in
-[SIGNING.md](menubar/Scripts/SIGNING.md). Two of its steps are required, not
-optional: the `release` environment with a required reviewer, and the tag
-ruleset that lets only the owner create `v*` tags. Without them anyone with
-write access could tag a commit and have it signed with the owner's
-Developer ID.
+tag. Signing needs "Setting it up, once" in
+[SIGNING.md](menubar/Scripts/SIGNING.md) done first. Two of its steps are
+required, not optional: the `release` environment with a required reviewer,
+and the tag ruleset that lets only the owner create `v*` tags. Without them
+anyone with write access could tag a commit and have it signed with the
+owner's Developer ID.
 
 1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
    the installed package metadata) and run `uv lock`.

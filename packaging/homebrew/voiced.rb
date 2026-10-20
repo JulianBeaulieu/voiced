@@ -1,22 +1,16 @@
-# Homebrew formula for voiced. Lives in this repository for review and is
-# copied to the tap (github.com/JulianBeaulieu/homebrew-voiced, Formula/) after
-# it lands. See docs/decisions/0017-homebrew-packaging.md for why it is built
-# this way.
+# Homebrew formula for voiced. Lives in this repository for review; for each tag
+# the release workflow sets `url` and `sha256`, and the result goes to the tap's
+# Formula/ (see README.md). See docs/decisions/0017-homebrew-packaging.md for
+# why it is built this way.
 class Voiced < Formula
   include Language::Python::Virtualenv
 
   desc "Local speech-to-text and text-to-speech server for Apple Silicon"
   homepage "https://github.com/JulianBeaulieu/voiced"
+  url "https://github.com/JulianBeaulieu/voiced/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "ff2eed09cb9305281eaf36a71a8c328667d19bf5cb6de97d0018d257fe98447a"
   license "MIT"
   head "https://github.com/JulianBeaulieu/voiced.git", branch: "main"
-
-  # FIRST RELEASE: there is no tagged release yet, so only `brew install --HEAD`
-  # works. When v0.1.0 is tagged (with `version = "0.1.0"` in pyproject.toml),
-  # uncomment these two lines and fill in the checksum
-  # (`curl -sL <url> | shasum -a 256`):
-  #
-  #   url "https://github.com/JulianBeaulieu/voiced/archive/refs/tags/v0.1.0.tar.gz"
-  #   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
   depends_on "uv" => :build
   depends_on arch: :arm64
@@ -63,10 +57,10 @@ class Voiced < Formula
       install <you>` line: the only step that needs root, the same script the
       menu bar app runs. Then `voiced status`.
 
-      Upgrade with `brew upgrade --fetch-HEAD voiced` (until the first tagged
-      release); once it has removed the old version, the watchdog moves the
-      services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set, run
-      `voiced restart all` after the upgrade instead.
+      Upgrade with `brew upgrade voiced` (for a `--HEAD` install, `brew upgrade
+      --fetch-HEAD voiced`); once it has removed the old version, the watchdog
+      moves the services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set,
+      run `voiced restart all` after the upgrade instead.
 
       Before `brew uninstall voiced`, run `voiced uninstall` and the sudo step
       it prints; otherwise launchd stops the daemons, since their program is

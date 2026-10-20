@@ -78,35 +78,9 @@ def _check_sha256(sha256: str) -> None:
 
 
 def formula(url: str, sha256: str, source: Path = FORMULA) -> str:
-    """The formula with ``url`` and ``sha256`` after ``homepage``, the commented stand-ins gone.
-
-    Before the first tag the formula carries the two lines in a comment block that starts
-    ``# FIRST RELEASE`` and ends at the commented ``sha256``; after it, the real lines.
-    Either way the result has exactly one of each.
-    """
     _check_sha256(sha256)
-    lines = source.read_text().splitlines()
-    out: list[str] = []
-    skipping = False
-    for line in lines:
-        if line.startswith("  # FIRST RELEASE"):
-            skipping = True
-        if skipping:
-            if re.match(r'^  #\s+sha256 "', line):
-                skipping = False
-            continue
-        if re.match(r'^  (url|sha256) "', line):
-            continue
-        out.append(line)
-        if line.startswith("  homepage "):
-            out += [f'  url "{url}"', f'  sha256 "{sha256}"']
-    if skipping:
-        raise ValueError(f"{source}: the FIRST RELEASE comment has no commented sha256 line")
-    if sum(line.startswith("  homepage ") for line in out) != 1:
-        raise ValueError(f"{source}: expected one homepage stanza")
-    # Removing the comment block can leave two blank lines in a row.
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(out) + "\n")
-    return text
+    text = _set_stanza(source.read_text(), "url", url)
+    return _set_stanza(text, "sha256", sha256)
 
 
 def cask(version: str, sha256: str, adhoc: bool = False, source: Path = CASK) -> str:
