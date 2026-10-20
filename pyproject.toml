@@ -1,6 +1,6 @@
 [project]
 name = "voiced"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local speech-to-text and text-to-speech server for Apple Silicon. OpenAI-compatible API and Wyoming protocol, runs as a launchd daemon."
 readme = "README.md"
 license = "MIT"

@@ -383,7 +383,7 @@ curl -s http://127.0.0.1:8880/health
   "last_inference_at": 1760450000.0,
   "last_inference_ms": 92.3,
   "last_error": null,
-  "version": "0.1.0"
+  "version": "0.1.1"
 }
 ```
 
