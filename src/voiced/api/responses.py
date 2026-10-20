@@ -38,11 +38,17 @@ class ClosingStreamingResponse(StreamingResponse):
         content: AsyncIterable[bytes],
         *,
         write_timeout_s: float,
+        status_code: int = 200,
         media_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
-        super().__init__(content, media_type=media_type, headers=headers, **kwargs)
+        # status_code stays an explicit parameter: FastAPI reads its default
+        # from this signature to document the route's success response, and
+        # fails to build /openapi.json when it is hidden in **kwargs.
+        super().__init__(
+            content, status_code=status_code, media_type=media_type, headers=headers, **kwargs
+        )
         self.write_timeout_s = write_timeout_s
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
