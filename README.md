@@ -242,6 +242,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
+| [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
@@ -267,6 +268,11 @@ the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
 `jean` are CC-BY-NC and are not offered. Kyutai's card prohibits voice
 impersonation without consent, deception (including passing generated
 audio off as a real recording) and unlawful or harmful content.
+Chatterbox Turbo is Resemble AI's, MIT for the weights, the default voice and
+the code. The mlx-community conversions voiced loads label themselves
+Apache-2.0; a conversion cannot change the licence of the weights, which
+stays Resemble AI's MIT. Resemble's own package watermarks its output
+(PerTh); the MLX port voiced runs does not.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -379,6 +385,28 @@ have no MLX conversion yet. Like Phonon, it has no rate control, so `speed`
 is accepted and ignored. Choose Pocket TTS over Phonon 31M for Kyutai's own
 model and its CC0 and CC-BY voices on the GPU; choose Phonon to keep the GPU
 for speech-to-text. See [ADR 0028](docs/decisions/0028-tts-pocket.md).
+### Using Chatterbox Turbo
+
+Chatterbox Turbo is a 350M text-to-speech model from Resemble AI that runs
+on the GPU. It is installed with voiced but is opt-in. To use it, download
+the model (about 420 MB) and switch to it:
+
+```sh
+~/.voiced/bin/voiced models download mlx-community/chatterbox-turbo-4bit
+~/.voiced/bin/voiced settings set tts.engine=chatterbox
+~/.voiced/bin/voiced restart tts
+```
+
+Know its limits before you switch. Its first audio takes about 310 to
+340 ms, against Kokoro's 95 ms, and the tts service holds about 0.9 GB. It
+has one voice, `default`, the one the model ships with; cloning a voice
+from your own clip is not supported yet. It has no rate control, so `speed`
+is accepted and ignored. It performs tags such as `[laugh]`, `[chuckle]`,
+`[sigh]` or `[whispering]` in the text instead of reading them.
+`mlx-community/chatterbox-turbo-fp16` works too (`tts.model=` in the
+`settings set`): it scored a little higher for naturalness here (UTMOS 3.82
+against 3.70), is no faster and holds about 3 GB. The details are in
+[ADR 0029](docs/decisions/0029-tts-chatterbox-turbo.md).
 
 ## Benchmarks
 

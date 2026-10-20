@@ -203,6 +203,7 @@ Registered engines:
 | `soprano` | `voiced.tts_engines` | Soprano-80M via mlx-audio, opt-in, with a repetition penalty and a per-sentence length bound against runaway generation ([ADR 0010](decisions/0010-tts-soprano.md)) |
 | `phonon` | `voiced.tts_engines` | Phonon 31M via `ptts` on the CPU, opt-in, each sentence streamed as it is decoded ([ADR 0021](decisions/0021-tts-phonon.md)) |
 | `pocket` | `voiced.tts_engines` | Kyutai's Pocket TTS via mlx-audio on the GPU, opt-in, each 80 ms frame streamed as it is decoded ([ADR 0028](decisions/0028-tts-pocket.md)) |
+| `chatterbox` | `voiced.tts_engines` | Chatterbox Turbo via mlx-audio, opt-in, each sentence rendered in pieces as its speech tokens arrive ([ADR 0029](decisions/0029-tts-chatterbox-turbo.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,

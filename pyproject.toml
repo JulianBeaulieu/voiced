@@ -102,6 +102,7 @@ kokoro = "voiced.engines.kokoro:KokoroEngine"
 soprano = "voiced.engines.soprano:SopranoEngine"
 phonon = "voiced.engines.phonon:PhononEngine"
 pocket = "voiced.engines.pocket:PocketEngine"
+chatterbox = "voiced.engines.chatterbox:ChatterboxEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

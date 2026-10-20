@@ -447,6 +447,7 @@ reboots need a person. voiced does not change this setting.
 | tts | Soprano-80M (opt-in) | 392 MB resident |
 | tts | Phonon 31M (opt-in, on the CPU) | 530 MB resident (260 MB footprint) after a long reply |
 | tts | Pocket TTS (opt-in, on the GPU) | 430 MB resident (680 MB footprint) after a long reply; 968 MB MLX peak while synthesizing |
+| tts | Chatterbox Turbo 4-bit (opt-in) | 0.89 GB footprint after a long reply (fp16: 2.99 GB) |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 
 All figures were measured on an M1 Max, each engine in its own process,

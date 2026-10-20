@@ -381,6 +381,14 @@ def tts_pocket_service(e2e_tmp: Path) -> Iterator[LiveService]:
             "engine": '"pocket"',
             "model": '"mlx-community/pocket-tts"',
             "default_voice": '"alba"',
+def tts_chatterbox_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "tts",
+        e2e_tmp / "chatterbox",
+        **{
+            "engine": '"chatterbox"',
+            "model": '"mlx-community/chatterbox-turbo-4bit"',
+            "default_voice": '"default"',
         },
     )
     service = start_service("tts", settings)

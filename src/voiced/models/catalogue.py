@@ -52,6 +52,19 @@ class Engine:
     shared: tuple[Model, ...] = ()
 
 
+CHATTERBOX = (
+    "config.json",
+    "model.safetensors*",
+    "conds.safetensors",
+    "added_tokens.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+"""Chatterbox Turbo's config, weights, text tokenizer and default voice
+(``conds.safetensors``); not the model card."""
+
 PHONON = ("config.json", "tokenizer.json", "model.q8.gguf", "default-voice.safetensors")
 """Phonon's config, tokenizer, q8 weights and default voice; not the other weight formats."""
 
@@ -200,6 +213,13 @@ CATALOGUE: tuple[Engine, ...] = (
                 "CC-BY-4.0",
                 ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICE_FILES)),
             ),
+        "chatterbox",
+        "tts",
+        # Resemble AI's MIT weights; the conversions' cards say Apache-2.0,
+        # which a conversion cannot make so (ADR 0029). 4-bit is the default.
+        models=(
+            Model("mlx-community/chatterbox-turbo-4bit", "MIT", CHATTERBOX),
+            Model("mlx-community/chatterbox-turbo-fp16", "MIT", CHATTERBOX),
         ),
     ),
 )

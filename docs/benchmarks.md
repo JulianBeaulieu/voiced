@@ -33,6 +33,8 @@ UTMOS: predicted naturalness, 1 to 5, the mean over three fixed sentences. First
 
 | Model | Engine | Quality | Speed | UTMOS | First audio, median / worst | First audio while STT streams | RTF | Voice | Load | Footprint | MLX peak, load / after use | Size | Languages | Licence | Machine | Version (commit), date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `mlx-community/chatterbox-turbo-4bit` | chatterbox | 3 of 5 | 2 of 5 | 3.70 | 638 / 652 ms | 350 / 463 ms | 0.432 | `default` | 2.6 s | 0.90 GB | 0.99 GB / 1.39 GB | 416.9 MB | en | MIT | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (aeed440+), 2026-10-21 |
+| `mlx-community/chatterbox-turbo-fp16` | chatterbox | 3 of 5 | 2 of 5 | 3.82 | 708 / 727 ms | 395 / 502 ms | 0.473 | `default` | 2.6 s | 2.99 GB | 3.25 GB / 3.64 GB | 3.0 GB | en | MIT | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (aeed440+), 2026-10-21 |
 | `mlx-community/Kokoro-82M-bf16` | kokoro | 5 of 5 | 5 of 5 | 4.52 | 94 / 98 ms | 112 / 226 ms | 0.042 | `af_heart` | 1.8 s | 0.73 GB | 0.76 GB / 1.86 GB | 389.4 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 | `gradium/phonon-31m-en` | phonon | 5 of 5 | 5 of 5 | 4.50 | 27 / 31 ms | 18 / 28 ms | 0.038 | `default` | 0.6 s | 0.26 GB | none / none | 65.1 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 | `mlx-community/pocket-tts` | pocket | 5 of 5 | 4 of 5 | 4.31 | 45 / 47 ms | 38 / 68 ms | 0.167 | `alba` | 1.4 s | 0.67 GB | 0.96 GB / 0.97 GB | 240.3 MB | en | CC-BY-4.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a2be27c+), 2026-10-21 |

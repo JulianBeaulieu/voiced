@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 | `input` | yes | Text to speak, not empty, at most `tts.max_input_chars` (default 4096). Markdown is stripped before synthesis; for an English voice, numbers, times, units and acronyms are spelled out, and other languages keep them as written. |
 | `model` | no | See [The `model` field](#the-model-field). |
 | `voice` | no | An id from [`/v1/audio/voices`](#get-v1audiovoices). Defaults to `tts.default_voice` (`af_heart`). |
-| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano, Phonon and Pocket TTS have no rate control and ignore it. |
+| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano, Phonon, Pocket TTS and Chatterbox have no rate control and ignore it. |
 | `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
 
 | Format | `Content-Type` | Body |
@@ -352,6 +352,15 @@ Their language is `en`:
     {"object": "voice", "id": "javert", "name": "Javert", "language": "en", "gender": "male"}
   ]
 }
+Chatterbox Turbo, when selected, has one voice, `default`, the one the
+model ships with (`"language": "en"`). Text for it may carry tags such as
+`[laugh]`, `[sigh]` or `[whispering]`, which it performs instead of reading:
+
+```sh
+curl -s http://127.0.0.1:8880/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "That is the best news all week. [laugh] Thank you.", "voice": "default"}' \
+  -o out.wav
 ```
 
 ## GET /v1/models
