@@ -795,7 +795,12 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 
 
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
-    from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
+    from voiced.launchd.install import (
+        plan_install,
+        remove_targets,
+        revision_line,
+        uninstall_targets,
+    )
     from voiced.models import size_text
 
     plan = plan_install(settings, state_dir=args.state_dir)
@@ -827,10 +832,8 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
             echo(f"Leaving {plan.state_dir} alone: {found.refused}.")
         present = [t for t in found.all() if t.exists() or t.is_symlink()]
         models = found.models
-        if models is not None and models.refused is not None:
-            echo(f"Leaving the models in {models.hub} alone: {models.refused}.")
-        for repo in models.unpinned if models is not None else []:
-            echo(f"Keeping {repo}: voiced does not pin its revision, so it may be another tool's.")
+        for note in models.notes() if models is not None else []:
+            echo(note)
         revisions = models.revisions if models is not None else []
         if not present and not revisions:
             echo("nothing to remove")
@@ -839,7 +842,9 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         for t in present:
             echo(f"  {t}")
         for r in revisions:
-            echo(f"  {r.repo} revision {r.revision} ({size_text(r.bytes)} on disk)")
+            echo(f"  {revision_line(r)}")
+        if models is not None and revisions:
+            echo(f"Removing those models frees {size_text(models.freed)} ({models.freed:,} bytes).")
         return 0
     # Not while an install (the app's or another terminal's) is running.
     waiting = lambda: echo(f"waiting for an install in {plan.state_dir}")  # noqa: E731

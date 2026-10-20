@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import sys
 import threading
 import time
@@ -200,33 +201,58 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
 
 @dataclass(frozen=True, order=True)
 class CachedRevision:
+    """One revision of a model repository in the Hugging Face cache."""
+
     repo: str
     revision: str
     bytes: int  # on disk, following the links into the shared blob store
+    refs: tuple[str, ...] = ()  # the branches and tags that point at it, such as "main"
 
 
-def cached_revisions(hub: Path, repos: set[str]) -> list[CachedRevision]:
+@dataclass(frozen=True)
+class CacheScan:
+    revisions: list[CachedRevision]
+    # Repositories the scan could not read (a download interrupted before
+    # any snapshot, say), with the reason; nothing of them can be deleted.
+    broken: list[tuple[str, str]]
+
+
+def cached_revisions(hub: Path, repos: set[str]) -> CacheScan:
     """The revisions of ``repos`` (model repositories) that the cache at
-    ``hub`` holds; nothing when there is no cache there."""
+    ``hub`` holds, and those of ``repos`` it could not read; nothing when
+    there is no cache there."""
     from huggingface_hub import scan_cache_dir
     from huggingface_hub.errors import CacheNotFound
 
     try:
         info = scan_cache_dir(hub)
     except CacheNotFound:
-        return []
-    return sorted(
-        CachedRevision(repo.repo_id, rev.commit_hash, rev.size_on_disk)
+        return CacheScan([], [])
+    revisions = sorted(
+        CachedRevision(repo.repo_id, rev.commit_hash, rev.size_on_disk, tuple(sorted(rev.refs)))
         for repo in info.repos
         if repo.repo_type == "model" and repo.repo_id in repos
         for rev in repo.revisions
     )
+    # The scan reports a repository it cannot read as a warning naming a
+    # path in its folder, and leaves it out of info.repos.
+    folders = {repo: f"models--{repo.replace('/', '--')}" for repo in repos}
+    broken = sorted(
+        (repo, str(warning))
+        for warning in info.warnings
+        for repo, folder in folders.items()
+        if re.search(rf"/{re.escape(folder)}(?![\w.-])", str(warning))
+    )
+    return CacheScan(revisions, broken)
 
 
-def delete_revisions(hub: Path, revisions: Sequence[CachedRevision]) -> int:
+def delete_revisions(
+    hub: Path, revisions: Sequence[CachedRevision], *, dry_run: bool = False
+) -> int:
     """Delete ``revisions`` from the cache at ``hub`` and return the bytes
-    freed. Through ``huggingface_hub``: a repository folder holds links into
-    the cache-wide blob store, so removing the folder would leave the bytes
+    freed (with ``dry_run``, that would be freed, deleting nothing).
+    Through ``huggingface_hub``: a repository folder holds links into the
+    cache-wide blob store, so removing the folder would leave the bytes
     behind. The library removes each revision's snapshot and refs and the
     blobs no other revision or repository uses; other revisions of the same
     repository stay. Only the named repositories are considered, so a
@@ -242,7 +268,8 @@ def delete_revisions(hub: Path, revisions: Sequence[CachedRevision]) -> int:
         repos=frozenset(r for r in info.repos if r.repo_type == "model" and r.repo_id in repos),
     )
     strategy = mine.delete_revisions(*(r.revision for r in revisions))
-    strategy.execute()
+    if not dry_run:
+        strategy.execute()
     return int(strategy.expected_freed_size)
 
 

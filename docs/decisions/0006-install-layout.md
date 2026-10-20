@@ -53,17 +53,9 @@ the environment, then prints the root step and stops: one line,
 `uninstall` prints the matching `uninstall <user>` line first and refuses
 to delete anything while any label is still loaded (otherwise launchd would
 respawn a missing binary every 10 s). Deleting needs `--yes`; models, logs
-and config each need their own flag. Only one kind of directory is deleted
-recursively: the venv (only if it contains `pyvenv.cfg`). The models are
-deleted through `huggingface_hub` (`scan_cache_dir().delete_revisions`), and
-only the revisions voiced pinned: `voiced.models.PINS` with their `previous`
-revisions, and what `python -m voiced.models` lists in each environment
-uninstall finds. `huggingface_hub` 2.x keeps file bytes in a store shared by
-every repository in the cache (`hub/blobs/<2 hex>/<xet hash>`), and a
-repository's folder holds only links into it, so removing the folder would
-leave the bytes behind (amended 2026-10-20; the first version did that).
-Other tools' revisions in the same cache stay, with their blobs, and so does
-a configured model voiced does not pin. Everything else is deleted file by file, because
+and config each need their own flag. Only two kinds of directory are deleted
+recursively: the venv (only if it contains `pyvenv.cfg`) and the models'
+Hugging Face cache entries. Everything else is deleted file by file, because
 the directories may be shared: `log_dir = "~/Library/Logs"` and
 `VOICED_CONFIG=~/config.toml` (an earlier release's staging dir `~/launchd`) are legal
 configurations. `--remove-logs` removes the per-service log files, their
@@ -142,3 +134,23 @@ needs uv). `install.json` marks the directory as voiced's. `uninstall`
 removes only what that layout owns and keeps anything else in the
 directory, instead of deleting a directory that has `pyvenv.cfg`. ADR 0017
 has the rules.
+
+## Amendment (2026-10-20)
+
+`--remove-models` no longer deletes the models' Hugging Face cache entries
+recursively. `huggingface_hub` 2.x keeps file bytes once in a store shared
+by every repository in the cache (`hub/blobs/<2 hex>/<xet hash>`), and a
+repository's folder holds only links into it, so removing the folder freed
+the links and left the bytes. `uninstall` now deletes through the library,
+`scan_cache_dir().delete_revisions()`, which removes a revision's snapshot,
+its refs and the blobs nothing else in the cache uses, and it says how many
+bytes that freed.
+
+It deletes only the revisions voiced pinned: each `voiced.models.PINS` entry
+and the revisions earlier releases pinned (`Pin.previous`). Other revisions
+in the cache stay, with their blobs, and so do other repositories and a
+model the config names that voiced does not pin; uninstall prints the `hf
+cache rm` command for those. A pinned revision is the same revision when
+another tool downloaded the repository's `main` and `main` is the pinned
+commit (Kokoro's is today): uninstall deletes it and that `main`, and its
+dry run names the branches that point at each revision it would delete.

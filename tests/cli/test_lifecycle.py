@@ -270,7 +270,8 @@ def test_uninstall_dry_then_real(
     assert lc.cmd_uninstall(_uninstall_args(remove_models=True), settings, fake, out.append) == 0
     assert settings.install.venv_dir.exists() and hf.store_path(hub, weights).exists()
     assert any("Would remove" in line for line in out)
-    assert f"  {kokoro.repo} revision {kokoro.revision} (2.0 KB on disk)" in out
+    assert f"  {kokoro.repo} revision {kokoro.revision}" in out
+    assert "Removing those models frees 2.0 KB (2,000 bytes)." in out
 
     args = _uninstall_args(yes=True, remove_models=True, remove_logs=True)
     assert lc.cmd_uninstall(args, settings, fake, out.append) == 0
