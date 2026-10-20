@@ -169,19 +169,39 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   "Benchmarks" keeps a short summary of the defaults and links to it; no
   table is kept twice.
 - **The catalogue** (ADR 0022's `CATALOGUE` in `voiced/models.py`): each
-  `Model` gains `quality: int | None`, `speed: int | None` and `note: str`,
-  a one-line description by hand ("The default: accurate and fast English
-  and 24 European languages"). Quality and speed are copied from the
-  laptop's row, and a test derives them again from that row's result file
-  with the harness's `rate()` and fails on a difference, naming the
-  command that measures the model. A model without a laptop row has none.
-  Size, languages and licence are already ADR 0022's (the lock's bytes, the
-  engine class, the catalogue's licence). The recommended badge is the
-  install default of each kind, not a new field.
-- **`voiced models list --json`** adds `quality`, `speed` and `note` to each
-  model, and **the app's model rows** (ADR 0022 section 5) show two five-step
-  bars labelled Quality and Speed, the note, and "Recommended" on the
-  default; the bars link to docs/benchmarks.md.
+  `Model` gains three fields, all with defaults so a model without
+  benchmarks stays valid:
+
+  ```python
+  quality: int | None = None  # 1 to 5, from the reference row; None: not measured
+  speed: int | None = None  # 1 to 5, likewise
+  note: str = ""  # one line by hand, at most 80 characters
+  ```
+
+  The reference row of a model is the result file in `docs/benchmarks/`
+  whose `kind` is its engine's kind, whose `engine` and `model` are the
+  catalogue's, and whose machine without the macOS version is "MacBook Pro,
+  Apple M1 Max, 64 GB" (`Result.hardware()`). `quality` and `speed` are
+  written by hand from that row, and `tests/test_models.py` gains one test
+  that, for every catalogue model, loads the result files with
+  `bench_engine.load_results`, finds the reference row and asserts
+  `(quality, speed) == (rate(row.metrics).quality, rate(row.metrics).speed)`,
+  or both None when there is no reference row; its failure names the
+  command that measures the model. A shared repository (`Engine.shared`) has
+  no ratings. The note says what the model is for ("The default: accurate
+  and fast, English and 24 European languages"). Size, languages and licence
+  are already ADR 0022's (the lock's bytes, the engine class, the
+  catalogue's licence). The recommended badge is the install default of each
+  kind (`PINS`' models today, the catalogue's default engine's first model
+  then), not a new field.
+- **`voiced models list --json`** adds `"quality"`, `"speed"` (integers or
+  null) and `"note"` (a string, possibly empty) to each model object, beside
+  ADR 0022's fields, and `"recommended": true` on the install defaults. The
+  text view adds a `Quality` and a `Speed` column (`4/5`, or `-`).
+- **The app's model rows** (ADR 0022 section 5) show under the name two
+  five-step bars labelled Quality and Speed (no bars when null), the note,
+  and a Recommended badge; the bars' help text is "Measured on an Apple M1
+  Max; see docs/benchmarks.md", linking to the document on GitHub.
 
 `CATALOGUE` and the model rows do not exist yet: ADR 0022's implementation is
 in progress. The catalogue fields and their test, the `models list` fields
