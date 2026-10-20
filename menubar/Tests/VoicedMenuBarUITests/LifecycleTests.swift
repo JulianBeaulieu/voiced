@@ -715,6 +715,17 @@ final class LifecycleTests: XCTestCase {
         try writeRecord(environment: second, version: "0.1.0", previous: first)
         XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000-3")
 
+        // Named through a symlinked parent, and through the parent's real path
+        // (`/private/var/...` for a `/var/...` temporary directory).
+        let linked = home.appendingPathComponent("linked-envs")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: envs)
+        let real = URL(fileURLWithPath: envs.resolvingSymlinksInPath().path.replacingOccurrences(
+            of: "/var/", with: "/private/var/", options: .anchored))
+        try writeRecord(
+            environment: linked.appendingPathComponent("20261020T000000"), version: "0.1.0",
+            previous: real.appendingPathComponent("20261020T000000-2"))
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000-3")
+
         // Unreadable, it names nothing, as for `install.plan_install`.
         try Data("{not json".utf8).write(to: state.appendingPathComponent("install.json"))
         XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000")
