@@ -237,16 +237,13 @@ def check_config_file(path: Path) -> Check:
 def check_espeak(required: bool = True) -> Check:
     """Does the Kokoro engine find an espeak-ng library it can load?
 
-    Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`)
-    and data path check (:func:`~voiced.engines.kokoro.espeak_data_path`), and
-    reports the first copy load would accept: ``[tts] espeak_library`` when set
-    (``VOICED_ESPEAK_LIBRARY``), else the ``espeakng-loader`` wheel's in this
-    environment, else the Homebrew keg, which is found whether or not it is
-    linked. Copies skipped on the way are named. An ``espeak-ng`` binary on
-    ``PATH`` is irrelevant: the engine loads the library. ``required`` is
-    whether the configured TTS engine needs it; if not, any problem is only a
-    warning. Nothing is copied or loaded: the engine's phonemizer self-test
-    runs only in the service.
+    Reports the first copy :func:`~voiced.engines.kokoro.espeak_candidates`
+    lists that :func:`~voiced.engines.kokoro.espeak_data_path` accepts, and
+    names the copies skipped on the way. An ``espeak-ng`` binary on ``PATH``
+    is irrelevant: the engine loads the library. ``required`` is whether the
+    configured TTS engine needs it; if not, any problem is only a warning.
+    Nothing is copied or loaded: the engine's phonemizer self-test runs only
+    in the service.
     """
     name = "espeak-ng"
     result: Result = "fail" if required else "warn"
@@ -270,7 +267,7 @@ def check_espeak(required: bool = True) -> Check:
         return Check(name, "pass", detail)
     if skipped:
         return Check(name, result, f"no usable copy ({'; '.join(skipped)}). {ESPEAK_REMEDY}")
-    missing = f"library not found: neither {ESPEAK_COPIES}; Kokoro needs it."
+    missing = f"library not found: {ESPEAK_COPIES}; Kokoro needs it."
     return Check(name, result, f"{missing} {ESPEAK_REMEDY}")
 
 

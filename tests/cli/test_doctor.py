@@ -80,7 +80,7 @@ def _wheel(monkeypatch: pytest.MonkeyPatch, root: Path, data: Path) -> Path:
     library = root / "espeakng_loader" / "libespeak-ng.dylib"
     library.parent.mkdir(parents=True)
     library.write_bytes(b"")
-    wheel = kokoro._Wheel(str(library), str(data), "0.2.4")
+    wheel = kokoro.EspeakCandidate(str(library), str(data), "wheel", "0.2.4")
     monkeypatch.setattr(kokoro, "_bundled_espeak", lambda: wheel)
     return library
 

@@ -27,6 +27,9 @@ without the ``tts`` extra.
 
 from __future__ import annotations
 
+import ctypes
+import dataclasses
+import fcntl
 import importlib.metadata
 import logging
 import os
@@ -56,7 +59,7 @@ __all__ = [
     "ENV_ESPEAK_DATA",
     "ENV_ESPEAK_LIBRARY",
     "ESPEAK_COPIES",
-    "ESPEAK_INSTALL_HINT",
+    "ESPEAK_DATA_FILES",
     "ESPEAK_REMEDY",
     "EspeakCandidate",
     "EspeakNotFound",
@@ -67,14 +70,14 @@ __all__ = [
     "kokoro_voices",
 ]
 
-ESPEAK_INSTALL_HINT = "brew install espeak-ng"
-ESPEAK_COPIES = "the espeak-ng in voiced's environment (espeakng-loader) nor Homebrew's"
-"""Follows "neither": the two copies looked for when there is no override."""
+ESPEAK_COPIES = "neither the espeak-ng in voiced's environment (espeakng-loader) nor Homebrew's"
+"""The two copies looked for when there is no override, for "found ..."."""
 ESPEAK_REMEDY = (
     "Reinstall voiced (Repair in the menu bar app), or install Homebrew's "
-    f"espeak-ng (`{ESPEAK_INSTALL_HINT}`), or point [tts] espeak_library and "
+    "espeak-ng (`brew install espeak-ng`), or point [tts] espeak_library and "
     "espeak_data at a working copy."
 )
+"""What to do when no espeak-ng works; the engine and ``voiced doctor`` end with it."""
 HOMEBREW_PREFIXES = ("/opt/homebrew/opt/espeak-ng", "/usr/local/opt/espeak-ng")
 MAX_ESPEAK_DATA_PATH = 159
 """Bytes. The espeak-ng in the ``espeakng-loader`` wheel keeps its data path in
@@ -133,13 +136,6 @@ class EspeakCandidate:
     wheel_version: str | None = None
     """Set when ``data`` is the wheel's: it is loaded from a short clone named
     after this version (:func:`espeak_data_path`)."""
-
-
-@dataclass(frozen=True)
-class _Wheel:
-    library: str
-    data: str
-    version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,11 +227,9 @@ def espeak_candidates() -> list[EspeakCandidate]:
         if data and not Path(data).is_dir():
             raise EspeakNotFound(f"[tts] espeak_data {data} is not a directory")
         if data is None and wheel is not None:
-            return [EspeakCandidate(override, wheel.data, "override", wheel.version)]
+            return [dataclasses.replace(wheel, library=override, source="override")]
         return [EspeakCandidate(override, data, "override")]
-    found = []
-    if wheel is not None and Path(wheel.library).is_file():
-        found.append(EspeakCandidate(wheel.library, wheel.data, "wheel", wheel.version))
+    found = [wheel] if wheel is not None and Path(wheel.library).is_file() else []
     return found + [
         EspeakCandidate(
             f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data", "homebrew"
@@ -392,7 +386,7 @@ class KokoroEngine(SentenceTTSEngine):
 # -- blocking helpers ----------------------------------------------------------
 
 
-def _bundled_espeak() -> _Wheel | None:
+def _bundled_espeak() -> EspeakCandidate | None:
     """The espeak-ng in the ``espeakng-loader`` wheel, or ``None`` when it is
     not installed or does not say where its files are."""
     try:
@@ -406,7 +400,7 @@ def _bundled_espeak() -> _Wheel | None:
         version = importlib.metadata.version("espeakng-loader")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
-    return _Wheel(library, data, version)
+    return EspeakCandidate(library, data, "wheel", version)
 
 
 def _user_cache_dir() -> Path | None:
@@ -419,51 +413,47 @@ def _user_cache_dir() -> Path | None:
     return Path(os.path.realpath(cache)) if cache else None
 
 
-def _short_espeak_copy(source: str, version: str) -> str:
-    """Clone the espeak-ng data directory ``source`` to
-    ``<user cache dir>/voiced/espeak-ng-data-<version>`` and return that path.
+def _short_espeak_copy(source: str, target: Path) -> None:
+    """Clone the espeak-ng data directory ``source`` to ``target``, the path
+    :func:`espeak_data_path` chose.
 
     ``cp -c`` makes an APFS clone, so the copy takes no extra disk space; a
     plain copy is the fallback on other file systems. A complete copy (it has
     every one of :data:`ESPEAK_DATA_FILES`) is reused and never replaced, so
     a running service never sees its data change under it; a wheel upgrade
     gets a new directory, and one the system purged, even in part, is made
-    again. Concurrent loads each clone into their own staging directory and
-    the first rename wins. Returns ``source`` unchanged when there is no user
-    cache directory.
+    again. Loads take turns on a lock file, so concurrent ones never move
+    each other's copy: the first makes it and the rest reuse it. Each clones
+    into a staging directory and renames it into place, so a crash never
+    leaves a partial copy at ``target``.
     """
-    target = _clone_target(version)
-    if target is None:
-        return source
     root = target.parent
     if _complete(target):
-        return str(target)
+        return
     try:
         root.mkdir(parents=True, exist_ok=True)
-        _remove_stale_staging(root)
-        staging = Path(tempfile.mkdtemp(prefix=".espeak-ng-data.", dir=root))
-        try:
-            copy = staging / "data"
-            # cp -R copies a symlink as a symlink, so hand it the real directory.
-            real = os.path.realpath(source)
-            cloned = subprocess.run(["/bin/cp", "-cR", real, str(copy)], capture_output=True)
-            if cloned.returncode != 0:
-                shutil.rmtree(copy, ignore_errors=True)
-                shutil.copytree(real, copy)
-            if target.is_dir() and not _complete(target):
-                # Left incomplete by a purge: move it aside so the rename can land.
-                target.rename(staging / "incomplete")
+        with open(root / ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # released when the file closes
+            if _complete(target):
+                return  # made by the load this one waited for
+            _remove_stale_staging(root)
+            staging = Path(tempfile.mkdtemp(prefix=".espeak-ng-data.", dir=root))
             try:
+                copy = staging / "data"
+                # cp -R copies a symlink as a symlink, so hand it the real directory.
+                real = os.path.realpath(source)
+                cloned = subprocess.run(["/bin/cp", "-cR", real, str(copy)], capture_output=True)
+                if cloned.returncode != 0:
+                    shutil.rmtree(copy, ignore_errors=True)
+                    shutil.copytree(real, copy)
+                if target.exists():
+                    # Left incomplete by a purge: move it aside so the rename can land.
+                    target.rename(staging / "incomplete")
                 copy.rename(target)
-            except OSError:
-                # Another load put its copy in place first; use that one.
-                if not _complete(target):
-                    raise
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
     except OSError as exc:
         raise EspeakNotFound(f"could not copy espeak-ng data to {target}: {exc}") from exc
-    return str(target)
 
 
 def _remove_stale_staging(root: Path) -> None:
@@ -496,22 +486,21 @@ def _can_create(path: Path) -> bool:
     return parent.is_dir() and os.access(parent, os.W_OK | os.X_OK)
 
 
-def _espeak_data(candidate: EspeakCandidate) -> str | None:
-    """:func:`espeak_data_path` for ``candidate``, with the wheel's data
-    cloned there first."""
-    path = espeak_data_path(candidate)
-    if candidate.wheel_version is not None and candidate.data is not None:
-        _short_espeak_copy(candidate.data, candidate.wheel_version)
-    return path
-
-
 def _try_espeak(candidate: EspeakCandidate) -> Any:
     """A tokenizer that phonemizes with ``candidate``, or :class:`EspeakNotFound`
     saying why not."""
     from kokoro_onnx.config import EspeakConfig
     from kokoro_onnx.tokenizer import Tokenizer
 
-    data = _espeak_data(candidate)
+    data = espeak_data_path(candidate)
+    if candidate.data is not None and data is not None and data != candidate.data:
+        _short_espeak_copy(candidate.data, Path(data))
+    try:
+        # The tokenizer quietly falls back to a system-wide espeak-ng when this
+        # one does not load; never run a copy other than the one logged.
+        ctypes.CDLL(candidate.library)
+    except OSError as exc:
+        raise EspeakNotFound(f"cannot load the library: {exc}") from exc
     try:
         tokenizer = Tokenizer(EspeakConfig(lib_path=candidate.library, data_path=data))
         probe = tokenizer.phonemize("hello", "en-us")
@@ -534,9 +523,7 @@ def _load_espeak() -> Any:
         except EspeakNotFound as exc:
             errors.append(f"{candidate.library}: {exc}")
     problem = (
-        f"no copy it tried works ({'; '.join(errors)})"
-        if errors
-        else f"it found neither {ESPEAK_COPIES}"
+        f"no copy it tried works ({'; '.join(errors)})" if errors else f"it found {ESPEAK_COPIES}"
     )
     raise EspeakNotFound(f"Kokoro needs espeak-ng for pronunciation but {problem}. {ESPEAK_REMEDY}")
 

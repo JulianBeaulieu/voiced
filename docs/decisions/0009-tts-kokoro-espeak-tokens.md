@@ -76,9 +76,10 @@ bundles its own espeak-ng; the engine does not look for it, but it is used
 when `VOICED_ESPEAK_LIBRARY` names its library, and its data directory is
 what the tokenizer reads whenever `VOICED_ESPEAK_DATA` is not set.
 
-Changed 2026-10-20: the wheel's library now comes first and the keg
-second, so no install needs espeak-ng installed separately; see ADR 0018,
-"espeak-ng: the wheel's copy, cloned to a short path".
+Changed 2026-10-20 (ADR 0018, `kokoro.espeak_candidates`): the wheel's
+library now comes first and the keg second, so no install needs espeak-ng
+installed separately; see ADR 0018, "espeak-ng: the wheel's copy, cloned
+to a short path".
 
 ### The wheel's espeak-ng and long paths
 

@@ -405,7 +405,10 @@ with its data cloned to the short path, then the kegs. A candidate whose
 data path would be too long or cannot be cloned is skipped for the next
 one rather than ending the load. A clone counts as complete only when it
 has `phontab`, `phondata`, `phonindex`, `intonations` and `en_dict`, since
-espeak-ng exits the process on a missing one; otherwise it is made again.
+espeak-ng exits the process on a missing one; otherwise it is made again,
+one load at a time under a lock file. A library that does not load is
+skipped before the tokenizer, which would otherwise quietly run a
+system-wide espeak-ng.
 `voiced doctor` uses the same data path check (`espeak_data_path`, which
 copies nothing) and names the first copy load would accept: the wheel's,
 the keg or the override. The cask needs no espeak-ng dependency; the
