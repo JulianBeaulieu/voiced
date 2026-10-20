@@ -134,3 +134,27 @@ needs uv). `install.json` marks the directory as voiced's. `uninstall`
 removes only what that layout owns and keeps anything else in the
 directory, instead of deleting a directory that has `pyvenv.cfg`. ADR 0017
 has the rules.
+
+## Amendment (2026-10-20)
+
+`--remove-models` no longer deletes the models' Hugging Face cache entries
+recursively. `huggingface_hub` 2.x keeps file bytes once in a store shared
+by every repository in the cache (`hub/blobs/<2 hex>/<xet hash>`), and a
+repository's folder holds only links into it, so removing the folder freed
+the links and left the bytes. `uninstall` now deletes through the library,
+`scan_cache_dir().delete_revisions()`, which removes a revision's snapshot,
+its refs and the blobs nothing else in the cache uses, and it says how many
+bytes that freed.
+
+It deletes only the revisions voiced pinned: each `voiced.models.PINS` entry
+and the revisions earlier releases pinned (`Pin.previous`). Other revisions
+in the cache stay, with their blobs, and so do other repositories and a
+model the config names that voiced does not pin; uninstall prints the `hf
+cache rm` command for those. A pinned revision is the same revision when
+another tool downloaded the repository's `main` and `main` is the pinned
+commit (Kokoro's is today): uninstall deletes it and that `main`, and its
+dry run names the branches that point at each revision it would delete. A pinned
+repository whose folder the scan cannot read (a download interrupted
+before any snapshot) cannot be deleted through the library, and `hf cache
+rm` uses the same scan: uninstall names it and says to run `voiced install`
+again to finish the download, or to remove the folder.

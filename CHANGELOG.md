@@ -6,6 +6,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- `voiced uninstall --remove-models` (and the app's Uninstall with Models
+  ticked) now frees the models' disk space. It removed each model's folder
+  in the Hugging Face cache, but with `huggingface_hub` 2.x that folder
+  holds only links into a store shared by the whole cache, so about 2.9 GB
+  stayed on disk. It now deletes the revisions voiced pinned through
+  `huggingface_hub`, which removes the bytes no other revision uses, and
+  prints how much it freed. Other revisions and repositories in the cache,
+  which other tools may use, stay, and so does a model the config names
+  that voiced does not pin: uninstall prints the `hf cache rm` command that
+  removes it.
+
 ## [0.1.1] - 2026-10-20
 
 ### Fixed
