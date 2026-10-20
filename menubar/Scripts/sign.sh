@@ -55,6 +55,25 @@ notarize() {
     fi
 }
 
+# stapler ACTION FILE: runs `xcrun stapler ACTION FILE` (staple or validate), up to five
+# times, 10, 20, 30 and 40 s apart. Apple's ticket delivery is eventually consistent and its
+# lookup endpoint drops connections, so right after notarization stapling sometimes fails
+# and works seconds later. After the last attempt, prints the stapler's output and fails.
+stapler() {
+    local output="$work/stapler.txt" attempt
+    for attempt in 1 2 3 4 5; do
+        if xcrun stapler "$1" "$2" > "$output" 2>&1; then
+            cat "$output"
+            return
+        fi
+        [ "$attempt" -lt 5 ] || break
+        echo "sign.sh: stapler $1 $(basename "$2") failed ($attempt of 5); again in $((attempt * 10)) s" >&2
+        sleep $((attempt * 10))
+    done
+    cat "$output" >&2
+    exit 1
+}
+
 if (( ! adhoc )); then
     for var in NOTARY_TEAM_ID NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER_ID; do
         [ -n "${!var:-}" ] || { echo "sign.sh: $var is not set" >&2; exit 1; }
@@ -104,8 +123,8 @@ if (( ! adhoc )); then
     codesign --verify --strict --deep --verbose=2 "$app"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$work/notarize.zip"
     notarize "$work/notarize.zip"
-    xcrun stapler staple "$app"
-    xcrun stapler validate "$app"
+    stapler staple "$app"
+    stapler validate "$app"
     spctl --assess --type execute -vv "$app" 2>&1 | tee "$work/spctl.txt"
     grep -q "source=Notarized Developer ID" "$work/spctl.txt"
 fi
@@ -131,8 +150,8 @@ done
 if (( ! adhoc )); then
     sign "$out/$name.dmg"
     notarize "$out/$name.dmg"
-    xcrun stapler staple "$out/$name.dmg"
-    xcrun stapler validate "$out/$name.dmg"
+    stapler staple "$out/$name.dmg"
+    stapler validate "$out/$name.dmg"
     spctl --assess --type open --context context:primary-signature -vv "$out/$name.dmg"
 fi
 echo "$out/$name.zip"
