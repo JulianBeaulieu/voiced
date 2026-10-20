@@ -69,7 +69,7 @@ def test_websocket_handshake_without_a_key_sends_no_authorization(
 
 
 def test_openai_client_carries_the_key(bench: ModuleType) -> None:
-    client = bench._openai("http://host:8880", "s3cret")
+    client = bench.openai_client("http://host:8880", "s3cret")
     assert client.auth_headers == {"Authorization": "Bearer s3cret"}
     assert str(client.base_url).rstrip("/") == "http://host:8880/v1"
 
@@ -126,7 +126,7 @@ def test_first_audio_while_another_client_streams(
 
     monkeypatch.setattr(bench, "stream_and_finalize", stream_and_finalize)
     monkeypatch.setattr(bench, "first_audio_ms", first_audio_ms)
-    monkeypatch.setattr(bench, "_openai", lambda url, key: object())
+    monkeypatch.setattr(bench, "openai_client", lambda url, key: object())
     monkeypatch.setattr(bench.time, "sleep", lambda s: threading.Event().wait(0.002))
     out = bench.first_audio_while_streaming_ms(
         "http://tts", "ws://stt/stream", "", "af_heart", np.zeros(160, "<i2"), 16_000, 5

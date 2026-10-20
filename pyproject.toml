@@ -125,6 +125,7 @@ files = ["src/voiced", "scripts"]
 mypy_path = "src"
 warn_unreachable = true
 
+# torch.*: scripts/utmos_score.py, which runs in its own uv environment (ADR 0024).
 [[tool.mypy.overrides]]
 module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*", "imageio_ffmpeg.*", "ptts.*", "torch.*"]
 ignore_missing_imports = true

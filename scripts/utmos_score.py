@@ -9,20 +9,28 @@ uv builds from its ``SCORER_PINS``, so torch never enters voiced's lock::
         python scripts/utmos_score.py a.wav b.wav
 
 It prints one JSON list of scores, in argument order. The model is
-tarepan/SpeechMOS's port of the UTMOS22 strong learner (MIT), fetched by
-``torch.hub`` at a fixed commit and cached under ``~/.cache/torch/hub``.
+tarepan/SpeechMOS's port of the UTMOS22 strong learner (MIT): its code
+through ``torch.hub`` at a fixed commit, its weights from the release that
+commit names, checked against :data:`WEIGHTS_SHA256`, both cached under
+``~/.cache/torch/hub``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import wave
+from pathlib import Path
 
 import torch
 
 HUB_REPO = "tarepan/SpeechMOS:ed25eacbfa42b99156c36ebec67a733b5dbb9b79"  # tag v1.2.0
 HUB_MODEL = "utmos22_strong"
+WEIGHTS_URL = (
+    "https://github.com/tarepan/SpeechMOS/releases/download/v1.0.0/utmos22_strong_step7459_v1.pt"
+)
+WEIGHTS_SHA256 = "38aa51ab79e2a4e09a1449758a4b37e9cbb2e8235a49662a732d33a9ba1e9bff"
 
 
 def read_wav(path: str) -> tuple[torch.Tensor, int]:
@@ -36,8 +44,22 @@ def read_wav(path: str) -> tuple[torch.Tensor, int]:
     return (torch.frombuffer(pcm, dtype=torch.int16).float() / 32768.0).unsqueeze(0), rate
 
 
+def weights() -> Path:
+    """The checkpoint, downloaded once and refused if its bytes changed."""
+    path = Path(torch.hub.get_dir()) / "checkpoints" / WEIGHTS_URL.rsplit("/", 1)[-1]
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.hub.download_url_to_file(WEIGHTS_URL, str(path), progress=False)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != WEIGHTS_SHA256:
+        raise SystemExit(f"{path} has sha256 {digest}, not {WEIGHTS_SHA256}")
+    return path
+
+
 def main(paths: list[str]) -> int:
-    model = torch.hub.load(HUB_REPO, HUB_MODEL, trust_repo=True, verbose=False)
+    model = torch.hub.load(HUB_REPO, HUB_MODEL, trust_repo=True, verbose=False, pretrained=False)
+    model.load_state_dict(torch.load(weights(), map_location="cpu"))
+    model.eval()
     scores = []
     with torch.no_grad():
         for path in paths:

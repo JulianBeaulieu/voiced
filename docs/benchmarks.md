@@ -5,11 +5,11 @@
 Every engine and model voiced ships, measured the same way on named Macs, so
 you can choose one by its numbers. The protocol, the clip set and why the
 ratings are what they are: [ADR 0024](decisions/0024-engine-benchmarks.md).
-Each row names its machine, the commit measured and the date; numbers from
-different machines do not compare.
+Each row names its machine, the voiced version and commit measured and the
+date; numbers from different machines do not compare.
 
 To add or refresh a row, start nothing and run, from a checkout with
-`uv sync --group dev --all-extras`:
+`uv sync --group dev --all-extras`, on a Mac with nothing else running:
 
 ```sh
 uv run python scripts/bench_engine.py stt --engine <name> [--model <repo>]
@@ -21,25 +21,19 @@ It writes the result to `docs/benchmarks/` and regenerates this file;
 
 ## Speech to text
 
-WER: word error rate over the 24 LibriSpeech clips, after normalizing case and punctuation. Finalize: from the client's `end` to the final transcript, streaming in real time. RTF: processing time over audio time.
+WER: word error rate over 24 clips of LibriSpeech test-clean (Panayotov et al. 2015, CC BY 4.0, openslr.org/12), after normalizing case and punctuation. Finalize: from the client's `end` to the final transcript, streaming in real time in 64 and 100 ms chunks. RTF: processing time over audio time.
 
-| Model | Engine | Quality | Speed | WER | Finalize after 200 ms silence, median / worst | Finalize at the last word, median / worst | Batch RTF | Load | Footprint / MLX peak | Size | Languages | Licence | Machine | Commit, date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `mlx-community/parakeet-tdt-0.6b-v3` | parakeet | 5 of 5 | 5 of 5 | 2.0% | 1 / 2 ms | 101 / 123 ms | 0.024 | 1.0 s | 1.55 GB / 3.60 GB | 2.5 GB | 25 languages | CC-BY-4.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 67aa19f, 2026-10-21 |
+No results yet.
 
 ## Text to speech
 
 UTMOS: predicted naturalness, 1 to 5, the mean over three fixed sentences. First audio: from the request to the first audio byte for "Turn on the kitchen lights." Every engine serves 24 kHz mono 16-bit audio.
 
-| Model | Engine | Quality | Speed | UTMOS | First audio, median / worst | First audio while STT streams | RTF | Voice | Load | Footprint / MLX peak | Size | Languages | Licence | Machine | Commit, date |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `mlx-community/Kokoro-82M-bf16` | kokoro | 5 of 5 | 5 of 5 | 4.52 | 96 / 99 ms | 106 / 198 ms | 0.043 | `af_heart` | 2.0 s | 0.73 GB / 1.86 GB | 389.4 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 67aa19f, 2026-10-21 |
-| `gradium/phonon-31m-en` | phonon | 5 of 5 | 5 of 5 | 4.50 | 32 / 38 ms | 18 / 23 ms | 0.042 | `default` | 0.6 s | 0.24 GB / none | 65.1 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 67aa19f, 2026-10-21 |
-| `mlx-community/Soprano-80M-bf16` | soprano | 5 of 5 | 4 of 5 | 4.35 | 126 / 392 ms | 130 / 352 ms | 0.079 | `default` | 2.1 s | 0.40 GB / 0.29 GB | 220.6 MB | en-US | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 67aa19f, 2026-10-21 |
+No results yet.
 
 ## Ratings
 
-Quality and speed, 1 to 5, come from the numbers above by these limits. Speed is the lower of its two ratings (the latency and the throughput a user waits on); a speech-to-text engine without streaming is rated on throughput alone. The model list in the app shows them.
+Quality and speed, 1 to 5, come from the numbers above by these limits (`voiced.ratings`). Speed is the lower of its two ratings (the latency and the throughput a user waits on). The app's model list will show them (ADR 0024 section 5).
 
 | Rating | Measure | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|---|
