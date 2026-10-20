@@ -243,13 +243,13 @@ def _download(model_id: str, source: Source, write: Write | None) -> Path:
         tqdm_class=_counting_tqdm(report) if report is not None else None,
     )
     if source.entry is not None:
-        _repair(model_id, source.entry)
+        _repair(model_id, source.entry, report)
     if report is not None:
         report.finish()
     return Path(path)
 
 
-def _repair(model_id: str, entry: Locked) -> None:
+def _repair(model_id: str, entry: Locked, report: ByteReport | None) -> None:
     """Fetch again any locked file the cache holds at the wrong size (an
     interrupted copy): ``snapshot_download`` keeps a file that is there
     without checking its size, so it would stay truncated."""
@@ -257,7 +257,13 @@ def _repair(model_id: str, entry: Locked) -> None:
 
     hub = Path(cache_dir())
     for name in missing_files(hub, entry):
-        hf_hub_download(entry.repo, name, revision=entry.revision, force_download=True)
+        hf_hub_download(
+            entry.repo,
+            name,
+            revision=entry.revision,
+            force_download=True,
+            tqdm_class=_counting_tqdm(report) if report is not None else None,
+        )
     still = missing_files(hub, entry)
     if still:
         raise ModelsError(

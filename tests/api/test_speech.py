@@ -158,7 +158,13 @@ async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> 
         assert texts == {"de_anna": "20 Euro.", "af_heart": "twenty Euro."}
         r = await c.post("/v1/audio/speech", json={"input": "3,5 Euro"})
         assert r.status_code == 200
-    assert texts["de_anna"] == "3,5 Euro."
+        assert texts["de_anna"] == "3,5 Euro."
+        # A voice that is not served falls back to the German default, and
+        # the text is normalized for German, the fallback's language.
+        texts.clear()
+        r = await c.post("/v1/audio/speech", json={"input": "20 Euro", "voice": "nobody"})
+        assert r.status_code == 200
+    assert texts == {"de_anna": "20 Euro."}
 
 
 async def test_an_unknown_voice_gets_the_configured_one(

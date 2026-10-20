@@ -136,7 +136,11 @@ class Progress:
         return True
 
     def done(self) -> None:
-        self.emit("done")
+        """The last event on success; like :meth:`close_with_error`, nothing
+        is written after it, so a SIGTERM now cannot add an ``error``."""
+        with self._lock:
+            self.emit("done")
+            self.out = None
 
     def error(self, message: str, code: ErrorCode = "failed") -> None:
         """``step`` is None when no step was running. A models-step error

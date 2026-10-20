@@ -42,7 +42,8 @@ class ModelNotDownloaded(LookupError):
         self.missing = missing
         self.command = f"voiced models download {model_id}"
         if missing:
-            what = f"{model_id} needs {', '.join(missing)}, which is not downloaded"
+            verb = "is" if len(missing) == 1 else "are"
+            what = f"{model_id} needs {', '.join(missing)}, which {verb} not downloaded"
         else:
             what = f"{model_id} is not downloaded" + (
                 f" at revision {revision}" if revision else ""

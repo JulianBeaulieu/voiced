@@ -85,7 +85,8 @@ Apache-2.0, Phonon 31M Apache-2.0, 40M CC-BY-NC-4.0; Soprano's, at its pin.
 
 Two parts, in the relation of `pyproject.toml` to `uv.lock`:
 
-- `CATALOGUE` in `voiced/models.py`, written by hand, standard library only
+- `CATALOGUE` in `voiced/models.py` (now `voiced/models/catalogue.py`),
+  written by hand, standard library only
   (where `PINS` is today; `voiced.engines.catalogue` keeps building
   `engines.list`):
 
@@ -426,7 +427,8 @@ above:
 - `gradium/phonon-40m-multilingual` is not catalogued: its terms were not
   granted to the account that pins, so its files could not be hashed. The
   engine refuses it, as it refuses any `gradium/phonon-*` model the
-  catalogue does not list, naming it as not in the catalogue. Pinning it later is one catalogue line and one `pin`.
+  catalogue does not list, naming it as not in the catalogue. Pinning it
+  later is one catalogue line and one `pin`.
 - Phonon's voices are pinned as the 37 English presets the engine loads
   (patterns naming each file), not `voices/*`: each file is its own request,
   and all 102 took 78 s here against about 30 s for the 38.

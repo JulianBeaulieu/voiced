@@ -58,15 +58,12 @@ from voiced.models.cache import (
     size_text,
     snapshot,
 )
-from voiced.models.catalogue import CATALOGUE, DEFAULT_ENGINES, Engine, Model
+from voiced.models.catalogue import CATALOGUE, DEFAULT_ENGINES, Model
 from voiced.models.errors import ModelNotDownloaded, ModelsError, classify, hub_missing_model
 from voiced.models.lockfile import (
-    PIN_COMMAND,
     Locked,
-    Source,
     lock,
     locked,
-    pinned_revision,
     pinned_revisions,
     resolve,
 )
@@ -84,14 +81,11 @@ __all__ = [
     "CATALOGUE",
     "DEFAULT_ENGINES",
     "DEFAULT_HF_HOME",
-    "PIN_COMMAND",
     "CachedRevision",
-    "Engine",
     "Locked",
     "Model",
     "ModelNotDownloaded",
     "ModelsError",
-    "Source",
     "cache_dir",
     "cached_revisions",
     "catalogued",
@@ -110,7 +104,6 @@ __all__ = [
     "locked",
     "missing_files",
     "not_downloaded",
-    "pinned_revision",
     "pinned_revisions",
     "repo_folder",
     "required",

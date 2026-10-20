@@ -36,7 +36,7 @@ def test_the_catalogue_and_the_lock_agree() -> None:
     catalogued = {m.id: (m.repo, m.patterns) for m in models.catalogued()}
     stale = pinning.stale(lock)
     dropped = sorted(set(lock) - set(catalogued))
-    fix = f"run {models.PIN_COMMAND} {' '.join(stale)}".rstrip()
+    fix = f"run {lockfile.PIN_COMMAND} {' '.join(stale)}".rstrip()
     assert not stale, f"the lock lacks or has other patterns for {stale}: {fix}"
     assert not dropped, f"the lock has {dropped}, which the catalogue dropped: {fix}"
     assert {i: (e.repo, e.patterns) for i, e in lock.items()} == catalogued
@@ -119,7 +119,7 @@ def test_a_shared_repository_comes_with_every_model_of_its_engine() -> None:
     ]
     assert models.required("someone/else") == ["someone/else"]
     assert models.find("gradium/phonon-voices") is None  # shared, not a model
-    assert models.pinned_revision("someone/else") is None
+    assert lockfile.pinned_revision("someone/else") is None
 
 
 # The cache on disk -------------------------------------------------------------
@@ -221,7 +221,7 @@ def test_the_hubs_offline_and_not_found_errors_are_a_missing_model() -> None:
     except RuntimeError as exc:
         found = models.hub_missing_model(exc, KOKORO)
     assert found is not None and found.model_id == KOKORO
-    assert found.revision == models.pinned_revision(KOKORO)
+    assert found.revision == lockfile.pinned_revision(KOKORO)
     own = models.ModelNotDownloaded("gradium/phonon-voices", "abc")
     assert models.hub_missing_model(own, KOKORO) is own
     assert models.hub_missing_model(RuntimeError("Metal"), KOKORO) is None
@@ -308,9 +308,13 @@ def fake_hub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., F
     def make(offline: bool = False, repairs: bool = True) -> FakeHub:
         fake = FakeHub(offline)
         fake.repaired = []  # type: ignore[attr-defined]
+        fake.repair_bars = []  # type: ignore[attr-defined]
 
-        def hf_hub_download(repo: str, name: str, *, revision: str, force_download: bool) -> str:
+        def hf_hub_download(
+            repo: str, name: str, *, revision: str, force_download: bool, tqdm_class: Any
+        ) -> str:
             fake.repaired.append((repo, name, force_download))  # type: ignore[attr-defined]
+            fake.repair_bars.append(tqdm_class)  # type: ignore[attr-defined]
             path = cache.snapshot_dir(Path(cache.cache_dir()), repo, revision) / name
             if repairs:
                 entry = next(e for e in models.lock().values() if e.repo == repo)
@@ -349,6 +353,8 @@ def test_a_pinned_model_downloads_its_locked_files_with_byte_progress(
     # The snapshot left every file missing, so each is fetched again whole.
     assert sorted(n for _, n, _ in fake.repaired) == sorted(entry.files)  # type: ignore[attr-defined]
     assert all(force for _, _, force in fake.repaired)  # type: ignore[attr-defined]
+    # With progress, the repair counts its bytes too.
+    assert all(bar is not None for bar in fake.repair_bars)  # type: ignore[attr-defined]
     # Starts at what is cached (nothing here); the total is the lock's.
     assert lines[1] == {"kind": "bytes", "repo": KOKORO, "bytes": 0, "total": entry.bytes}
     assert lines[-1] == {

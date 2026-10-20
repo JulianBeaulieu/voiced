@@ -17,6 +17,7 @@ from voiced.config import Settings
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.layout import install_lock
 from voiced.models import lockfile
+from voiced.models.catalogue import Engine
 
 pytest.importorskip("huggingface_hub")
 
@@ -398,7 +399,7 @@ def test_models_in_one_download_are_deleted_together_unless_one_is_in_use(
     that one is in use."""
     small = models.Model("org/assets", "MIT", ("small/*",), id="org/assets-small")
     base = models.Model("org/assets", "MIT", ("base/*",), id="org/assets-base")
-    engine = models.Engine("assets", "stt", models=(small, base))
+    engine = Engine("assets", "stt", models=(small, base))
     catalogue = (*models.CATALOGUE, engine)
     monkeypatch.setattr(models, "CATALOGUE", catalogue)
     monkeypatch.setattr("voiced.models.lookup.CATALOGUE", catalogue)
