@@ -42,9 +42,11 @@ final class ClientTests: XCTestCase {
         XCTAssertEqual(settings.ports?.ttsHTTP, 8880)
 
         let engines = try await client.engines()
-        XCTAssertEqual(engines.tts.map(\.name), ["kokoro", "soprano", "fake"])
+        XCTAssertEqual(engines.tts.map(\.name), ["kokoro", "soprano", "phonon", "fake"])
         XCTAssertEqual(engines.ttsEngine(named: "kokoro")?.voiceName("bm_george"), "George (British English, male)")
         XCTAssertEqual(engines.ttsEngine(named: "soprano")?.voiceName("default"), "Default")
+        XCTAssertEqual(engines.ttsEngine(named: "phonon")?.voiceName("Easton"), "Easton (American English, male)")
+        XCTAssertEqual(engines.ttsEngine(named: "phonon")?.voiceLanguages["Maeve"], "en-GB")
         XCTAssertEqual(engines.ttsEngine(named: "fake")?.voiceName("fake"), "fake")
 
         let target = try await client.openTarget(.statusPage)

@@ -21,7 +21,15 @@ from lock_target import ROOT
 # Each shipped lock and the `uv export` flags that write it (ADR 0017, "One lock
 # for all paths"). The test that keeps them in step with uv.lock uses these.
 EXPORTS = {
-    "src/voiced/requirements.lock": ["--no-dev", "--extra", "stt", "--extra", "tts"],
+    "src/voiced/requirements.lock": [
+        "--no-dev",
+        "--extra",
+        "stt",
+        "--extra",
+        "tts",
+        "--extra",
+        "phonon",
+    ],
     "src/voiced/build-requirements.lock": ["--only-group", "build"],
 }
 

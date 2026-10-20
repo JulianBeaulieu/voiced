@@ -193,14 +193,18 @@ Registered engines:
 | `parakeet` | `voiced.stt_engines` | Parakeet TDT 0.6B v3 via `parakeet-mlx`, batch and streaming, the default ([ADR 0008](decisions/0008-stt-engine-parakeet.md)) |
 | `kokoro` | `voiced.tts_engines` | Kokoro-82M via MLX with espeak-ng phonemes, the default ([ADR 0009](decisions/0009-tts-kokoro-espeak-tokens.md)) |
 | `soprano` | `voiced.tts_engines` | Soprano-80M via mlx-audio, opt-in, with a repetition penalty and a per-sentence length bound against runaway generation ([ADR 0010](decisions/0010-tts-soprano.md)) |
+| `phonon` | `voiced.tts_engines` | Phonon 31M via `ptts` on the CPU, opt-in, each sentence streamed as it is decoded ([ADR 0021](decisions/0021-tts-phonon.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
 which provides `load()`, the loaded, voice and speed checks and the
-split-synthesize-yield loop; Kokoro and Soprano do.
+split-synthesize-yield loop; Kokoro, Soprano and Phonon do. An engine that
+decodes a sentence in pieces also overrides `_synth_chunks`, and the loop
+yields each piece as it comes (Phonon).
 
-The MLX engines live in the optional extras `stt` and `tts`, so the core
-package installs on any machine and CI runs against the fakes.
+The MLX engines live in the optional extras `stt` and `tts`, and Phonon in
+`phonon`, so the core package installs on any machine and CI runs against
+the fakes. The shipped lock carries all three extras.
 
 ## Engine interfaces
 

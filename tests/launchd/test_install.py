@@ -744,6 +744,28 @@ def test_remove_models_reports_a_repository_the_scan_cannot_read(
     )
 
 
+def test_remove_models_removes_the_optional_pins_too(settings: Settings, tmp_path: Path) -> None:
+    """Phonon's model, its voices repository and the gated 40M models are
+    pinned like the defaults, so uninstall removes their pinned revisions
+    whichever engine the config names; another revision stays."""
+    settings.install.hf_home = tmp_path / "hf"
+    hub = tmp_path / "hf" / "hub"
+    optional = [pin(repo) for repo in ("gradium/phonon-31m-en", "gradium/phonon-voices")]
+    optional.append(pin("gradium/phonon-40m-en"))
+    for k, pinned in enumerate(optional):
+        assert pinned is not None
+        hf.add_revision(hub, pinned.repo, pinned.revision, {"f": bytes([k]) * 100})
+    other = hf.add_revision(hub, "gradium/phonon-voices", FOREIGN_REVISION, {"g": b"g" * 50})
+    p = plan_install(settings, home=tmp_path)
+    targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
+    assert targets.models is not None
+    assert {(r.repo, r.revision) for r in targets.models.revisions} == {
+        (o.repo, o.revision) for o in optional if o is not None
+    }
+    assert remove_targets(targets, p, lambda _: None) == 3
+    assert (other / "g").read_bytes() == b"g" * 50
+
+
 def test_plan_uses_the_real_account_not_logname(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

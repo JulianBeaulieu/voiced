@@ -8,16 +8,24 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Generator
 
 import pytest
 
-from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded, UnknownVoice
+from voiced.engines.base import (
+    TTS_SAMPLE_RATE,
+    EngineError,
+    EngineNotLoaded,
+    UnknownVoice,
+    Voice,
+)
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.phonon import PhononEngine
 from voiced.engines.sentence import SentenceTTSEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.queue import InferenceQueue
 
-ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine, SopranoEngine]
+ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine, SopranoEngine, PhononEngine]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
 
@@ -48,6 +56,13 @@ def _stub_loaded(
     engine._model = object()
     monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
     monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
+
+    # One piece per sentence, through whatever _synth_sentence a test patches
+    # in, for engines that stream within a sentence too.
+    def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
+        yield engine._synth_sentence(sentence, voice, speed)
+
+    monkeypatch.setattr(engine, "_synth_chunks", pieces)
     return calls
 
 
@@ -241,6 +256,72 @@ async def test_load_bounds_the_mlx_cache_even_when_it_fails(
     with pytest.raises(RuntimeError):
         await engine.load()
     assert events == ["limit", "clear"]
+
+
+class _Pieces(SentenceTTSEngine):
+    """Streams each sentence as three pieces, recording each step and the
+    thread it ran on."""
+
+    name = "pieces"
+    model_id = "none"
+    languages = ["en"]
+    license = "MIT"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._model = object()
+        self.events: list[str] = []
+        self.threads: set[int] = set()
+
+    def _load_sync(self) -> None:
+        pass
+
+    async def voices(self) -> list[Voice]:
+        return []
+
+    def _has_voice(self, voice: str) -> bool:
+        return voice == VOICE
+
+    def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
+        raise AssertionError("a streaming engine is read piece by piece")
+
+    def _synth_chunks(
+        self, sentence: str, voice: str, speed: float
+    ) -> Generator[bytes, None, None]:
+        try:
+            for i in range(3):
+                self.threads.add(threading.get_ident())
+                self.events.append(f"{sentence} {i}")
+                yield bytes([i + 1]) * 2
+        finally:
+            self.threads.add(threading.get_ident())
+            self.events.append(f"{sentence} closed")
+
+
+async def test_a_streaming_engine_yields_each_piece_as_it_comes() -> None:
+    engine = _Pieces()
+    gen = engine.synthesize("One. Two.", VOICE)
+    first = await gen.__anext__()
+    # Nothing past the first piece was asked for before it went out.
+    assert engine.events == ["One. 0"]
+    rest = [c async for c in gen]
+    assert [c.data for c in [first, *rest]] == [bytes([i]) * 2 for i in (1, 2, 3, 1, 2, 3)]
+    assert engine.events == [
+        *(f"One. {i}" for i in range(3)),
+        "One. closed",
+        *(f"Two. {i}" for i in range(3)),
+        "Two. closed",
+    ]
+    assert threading.get_ident() not in engine.threads
+
+
+async def test_aclose_mid_sentence_closes_the_engine_stream_off_the_loop() -> None:
+    engine = _Pieces()
+    gen = engine.synthesize("One. Two.", VOICE)
+    await gen.__anext__()
+    await gen.aclose()
+    assert engine.events == ["One. 0", "One. closed"]
+    assert threading.get_ident() not in engine.threads
 
 
 @pytest.mark.model

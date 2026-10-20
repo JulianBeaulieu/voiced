@@ -11,7 +11,9 @@ synthesized. Models and languages come from ``model_id`` and ``languages``.
 Display labels are built here, in one place: an engine's label is its
 registry name capitalised, and a voice with a gender is labelled
 ``Name (Language, gender)`` (Kokoro's ``af_heart`` is "Heart (American
-English, female)"), any other voice by its name.
+English, female)"), any other voice by its name. ``voice_languages`` gives
+each voice's BCP-47 tag, so a settings UI can group voices without parsing
+labels.
 
 ``python -m voiced.engines.catalogue`` prints :func:`engines_list` as JSON.
 The watchdog runs it that way, in a child process with a timeout, so engine
@@ -82,6 +84,7 @@ def engines_list() -> dict[str, Any]:
         entry = _common(name, tts_cls)
         entry["voices"] = [v.id for v in voices]
         entry["voice_labels"] = {v.id: voice_label(v) for v in voices}
+        entry["voice_languages"] = {v.id: v.language for v in voices}
         tts.append(entry)
     return {"stt": stt, "tts": tts}
 

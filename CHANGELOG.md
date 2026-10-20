@@ -6,6 +6,22 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Phonon text-to-speech engine, opt-in: `engine = "phonon"`,
+  `model = "gradium/phonon-31m-en"` (Apache-2.0). It runs on the CPU,
+  leaving the GPU to speech-to-text, and streams each sentence as it is
+  decoded, so first audio arrives after the first 80 ms of speech is ready.
+  Voices are the model's `default` and Gradium's 37 English presets by name
+  (`Easton`, `Maeve`, ...); the menu bar app lists them. The model and the
+  voices are pinned and downloaded by `voiced install` like the default
+  models. The gated `gradium/phonon-40m-en` and
+  `gradium/phonon-40m-multilingual` work as `model` too, under their
+  non-commercial CC-BY-NC-4.0 licence, with a Hugging Face token; without
+  one, the service says how to add it.
+- `engines.list` gives each voice's language in `voice_languages`, so
+  settings UIs can group voices.
+
 ### Fixed
 
 - `voiced uninstall --remove-models` (and the app's Uninstall with Models

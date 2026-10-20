@@ -15,6 +15,12 @@ while the GPU is still busy). A subclass supplies:
   thread: int16 PCM at :data:`TTS_SAMPLE_RATE` for one sentence, or ``b""``
   for nothing to say.
 
+An engine that produces a sentence's audio in pieces also overrides
+``_synth_chunks(sentence, voice, speed)``, a blocking generator of int16 PCM
+pieces; each ``next()`` and its ``close()`` run in a worker thread, so the
+first piece goes out before the sentence is done. By default it is the
+sentence from ``_synth_sentence`` as one piece.
+
 ``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``. An engine without rate
 control may ignore ``speed`` within the bounds, as ``TTSEngine.synthesize``
 allows.
@@ -23,7 +29,7 @@ allows.
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Generator
 from typing import Any, ClassVar
 
 from voiced.engines.base import (
@@ -107,20 +113,32 @@ class SentenceTTSEngine(TTSEngine):
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
         """Blocking; runs in a worker thread."""
 
+    def _synth_chunks(
+        self, sentence: str, voice: str, speed: float
+    ) -> Generator[bytes, None, None]:
+        """Blocking; each step runs in a worker thread. The whole sentence as
+        one piece unless the engine streams within a sentence."""
+        yield self._synth_sentence(sentence, voice, speed)
+
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
         """``text`` is already normalized by the caller; this only splits it
-        into sentences and synthesizes one chunk per sentence."""
+        into sentences and yields each sentence's pieces as they come."""
         self._check_loaded()
         if not self._has_voice(voice):
             raise UnknownVoice(voice)
         if not self.MIN_SPEED <= speed <= self.MAX_SPEED:
             raise EngineError(f"speed must be between {self.MIN_SPEED} and {self.MAX_SPEED}")
         for sentence in split_sentences(text):
-            pcm = await run_blocking(self._synth_sentence, sentence, voice, speed)
-            if pcm:
-                yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
+            pieces = self._synth_chunks(sentence, voice, speed)
+            try:
+                while (pcm := await run_blocking(next, pieces, None)) is not None:
+                    if pcm:
+                        yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
+            finally:
+                # Stops the engine's work for the sentence when the client goes away.
+                await run_blocking(pieces.close)
 
     def _check_loaded(self) -> None:
         if self._model is None:

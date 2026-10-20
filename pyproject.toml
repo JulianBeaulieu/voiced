@@ -51,6 +51,10 @@ stt = ["parakeet-mlx>=0.5,<0.6"]
 # attributes. scipy (also an mlx-audio dependency) is declared because
 # voiced.audio.resample uses it to take Soprano's 32 kHz output to 24 kHz.
 tts = ["mlx-audio>=0.5.8,<0.5.10", "kokoro-onnx>=0.4", "huggingface-hub>=1.1", "scipy>=1.11"]
+# Phonon on the CPU (ADR 0021): no MLX, so it installs on its own too. ptts is
+# pinned to the minor release the engine was checked against (stream(),
+# add_voice(), voice_catalog= and its default model and voice revisions).
+phonon = ["ptts>=0.4,<0.5", "huggingface-hub>=1.1"]
 
 [dependency-groups]
 dev = [
@@ -87,6 +91,7 @@ parakeet = "voiced.engines.parakeet:ParakeetEngine"
 fake = "voiced.testing.fakes:FakeTTSEngine"
 kokoro = "voiced.engines.kokoro:KokoroEngine"
 soprano = "voiced.engines.soprano:SopranoEngine"
+phonon = "voiced.engines.phonon:PhononEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]
@@ -121,7 +126,7 @@ mypy_path = "src"
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*", "imageio_ffmpeg.*"]
+module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*", "imageio_ffmpeg.*", "ptts.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

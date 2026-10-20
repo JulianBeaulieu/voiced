@@ -7,13 +7,14 @@ command, and keeping it out of the CLI keeps its measurement code and the
 ``openai`` dependency off the daemon's path. See ADR 0015.
 
 Start the servers first (``uv run voiced serve stt`` and ``uv run voiced serve
-tts``, plus optionally a second TTS server running Soprano on another port),
+tts``, plus optionally more TTS servers running Soprano and Phonon on other
+ports),
 then point this at them (add ``--api-key`` or ``VOICED_API_KEY`` when the
 servers set ``server.api_key``)::
 
     uv run python scripts/bench.py \\
         --stt-url http://127.0.0.1:8881 --tts-url http://127.0.0.1:8880 \\
-        --soprano-url http://127.0.0.1:8870
+        --soprano-url http://127.0.0.1:8870 --phonon-url http://127.0.0.1:8860
 
 It prints a Markdown table. What each row measures:
 
@@ -485,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
         "--soprano-url", default=None, help="optional second TTS server running Soprano"
     )
     parser.add_argument(
+        "--phonon-url", default=None, help="optional TTS server running Phonon (ADR 0021)"
+    )
+    parser.add_argument(
         "--wav",
         type=Path,
         default=DEFAULT_WAV,
@@ -542,6 +546,11 @@ def main(argv: list[str] | None = None) -> int:
         rows.append(Row("Soprano first audio", fmt_ms(sop), ""))
     else:
         rows.append(Row("Soprano first audio", "skipped (no --soprano-url)", ""))
+    if args.phonon_url:
+        pho = tts_first_audio_ms(args.phonon_url, key, "default", args.trials)
+        rows.append(Row("Phonon first audio", fmt_ms(pho), "<= 200 ms"))
+    else:
+        rows.append(Row("Phonon first audio", "skipped (no --phonon-url)", ""))
 
     ws_url = f"{_ws(args.stt_url)}/v1/audio/transcriptions/stream"
     tails = ((SILENCE_WINDOW_S, "200 ms trailing silence"), (0.0, "0 ms trailing silence"))
@@ -561,6 +570,20 @@ def main(argv: list[str] | None = None) -> int:
                     "<= 150 ms worst",
                 )
             )
+    if args.phonon_url:
+        # Phonon runs on the CPU, beside the STT's own CPU work.
+        with tts_busy(args.phonon_url, key, "default"):
+            for trailing, tail in tails:
+                fin = ws_finalize_ms(
+                    ws_url, key, samples, rate, 1024, args.alignments // 2, trailing
+                )
+                rows.append(
+                    Row(
+                        f"Streaming finalize, 64 ms chunks, {tail}, Phonon synthesizing",
+                        fmt_ms(fin),
+                        "<= 150 ms worst",
+                    )
+                )
     if args.streams > 1:
         for trailing, tail in tails:
             fin = concurrent_finalize_ms(
@@ -579,6 +602,17 @@ def main(argv: list[str] | None = None) -> int:
     rows.append(
         Row("Kokoro first audio while another client streams to STT", fmt_ms(speaking), "<= 200 ms")
     )
+    if args.phonon_url:
+        speaking = first_audio_while_streaming_ms(
+            args.phonon_url, ws_url, key, "default", samples, rate, 3 * args.trials
+        )
+        rows.append(
+            Row(
+                "Phonon first audio while another client streams to STT",
+                fmt_ms(speaking),
+                "<= 200 ms",
+            )
+        )
 
     ten = batch_transcription_ms(args.stt_url, key, wav_container(ten_second, rate), args.trials)
     rows.append(
@@ -596,6 +630,10 @@ def main(argv: list[str] | None = None) -> int:
         synthesize_long_reply(args.soprano_url, key, "default")
         time.sleep(SETTLE_S)
         rows.append(Row("TTS (Soprano) memory", fmt_mem(memory(args.soprano_url))))
+    if args.phonon_url:
+        synthesize_long_reply(args.phonon_url, key, "default")
+        time.sleep(SETTLE_S)
+        rows.append(Row("TTS (Phonon) memory", fmt_mem(memory(args.phonon_url))))
     field = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"
     combined = stt_mem[field] + tts_mem[field]
     rows.append(

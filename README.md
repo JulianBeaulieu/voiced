@@ -19,8 +19,8 @@ The recording's timings are curl fetching a WAV, slower than the streamed benchm
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
-Soprano-80M. The numbers below come from two machines, both named under
-[Benchmarks](#benchmarks).
+Soprano-80M or Phonon 31M. The numbers below come from two machines, both
+named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -230,10 +230,21 @@ is the exception: it ships inside the `pysilero-vad` wheel.
 | [Parakeet TDT 0.6B v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | STT | yes | CC-BY-4.0 |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
+| [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
+| [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English and [multilingual](https://huggingface.co/gradium/phonon-40m-multilingual) | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
+
+Phonon is Gradium's. It builds on Kyutai's Pocket TTS and Mimi codec, both
+released under CC-BY-4.0; Gradium releases Phonon 31M's weights, tokenizer
+and voices under Apache-2.0, and its runtime, the `ptts` package, under MIT
+or Apache-2.0. The Phonon 40M models are CC-BY-NC-4.0: non-commercial use
+only. They are gated on Hugging Face, so using one means accepting its terms
+on the model page and giving the services a token (see
+[Using Phonon](#using-phonon)). voiced never uses them unless the config
+names one, and `/v1/models` reports the licence of the model in use.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -300,6 +311,36 @@ short fade and logs `soprano: runaway generation`, which can clip the last
 word, most often on one- and two-word replies. The details are in
 [ADR 0010](docs/decisions/0010-tts-soprano.md).
 
+### Using Phonon
+
+Phonon is a small text-to-speech model that runs on the CPU, so it leaves
+the GPU to speech-to-text. It is installed with voiced but is opt-in. To use
+it, set all three keys under `[tts]`:
+
+```toml
+[tts]
+engine = "phonon"
+model = "gradium/phonon-31m-en"
+default_voice = "default"
+```
+
+`default` is the model's own voice. The other 37 are Gradium's English
+presets, named as Gradium names them (`Easton`, `Maeve`, `The Snow Queen`);
+`/v1/audio/voices` and the menu bar app list them. Then run
+`~/.voiced/bin/voiced install`, which downloads the model and the voices
+(about 75 MB), and `voiced restart all`. Like Soprano, it has no rate
+control, so `speed` is accepted and ignored. Voice cloning needs Gradium's
+hosted service and is not supported.
+
+The larger `gradium/phonon-40m-en` and `gradium/phonon-40m-multilingual`
+work the same way, as `model`, under their non-commercial licence; the
+other Phonon 40M models do not speak English and are refused. They are
+gated: accept the terms on the model's Hugging Face page while signed in,
+then, as the user the services run as, run `hf auth login` with `HF_HOME`
+set to the Hugging Face home the services use (`[install] hf_home`, or
+`~/.cache/huggingface` when unset), so the token lands where they read it.
+The details are in [ADR 0021](docs/decisions/0021-tts-phonon.md).
+
 ## Benchmarks
 
 Apple M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
@@ -344,7 +385,9 @@ process. Method, the complete table and the known misses are in
   worst up to 165 ms and 192 ms while TTS synthesizes (on the Studio 146 to
   149 ms median, 170 ms worst, and 510 ms worst while TTS synthesizes); that
   misses the project's 50 ms median target
-  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)).
+  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). Those TTS figures
+  are Kokoro's; while Phonon synthesizes, on the M1 Max, the worst was
+  115 ms ([ADR 0021](docs/decisions/0021-tts-phonon.md)).
 - Memory: the physical footprint (what Activity Monitor counts, GPU buffers
   included), idle after a long reply, with the MLX peak reached while serving.
 
@@ -354,6 +397,8 @@ process. Method, the complete table and the known misses are in
 | Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | 3 ms median, 59 ms worst |
 | Batch transcription, 10.1 s clip | 253 ms median | 258 ms median |
 | STT + TTS footprint, idle after use | 2.21 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | 2.36 GB (Kokoro MLX peak 2.16 GB) |
+| Phonon 31M first audio (opt-in, on the CPU) | 28 ms median, 33 ms worst; 19 ms median, 28 ms worst while STT streams | not measured |
+| Phonon 31M footprint, idle after use | 0.26 GB | not measured |
 | End of speech to first audio, STT -> LLM -> TTS | not measured | 436 ms median (STT 7 + LLM 217 + TTS 221), `ministral-3:8b` on Ollama, from a laptop over Wi-Fi |
 
 The Studio ran the services as LaunchDaemons with Ollama's `ministral-3:8b`
@@ -380,6 +425,7 @@ daemons and Metal access, including from a real daemon context with
 | HTTP 500 `ffmpeg_missing` | Uploads and mp3 or opus output need ffmpeg, which comes with voiced's `imageio-ffmpeg` dependency: reinstall voiced. |
 | HTTP 400 `invalid_audio` | ffmpeg could not decode the upload. |
 | Soprano clips the last word; the log shows `soprano: runaway generation` | The model ran past the sentence and was cut at its length bound. Expected now and then, mostly on one- and two-word replies; Kokoro does not do this. |
+| tts exits at startup with `gradium/phonon-40m-... is gated` | The configured Phonon 40M model needs its licence accepted and a Hugging Face token where the services read it; the message says how. See [Using Phonon](#using-phonon). |
 | Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |

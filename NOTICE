@@ -74,6 +74,7 @@ Python packages (src/voiced/requirements.lock)
   pooch==1.9.0  BSD-3-Clause  https://pypi.org/project/pooch/1.9.0/
   protobuf==7.36.2  BSD-3-Clause  https://pypi.org/project/protobuf/7.36.2/
   psutil==7.2.2  BSD-3-Clause  https://pypi.org/project/psutil/7.2.2/
+  ptts==0.4.0  MIT OR Apache-2.0  https://pypi.org/project/ptts/0.4.0/
   pycparser==3.11  BSD-3-Clause  https://pypi.org/project/pycparser/3.11/
   pydantic==2.14.1  MIT  https://pypi.org/project/pydantic/2.14.1/
   pydantic-core==2.50.1  MIT  https://pypi.org/project/pydantic-core/2.50.1/
