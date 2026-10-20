@@ -133,7 +133,10 @@ extension FakeState {
                             "default": "Default", "Easton": "Easton (American English, male)",
                             "Maeve": "Maeve (British English, female)", "The Snow Queen": "The Snow Queen",
                         ],
-                        languages: ["en"]),
+                        voiceLanguages: [
+                            "default": "en", "Easton": "en-US", "Maeve": "en-GB", "The Snow Queen": "en",
+                        ],
+                        languages: ["en-US", "en-GB"]),
                     // No labels, as from an engine (or a server) that does not send them.
                     TTSEngineInfo(name: "fake", models: ["fake"], voices: ["fake"]),
                 ]),

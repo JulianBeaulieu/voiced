@@ -55,7 +55,6 @@ from voiced.layout import (
     same_path,
     sha256_file,
 )
-from voiced.models import login_hint, pin
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
 
@@ -277,26 +276,6 @@ _ESPEAK_SOURCES = {
     "wheel": "espeakng-loader wheel",
     "homebrew": "Homebrew",
 }
-
-
-def check_model_access(settings: Settings) -> list[Check]:
-    """A gated model the config names (Phonon 40M) needs a Hugging Face token
-    where the services read it: ``token`` under ``[install] hf_home``, the
-    ``HF_HOME`` the plists set, or under the default one. Whether the licence
-    was accepted only the download can tell."""
-    home = settings.install.hf_home or Path.home() / ".cache" / "huggingface"
-    token = home / "token"
-    checks: list[Check] = []
-    for service, model in (("stt", settings.stt.model), ("tts", settings.tts.model)):
-        pinned = pin(model)
-        if pinned is None or not pinned.gated:
-            continue
-        name = f"Model access ({service})"
-        if token.is_file() and token.stat().st_size > 0:
-            checks.append(Check(name, "pass", f"{model} is gated; token found at {token}"))
-        else:
-            checks.append(Check(name, "fail", login_hint(model, home)))
-    return checks
 
 
 def check_ffmpeg(
@@ -648,7 +627,6 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_install(state_dir(settings)),
         check_config_file(config_path()),
         check_espeak(required=settings.tts.engine == KokoroEngine.name),
-        *check_model_access(settings),
         check_ffmpeg(runner=runner),
         check_memory(runner),
         *check_ports(settings, runner),

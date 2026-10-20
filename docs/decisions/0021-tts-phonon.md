@@ -36,7 +36,7 @@ building anything:
 |---|---|---|
 | `gradium/phonon-31m-en` (weights, tokenizer, default voice) | Apache-2.0 | model card, `license: apache-2.0` |
 | `gradium/phonon-voices` (the preset voices) | Apache-2.0 | model card |
-| `gradium/phonon-40m-en`, `-40m-multilingual` (and `-fr`, `-de`, `-es`, `-pt`) | CC-BY-NC-4.0, gated | model cards, `license: cc-by-nc-4.0` |
+| `gradium/phonon-40m-en`, `-40m-multilingual` (the two voiced supports) | CC-BY-NC-4.0, gated | model cards, `license: cc-by-nc-4.0` |
 | `ptts`, the runtime | MIT OR Apache-2.0 | wheel metadata |
 | Kyutai's Pocket TTS and Mimi, which Phonon builds on | CC-BY-4.0 | `kyutai/pocket-tts`, `kyutai/mimi` model cards |
 
@@ -65,7 +65,13 @@ path were tuned on, and Phonon is new.
   stream and its `close()`) runs in a worker thread through `run_blocking`,
   like the other engines' model calls, so the event loop never waits and a
   cancelled request keeps the slot until the step returns. No dedicated
-  model thread: `ptts` holds no thread-bound state.
+  model thread: `ptts` holds no thread-bound state. `ptts`'s own pool of
+  CPU threads defaults to every core, efficiency cores included, beside
+  the STT's CPU work, and nothing else would bound it on a Mac with four
+  cores or with two STT streams open; the engine sets it to 4
+  (`ptts.set_num_threads`, process-wide, before the model is built). On
+  the M1 Max, 4 threads were no slower than the default 10 (see
+  Measurements).
 - **Streaming within a sentence.** `SentenceTTSEngine` gains
   `_synth_chunks(sentence, voice, speed)`, a blocking generator of int16
   pieces; the loop yields each piece as it comes and closes the generator
@@ -73,7 +79,10 @@ path were tuned on, and Phonon is new.
   `_synth_sentence` as one piece, so Kokoro and Soprano are unchanged.
   Phonon yields each decoded chunk, converted to int16, and closing it
   leaves `ptts`'s `with` block, which stops Phonon's workers. First audio
-  is the first chunk, not the sentence.
+  is the first chunk, not the sentence. Phonon's `_synth_sentence` is never
+  called and raises `NotImplementedError`. A sentence without a letter or
+  a digit ("...", "!!!") is skipped: Phonon reads one as 1 to 1.6 s of
+  sound.
 - **Text.** `lang="en"`, `ptts`'s English normalization: voiced is English
   only, and the runtime requires a language. voiced has already normalized
   the text, so it mostly finds nothing to do.
@@ -91,13 +100,17 @@ path were tuned on, and Phonon is new.
   the 40M models', with the defaults' (every `OPTIONAL_PINS` entry is in
   `pinned_revisions()`, whichever engine the config names). `ptts` gets local
   folders only, the catalogue included, so it never reaches the Hub
-  itself.
+  itself. Switching to Phonon from the menu bar app restarts the service,
+  whose `load()` then downloads the model and voices (about 75 MB) with no
+  progress shown, until ADR 0022's on-demand downloads.
 - **Voices.** `default`, the checkpoint's own voice, first (an engine switch
   without a voice picks it), then the English rows of `voices.jsonl` as a
   static table in the engine: the id is the catalogue's name as it is
   (`Easton`, `The Snow Queen`), the language its locale (`en-US`, `en-GB`,
   `en` for the character voices) and its gender, so the menu bar app labels
-  them as it does Kokoro's. A static table lets the catalogue list voices
+  them as it does Kokoro's. `engines.list` carries the languages as a
+  `voice_languages` map beside `voice_labels`, for any engine, so the app
+  can group voices without parsing labels. A static table lets the catalogue list voices
   without the cache (ADR 0013); a model test keeps it equal to the pinned
   `voices.jsonl`. Every preset is registered with `add_voice` at load, so
   a named voice is on disk before the first request, and a name outside
@@ -109,16 +122,19 @@ path were tuned on, and Phonon is new.
 ### The 40M models
 
 `tts.model = "gradium/phonon-40m-en"` or `"gradium/phonon-40m-multilingual"`
-works, at pinned revisions, and is never a default. The engine sets its
-`license` from the model, so `/v1/models`, the status page and Wyoming's
-info report `CC-BY-NC-4.0` for them and `Apache-2.0` for 31M. The pins mark
-them gated. Without access, the download fails at load or at
-`voiced install` with what to do: accept the licence on the model page,
-then, as the user the services run as, run `hf auth login` with `HF_HOME`
-set to the Hugging Face home the services use. The plists pass `HF_HOME`
-and no `HF_TOKEN`, so the token has to be the `token` file there.
-`voiced doctor` fails the "Model access" check when that file is missing
-and prints the same command.
+works, at pinned revisions, and is never a default. The other 40M models
+(French, German, Spanish, Portuguese) are refused when the engine is
+built: they do not speak English, voiced's one language, and are not
+pinned. The engine sets its `license` from the model, so `/v1/models`, the
+status page and Wyoming's info report `CC-BY-NC-4.0` for the 40M models and
+`Apache-2.0` for 31M. Both are gated on the Hub. Without access, the
+download fails at load or at `voiced install` with one plain message:
+accept the licence at the model's page, then run `hf auth login` with
+`HF_HOME` set to the Hugging Face home the services use, as the user they
+run as. The plists pass `HF_HOME` and no `HF_TOKEN`, so the token has to be
+the `token` file there. `voiced doctor` does not check for it: a token file
+says nothing about access, and ADR 0022 replaces this with its
+`token_missing`, `token_invalid` and `gated_terms` states.
 
 ## Measurements
 
@@ -127,7 +143,8 @@ Apple M1 Max, 64 GB, macOS 15.7.4. `scripts/bench.py` with the new
 (Kokoro) and a third `voiced serve tts` running Phonon, each in its own
 process, over real sockets. First audio is the `openai` client's streamed
 `pcm` request for "Turn on the kitchen lights." to the first byte, voice
-`default`, after one warm-up.
+`default`, after one warm-up. This run used `ptts`'s default pool of 10
+threads, before the engine set 4.
 
 | Metric | Measured |
 |---|---|
@@ -142,13 +159,27 @@ process, over real sockets. First audio is the `openai` client's streamed
 | Phonon 40M English first audio | median 40 / p95 46 / worst 47 ms (n=10) |
 | TTS (Phonon 40M English) memory after a long reply | footprint 0.18 GB, RSS 0.41 GB |
 
+The thread pool, measured once more the same way against a fresh STT server
+and Phonon server, with `ptts`'s pool at 4 and then at 10 threads:
+
+| Metric | 4 threads | 10 threads |
+|---|---|---|
+| Phonon 31M first audio | median 28 / p95 33 / worst 33 ms (n=10) | median 33 / p95 36 / worst 36 ms (n=10) |
+| The same while another client streams to STT | median 19 / p95 27 / worst 28 ms (n=30) | median 26 / p95 41 / worst 45 ms (n=30) |
+| STT finalize, 64 ms chunks, 0 ms trailing silence, Phonon synthesizing | median 107 / p95 113 / worst 115 ms (n=16) | median 106 / p95 109 / worst 109 ms (n=16) |
+
+Four threads cost nothing here and leave six cores free; on this ten-core
+Mac the STT finalize is the same within noise either way. The benefit is
+on smaller Macs, which were not measured.
+
 Phonon does not wait for the STT's encoder calls, so its first audio does
 not grow while someone speaks; it ran faster then, plausibly because the
 CPU stays clocked up. Its CPU work costs the STT a little: the push-to-talk
 finalize (0 ms trailing silence) rose by about 9 ms median and 23 ms worst,
-inside the 150 ms target. The in-process engine measured first audio of 12
-to 37 ms for the default voice, a preset and a character voice, and about
-40 pieces for a two-sentence reply.
+inside the 150 ms target. Calling the engine in process, one warm
+two-sentence request per voice right after load (n=1 each, no HTTP), first
+audio was 12 ms for `default`, 37 ms for `Easton` and 36 ms for `Captain
+Silas Blackwater`, in 28 to 30 pieces.
 
 ## Consequences
 
@@ -165,3 +196,4 @@ to 37 ms for the default voice, a preset and a character voice, and about
   as an optional engine classmethod outside the frozen interface.
 - Phonon's voices outside English (65 of the 102) and the other 40M
   languages wait for voiced's languages beyond English.
+- `engines.list` gains `voice_languages` for every TTS engine (ADR 0013).

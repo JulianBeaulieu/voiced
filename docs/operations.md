@@ -252,7 +252,7 @@ every 10 s, and a `settings` event follows any change to the config file.
 | `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
-| `engines.list` | | installed engines with their `label`, models, languages, voices and `voice_labels`, without loading any |
+| `engines.list` | | installed engines with their `label`, models, languages, voices, `voice_labels` and `voice_languages`, without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
 | `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
 | `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
@@ -320,7 +320,7 @@ reboots need a person. voiced does not change this setting.
 |---|---|---|
 | tts | Kokoro-82M (default) | 469 MB peak resident |
 | tts | Soprano-80M (opt-in) | 392 MB resident |
-| tts | Phonon 31M (opt-in, on the CPU) | 0.26 GB footprint, 0.53 GB resident after a long reply |
+| tts | Phonon 31M (opt-in, on the CPU) | 530 MB resident (260 MB footprint) after a long reply |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 
 All figures were measured on an M1 Max. Parakeet's are MLX allocations

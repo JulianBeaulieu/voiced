@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -32,12 +31,11 @@ def test_the_default_models_are_pinned_to_commits() -> None:
 
 
 def test_optional_pins_are_loaded_at_their_revision_but_not_installed_by_default() -> None:
-    """Phonon's: pinned, not in the manifest; only its 40M checkpoints are gated."""
+    """Phonon's: pinned, and uninstall knows them, but not in the manifest."""
     assert not {p.repo for p in models.PINS} & {p.repo for p in models.OPTIONAL_PINS}
     for pin in models.OPTIONAL_PINS:
         assert models.pin(pin.repo) == pin and len(pin.revision) == 40 and pin.bytes > 0
-    gated = {p.repo for p in (*models.PINS, *models.OPTIONAL_PINS) if p.gated}
-    assert gated == {"gradium/phonon-40m-en", "gradium/phonon-40m-multilingual"}
+        assert (pin.repo, pin.revision) in models.pinned_revisions()
 
 
 def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
@@ -203,12 +201,9 @@ def test_without_write_there_is_no_dry_run_and_no_report(hub: Callable[..., Fake
     assert fake.calls[0]["revision"] == models.PINS[0].revision
 
 
-def test_a_gated_model_says_how_to_get_access(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_a_gated_model_says_how_to_get_access(monkeypatch: pytest.MonkeyPatch) -> None:
     huggingface_hub = pytest.importorskip("huggingface_hub")
     import httpx
-    from huggingface_hub import constants
     from huggingface_hub.errors import GatedRepoError
 
     def gated(repo: str, **kwargs: Any) -> Any:
@@ -216,14 +211,11 @@ def test_a_gated_model_says_how_to_get_access(
         raise GatedRepoError("401", response=httpx.Response(401, request=request))
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", gated)
-    monkeypatch.setattr(constants, "HF_HOME", str(tmp_path))
     with pytest.raises(RuntimeError) as exc:
         models.snapshot("gradium/phonon-40m-en", ["config.json"])
     message = str(exc.value)
     assert "https://huggingface.co/gradium/phonon-40m-en" in message
-    hf = shlex.quote(str(Path(sys.executable).parent / "hf"))  # voiced's environment's
-    assert f"HF_HOME={tmp_path} {hf} auth login" in message
-    assert str(tmp_path / "token") in message
+    assert "`hf auth login` with HF_HOME set" in message
 
 
 def test_offline_the_download_goes_to_the_cache_without_bytes(

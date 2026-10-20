@@ -367,8 +367,25 @@ curl -s http://127.0.0.1:8880/v1/models
 
 The stt service reports `"task": "transcription"`. `license` is the
 configured model's: with Phonon it is `Apache-2.0` for the default
-`gradium/phonon-31m-en` and `CC-BY-NC-4.0` (non-commercial) for the
-`gradium/phonon-40m-*` models.
+`gradium/phonon-31m-en` and `CC-BY-NC-4.0` (non-commercial) for
+`gradium/phonon-40m-en` and `gradium/phonon-40m-multilingual`:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "gradium/phonon-40m-en",
+      "object": "model",
+      "owned_by": "voiced",
+      "engine": "phonon",
+      "task": "speech",
+      "languages": ["en-US", "en-GB"],
+      "license": "CC-BY-NC-4.0"
+    }
+  ]
+}
+```
 
 ```python
 from openai import OpenAI

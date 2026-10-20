@@ -38,7 +38,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import shlex
 import sys
 import threading
 import time
@@ -58,7 +57,6 @@ class Pin:
     # The revisions earlier releases pinned, newest first: re-pinning moves
     # the old revision here, so uninstall still knows it is voiced's.
     previous: tuple[str, ...] = ()
-    gated: bool = False  # needs its licence accepted and a Hugging Face token
 
 
 PINS: tuple[Pin, ...] = (
@@ -74,16 +72,13 @@ OPTIONAL_PINS: tuple[Pin, ...] = (
     # config.json, tokenizer.json, model.q8.gguf and default-voice.safetensors,
     # at the revisions ptts 0.4.0 names as its defaults
     Pin("gradium/phonon-31m-en", "8c64b55ec301728e2d1695bfea87a08a267d0c2d", 65049306),
-    # voices.jsonl and the 37 English voices/*.safetensors
+    # voices.jsonl and the 37 English voices/*.safetensors. On a bump, run
+    # tests/tts/test_phonon.py::test_the_voice_table_is_the_pinned_catalogue
+    # (model tier): the engine's voice table must match the new voices.jsonl.
     Pin("gradium/phonon-voices", "da6c9ec0d47be8df5c87c730a3aa97187f3229c3", 9510439),
-    # The 40M checkpoints: CC BY-NC 4.0, gated
-    Pin("gradium/phonon-40m-en", "9b95393286eaeeebf1330b2ae90a14a2074c415d", 75090522, gated=True),
-    Pin(
-        "gradium/phonon-40m-multilingual",
-        "1267486cbcb55d2eaa61ba521c2ed8e4d22923c2",
-        75090344,
-        gated=True,
-    ),
+    # The 40M checkpoints voiced supports: CC-BY-NC-4.0, gated on the Hub
+    Pin("gradium/phonon-40m-en", "9b95393286eaeeebf1330b2ae90a14a2074c415d", 75090522),
+    Pin("gradium/phonon-40m-multilingual", "1267486cbcb55d2eaa61ba521c2ed8e4d22923c2", 75090344),
 )
 
 REPORT_INTERVAL_S = 0.25
@@ -124,19 +119,6 @@ def extra_downloads(engine: type) -> dict[str, list[str]]:
     """Other repositories ``engine`` loads from, with their file patterns."""
     declared = getattr(engine, "extra_downloads", None)
     return dict(declared()) if callable(declared) else {}
-
-
-def login_hint(repo: str, hf_home: Path) -> str:
-    """What to do when ``repo`` is gated and the services cannot read it.
-    The command is huggingface_hub's, from voiced's environment when this
-    runs in it."""
-    found = Path(sys.executable).parent / "hf"
-    hf = shlex.quote(str(found)) if found.is_file() else "hf"
-    return (
-        f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then, as "
-        f"the user the services run as, run `HF_HOME={shlex.quote(str(hf_home))} {hf} auth "
-        f"login`, which saves the token to {hf_home / 'token'}"
-    )
 
 
 Write = Callable[[str], None]
@@ -214,9 +196,11 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
     try:
         return _snapshot(repo, patterns, write)
     except GatedRepoError as exc:
-        from huggingface_hub import constants
-
-        raise RuntimeError(login_hint(repo, Path(constants.HF_HOME))) from exc
+        raise RuntimeError(
+            f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then "
+            "run `hf auth login` with HF_HOME set to the Hugging Face home the services "
+            "use, as the user they run as"
+        ) from exc
 
 
 def _snapshot(repo: str, patterns: list[str] | None, write: Write | None) -> Path:

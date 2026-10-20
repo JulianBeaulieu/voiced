@@ -83,7 +83,7 @@ wyoming_port = 10200
 # together. Phonon runs on the CPU: model "gradium/phonon-31m-en" (Apache-2.0)
 # with default_voice "default" or a preset such as "Easton"; the
 # "gradium/phonon-40m-en" and "gradium/phonon-40m-multilingual" models are
-# CC BY-NC 4.0 (non-commercial) and need a Hugging Face token (ADR 0021).
+# CC-BY-NC-4.0 (non-commercial) and need a Hugging Face token (ADR 0021).
 engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"

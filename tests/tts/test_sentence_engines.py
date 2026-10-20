@@ -56,13 +56,13 @@ def _stub_loaded(
     engine._model = object()
     monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
     monkeypatch.setattr(engine, "_synth_sentence", fake_synth)
-    if type(engine)._synth_chunks is not SentenceTTSEngine._synth_chunks:
-        # An engine that streams within a sentence: one piece per sentence,
-        # through whatever _synth_sentence a test patches in.
-        def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
-            yield engine._synth_sentence(sentence, voice, speed)
 
-        monkeypatch.setattr(engine, "_synth_chunks", pieces)
+    # One piece per sentence, through whatever _synth_sentence a test patches
+    # in, for engines that stream within a sentence too.
+    def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
+        yield engine._synth_sentence(sentence, voice, speed)
+
+    monkeypatch.setattr(engine, "_synth_chunks", pieces)
     return calls
 
 

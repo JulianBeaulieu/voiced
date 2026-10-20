@@ -46,6 +46,9 @@ def test_labels() -> None:
     assert tts["soprano"]["voice_labels"] == {"default": "Default"}
     assert tts["phonon"]["voice_labels"]["Easton"] == "Easton (American English, male)"
     assert tts["phonon"]["voice_labels"]["The Snow Queen"] == "The Snow Queen"
+    assert tts["phonon"]["voice_languages"]["Maeve"] == "en-GB"
+    assert tts["kokoro"]["voice_languages"]["bm_george"] == "en-GB"
+    assert set(tts["kokoro"]["voice_languages"]) == set(tts["kokoro"]["voices"])
     assert stt["parakeet"] == {
         "name": "parakeet",
         "label": "Parakeet",

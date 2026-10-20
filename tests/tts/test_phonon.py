@@ -44,6 +44,13 @@ def test_registered_with_its_model_and_licence() -> None:
     assert PhononEngine.license == "Apache-2.0"  # the class default is untouched
 
 
+@pytest.mark.parametrize("language", ["fr", "de", "es", "pt"])
+def test_the_other_40m_models_are_refused(language: str) -> None:
+    """They are not pinned and do not speak English."""
+    with pytest.raises(ValueError, match="only gradium/phonon-40m-en and"):
+        PhononEngine(f"gradium/phonon-40m-{language}")
+
+
 def test_the_module_imports_without_ptts() -> None:
     """The registry imports every engine module; ptts is imported in load()."""
     code = "import sys; sys.modules['ptts'] = None; import voiced.engines.phonon"
@@ -53,23 +60,12 @@ def test_the_module_imports_without_ptts() -> None:
 def test_the_catalogue_is_the_default_voice_then_the_english_presets() -> None:
     assert PhononEngine.catalogue_voices()[0] == DEFAULT_VOICE
     ids = [v.id for v in PHONON_VOICES]
-    assert len(ids) == len(set(ids)) == 38
+    assert len(ids) == len(set(ids))
     assert set(ids[1:]) == set(VOICE_FILES)
     by_id = {v.id: v for v in PHONON_VOICES}
     assert voice_label(by_id["Easton"]) == "Easton (American English, male)"
     assert voice_label(by_id["Maeve"]) == "Maeve (British English, female)"
     assert voice_label(by_id["The Snow Queen"]) == "The Snow Queen"
-
-
-def test_it_names_what_it_downloads() -> None:
-    patterns = ["config.json", "tokenizer.json", "model.q8.gguf", "default-voice.safetensors"]
-    assert models.download_patterns(PhononEngine) == patterns
-    extra = models.extra_downloads(PhononEngine)
-    assert list(extra) == [VOICES_REPO]
-    assert extra[VOICES_REPO][0] == "voices.jsonl"
-    assert extra[VOICES_REPO][1:] == list(VOICE_FILES.values())
-    assert models.pinned_revision(PhononEngine.model_id) is not None
-    assert models.pinned_revision(VOICES_REPO) is not None
 
 
 class _Stream:
@@ -100,6 +96,7 @@ class _FakeTTS:
         self.voices = ["default"]
         self.added: dict[str, str] = {}
         self.log: list[str] = []
+        self.threads: int | None = None
 
     def add_voice(self, name: str, path: str) -> None:
         self.added[name] = path
@@ -115,12 +112,16 @@ def fake_ptts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[_FakeTTS]
     """A ``ptts`` module whose models are recorded, and snapshots that are
     folders under ``tmp_path``."""
     built: list[_FakeTTS] = []
+    module = SimpleNamespace(threads=None)
 
     def tts(model: str, **kwargs: Any) -> _FakeTTS:
         built.append(_FakeTTS(model, **kwargs))
+        built[-1].threads = module.threads  # the pool it was built with
         return built[-1]
 
-    monkeypatch.setitem(sys.modules, "ptts", SimpleNamespace(TTS=tts))
+    module.TTS = tts
+    module.set_num_threads = lambda n: setattr(module, "threads", n)
+    monkeypatch.setitem(sys.modules, "ptts", module)
     monkeypatch.setattr(models, "snapshot", lambda repo, patterns: tmp_path / repo)
     return built
 
@@ -147,6 +148,7 @@ async def test_load_reads_the_pinned_snapshots_on_the_cpu(
         "lang": "en",
         "voice_catalog": str(voices),
     }
+    assert model.threads == 4  # set before the model, not ptts's every core
     assert model.added == {name: str(voices / path) for name, path in VOICE_FILES.items()}
     assert model.log == ["stream Warming up. default", "piece", "piece", "closed"]
     assert await engine.voices() == PHONON_VOICES
@@ -167,7 +169,7 @@ async def test_a_load_that_fails_leaves_it_unloaded(
         spoil(tts)
         return tts
 
-    monkeypatch.setitem(sys.modules, "ptts", SimpleNamespace(TTS=spoilt))
+    monkeypatch.setattr(sys.modules["ptts"], "TTS", spoilt)
     engine = PhononEngine()
     with pytest.raises(RuntimeError, match=message):
         await engine.load()
@@ -190,6 +192,18 @@ async def test_a_client_leaving_mid_sentence_stops_phonon(fake_ptts: list[_FakeT
     await gen.__anext__()
     await gen.aclose()
     assert model.log == ["stream One. default", "piece", "closed"]
+
+
+async def test_a_sentence_without_letters_or_digits_is_not_spoken(
+    fake_ptts: list[_FakeTTS],
+) -> None:
+    """Phonon reads "..." or "!!!" as a second or more of sound."""
+    engine, model = await _loaded(fake_ptts)
+    for text in ("...", "!!!", "?"):
+        assert [c async for c in engine.synthesize(text, "default")] == []
+    assert model.log == []
+    chunks = [c async for c in engine.synthesize("Wait... 42!", "default")]  # one sentence
+    assert len(chunks) == len(PIECES)
 
 
 async def test_an_unknown_voice_never_reaches_phonon(fake_ptts: list[_FakeTTS]) -> None:
@@ -252,7 +266,8 @@ def test_streams_pieces_in_order_before_the_sentence_is_done(phonon_engine: Any)
     assert len(arrivals) >= 10
     times = [t for t, _ in arrivals]
     assert times == sorted(times)
-    assert times[0] < 0.15, f"first audio after {times[0] * 1000:.0f} ms"
+    assert times[0] < 0.1, f"first audio after {times[0] * 1000:.0f} ms"
+    assert times[0] < times[1] < times[-1]
     assert times[0] < times[-1] / 4
 
 

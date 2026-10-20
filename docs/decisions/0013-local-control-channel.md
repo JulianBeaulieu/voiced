@@ -170,7 +170,9 @@ built there, in one place: an engine's `label` is its name capitalised;
 `voice_labels` maps each voice id to `Name (Language, gender)` when the
 engine gives a gender (Kokoro's names, languages and genders come from its
 voice id convention, `kokoro_voices()`), else to the voice's name (Soprano:
-"Default"). `LANGUAGE_NAMES` there also names the languages Kokoro can
+"Default"). `voice_languages` (added with Phonon, ADR 0021) maps each
+voice id to its BCP-47 tag, so the app can group voices without parsing
+labels. `LANGUAGE_NAMES` there also names the languages Kokoro can
 speak beyond English; voiced v1 is English-only, so `engines.list` only
 lists English voices today, and the table is ready for when an engine
 enables more.

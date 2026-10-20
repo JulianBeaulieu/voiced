@@ -182,22 +182,6 @@ def test_espeak_required_follows_tts_engine(
     assert seen == [True, False]
 
 
-def test_a_gated_model_needs_a_token_where_the_services_read_it(
-    settings: Settings, tmp_path: Path
-) -> None:
-    settings.install.hf_home = tmp_path / "hf"
-    assert doctor.check_model_access(settings) == []  # nothing gated configured
-    settings.tts.engine, settings.tts.model = "phonon", "gradium/phonon-40m-en"
-    (missing,) = doctor.check_model_access(settings)
-    assert (missing.name, missing.result) == ("Model access (tts)", "fail")
-    assert "https://huggingface.co/gradium/phonon-40m-en" in missing.detail
-    assert f"HF_HOME={tmp_path / 'hf'} " in missing.detail and " auth login" in missing.detail
-    (tmp_path / "hf").mkdir()
-    (tmp_path / "hf" / "token").write_text("hf_x")
-    (found,) = doctor.check_model_access(settings)
-    assert found.result == "pass" and str(tmp_path / "hf" / "token") in found.detail
-
-
 PROTOCOLS = "Supported file protocols:\nInput:\n  {inputs}\nOutput:\n  fd\n  file\n  pipe\n"
 
 

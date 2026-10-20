@@ -7,10 +7,10 @@ runtime in the ``ptts`` wheel (no PyTorch, no espeak-ng). This engine (see
 
 * streams each sentence: the shared sentence loop yields Phonon's chunks as
   they are decoded, so first audio is the first chunk, not the sentence;
-* runs on the CPU (``device="cpu"``), so it never waits for or holds the GPU
-  the STT service goes first on (ADR 0019); each blocking step runs in a
-  worker thread through ``run_blocking``, and ``ptts`` releases the GIL while
-  it works;
+* runs on the CPU (``device="cpu"``, a pool of :data:`THREADS` threads), so
+  it never waits for or holds the GPU the STT service goes first on
+  (ADR 0019); each blocking step runs in a worker thread through
+  ``run_blocking``, and ``ptts`` releases the GIL while it works;
 * loads the model and the voices from voiced's pinned snapshots
   (``voiced.models``), as local folders, so ``ptts`` never reaches the Hub
   itself and every voice is on disk before the first request.
@@ -39,13 +39,18 @@ from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 
 log = logging.getLogger(__name__)
 
-__all__ = ["PHONON_VOICES", "PhononEngine", "weights_license"]
+__all__ = ["DEFAULT_VOICE", "PHONON_VOICES", "PhononEngine", "weights_license"]
 
 LANG = "en"
 """``ptts``'s text normalization; voiced is English-only (DECISIONS)."""
 QUANT = "q8"
 """8-bit weights, ``model.q8.gguf``: what the model cards recommend on the CPU."""
+THREADS = 4
+"""``ptts``'s CPU thread pool. Its default is every core, efficiency cores
+included, beside the STT's own CPU work; ADR 0021 has the measurement."""
 VOICES_REPO = "gradium/phonon-voices"
+MODELS_40M = ("gradium/phonon-40m-en", "gradium/phonon-40m-multilingual")
+"""The 40M checkpoints voiced supports: the English-speaking ones, pinned."""
 
 DEFAULT_VOICE = Voice(id="default", name="Default", language="en", gender=None)
 
@@ -103,9 +108,9 @@ PHONON_VOICES: list[Voice] = [
 
 
 def weights_license(model_id: str) -> str:
-    """Phonon 31M is Apache-2.0; the 40M checkpoints, every language, are
-    CC BY-NC 4.0 (non-commercial) and gated on the Hub."""
-    return "CC-BY-NC-4.0" if "phonon-40m" in model_id else "Apache-2.0"
+    """Phonon 31M is Apache-2.0; the 40M checkpoints are CC-BY-NC-4.0
+    (non-commercial) and gated on the Hub."""
+    return "CC-BY-NC-4.0" if model_id in MODELS_40M else "Apache-2.0"
 
 
 class PhononEngine(SentenceTTSEngine):
@@ -131,6 +136,11 @@ class PhononEngine(SentenceTTSEngine):
 
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
+        if "phonon-40m" in self.model_id and self.model_id not in MODELS_40M:
+            raise ValueError(
+                f"{self.model_id} is not supported: voiced speaks English, so of the "
+                f"Phonon 40M models only {' and '.join(MODELS_40M)} are"
+            )
         self.license = weights_license(self.model_id)
 
     def _load_sync(self) -> None:
@@ -143,6 +153,7 @@ class PhononEngine(SentenceTTSEngine):
         started = time.perf_counter()
         root = snapshot(self.model_id, self.download_patterns())
         voices = snapshot(VOICES_REPO, self.extra_downloads()[VOICES_REPO])
+        ptts.set_num_threads(THREADS)  # process-wide, so before the model
         model = ptts.TTS(str(root), device="cpu", quant=QUANT, lang=LANG, voice_catalog=str(voices))
         rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:
@@ -170,14 +181,16 @@ class PhononEngine(SentenceTTSEngine):
         return voice == DEFAULT_VOICE.id or voice in VOICE_FILES
 
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a worker thread. ``speed`` is ignored: the model
-        has no rate control."""
-        return b"".join(_stream(self._model, sentence, voice))
+        raise NotImplementedError("Phonon streams each sentence: see _synth_chunks")
 
     def _synth_chunks(
         self, sentence: str, voice: str, speed: float
     ) -> Generator[bytes, None, None]:
-        return _stream(self._model, sentence, voice)
+        """Blocking; each step runs in a worker thread. ``speed`` is ignored:
+        the model has no rate control. A sentence without a letter or a digit
+        is skipped: Phonon reads "..." or "!!!" as a second or more of sound."""
+        if any(c.isalnum() for c in sentence):
+            yield from _stream(self._model, sentence, voice)
 
 
 def _stream(model: Any, sentence: str, voice: str) -> Generator[bytes, None, None]:

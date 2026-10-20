@@ -17,8 +17,10 @@ uses [Semantic Versioning](https://semver.org/).
   voices are pinned and downloaded by `voiced install` like the default
   models. The gated `gradium/phonon-40m-en` and
   `gradium/phonon-40m-multilingual` work as `model` too, under their
-  non-commercial CC-BY-NC-4.0 licence, with a Hugging Face token;
-  `voiced doctor` checks for the token and says how to add one.
+  non-commercial CC-BY-NC-4.0 licence, with a Hugging Face token; without
+  one, the service says how to add it.
+- `engines.list` gives each voice's language in `voice_languages`, so
+  settings UIs can group voices.
 
 ### Fixed
 
