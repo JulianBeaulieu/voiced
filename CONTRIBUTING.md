@@ -207,8 +207,11 @@ in [docs/architecture.md](docs/architecture.md#adding-an-engine). Engines
 bundled with voiced follow the same path; the only difference is that their
 entry points are declared in this repository's `pyproject.toml`.
 
-Then run the benchmark and add the rows. Commit the engine first, so the rows
-name the commit they measured, then run, for each model the engine offers:
+Then run the benchmark and add the rows. Each row names the commit of `main`
+the branch starts from, with `+` when `src/`, `scripts/`, `pyproject.toml` or
+`uv.lock` differ from it, as they do on an engine's branch
+([ADR 0024](docs/decisions/0024-engine-benchmarks.md) section 3). Run, for
+each model the engine offers:
 
 ```sh
 uv run python scripts/bench_engine.py stt --engine <name> [--model <repo>]

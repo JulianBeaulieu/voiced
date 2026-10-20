@@ -15,7 +15,7 @@ for local speech services.
 
 ![A terminal sends a speech request to voiced, transcribes a WAV clip and checks both services' health](docs/demo.gif)
 
-The recording's timings are curl fetching a WAV, slower than the streamed benchmark (96 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
+The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
@@ -303,8 +303,9 @@ default_voice = "default"
 
 Then run `~/.voiced/bin/voiced install`, which downloads the model (from
 the service environment, so nothing is rebuilt), and `voiced restart all`.
-Know its limits before you switch. Its first audio takes about 150 to
-220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
+Know its limits before you switch. Its first audio varies more than
+Kokoro's from run to run (it samples its tokens); the current numbers are in
+[docs/benchmarks.md](docs/benchmarks.md). It has no rate control, so `speed` is
 accepted and ignored. It has one voice, `default`. It sometimes runs on past
 the end of a sentence; voiced cuts each sentence at a length bound with a
 short fade and logs `soprano: runaway generation`, which can clip the last

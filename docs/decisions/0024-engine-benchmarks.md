@@ -78,11 +78,11 @@ Common to both kinds:
 - **Memory** from the service's `/metrics.json`: the physical footprint
   (what Activity Monitor and memory pressure count, Metal buffers included)
   1 s after use, before the naturalness scorer runs, and MLX's peak
-  allocation twice, right after the service is ready (the load peak) and
-  after use. The service has no way to reset the peak, so a serving peak
-  below the load peak does not show: Parakeet's 2.46 GB serving peak (ADR
-  0008, measured in process) is under its 3.6 GB load peak. "none" for an
-  engine without MLX allocations.
+  allocation twice: the load peak, right after the service is ready, and
+  the peak since start, after use. Where serving stays under the load peak
+  the two are equal, and the serving peak is the one the engine's ADR
+  measured in process (Parakeet's 2.46 GB, ADR 0008). "none" for an engine
+  without MLX allocations.
 - **Size**: the bytes of the model's revision in the Hugging Face cache (the
   pinned one, else `main`'s), without repositories shared between models
   (Phonon's voices, about 9.5 MB).
@@ -205,14 +205,18 @@ Assistant and the endpointer); the push-to-talk case is in the table.
 
   The reference row of a model is the result file in `docs/benchmarks/`
   whose `kind` is its engine's kind, whose `engine` and `model` are the
-  catalogue's, and whose machine without the macOS version is "MacBook Pro,
-  Apple M1 Max, 64 GB" (`Result.hardware()`). `quality` and `speed` are
-  written by hand from that row, and `tests/core/test_models.py` gains one test
-  that, for every catalogue model, loads the result files with
-  `bench_engine.load_results`, finds the reference row and asserts that
-  `(quality, speed)` is `bench_engine.rate(row.metrics)`, which applies
-  `voiced.ratings.rate_stt` or `rate_tts`,
-  or both None when there is no reference row; its failure names the
+  catalogue's, and whose `hardware` field is "MacBook Pro, Apple M1 Max,
+  64 GB". `quality` and `speed` are written by hand from that row, and
+  `tests/core/test_models.py` gains one test that, for every catalogue
+  model, reads the result files as JSON (it does not import the script),
+  finds the reference row, and asserts that `(quality, speed)` is
+  `voiced.ratings.rate()` of that row's numbers on their scales: for stt
+  `metrics.wer_percent` on `STT_WER`, `metrics.finalize_after_silence.worst_ms`
+  on `STT_FINALIZE` and `metrics.batch_rtf` on `STT_RTF`; for tts
+  `metrics.utmos` on `TTS_UTMOS`, `metrics.first_audio.median_ms` on
+  `TTS_FIRST_AUDIO` and `metrics.rtf` on `TTS_RTF` (the pairs
+  `bench_engine.rated()` builds); or both None when there is no reference
+  row; its failure names the
   command that measures the model. A shared repository (`Engine.shared`) has
   no ratings. The note says what the model is for ("The default: accurate
   and fast, English and 24 European languages"). Size, languages and licence
@@ -280,7 +284,7 @@ once the scorer's environment is cached.
 
 | Engine | Quality | Speed | From |
 |---|---|---|---|
-| Parakeet | 5 | 5 | WER 2.0 %, finalize worst 6 ms, batch RTF 0.023 |
+| Parakeet | 5 | 5 | WER 2.0%, finalize worst 6 ms, batch RTF 0.023 |
 | Kokoro | 5 | 5 | UTMOS 4.52, first audio 94 ms median, RTF 0.042 |
 | Phonon 31M | 5 | 5 | UTMOS 4.50, first audio 27 ms median, RTF 0.038 |
 | Soprano | 4 | 5 | UTMOS 4.25, first audio 97 ms median, RTF 0.071 |
@@ -307,12 +311,14 @@ from the ADR named):
 | Kokoro first audio | 96 ms median, 112 worst (ADR 0015) | 94 median, 98 worst | same method; the worst varies run to run |
 | Kokoro first chunk | 106 ms median (ADR 0009) | 94 ms median | in process with multi-sentence text then; over HTTP with one short sentence now |
 | Kokoro real-time factor | 0.046 (ADR 0009) | 0.042 | in process then; the long reply over HTTP now |
+| Kokoro memory | 469 MB peak resident, 326 MB MLX active (ADR 0009) | 0.73 GB footprint, MLX peak 0.76 GB at load | resident set and MLX's idle allocation then; the footprint, which counts Metal buffers, and the peak now |
+| Kokoro MLX peak while serving | 2.16 GB (ADR 0015) | 1.86 GB after use | another workload: ADR 0015's run kept Kokoro synthesizing the long reply back to back through its finalize rows; here it is first-audio requests, the long reply three times and three short sentences |
 | Kokoro load | 1.9 s (ADR 0009) | 1.8 s | engine load and warm-up then; spawn to ready now |
 | Soprano first chunk | 156 to 223 ms median (ADR 0010) | 97 median, 156 worst | in process with ADR 0010's own requests then; over HTTP with one 27-character sentence now (Soprano generates a sentence's tokens before its first audio, so a short sentence is faster), and Soprano varies run to run (above) |
 | Soprano memory | 392 MB resident (ADR 0010) | 0.39 GB footprint | the same size by another measure; the footprint counts Metal buffers |
 | Parakeet batch | 163 ms for a 9.4 s clip (ADR 0008); 253 ms for 10.1 s tiled (ADR 0015) | RTF 0.023, about 230 ms per 10 s | 24 real clips of 3 to 12 s, uploaded one by one |
 | Parakeet load | 1.2 s (ADR 0008) | 1.0 s | engine load and warm-up then; spawn to ready now, warm disk cache both |
-| Parakeet memory | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB load peak (ADR 0008) | 1.52 GB footprint after use, 3.38 GB MLX peak | MLX allocations in process then; the footprint after use and the peak since start now, which includes the load peak and so hides the serving peak (section 2) |
+| Parakeet memory | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB load peak (ADR 0008) | 1.52 GB footprint after use, 3.38 GB MLX peak | MLX allocations in process then; the footprint after use and the peak since start now. The 3.38 GB peak is the load peak, under ADR 0008's 3.6 to 4.1 GB range; serving stays under it (section 2) |
 | Finalize after 200 ms of silence | 1 median, 16 worst (ADR 0015) | 1 median, 6 worst | same chunks and alignments; the worst varies run to run |
 | Push-to-talk finalize | 114 median, 165 worst (ADR 0015) | 115 median, 129 worst | same chunks and alignments; the worst varies run to run |
 | STT + Kokoro footprint idle | 2.21 GB (ADR 0015) | 1.52 + 0.73 = 2.25 GB | each service alone now, measured after its own run |

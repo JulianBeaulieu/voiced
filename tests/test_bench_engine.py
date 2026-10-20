@@ -353,6 +353,8 @@ def _completed(stdout: str) -> subprocess.CompletedProcess[str]:
         ("", None),
         ("not json\n", None),
         ("[4.5]\n", None),  # one score for two files
+        ("[4.5, NaN]\n", None),
+        ("4.5\n", None),  # not a list
     ],
 )
 def test_utmos_parses_the_last_line_or_says_why_not(
@@ -398,15 +400,11 @@ def test_started_stops_the_service_after_use_and_on_error(
     monkeypatch.setenv("VOICED_SERVER__API_KEY", "from-the-shell")
     monkeypatch.setattr(be.subprocess, "Popen", popen)
     monkeypatch.setattr(be, "_ready", lambda url: True)
-    monkeypatch.setattr(be.bench, "engine_name", lambda url: "parakeet")
     with be.started("stt", "parakeet", "m", tmp_path) as server:
         assert server.url.startswith("http://127.0.0.1:")
     with pytest.raises(RuntimeError), be.started("stt", "parakeet", "m", tmp_path):
         raise RuntimeError
-    with pytest.raises(SystemExit, match="runs parakeet, not kokoro"):
-        with be.started("stt", "kokoro", "m", tmp_path):
-            pass
-    assert [p.terminated for p in procs] == [True, True, True]
+    assert [p.terminated for p in procs] == [True, True]
     assert "VOICED_SERVER__API_KEY" not in envs[0]
     assert envs[0]["VOICED_STT__ENGINE"] == "parakeet"
     assert "hf_home" in Path(envs[0]["VOICED_CONFIG"]).read_text()

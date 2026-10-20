@@ -51,6 +51,7 @@ import contextlib
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -85,9 +86,8 @@ from voiced.ratings import (
     TTS_UTMOS,
     Rating,
     Scale,
-    rate_stt,
-    rate_tts,
 )
+from voiced.ratings import rate as rate_measured
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = REPO_ROOT / "docs" / "benchmarks"
@@ -513,11 +513,7 @@ def rated(metrics: STTMetrics | TTSMetrics) -> list[tuple[Scale, float]]:
 
 
 def rate(metrics: STTMetrics | TTSMetrics) -> Rating:
-    if isinstance(metrics, STTMetrics):
-        return rate_stt(
-            metrics.wer_percent, metrics.finalize_after_silence.worst_ms, metrics.batch_rtf
-        )
-    return rate_tts(metrics.utmos, metrics.first_audio.median_ms, metrics.rtf)
+    return rate_measured(rated(metrics))
 
 
 # -- the document ------------------------------------------------------------
@@ -572,7 +568,7 @@ def _common_cells(r: Result) -> list[str]:
     load = "not measured" if r.load_s is None else f"{r.load_s:.1f} s"
     return [
         load,
-        _gb(r.footprint_bytes),
+        "not reported" if r.footprint_bytes is None else _gb(r.footprint_bytes),
         f"{_gb(r.mlx_load_peak_bytes)} / {_gb(r.mlx_peak_bytes)}",
         _size(r.size_bytes),
         _languages(r.languages),
@@ -737,8 +733,8 @@ def bench_config(workdir: Path) -> Path:
 @contextmanager
 def started(kind: Kind, engine: str, model: str, workdir: Path) -> Iterator[Server]:
     """``voiced serve <kind>`` on free ports with :func:`bench_config` (no
-    ``VOICED_`` variable of the caller's shell applies), once it is ready
-    and serves ``engine``."""
+    ``VOICED_`` variable of the caller's shell applies), once it is ready.
+    :func:`run` checks that it serves the engine and model named."""
     workdir.mkdir(parents=True, exist_ok=True)
     http, wyoming = _free_ports(2)
     section = f"VOICED_{kind.upper()}__"
@@ -765,11 +761,7 @@ def started(kind: Kind, engine: str, model: str, workdir: Path) -> Iterator[Serv
             if time.perf_counter() - spawned > READY_TIMEOUT_S:
                 raise SystemExit(f"voiced serve {kind} was not ready after {READY_TIMEOUT_S:.0f} s")
             time.sleep(0.05)
-        load_s = round(time.perf_counter() - spawned, 1)
-        served = bench.engine_name(url)
-        if served != engine:
-            raise SystemExit(f"voiced serve {kind} runs {served}, not {engine}")
-        yield Server(url, load_s)
+        yield Server(url, round(time.perf_counter() - spawned, 1))
     finally:
         proc.terminate()
         try:
@@ -885,9 +877,9 @@ def utmos(wavs: list[Path]) -> float | None:
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=1800, check=True)
         scores = [float(s) for s in json.loads(done.stdout.strip().splitlines()[-1])]
-        if len(scores) != len(wavs):
-            raise ValueError(f"{len(scores)} scores for {len(wavs)} files")
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        if len(scores) != len(wavs) or not all(map(math.isfinite, scores)):
+            raise ValueError(f"unexpected scores {scores} for {len(wavs)} files")
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, TypeError) as exc:
         stderr = getattr(exc, "stderr", None) or ""
         print(f"  naturalness not scored: {exc}\n{stderr[-2000:]}")
         return None
@@ -972,7 +964,8 @@ def commit() -> str:
         try:
             base = git("merge-base", "HEAD", "origin/main")
         except subprocess.CalledProcessError:
-            base = git("rev-parse", "HEAD")
+            # No origin/main: whether HEAD is on main cannot be told.
+            return git("rev-parse", "--short=7", "HEAD") + "+"
         changed = git("diff", "--name-only", base, "--", *MEASURED_PATHS)
         new = git("ls-files", "--others", "--exclude-standard", "--", *MEASURED_PATHS)
     except (OSError, subprocess.CalledProcessError):
@@ -983,9 +976,12 @@ def commit() -> str:
 def size_on_disk(model: str) -> int | None:
     """Bytes of ``model``'s pinned revision in the Hugging Face cache, else
     of the revision ``main`` points at, else of the largest one cached."""
-    from voiced.models import cache_dir, cached_revisions, pinned_revision
+    from huggingface_hub import constants
 
-    revisions = cached_revisions(Path(cache_dir()), {model}).revisions
+    from voiced.models import cached_revisions, pinned_revision
+
+    # The hub under the HF_HOME bench_config() gives the service.
+    revisions = cached_revisions(Path(constants.HF_HOME) / "hub", {model}).revisions
     if not revisions:
         return None
     pinned = pinned_revision(model)

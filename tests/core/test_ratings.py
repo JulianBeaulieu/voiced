@@ -7,7 +7,16 @@ import math
 import pytest
 
 from voiced import ratings
-from voiced.ratings import Rating, rate_stt, rate_tts
+from voiced.ratings import (
+    STT_FINALIZE,
+    STT_RTF,
+    STT_WER,
+    TTS_FIRST_AUDIO,
+    TTS_RTF,
+    TTS_UTMOS,
+    Rating,
+    rate,
+)
 
 
 def test_the_limits_are_the_adr_table() -> None:
@@ -46,15 +55,23 @@ def test_a_value_that_is_not_a_number_is_refused(value: float) -> None:
         ratings.STT_RTF.rate(value)
 
 
+def stt(wer: float, finalize: float, rtf: float) -> Rating:
+    return rate([(STT_WER, wer), (STT_FINALIZE, finalize), (STT_RTF, rtf)])
+
+
 def test_stt_speed_is_the_slower_of_finalize_and_throughput() -> None:
-    assert rate_stt(2.0, 16.0, 0.02) == Rating(quality=5, speed=5)
-    assert rate_stt(2.0, 200.0, 0.02).speed == 3
-    assert rate_stt(2.0, 16.0, 0.3).speed == 2
-    assert rate_stt(9.0, 16.0, 0.02).quality == 2
+    assert stt(2.0, 16.0, 0.02) == Rating(quality=5, speed=5)
+    assert stt(2.0, 200.0, 0.02).speed == 3
+    assert stt(2.0, 16.0, 0.3).speed == 2
+    assert stt(9.0, 16.0, 0.02).quality == 2
 
 
 def test_tts_ratings() -> None:
-    assert rate_tts(4.4, 96.0, 0.05) == Rating(quality=5, speed=5)
-    assert rate_tts(4.4, 96.0, 1.2).speed == 1  # cannot keep up with playback
-    assert rate_tts(4.4, 250.0, 0.05).speed == 3
-    assert rate_tts(None, 96.0, 0.05).quality is None
+    assert rate([(TTS_UTMOS, 4.4), (TTS_FIRST_AUDIO, 96.0), (TTS_RTF, 0.05)]) == Rating(5, 5)
+    assert rate([(TTS_FIRST_AUDIO, 96.0), (TTS_RTF, 1.2)]) == Rating(None, 1)  # not scored
+    assert rate([(TTS_FIRST_AUDIO, 250.0), (TTS_RTF, 0.05)]).speed == 3
+
+
+def test_a_rating_needs_a_speed_measurement() -> None:
+    with pytest.raises(ValueError, match="no speed"):
+        rate([(STT_WER, 2.0)])

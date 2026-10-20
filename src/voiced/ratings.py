@@ -10,6 +10,7 @@ library only.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -56,15 +57,18 @@ class Rating:
     speed: int
 
 
-def rate_stt(wer_percent: float, finalize_worst_ms: float, batch_rtf: float) -> Rating:
-    """Speed is the lower of the finalize and the throughput rating: the
-    slower path a user waits on."""
-    speed = min(STT_FINALIZE.rate(finalize_worst_ms), STT_RTF.rate(batch_rtf))
-    return Rating(STT_WER.rate(wer_percent), speed)
-
-
-def rate_tts(utmos: float | None, first_audio_median_ms: float, rtf: float) -> Rating:
-    """Speed is the lower of the first-audio and the throughput rating: an
-    engine slower than real time stalls playback whatever its first audio."""
-    speed = min(TTS_FIRST_AUDIO.rate(first_audio_median_ms), TTS_RTF.rate(rtf))
-    return Rating(None if utmos is None else TTS_UTMOS.rate(utmos), speed)
+def rate(measured: Iterable[tuple[Scale, float]]) -> Rating:
+    """The rating of one model from its measured numbers, each with the
+    scale it is rated on: quality from the quality scale (None without one),
+    speed the lowest speed rating, the slower path a user waits on (an
+    engine slower than real time stalls playback whatever its first audio)."""
+    quality: int | None = None
+    speeds = []
+    for scale, value in measured:
+        if scale.axis == "quality":
+            quality = scale.rate(value)
+        else:
+            speeds.append(scale.rate(value))
+    if not speeds:
+        raise ValueError("no speed measurement")
+    return Rating(quality, min(speeds))
