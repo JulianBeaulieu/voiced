@@ -26,7 +26,8 @@ Opening the status page hands the URL voiced reports to your browser.
 It needs macOS 14 or newer on Apple Silicon. Install it with
 `brew install --cask julianbeaulieu/voiced/voiced`, or download the DMG
 from the [release page](https://github.com/JulianBeaulieu/voiced/releases/latest);
-the released app is signed and notarized. The rest of this page is for
+the released app is signed and notarized, so macOS only asks once whether
+to open an app downloaded from the internet. The rest of this page is for
 working on the app. Building it needs Swift 6 (Xcode 16 or newer, or the
 matching command line tools) and no third-party packages.
 

@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Security fixes go into the latest minor release, today 0.1.x. Update to the
-newest release before you report; the fix will land there too.
+Security fixes go into the latest minor release. Update to the newest
+release before you report; the fix will land there too.
 
 | Version | Supported |
 |---|---|
@@ -22,9 +22,9 @@ installed voiced (the menu bar app, the Homebrew formula or a checkout)
 help.
 
 voiced has one maintainer, who works on it part time. Expect an
-acknowledgement within a week. Once the issue is confirmed, we agree on a
-fix and a date to publish it, and you are credited in the advisory unless
-you prefer not to be.
+acknowledgement within a week. Once the issue is confirmed, the maintainer
+agrees a fix and a publication date with you, and credits you in the
+advisory unless you prefer not to be.
 
 ## Scope
 
@@ -49,9 +49,11 @@ voiced is built for a Mac at home or in a small office.
 
 - By default both services bind to `127.0.0.1` and only the Mac itself can
   reach them.
-- On the local network (`bind = "0.0.0.0"`) the HTTP API is behind the API
-  key, once you set one. The Wyoming protocol has no authentication, so
-  anyone on the network can use those ports.
+- On the local network (`bind = "0.0.0.0"`), the `/v1` routes of the HTTP
+  API need the API key, once you set one. `/health`, `/`, `/metrics.json`
+  and `/docs` stay open without it; with a key set they leave out error
+  details. The Wyoming protocol has no authentication, so anyone on the
+  network can use those ports.
 - voiced is not designed to face the internet. It does no TLS and no rate
   limiting. Do not forward its ports from your router.
 - Nothing runs as root except the privileged script, which you run with

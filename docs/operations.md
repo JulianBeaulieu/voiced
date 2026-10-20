@@ -70,12 +70,14 @@ a failed check, not on a warning.
 
 ## Installing from a checkout
 
-For development, or to run `main`. You need [Homebrew](https://brew.sh)
-and [uv](https://docs.astral.sh/uv/):
+For development, or to run `main`. You need
+[uv](https://docs.astral.sh/uv/). The `tts` extra brings its own espeak-ng;
+Homebrew's is optional, as the fallback or for the `[tts] espeak_library`
+override:
 
 ```sh
-brew install espeak-ng
-brew install uv    # skip if `uv --version` already works
+brew install uv            # skip if `uv --version` already works
+brew install espeak-ng     # optional
 ```
 
 Then:

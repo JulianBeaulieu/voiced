@@ -8,18 +8,24 @@ welcome. Everyone taking part follows the
 
 1. Find an [issue](https://github.com/JulianBeaulieu/voiced/issues), or
    open one. Questions go in
-   [Discussions](https://github.com/JulianBeaulieu/voiced/discussions).
+   [Discussions](https://github.com/JulianBeaulieu/voiced/discussions). A
+   small fix, such as a typo or an obvious bug, needs no issue.
 2. Say in the issue that you are taking it, so nobody does the same work
    twice.
 3. Fork the repository and branch from `main`.
-4. Make one change per pull request. A small fix, such as a typo or an
-   obvious bug, can go straight to a pull request without an issue.
-5. Open the pull request and fill in the template.
+4. Make one change per pull request. Split refactors from features.
+5. Open the pull request and fill in the template: what was built, how to
+   try it by hand, any interface questions, and the exact commands you ran
+   with their results.
 
 CI must be green before a pull request can merge; it runs the
 [checks](#checks) below. The maintainer reviews every pull request and may
-ask for changes. Pull requests are squash merged, and the title becomes the
-commit message, so it follows the [commit format](#conventions).
+ask for changes. The review looks for tests that run without models, no
+personal data, no emoji, nothing stable changed without an issue, and docs
+updated where behaviour changed (`README.md`, `docs/`,
+`config.example.toml`, `CHANGELOG.md`). Pull requests are squash merged,
+and the title becomes the commit message, so it follows the
+[commit format](#conventions).
 
 voiced has one maintainer, who works on it part time. Expect a first reply
 within a week, and longer at times. A friendly ping on a pull request that
@@ -27,13 +33,18 @@ has waited two weeks is welcome.
 
 ## What is stable
 
-These are stable, and other projects may build on them: the engine
-interfaces in `src/voiced/engines/base.py`, the config schema, the HTTP and
-Wyoming API, and the conventions below. A change to one of them starts as
-an issue. Non-obvious choices get an ADR under `docs/decisions/`, and
-anything a user would notice gets a line in [CHANGELOG.md](CHANGELOG.md).
-While the version starts with 0, a minor release can still change them; the
-changelog then says what changed and what to do.
+These are stable, and other projects may build on them:
+
+- the engine interfaces in `src/voiced/engines/base.py`
+- the [audio conventions](docs/architecture.md#audio-conventions)
+- the config schema
+- the HTTP and Wyoming API, including the `/health` schema
+- the [conventions](#conventions) below
+
+A change to one of them starts as an issue, then follows the conventions
+(an ADR when the choice is not obvious, a changelog line). While the
+version starts with 0, a minor release can still change them; the changelog
+then says what changed and what to do.
 
 ## Development setup
 
@@ -60,10 +71,15 @@ VOICED_STT__ENGINE=fake uv run voiced serve stt    # http://127.0.0.1:8881/healt
 Set `VOICED_CONFIG=/nonexistent` as well if your `~/.config/voiced/config.toml`
 contains keys your branch does not know yet; unknown keys are errors.
 
+To install your checkout as the running service, see
+[Installing from a checkout](docs/operations.md#installing-from-a-checkout).
+To try a change to the Homebrew formula from a local tap, see
+[packaging/homebrew/README.md](packaging/homebrew/README.md).
+
 ## Checks
 
-CI runs exactly these four on a GitHub `macos-14` runner. Run them before
-you open a pull request.
+CI runs these four on a GitHub `macos-14` runner. Run them before you
+open a pull request.
 
 ```sh
 uv run ruff check .
@@ -78,7 +94,10 @@ uv run pytest
 | mypy | `strict` over the `voiced` package. Third-party MLX and Wyoming packages are `ignore_missing_imports`; add new untyped dependencies to that list in `pyproject.toml`, do not sprinkle `type: ignore`. |
 | pytest | `asyncio_mode = "auto"`; `DeprecationWarning` from `voiced.*` is an error. |
 
-Changes under `.github/` also go through the `workflows` job:
+CI runs two more jobs on every pull request. `menubar` builds and tests
+the Swift menu bar app on `macos-15` (`swift build -c release`,
+`swift test`, `Scripts/bundle.sh`); for a Swift change, run
+`cd menubar && swift test` first. `workflows` lints the workflows with
 [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh/) (`actionlint` and `uvx zizmor .github/`
 locally). Every `uses:` is pinned to a full commit SHA with its version as a
@@ -133,12 +152,10 @@ under 300 KB each, free of personal content. Never commit model weights.
   tokens. Deployment settings belong in your own
   `~/.config/voiced/config.toml`, outside the repository. `.env` files are
   never read by the code and must never be committed.
-- The engine interfaces in `src/voiced/engines/base.py`, the
-  [audio conventions](docs/architecture.md#audio-conventions) and the
-  `/health` schema are frozen. Propose a change in an issue before touching
-  them.
 - Non-obvious design choices get an ADR under `docs/decisions/` with the
   next free number, and a line in `docs/decisions/README.md`.
+- Anything a user would notice gets a line under **Unreleased** in
+  [CHANGELOG.md](CHANGELOG.md).
 - Engines run every blocking model call through
   `voiced.threads.run_blocking`, or a `voiced.threads.ModelThread` when the
   engine keeps MLX streams, which belong to one thread, and transports call engines only inside
@@ -191,19 +208,6 @@ The walkthrough, with a complete example and the entry-point declaration, is
 in [docs/architecture.md](docs/architecture.md#adding-an-engine). Engines
 bundled with voiced follow the same path; the only difference is that their
 entry points are declared in this repository's `pyproject.toml`.
-
-## Pull requests
-
-Fill in the template. A good description says what was built, how to try it
-by hand, any interface questions, and the exact commands you ran with their
-results. Keep pull requests to one topic; split refactors from features.
-
-Reviews look for: tests that run without models, no new personal data, no
-emoji, the frozen interfaces untouched, and docs updated when behaviour
-changed (`README.md`, `docs/`, `config.example.toml`, `CHANGELOG.md`).
-
-Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for anything
-a user would notice.
 
 ## Cutting a release
 
