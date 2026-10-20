@@ -47,6 +47,9 @@ class Pin:
     repo: str
     revision: str  # a commit SHA
     bytes: int  # the files download_patterns() names at that revision
+    # The revisions earlier releases pinned, newest first: re-pinning moves
+    # the old revision here, so uninstall still knows it is voiced's.
+    previous: tuple[str, ...] = ()
 
 
 PINS: tuple[Pin, ...] = (
@@ -74,6 +77,12 @@ def pinned_revision(repo: str) -> str | None:
     """``repo``'s pinned commit, or None (its ``main``)."""
     pinned = pin(repo)
     return pinned.revision if pinned is not None else None
+
+
+def pinned_revisions() -> set[tuple[str, str]]:
+    """Every ``(repo, revision)`` voiced pins or pinned, which is what
+    ``voiced uninstall --remove-models`` may delete."""
+    return {(p.repo, rev) for p in PINS for rev in (p.revision, *p.previous)}
 
 
 def manifest() -> dict[str, Any]:
@@ -187,6 +196,62 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
     if report is not None:
         report.finish()
     return Path(path)
+
+
+@dataclass(frozen=True, order=True)
+class CachedRevision:
+    repo: str
+    revision: str
+    bytes: int  # on disk, following the links into the shared blob store
+
+
+def cached_revisions(hub: Path, repos: set[str]) -> list[CachedRevision]:
+    """The revisions of ``repos`` (model repositories) that the cache at
+    ``hub`` holds; nothing when there is no cache there."""
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.errors import CacheNotFound
+
+    try:
+        info = scan_cache_dir(hub)
+    except CacheNotFound:
+        return []
+    return sorted(
+        CachedRevision(repo.repo_id, rev.commit_hash, rev.size_on_disk)
+        for repo in info.repos
+        if repo.repo_type == "model" and repo.repo_id in repos
+        for rev in repo.revisions
+    )
+
+
+def delete_revisions(hub: Path, revisions: Sequence[CachedRevision]) -> int:
+    """Delete ``revisions`` from the cache at ``hub`` and return the bytes
+    freed. Through ``huggingface_hub``: a repository folder holds links into
+    the cache-wide blob store, so removing the folder would leave the bytes
+    behind. The library removes each revision's snapshot and refs and the
+    blobs no other revision or repository uses; other revisions of the same
+    repository stay. Only the named repositories are considered, so a
+    revision hash another repository shares is not touched there."""
+    import dataclasses
+
+    from huggingface_hub import scan_cache_dir
+
+    info = scan_cache_dir(hub)
+    repos = {r.repo for r in revisions}
+    mine = dataclasses.replace(
+        info,
+        repos=frozenset(r for r in info.repos if r.repo_type == "model" and r.repo_id in repos),
+    )
+    strategy = mine.delete_revisions(*(r.revision for r in revisions))
+    strategy.execute()
+    return int(strategy.expected_freed_size)
+
+
+def size_text(n: int) -> str:
+    """``n`` bytes in decimal units, as the Hugging Face tools show them."""
+    for unit, scale in (("GB", 10**9), ("MB", 10**6), ("KB", 10**3)):
+        if n >= scale:
+            return f"{n / scale:.1f} {unit}"
+    return f"{n} bytes"
 
 
 def cache_dir() -> str:

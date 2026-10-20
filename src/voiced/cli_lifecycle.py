@@ -173,7 +173,9 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     )
     uninstall.add_argument("--remove-logs", action="store_true", help="also delete the log dir")
     uninstall.add_argument(
-        "--remove-models", action="store_true", help="also delete the configured models' cache"
+        "--remove-models",
+        action="store_true",
+        help="also delete the models voiced pinned from the Hugging Face cache",
     )
 
     doc = sub.add_parser("doctor", help="check this machine")
@@ -794,6 +796,7 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     from voiced.launchd.install import plan_install, remove_targets, uninstall_targets
+    from voiced.models import size_text
 
     plan = plan_install(settings, state_dir=args.state_dir)
     refusal = plan.root_step_refusal()
@@ -823,12 +826,20 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         if found.refused is not None:
             echo(f"Leaving {plan.state_dir} alone: {found.refused}.")
         present = [t for t in found.all() if t.exists() or t.is_symlink()]
-        if not present:
+        models = found.models
+        if models is not None and models.refused is not None:
+            echo(f"Leaving the models in {models.hub} alone: {models.refused}.")
+        for repo in models.unpinned if models is not None else []:
+            echo(f"Keeping {repo}: voiced does not pin its revision, so it may be another tool's.")
+        revisions = models.revisions if models is not None else []
+        if not present and not revisions:
             echo("nothing to remove")
             return 0
         echo("Would remove (pass --yes to do it):")
         for t in present:
             echo(f"  {t}")
+        for r in revisions:
+            echo(f"  {r.repo} revision {r.revision} ({size_text(r.bytes)} on disk)")
         return 0
     # Not while an install (the app's or another terminal's) is running.
     waiting = lambda: echo(f"waiting for an install in {plan.state_dir}")  # noqa: E731

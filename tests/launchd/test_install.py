@@ -25,7 +25,9 @@ from typing import Any
 
 import pytest
 
+from tests import hf_cache_support as hf
 from tests.scripts_support import load
+from voiced import models as voiced_models
 from voiced.cli import main
 from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, LOG_DIR_IN_HOME, SERVICES, Settings
 from voiced.launchd import install as install_module
@@ -58,6 +60,7 @@ from voiced.layout import (
     sha256_file,
     write_manifest,
 )
+from voiced.models import pin
 
 GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
@@ -595,12 +598,134 @@ def test_remove_config_only_touches_generated_files(settings: Settings, tmp_path
     assert sorted(x.name for x in staging.iterdir()) == ["mine.plist"]
 
 
-def test_uninstall_targets_models(settings: Settings, tmp_path: Path) -> None:
+KOKORO = pin("mlx-community/Kokoro-82M-bf16")
+PARAKEET = pin("mlx-community/parakeet-tdt-0.6b-v3")
+FOREIGN_REVISION = "f" * 40
+EARLIER_REVISION = "e" * 40
+
+
+def _no_runner(argv: Sequence[str]) -> CommandResult:
+    raise AssertionError(f"ran {argv}")
+
+
+def test_remove_models_frees_the_blobs_and_keeps_other_revisions(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The repository folder holds links; the bytes are in the shared store.
+    The pinned revisions go with every blob only they use; another tool's
+    revision of the same repository, and another repository sharing a
+    blob, keep theirs."""
+    assert KOKORO is not None and PARAKEET is not None
+    settings.install.hf_home = tmp_path / "hf"
+    hub = tmp_path / "hf" / "hub"
+    weights, voice, shared, config = b"w" * 5000, b"v" * 700, b"s" * 300, b"{}"
+    hf.add_revision(
+        hub,
+        KOKORO.repo,
+        KOKORO.revision,
+        {"config.json": config, "kokoro.safetensors": weights, "voices/af.safetensors": voice},
+        ref="main",
+    )
+    other_tool = hf.add_revision(
+        hub, KOKORO.repo, FOREIGN_REVISION, {"config.json": config, "extra.bin": b"x" * 40}
+    )
+    hf.add_revision(hub, "someone/else", "a" * 40, {"voice.safetensors": voice})
+    hf.add_revision(hub, PARAKEET.repo, PARAKEET.revision, {"model.safetensors": shared})
+    before = hf.du(hub)
+
+    p = plan_install(settings, home=tmp_path)
+    targets = uninstall_targets(
+        p, settings, logs=False, models=True, config=False, runner=_no_runner
+    )
+    assert targets.models is not None
+    assert {(r.repo, r.revision) for r in targets.models.revisions} == {
+        (KOKORO.repo, KOKORO.revision),
+        (PARAKEET.repo, PARAKEET.revision),
+    }
+    assert hf.repo_dir(hub, KOKORO.repo) not in targets.trees  # never rmtree'd
+    said: list[str] = []
+    assert remove_targets(targets, p, said.append) == 2
+
+    assert not (hf.repo_dir(hub, KOKORO.repo) / "snapshots" / KOKORO.revision).exists()
+    assert not hf.store_path(hub, weights).exists()
+    assert not hf.store_path(hub, shared).exists()
+    assert not hf.repo_dir(hub, PARAKEET.repo).exists()  # its only revision
+    # Another tool's: its revision of Kokoro, the blob it shares, and a
+    # repository that shares the voice's bytes through the store.
+    assert (other_tool / "config.json").read_bytes() == config
+    assert (other_tool / "extra.bin").read_bytes() == b"x" * 40
+    assert hf.store_path(hub, voice).exists()
+    snapshot = hf.repo_dir(hub, "someone/else") / "snapshots" / ("a" * 40)
+    assert (snapshot / "voice.safetensors").read_bytes() == voice
+    freed = len(weights) + len(shared)
+    assert before - hf.du(hub) >= freed
+    assert f"freed {freed / 1000:.1f} KB ({freed:,} bytes) of models in {hub}" in said
+    assert f"removed {KOKORO.repo} revision {KOKORO.revision}" in said
+
+
+def test_remove_models_keeps_a_model_voiced_does_not_pin(
+    settings: Settings, tmp_path: Path
+) -> None:
+    settings.install.hf_home = tmp_path / "hf"
+    settings.tts.model = "someone/custom-voice"
+    hub = tmp_path / "hf" / "hub"
+    snapshot = hf.add_revision(hub, "someone/custom-voice", "c" * 40, {"m.bin": b"m" * 10})
+    p = plan_install(settings, home=tmp_path)
+    targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
+    assert targets.models is not None
+    assert targets.models.revisions == [] and targets.models.unpinned == ["someone/custom-voice"]
+    said: list[str] = []
+    assert remove_targets(targets, p, said.append) == 0
+    assert (snapshot / "m.bin").exists()
+    assert any(line.startswith("kept someone/custom-voice: ") for line in said)
+
+
+def test_remove_models_includes_what_other_environments_pinned(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """An environment of another release says what it pinned
+    (``python -m voiced.models``); voiced's own earlier revision goes too."""
+    assert KOKORO is not None
+    settings.install.hf_home = tmp_path / "hf"
+    hub = tmp_path / "hf" / "hub"
+    hf.add_revision(hub, KOKORO.repo, EARLIER_REVISION, {"config.json": b"old"})
+    hf.add_revision(hub, KOKORO.repo, FOREIGN_REVISION, {"config.json": b"theirs"})
+    p = plan_install(settings, home=tmp_path)
+    p.state_dir.mkdir()
+    env = new_environment_dir(p.state_dir, "0.0.9")
+    (env / "bin").mkdir(parents=True)
+    (env / "bin" / "python").write_text("")
+    (env / "pyvenv.cfg").write_text("home = /x\n")
+    write_manifest(p.state_dir, Manifest(source="cli", environment=env))
+    ran: list[Sequence[str]] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        ran.append(argv)
+        models = [{"repo": KOKORO.repo, "revision": EARLIER_REVISION, "bytes": 3}]
+        return CommandResult(0, json.dumps({"models": models}))
+
+    targets = uninstall_targets(p, settings, logs=False, models=True, config=False, runner=runner)
+    assert ran == [[str(env / "bin" / "python"), "-I", "-m", "voiced.models"]]
+    assert targets.models is not None
+    assert [r.revision for r in targets.models.revisions] == [EARLIER_REVISION]
+    remove_targets(targets, p, lambda _: None)
+    revisions = hf.repo_dir(hub, KOKORO.repo) / "snapshots"
+    assert sorted(x.name for x in revisions.iterdir()) == [FOREIGN_REVISION]
+
+
+def test_remove_models_without_a_cache(settings: Settings, tmp_path: Path) -> None:
     settings.install.hf_home = tmp_path / "hf"
     p = plan_install(settings, home=tmp_path)
     targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
-    assert tmp_path / "hf" / "hub" / "models--mlx-community--Kokoro-82M-bf16" in targets.trees
-    assert tmp_path / "hf" / "hub" / "models--mlx-community--parakeet-tdt-0.6b-v3" in targets.trees
+    assert targets.models is not None and targets.models.revisions == []
+    assert remove_targets(targets, p, lambda _: None) == 0
+
+
+def test_pinned_revisions_include_earlier_pins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        voiced_models, "PINS", (voiced_models.Pin("a/b", "2" * 40, 1, previous=("1" * 40,)),)
+    )
+    assert voiced_models.pinned_revisions() == {("a/b", "2" * 40), ("a/b", "1" * 40)}
 
 
 def test_plan_uses_the_real_account_not_logname(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import grp
+import json
 import os
 import pwd
 import shlex
@@ -70,6 +71,13 @@ from voiced.layout import (
     sha256_file,
     stable_environment,
     write_manifest,
+)
+from voiced.models import (
+    CachedRevision,
+    cached_revisions,
+    delete_revisions,
+    pinned_revisions,
+    size_text,
 )
 
 Service = DaemonName
@@ -1014,11 +1022,84 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     return None
 
 
-def hf_cache_dirs(settings: Settings, hf_home: Path | None) -> list[Path]:
-    """Hugging Face cache directories for the configured models."""
-    hub = (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
-    models = (settings.stt.model, settings.tts.model)
-    return [hub / f"models--{m.replace('/', '--')}" for m in models]
+def hf_hub(hf_home: Path | None) -> Path:
+    """The Hugging Face cache the services use (``[install] hf_home``)."""
+    return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
+
+
+def environment_pins(environment: Path, runner: Runner = run_command) -> set[tuple[str, str]]:
+    """What the voiced in ``environment`` pins, from its ``python -m
+    voiced.models`` (another release's pins, for an environment it built);
+    nothing when it cannot say."""
+    python = environment / "bin" / "python"
+    if not python.is_file():
+        return set()
+    result = runner([str(python), "-I", "-m", "voiced.models"])
+    if result.returncode != 0:
+        return set()
+    try:
+        models = json.loads(result.stdout)["models"]
+        return {(str(m["repo"]), str(m["revision"])) for m in models}
+    except (ValueError, TypeError, KeyError):
+        return set()
+
+
+@dataclass(frozen=True)
+class ModelTargets:
+    """What ``--remove-models`` deletes from the cache at ``hub``: the
+    revisions voiced pinned, and never another revision (other tools share
+    the cache). ``unpinned``: repositories the config names that voiced
+    does not pin, which are kept. ``refused``: why nothing can be deleted."""
+
+    hub: Path
+    revisions: list[CachedRevision] = field(default_factory=list)
+    unpinned: list[str] = field(default_factory=list)
+    refused: str | None = None
+
+
+def model_targets(
+    plan: InstallPlan,
+    settings: Settings,
+    environments: Sequence[Path],
+    runner: Runner = run_command,
+) -> ModelTargets:
+    """The pinned revisions in the cache: this release's pins and earlier
+    ones (:func:`voiced.models.pinned_revisions`), and those of the voiced in
+    each of ``environments``, which may be a newer or older release."""
+    hub = hf_hub(plan.hf_home)
+    pins = pinned_revisions()
+    for environment in environments:
+        pins |= environment_pins(environment, runner)
+    configured = {settings.stt.model, settings.tts.model}
+    try:
+        cached = cached_revisions(hub, {repo for repo, _ in pins} | configured)
+    except ImportError:
+        return ModelTargets(hub, refused="huggingface_hub is not installed here")
+    pinned_repos = {repo for repo, _ in pins}
+    return ModelTargets(
+        hub,
+        revisions=[c for c in cached if (c.repo, c.revision) in pins],
+        unpinned=sorted({c.repo for c in cached if c.repo not in pinned_repos}),
+    )
+
+
+def remove_models(models: ModelTargets, say: Say) -> int:
+    """Delete ``models.revisions``; returns how many were removed."""
+    if models.refused is not None:
+        say(f"not removing models from {models.hub}: {models.refused}")
+        return 0
+    for repo in models.unpinned:
+        say(
+            f"kept {repo}: voiced does not pin its revision, so it may be another tool's "
+            f"(`hf cache rm model/{repo}` removes it)"
+        )
+    if not models.revisions:
+        return 0
+    freed = delete_revisions(models.hub, models.revisions)
+    for revision in models.revisions:
+        say(f"removed {revision.repo} revision {revision.revision}")
+    say(f"freed {size_text(freed)} ({freed:,} bytes) of models in {models.hub}")
+    return len(models.revisions)
 
 
 @dataclass(frozen=True)
@@ -1031,6 +1112,7 @@ class UninstallTargets:
     # Why the state directory is left alone (it is not voiced's), or None.
     refused: str | None = None
     manifest: Manifest | None = None
+    models: ModelTargets | None = None  # with --remove-models
 
     def all(self) -> list[Path]:
         return [*self.trees, *self.files]
@@ -1065,7 +1147,13 @@ def state_targets(state_dir: Path) -> UninstallTargets:
 
 
 def uninstall_targets(
-    plan: InstallPlan, settings: Settings, *, logs: bool, models: bool, config: bool
+    plan: InstallPlan,
+    settings: Settings,
+    *,
+    logs: bool,
+    models: bool,
+    config: bool,
+    runner: Runner = run_command,
 ) -> UninstallTargets:
     """What ``uninstall`` deletes.
 
@@ -1085,13 +1173,29 @@ def uninstall_targets(
             files += sorted(plan.log_dir.glob(f"{name}.log.*"))  # rotated app logs
         files.append(plan.log_dir / METAL_PROBE_FILE)
         prune.append(plan.log_dir)
+    found_models = None
     if models:
-        trees += hf_cache_dirs(settings, plan.hf_home)
+        # The environments voiced built, and those install.json names (a
+        # Homebrew keg), while they are still there to say what they pinned.
+        environments: dict[str, Path] = {}
+        if state.refused is None and state.manifest is not None:
+            named = (state.manifest.environment, state.manifest.previous)
+            for env in [*built_environments(plan.state_dir), *named]:
+                if env is not None:
+                    environments.setdefault(os.path.realpath(env), env)
+        found_models = model_targets(plan, settings, list(environments.values()), runner)
     if config:
         files += [plan.config_file, plan.config_file.parent / "metal-probe.sh"]
         files += plan.legacy_staged_files()
         prune.append(plan.legacy_staging_dir)
-    return UninstallTargets(trees, files, prune, refused=state.refused, manifest=state.manifest)
+    return UninstallTargets(
+        trees,
+        files,
+        prune,
+        refused=state.refused,
+        manifest=state.manifest,
+        models=found_models,
+    )
 
 
 def remove_targets(targets: UninstallTargets, plan: InstallPlan, say: Say) -> int:
@@ -1099,6 +1203,8 @@ def remove_targets(targets: UninstallTargets, plan: InstallPlan, say: Say) -> in
     removed = 0
     if targets.refused is not None:
         say(f"refusing to touch {plan.state_dir}: {targets.refused}")
+    if targets.models is not None:
+        removed += remove_models(targets.models, say)
     for tree in targets.trees:
         if not tree.exists() and not tree.is_symlink():
             continue

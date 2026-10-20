@@ -53,9 +53,17 @@ the environment, then prints the root step and stops: one line,
 `uninstall` prints the matching `uninstall <user>` line first and refuses
 to delete anything while any label is still loaded (otherwise launchd would
 respawn a missing binary every 10 s). Deleting needs `--yes`; models, logs
-and config each need their own flag. Only two kinds of directory are deleted
-recursively: the venv (only if it contains `pyvenv.cfg`) and the models'
-Hugging Face cache entries. Everything else is deleted file by file, because
+and config each need their own flag. Only one kind of directory is deleted
+recursively: the venv (only if it contains `pyvenv.cfg`). The models are
+deleted through `huggingface_hub` (`scan_cache_dir().delete_revisions`), and
+only the revisions voiced pinned: `voiced.models.PINS` with their `previous`
+revisions, and what `python -m voiced.models` lists in each environment
+uninstall finds. `huggingface_hub` 2.x keeps file bytes in a store shared by
+every repository in the cache (`hub/blobs/<2 hex>/<xet hash>`), and a
+repository's folder holds only links into it, so removing the folder would
+leave the bytes behind (amended 2026-10-20; the first version did that).
+Other tools' revisions in the same cache stay, with their blobs, and so does
+a configured model voiced does not pin. Everything else is deleted file by file, because
 the directories may be shared: `log_dir = "~/Library/Logs"` and
 `VOICED_CONFIG=~/config.toml` (an earlier release's staging dir `~/launchd`) are legal
 configurations. `--remove-logs` removes the per-service log files, their
