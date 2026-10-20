@@ -9,9 +9,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
-from voiced.models.cache import Write, cache_dir, snapshot
+from voiced.models.cache import Write, cache_dir, fetch
 from voiced.models.lockfile import manifest, pinned_revision, read_lock
-from voiced.models.lookup import engine, required
+from voiced.models.lookup import engine
 from voiced.models.pinning import pin
 
 # The models step -------------------------------------------------------------
@@ -20,10 +20,10 @@ from voiced.models.pinning import pin
 def download(config: Path, write: Write | None) -> None:
     """The models step: each configured model, then each engine loaded once.
     The engine is built first, so a model it refuses fails before anything
-    is fetched. A catalogued engine's model is fetched at its pin with its
-    shared repositories, any other model of a catalogued engine whole at
-    ``main``; a plugin engine downloads in its own ``load()``, and a model
-    whose engine is not installed is fetched whole."""
+    is fetched. A catalogued engine's model is fetched (:func:`fetch`) at
+    its pin with its shared models, any other model of a catalogued engine
+    whole at ``main``; a plugin engine downloads in its own ``load()``, and a
+    model whose engine is not installed is fetched whole."""
     import asyncio
 
     from voiced.config import load_settings
@@ -43,11 +43,10 @@ def download(config: Path, write: Write | None) -> None:
             built = create_engine(kind, engine_name, model)
         except UnknownEngine as exc:
             print(f"  {exc}; downloading weights only", flush=True)
-            snapshot(model, write=write)
+            fetch(model, write)
             continue
         if engine(engine_name) is not None:
-            for needed in required(model):
-                snapshot(needed, write=write)
+            fetch(model, write)
         asyncio.run(built.load())
         print(f"  loaded {built.name} ({built.model_id})", flush=True)
 

@@ -30,6 +30,16 @@ from voiced import __version__
 PROTOCOL = 1
 DOWNLOAD_PREFIX = "@@voiced-download "
 
+ErrorCode = Literal[
+    "token_missing", "token_invalid", "gated_terms", "network", "disk", "busy", "in_use", "failed"
+]
+"""What an ``error`` event's ``code`` says went wrong (ADR 0022 section 4):
+a 401 without a token, a token Hugging Face rejected, a gated model's
+terms not accepted, no network, not enough disk, an install holding the
+state directory, the model the config uses (``delete``), anything else.
+The installer's own errors are ``failed``. Readers show an unknown code as
+text."""
+
 StepState = Literal["planned", "start", "done"]
 
 
@@ -115,7 +125,7 @@ class Progress:
     def done(self) -> None:
         self.emit("done")
 
-    def error(self, message: str, code: str = "failed") -> None:
+    def error(self, message: str, code: ErrorCode = "failed") -> None:
         """``step`` is None when no step was running. A models-step error
         names the model it was on, for the app's manual fallback and its
         Show in Finder. ``code`` says what went wrong for the app to act on

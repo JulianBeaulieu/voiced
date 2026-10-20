@@ -65,8 +65,14 @@ The FastAPI lifespan starts the engine's `load()` as a background task and
 returns at once, so the HTTP port and the Wyoming port are bound within a
 second of the process starting. Until the load finishes, `/health` answers
 `503` with `status: "starting"` and every `/v1` route and Wyoming request
-answers `server_busy`. `load()` downloads the weights if needed, loads them
-and runs a warm-up inference, so "healthy" means "warm".
+answers `server_busy`. `load()` loads the weights from the Hugging Face
+cache and runs a warm-up inference, so "healthy" means "warm". The services
+run with `HF_HUB_OFFLINE=1` and never download: a catalogued engine reads
+its model through `voiced.models.snapshot(model_id, check_only=True)`, and
+a plugin engine's own download fails offline. A model that is not in the
+cache (`ModelNotDownloaded`, or the hub's offline and not-found errors)
+leaves the process up with `status: "missing_model"`; `voiced models
+download` or `voiced install` fetches it.
 
 If `load()` raises, the process logs the traceback and exits with status 1,
 so launchd restarts it. A stop request during a load exits immediately
@@ -292,7 +298,7 @@ class PiperEngine(TTSEngine):
     languages = ["en", "de"]
     license = "MIT"
 
-    async def load(self) -> None: ...  # download, load and warm up via run_blocking
+    async def load(self) -> None: ...  # load from the cache and warm up via run_blocking
 
     async def voices(self) -> list[Voice]:
         return [Voice(id="en_US-lessac-medium", name="Lessac", language="en-US")]

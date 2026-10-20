@@ -4,6 +4,7 @@ and the models step (ADR 0018, ADR 0022)."""
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -126,9 +127,10 @@ KOKORO = "mlx-community/Kokoro-82M-bf16"
 
 
 def _cache(hub: Path, repo: str, skip: Sequence[str] = ()) -> Path:
-    entry = models.lock()[repo]
-    files = {name: name.encode() for name in entry.files if name not in skip}
-    return hf.add_revision(hub, repo, entry.revision, files)
+    snapshot = hf.add_locked(hub, models.lock()[repo])
+    for name in skip:
+        (snapshot / name).unlink()
+    return snapshot
 
 
 @pytest.fixture
@@ -149,12 +151,24 @@ def test_check_only_finds_a_missing_file_without_the_hub(hub: Path) -> None:
     _cache(hub, KOKORO, skip=["voices/af_heart.safetensors"])
     with pytest.raises(models.ModelNotDownloaded) as exc:
         models.snapshot(KOKORO, check_only=True)
-    assert (exc.value.repo, exc.value.revision) == (KOKORO, entry.revision)
+    assert (exc.value.model_id, exc.value.revision) == (KOKORO, entry.revision)
     assert str(exc.value) == (
         f"{KOKORO} is not downloaded at revision {entry.revision}; "
         f"run voiced models download {KOKORO}"
     )
     assert models.missing_files(hub, entry) == ["voices/af_heart.safetensors"]
+
+
+def test_a_file_of_another_size_is_missing(hub: Path) -> None:
+    """A truncated download (huggingface_hub checks sizes, not hashes)."""
+    snapshot = _cache(hub, KOKORO)
+    os.truncate(snapshot / "config.json", 1)
+    assert models.missing_files(hub, models.lock()[KOKORO]) == ["config.json"]
+
+
+def test_a_missing_lock_is_an_error_not_an_empty_lock(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        models.read_lock(tmp_path / "models.lock.json")
 
 
 def test_a_link_whose_blob_is_gone_is_missing(hub: Path) -> None:
@@ -205,7 +219,7 @@ def test_the_hubs_offline_and_not_found_errors_are_a_missing_model() -> None:
             raise RuntimeError("the engine's own wrapper") from inner
     except RuntimeError as exc:
         found = models.hub_missing_model(exc, KOKORO)
-    assert found is not None and found.repo == KOKORO
+    assert found is not None and found.model_id == KOKORO
     assert found.revision == models.pinned_revision(KOKORO)
     own = models.ModelNotDownloaded("gradium/phonon-voices", "abc")
     assert models.hub_missing_model(own, KOKORO) is own
@@ -231,7 +245,7 @@ def _lines(written: list[str]) -> list[dict[str, Any]]:
 def test_byte_reports_are_throttled_to_four_a_second() -> None:
     written: list[str] = []
     clock = Clock()
-    report = models.ByteReport("org/m", 100, 1000, 1000, written.append, clock)
+    report = models.ByteReport("org/m", 100, 1000, written.append, clock)
     report.add(0)  # the start, at what was cached
     for _ in range(10):
         clock.now += 0.0625
@@ -247,7 +261,7 @@ def test_byte_reports_are_throttled_to_four_a_second() -> None:
 
 def test_only_the_bar_of_bytes_written_counts() -> None:
     pytest.importorskip("huggingface_hub")
-    report = models.ByteReport("org/m", 0, 10, 10, lambda line: None)
+    report = models.ByteReport("org/m", 0, 10, lambda line: None)
     counting = models._counting_tqdm(report)
     written = counting(name=models.BYTES_BAR, total=0, disable=True)
     transfer = counting(name="huggingface_hub.snapshot_download.transfer", disable=True)
@@ -305,8 +319,10 @@ def test_a_pinned_model_downloads_its_locked_files_with_byte_progress(
     written: list[str] = []
     path = models.snapshot(KOKORO, write=written.append)
     assert path == Path("/hf/hub/models--org--m/snapshots/abc")
-    assert {c["revision"] for c in fake.calls} == {entry.revision}
-    assert {tuple(c["allow_patterns"]) for c in fake.calls} == {entry.patterns}
+    # The lock says what is cached: no dry run.
+    assert [(c["revision"], tuple(c["allow_patterns"])) for c in fake.calls] == [
+        (entry.revision, entry.patterns)
+    ]
     lines = _lines(written)
     assert lines[0] == {
         "kind": "model",
@@ -314,17 +330,42 @@ def test_a_pinned_model_downloads_its_locked_files_with_byte_progress(
         "revision": entry.revision,
         "path": "/hf/hub",
     }
-    # Starts at what was cached; the total is the lock's; ends at what is there.
-    assert lines[1] == {"kind": "bytes", "repo": KOKORO, "bytes": 30, "total": entry.bytes}
-    assert lines[-1] == {"kind": "bytes", "repo": KOKORO, "bytes": 100, "total": entry.bytes}
+    # Starts at what is cached (nothing here); the total is the lock's.
+    assert lines[1] == {"kind": "bytes", "repo": KOKORO, "bytes": 0, "total": entry.bytes}
+    assert lines[-1] == {
+        "kind": "bytes",
+        "repo": KOKORO,
+        "bytes": entry.bytes,
+        "total": entry.bytes,
+    }
+
+
+def test_a_resumed_download_starts_at_what_the_lock_says_is_cached(
+    fake_hub: Callable[..., FakeHub], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_hub()
+    hub = tmp_path / "hub"
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(hub))
+    snapshot = hf.add_locked(hub, models.lock()[KOKORO])
+    (snapshot / "config.json").unlink()
+    written: list[str] = []
+    models.snapshot(KOKORO, write=written.append)
+    entry = models.lock()[KOKORO]
+    done = entry.bytes - entry.files["config.json"].bytes
+    assert _lines(written)[1] == {
+        "kind": "bytes",
+        "repo": KOKORO,
+        "bytes": done,
+        "total": entry.bytes,
+    }
 
 
 def test_an_unpinned_model_downloads_main_whole(fake_hub: Callable[..., FakeHub]) -> None:
     fake = fake_hub()
     written: list[str] = []
     models.snapshot("org/m", write=written.append)
-    assert {c["revision"] for c in fake.calls} == {None}
-    assert {c["allow_patterns"] for c in fake.calls} == {None}
+    assert {c.get("revision") for c in fake.calls} == {None}
+    assert {c.get("allow_patterns") for c in fake.calls} == {None}
     assert _lines(written)[1:] == [
         {"kind": "bytes", "repo": "org/m", "bytes": 30, "total": 100},
         {"kind": "bytes", "repo": "org/m", "bytes": 100, "total": 100},
@@ -351,11 +392,12 @@ def test_a_gated_model_says_how_to_get_access(monkeypatch: pytest.MonkeyPatch) -
         raise GatedRepoError("401", response=httpx.Response(401, request=request))
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", gated)
-    with pytest.raises(RuntimeError) as exc:
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    with pytest.raises(models.ModelsError) as exc:
         models.snapshot("gradium/phonon-40m-en")
-    message = str(exc.value)
-    assert "https://huggingface.co/gradium/phonon-40m-en" in message
-    assert "`hf auth login` with HF_HOME set" in message
+    assert exc.value.code == "token_missing"
+    assert "https://huggingface.co/gradium/phonon-40m-en" in exc.value.message
+    assert "`hf auth login` with HF_HOME set" in exc.value.message
     assert isinstance(exc.value.__cause__, GatedRepoError)
 
 
@@ -429,6 +471,8 @@ def test_pin_without_repositories_fixes_what_is_stale(
     assert asked == [(KOKORO, None)]
     written = models.read_lock(lock)
     assert set(written) == set(shipped) and written[KOKORO].revision == NEWER
+    # The dropped model's revision stays known, so uninstall still deletes it.
+    assert models.read_retired(lock) == {("org/dropped", SHA)}
     with pytest.raises(SystemExit, match="not in the catalogue: org/new"):
         models.pin(["org/new"], path=lock)
 
@@ -445,7 +489,9 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     fails before anything is fetched."""
     fetched: list[str] = []
     monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
-    monkeypatch.setattr("voiced.models.commands.snapshot", lambda repo, write: fetched.append(repo))
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.cache.check_disk", lambda hub, needed: None)
+    monkeypatch.setattr("voiced.models.cache.snapshot", lambda repo, write: fetched.append(repo))
     config = tmp_path / "config.toml"
     config.write_text(
         '[stt]\nengine = "fake"\nmodel = "org/stt"\n[tts]\nengine = "nope"\nmodel = "org/tts"\n'
@@ -499,7 +545,7 @@ def test_a_real_download_reports_its_bytes(tmp_path: Path) -> None:
     from huggingface_hub import snapshot_download
 
     entry = models.lock()[KOKORO]
-    report = models.ByteReport(KOKORO, 0, entry.bytes, entry.bytes, lambda line: None)
+    report = models.ByteReport(KOKORO, 0, entry.bytes, lambda line: None)
     path = snapshot_download(
         KOKORO,
         revision=entry.revision,

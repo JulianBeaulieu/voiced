@@ -36,6 +36,11 @@ def catalogued() -> list[Model]:
     return list(seen.values())
 
 
+def is_shared(model_id: str) -> bool:
+    """A model that comes with its engine's models (Phonon's voices), never alone."""
+    return find(model_id) is None and model_id in {m.id for m in catalogued()}
+
+
 def required(model_id: str) -> list[str]:
     """What a load of ``model_id`` needs: the model, then its engine's shared models."""
     found = find(model_id)

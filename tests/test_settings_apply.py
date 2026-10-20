@@ -333,11 +333,11 @@ def test_a_catalogued_model_that_is_not_downloaded_is_refused(cfg: Path, model_c
     from voiced import models
 
     entry = models.lock()[PHONON_40M]
-    hf.add_revision(model_cache, PHONON_40M, entry.revision, {n: b"x" for n in entry.files})
+    hf.add_locked(model_cache, entry)
     with pytest.raises(store.ModelMissing):
         apply_settings({"tts.engine": "phonon", "tts.model": PHONON_40M}, cfg)
     voices = models.lock()["gradium/phonon-voices"]
-    hf.add_revision(model_cache, voices.repo, voices.revision, {n: b"x" for n in voices.files})
+    hf.add_locked(model_cache, voices)
     change = apply_settings({"tts.engine": "phonon", "tts.model": PHONON_40M}, cfg)
     assert change.changed == ("tts.engine", "tts.model")
 

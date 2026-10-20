@@ -446,3 +446,20 @@ above:
 - A plugin engine the catalogue does not know still downloads in its own
   `load()` during the models step; a catalogued engine with a model outside
   the catalogue fetches that model whole at `main`.
+- After the first review: `voiced.models` is a package whose
+  `catalogue.py` holds only the data a new engine adds; one classifier
+  (`voiced.models.classify`) turns any failed download into a code, and a
+  401 for a repository that does not exist is `failed`, not a token code;
+  `voiced models download` and the install's models step share
+  `voiced.models.fetch`, which checks the disk first; `missing_files`
+  compares sizes, so a truncated file is missing (the lock's sha256 is kept
+  for the mirror under "Later", not checked when loading); the lock keeps a
+  dropped model's revisions under `retired`; Cancel exits at once (exit 143)
+  instead of waiting for the files in flight. Deleting one of several models
+  that are folders of one repository deletes the others with it (the
+  revision goes whole), refused while one of them is in use. A missing
+  shared model is reported as its model, naming the shared one, so the
+  command given is one `voiced models download` takes. The delete note
+  reads "Phonon's shared files (gradium/phonon-voices) are deleted with
+  it." rather than section 5's "Phonon's voices are deleted with it.": the
+  catalogue names shared models, not what they hold.

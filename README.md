@@ -223,11 +223,11 @@ exposes the services to your whole network:
 
 Weights are not vendored. They come from Hugging Face into the local cache,
 each at the revision voiced pins: `voiced install` fetches the configured
-models, and `voiced models download <repo>` any other (`voiced models list`
+models, and `voiced models download <model>` any other (`voiced models list`
 shows them all, with their licence, size and state). The services never
 download; a service whose model is missing stays up and reports
 `missing_model` with the command that fetches it. `voiced models delete
-<repo>` removes a model voiced pins and nothing else in the cache, which
+<model>` removes a model voiced pins and nothing else in the cache, which
 other tools share ([docs/operations.md](docs/operations.md#models)). Silero
 VAD is the exception: it ships inside the `pysilero-vad` wheel.
 
@@ -386,7 +386,7 @@ daemons and Metal access, including from a real daemon context with
 | Symptom | Likely cause and fix |
 |---|---|
 | `/health` returns 503 with `"status": "starting"`, `/v1` returns 503 `server_busy` | The model is still loading, which takes seconds; watch `voiced logs`. |
-| `/health` returns 503 with `"status": "missing_model"`, `/v1` returns 503 `model_not_downloaded` | The configured model is not in the Hugging Face cache (a hand-edited config, a cache another tool cleared). `last_error` and `voiced doctor` name the command: `voiced models download <repo>`, then `voiced restart`. The watchdog leaves the service alone meanwhile. |
+| `/health` returns 503 with `"status": "missing_model"`, `/v1` returns 503 `model_not_downloaded` | The configured model is not in the Hugging Face cache (a hand-edited config, a cache another tool cleared). `last_error` and `voiced doctor` name the command: `voiced models download <model>`, then `voiced restart`. The watchdog leaves the service alone meanwhile. |
 | `/health` says `"degraded"` | The last inference failed. The error is in `last_error` and on the status page; the watchdog restarts the service if it stays degraded for two minutes. |
 | HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
 | HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |

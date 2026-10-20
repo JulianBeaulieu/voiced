@@ -75,3 +75,30 @@ def test_a_missing_model_is_not_an_engine_failure() -> None:
     """Inside a slot (a Wyoming stream checks there) it is counted busy and
     never marks the service degraded."""
     assert classify(ModelNotDownloaded(REPO)) is Outcome.BUSY
+
+
+async def test_a_missing_shared_model_names_the_command_that_fetches_it(
+    settings: Settings,
+) -> None:
+    """Phonon's voices alone missing: the command is the model's, which
+    ``voiced models download`` takes, and the voices are named."""
+    engine = Missing(ModelNotDownloaded("gradium/phonon-voices", "d" * 40))
+    engine.model_id = "gradium/phonon-31m-en"
+    app = build_stt_app(settings, engine)
+    async with lifespan_client(app) as c:
+        body = (await c.get("/health")).json()
+        error = (await c.get("/v1/models")).json()["error"]["message"]
+    assert body["status"] == "missing_model"
+    for text in (body["last_error"], error):
+        assert (
+            "(gradium/phonon-voices missing); run voiced models download gradium/phonon-31m-en"
+            in text
+        )
+
+
+async def test_offline_mode_in_a_plugin_is_a_missing_model(settings: Settings) -> None:
+    """A plugin calling the Hub under HF_HUB_OFFLINE must not restart every 10 s."""
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    app = _app(settings, huggingface_hub.errors.OfflineModeIsEnabled("offline"))
+    async with lifespan_client(app) as c:
+        assert (await c.get("/health")).json()["status"] == "missing_model"

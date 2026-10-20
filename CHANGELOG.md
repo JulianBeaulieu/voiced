@@ -27,8 +27,8 @@ uses [Semantic Versioning](https://semver.org/).
   each row with its machine, commit and date, and a quality and a speed
   rating from 1 to 5 by fixed limits. `scripts/bench_engine.py` measures one
   engine with one command and regenerates the document (ADR 0024).
-- `voiced models list`, `voiced models download <repo>` and `voiced models
-  delete <repo>`: see every model voiced can run with its licence, size and
+- `voiced models list`, `voiced models download <model>` and `voiced models
+  delete <model>`: see every model voiced can run with its licence, size and
   state, download one at its pinned revision with byte progress, and delete
   one to free its disk space, never touching what other tools keep in the
   shared Hugging Face cache. `--json` and `--json-progress` are for the menu
@@ -54,6 +54,11 @@ uses [Semantic Versioning](https://semver.org/).
 - A configured engine that is not installed, or a model it refuses, ends
   `voiced serve` with one line saying so, not a traceback.
 - The `error` event of `--json-progress` carries a `code`.
+- For engine plugins: the services run `load()` with `HF_HUB_OFFLINE=1`, so
+  it cannot download. `voiced install` still runs each engine's `load()`
+  once with the network, which fetches a plugin's weights; a load that later
+  fails with the hub's offline or not-found errors reports `missing_model`
+  instead of exiting.
 
 ### Changed
 

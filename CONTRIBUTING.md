@@ -141,7 +141,7 @@ under 300 KB each, free of personal content. Never commit model weights.
 - `main` is protected.
 - Conventional commit messages: `feat(stt): ...`, `fix(api): ...`,
   `docs: ...`, `chore(ci): ...`, `test(wyoming): ...`. Scopes are the package
-  directories (`stt`, `tts`, `api`, `wyoming`, `cli`, `launchd`, `engines`,
+  directories (`stt`, `tts`, `api`, `wyoming`, `cli`, `launchd`, `engines`, `models`,
   `ci`, `docs`). One logical change per commit.
 - No AI attribution and no `Co-Authored-By` trailers in commits or pull
   requests.
@@ -236,15 +236,15 @@ The models voiced runs are listed by hand in `CATALOGUE` in
 repository, licence (from its model card), whether it is gated, and the
 file patterns the engine loads; the first model is the default, and
 `shared` names models every model of the engine needs. A model is known by
-its repository, which is what the config's `model` holds; when several
-models are folders of one repository, give each an `id` and patterns for
-its folder. The revisions,
+its id, which is what the config's `model` holds and what `voiced models`
+takes; it defaults to the repository, and when several models are folders
+of one repository, give each an `id` and patterns for its folder. The revisions,
 files, sizes and hashes are in `src/voiced/models.lock.json`, which you
 never edit by hand:
 
 ```sh
 uv run python -m voiced.models pin                        # every repository added or with new patterns
-uv run python -m voiced.models pin <repo> --revision main # move a model to its current main
+uv run python -m voiced.models pin <model> --revision main # move a model to its current main
 ```
 
 `pin` resolves the revision to a commit through the Hugging Face API,

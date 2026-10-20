@@ -5,23 +5,36 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from voiced.launchd.progress import DOWNLOAD_PREFIX
-from voiced.models.lockfile import Locked, locked, pinned_revision
-from voiced.models.lookup import find, required
+from voiced.models.errors import ModelNotDownloaded, ModelsError, classify
+from voiced.models.lockfile import Locked, Source, locked, resolve
+from voiced.models.lookup import find, is_shared, required
+
+T = TypeVar("T")
+
+DEFAULT_HF_HOME = Path.home() / ".cache" / "huggingface"
+"""Where Hugging Face keeps its cache without ``HF_HOME``, ignoring
+``XDG_CACHE_HOME`` so voiced and its services always agree."""
 
 # The cache on disk (standard library) ------------------------------------
 
+DISK_HEADROOM = 10**9
+"""Free space a download leaves: the bytes still to fetch plus 1 GB."""
+
 
 def hub_dir(hf_home: Path | None) -> Path:
-    """The Hugging Face cache under ``[install] hf_home``, or the default one."""
-    return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
+    """The Hugging Face cache under ``[install] hf_home``, or the default one
+    (``voiced.config.apply_engine_environment`` sets ``HF_HOME`` to the same,
+    so ``huggingface_hub`` downloads where this looks)."""
+    return (hf_home or DEFAULT_HF_HOME) / "hub"
 
 
 def repo_folder(repo: str) -> str:
@@ -35,14 +48,17 @@ def snapshot_dir(hub: Path, repo: str, revision: str) -> Path:
 
 def missing_files(hub: Path, entry: Locked, revision: str | None = None) -> list[str]:
     """The locked files of ``entry`` (at ``revision``, its pin by default)
-    that the cache at ``hub`` lacks: each is a link into the blob store,
-    checked by ``stat``, so a broken link is missing too."""
+    that the cache at ``hub`` lacks or holds at another size: each is a link
+    into the blob store, checked by ``stat``, so a broken link or a
+    truncated file is missing too."""
     root = snapshot_dir(hub, entry.repo, revision or entry.revision)
     missing = []
-    for name in entry.files:
+    for name, locked_file in entry.files.items():
         try:
-            os.stat(root / name)
+            size = os.stat(root / name).st_size
         except OSError:
+            size = -1
+        if size != locked_file.bytes:
             missing.append(name)
     return missing
 
@@ -55,49 +71,25 @@ def not_downloaded(hub: Path, model_id: str) -> list[str]:
     return [m for m in required(model_id) if (e := locked(m)) is None or missing_files(hub, e)]
 
 
-class ModelNotDownloaded(LookupError):
-    """A model's files are not in the cache. ``repo`` is the model's id
-    (its repository for every model so far); ``revision`` is None for a
-    model outside the catalogue, which loads ``main``."""
-
-    def __init__(self, repo: str, revision: str | None = None) -> None:
-        self.repo = repo
-        self.revision = revision
-        self.command = f"voiced models download {repo}"
-        at = f" at revision {revision}" if revision else ""
-        super().__init__(f"{repo} is not downloaded{at}; run {self.command}")
+def remaining_bytes(hub: Path, model_ids: list[str]) -> int:
+    """What is still to fetch of ``model_ids`` (0 for an unpinned one, whose size is unknown)."""
+    total = 0
+    for model_id in model_ids:
+        entry = locked(model_id)
+        if entry is not None:
+            total += sum(entry.files[name].bytes for name in missing_files(hub, entry))
+    return total
 
 
-def hub_missing_model(exc: BaseException, repo: str) -> ModelNotDownloaded | None:
-    """``exc``, or what caused it, as :class:`ModelNotDownloaded`: that
-    itself, or the hub's offline and not-found errors (``repo`` is the
-    model the engine was loading). None for any other failure."""
-    try:
-        from huggingface_hub.errors import (
-            EntryNotFoundError,
-            LocalEntryNotFoundError,
-            RepositoryNotFoundError,
-            RevisionNotFoundError,
+def check_disk(hub: Path, needed: int) -> None:
+    existing = next(p for p in (hub, *hub.parents) if p.exists())
+    free = shutil.disk_usage(existing).free
+    if free < needed + DISK_HEADROOM:
+        raise ModelsError(
+            "disk",
+            f"not enough disk space in {hub}: the download needs {size_text(needed)} "
+            f"and 1 GB to spare, {size_text(free)} is free",
         )
-
-        hub_errors: tuple[type[BaseException], ...] = (
-            LocalEntryNotFoundError,
-            RepositoryNotFoundError,
-            RevisionNotFoundError,
-            EntryNotFoundError,
-        )
-    except ImportError:
-        hub_errors = ()
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, ModelNotDownloaded):
-            return current
-        if isinstance(current, hub_errors):
-            return ModelNotDownloaded(repo, pinned_revision(repo))
-        current = current.__cause__ or current.__context__
-    return None
 
 
 # Downloading ---------------------------------------------------------------
@@ -115,19 +107,18 @@ Write = Callable[[str], None]
 class ByteReport:
     """Writes ``{"kind": "bytes", "repo", "bytes", "total"}`` lines after
     :data:`DOWNLOAD_PREFIX`, at most every :data:`REPORT_INTERVAL_S`.
-    ``done`` is what was cached before the download and ``size`` what it
-    adds up to; the bar's updates come from several download threads."""
+    ``done`` is what was cached before the download (``repo`` names the
+    model by its id); the bar's updates come from several download threads."""
 
     def __init__(
         self,
         repo: str,
         done: int,
-        size: int,
         total: int,
         write: Write,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.repo, self.bytes, self.size, self.total = repo, done, size, total
+        self.repo, self.bytes, self.total = repo, done, total
         self._write, self._clock = write, clock
         self._lock = threading.Lock()
         self._last: float | None = None
@@ -142,7 +133,7 @@ class ByteReport:
 
     def finish(self) -> None:
         with self._lock:
-            self.bytes = self.size
+            self.bytes = self.total
             self._emit()
 
     def _emit(self) -> None:
@@ -171,6 +162,22 @@ def _counting_tqdm(report: ByteReport) -> type:
     return Counting
 
 
+def fetch(model_id: str, write: Write | None = None) -> list[Path]:
+    """Download ``model_id`` and the shared models it needs, after checking
+    the disk has room for what is missing and 1 GB more: ``voiced models
+    download`` and the install's models step. A shared model alone is
+    refused; a model outside the catalogue is fetched whole at ``main``.
+    Raises :class:`ModelsError`."""
+    if is_shared(model_id):
+        raise ModelsError(
+            "failed", f"{model_id} comes with its engine's models; download one of them"
+        )
+    needed = required(model_id)
+    hub = Path(cache_dir())
+    check_disk(hub, remaining_bytes(hub, needed))
+    return [snapshot(m, write=write) for m in needed]
+
+
 def snapshot(model_id: str, *, check_only: bool = False, write: Write | None = None) -> Path:
     """The local snapshot of ``model_id``'s repository at its pinned revision
     (a model outside the catalogue: the repository ``model_id`` at ``main``).
@@ -180,77 +187,94 @@ def snapshot(model_id: str, *, check_only: bool = False, write: Write | None = N
     file missing from the cache, or a model outside the catalogue not cached
     at all, raises :class:`ModelNotDownloaded`. Otherwise what the lock's
     patterns name (everything, unpinned) that is not cached is downloaded;
-    with ``write``, the download's progress goes there (:class:`ByteReport`)."""
+    with ``write``, the download's progress goes there (:class:`ByteReport`).
+    A failed download raises :class:`ModelsError` with its code."""
     local = Path(model_id).expanduser()
     if local.is_dir():
         return local
     if check_only:
         return _cached(model_id)
-    from huggingface_hub.errors import GatedRepoError
-
-    entry = locked(model_id)
-    repo = entry.repo if entry is not None else model_id
+    source = resolve(model_id)
     try:
-        return _download(model_id, write)
-    except GatedRepoError as exc:
-        raise RuntimeError(
-            f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then "
-            "run `hf auth login` with HF_HOME set to the Hugging Face home the services "
-            "use, as the user they run as"
-        ) from exc
+        return _download(model_id, source, write)
+    except ModelsError:
+        raise
+    except Exception as exc:
+        code, message = classify(exc, source.repo)
+        raise ModelsError(code, message) from exc
 
 
 def _cached(model_id: str) -> Path:
-    entry = locked(model_id)
-    if entry is None:
+    source = resolve(model_id)
+    if source.entry is None:
         from huggingface_hub import snapshot_download
         from huggingface_hub.errors import LocalEntryNotFoundError
 
         try:
-            return Path(snapshot_download(model_id, local_files_only=True))
+            return Path(snapshot_download(source.repo, local_files_only=True))
         except LocalEntryNotFoundError as exc:
             raise ModelNotDownloaded(model_id) from exc
     hub = Path(cache_dir())
-    if missing_files(hub, entry):
-        raise ModelNotDownloaded(model_id, entry.revision)
-    return snapshot_dir(hub, entry.repo, entry.revision)
+    if missing_files(hub, source.entry):
+        raise ModelNotDownloaded(model_id, source.revision)
+    return snapshot_dir(hub, source.repo, source.entry.revision)
 
 
-def _download(model_id: str, write: Write | None) -> Path:
-    """Progress lines name the model by its id."""
+def _download(model_id: str, source: Source, write: Write | None) -> Path:
+    """Progress lines name the model by its id. A pinned model's progress
+    starts at what the lock says is cached; only an unpinned one asks the
+    hub (a dry run) what it holds."""
     from huggingface_hub import snapshot_download
-    from huggingface_hub.errors import DryRunError
 
-    entry = locked(model_id)
-    repo = entry.repo if entry is not None else model_id
-    revision = entry.revision if entry is not None else None
-    patterns = list(entry.patterns) if entry is not None else None
     report = None
     if write is not None:
-        start = {"kind": "model", "repo": model_id, "revision": revision, "path": cache_dir()}
+        start = {
+            "kind": "model",
+            "repo": model_id,
+            "revision": source.revision,
+            "path": cache_dir(),
+        }
         write(DOWNLOAD_PREFIX + json.dumps(start))
-        # What is cached already, so a resumed download starts at those bytes.
-        try:
-            files = snapshot_download(
-                repo, revision=revision, allow_patterns=patterns, dry_run=True
-            )
-        except DryRunError:  # offline: the download finds the cache or says why it cannot
-            files = None
-        if files is not None:
-            size = sum(f.file_size or 0 for f in files)
-            cached = sum(f.file_size or 0 for f in files if not f.will_download)
-            total = entry.bytes if entry is not None else size
-            report = ByteReport(model_id, cached, size, total, write)
-            report.add(0)
+        report = _report(model_id, source, write)
     path = snapshot_download(
-        repo,
-        revision=revision,
-        allow_patterns=patterns,
+        source.repo,
+        revision=source.revision,
+        allow_patterns=source.patterns,
         tqdm_class=_counting_tqdm(report) if report is not None else None,
     )
     if report is not None:
         report.finish()
     return Path(path)
+
+
+def _report(model_id: str, source: Source, write: Write) -> ByteReport | None:
+    if source.entry is not None:
+        total = source.entry.bytes
+        done = total - remaining_bytes(Path(cache_dir()), [model_id])
+    else:
+        from huggingface_hub import snapshot_download
+        from huggingface_hub.errors import DryRunError
+
+        try:
+            files = snapshot_download(source.repo, dry_run=True)
+        except DryRunError:  # offline: the download finds the cache or says why it cannot
+            return None
+        total = sum(f.file_size or 0 for f in files)
+        done = sum(f.file_size or 0 for f in files if not f.will_download)
+    report = ByteReport(model_id, done, total, write)
+    report.add(0)
+    return report
+
+
+def load_pinned(loader: Callable[..., T], model_id: str) -> T:
+    """``loader(repo, revision=..., allow_patterns=...)`` for a model at its
+    pin, after checking it is downloaded (:class:`ModelNotDownloaded`): for
+    engines whose library takes a repository id rather than a folder
+    (mlx-audio's ``load_model``, which tells a model by its name). Under
+    ``HF_HUB_OFFLINE`` its own resolve is a cache hit."""
+    snapshot(model_id, check_only=True)
+    source = resolve(model_id)
+    return loader(source.repo, revision=source.revision, allow_patterns=source.patterns)
 
 
 # The cache through huggingface_hub ---------------------------------------

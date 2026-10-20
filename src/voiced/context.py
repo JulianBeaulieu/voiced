@@ -141,7 +141,9 @@ class ServiceContext:
         """
         missing = self.health.missing
         if missing is not None:
-            raise ModelNotDownloaded(missing.repo, missing.revision)
+            # A new exception each time: raising the stored one would grow
+            # its traceback with every request.
+            raise ModelNotDownloaded(missing.model_id, missing.revision, missing.missing)
         if not self.health.model_loaded:
             raise EngineNotLoaded("model is still loading")
 

@@ -1035,3 +1035,15 @@ Needs the owner at the keyboard during implementation:
   the Background reads as `requiresApproval` from
   `SMAppService.statusForLegacyPlist(at:)`, which the app takes as off.
   The Debug pane shows the raw status of each service.
+
+## Amendment (ADR 0022)
+
+`voiced.models.PINS` and the engines' `download_patterns()` are replaced by
+the model catalogue (`voiced/models/catalogue.py`: repository, licence,
+gated, patterns) and its generated lock (`voiced/models/models.lock.json`:
+revision, files with size and sha256, earlier pins). `python -I -m
+voiced.models` still prints the default models for `install-manifest.json`,
+from the lock. The models step still runs `python -m voiced.models download
+--config` in the new environment; it now checks the disk first, and the
+progress protocol's `error` event carries a `code` (`failed` for the
+installer's own errors).

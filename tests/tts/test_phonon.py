@@ -52,8 +52,8 @@ def test_the_other_40m_models_are_refused(variant: str) -> None:
     with pytest.raises(ValueError) as exc:
         PhononEngine(model)
     assert str(exc.value) == (
-        f"{model} is not in voiced's model catalogue; of the Phonon 40M models it lists "
-        "gradium/phonon-40m-en"
+        f"{model} is not in voiced's model catalogue; its Phonon models are "
+        "gradium/phonon-31m-en, gradium/phonon-40m-en"
     )
 
 

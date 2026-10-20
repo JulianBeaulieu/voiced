@@ -68,14 +68,16 @@ def test_load_asks_mlx_audio_for_the_pinned_revision(
     monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", utils)
     monkeypatch.setattr("voiced.engines.kokoro._load_espeak", lambda: None)
     snapshots: list[tuple[str, bool]] = []
-    monkeypatch.setattr(
-        models,
-        "snapshot",
-        lambda repo, check_only=False: snapshots.append((repo, check_only)) or tmp_path,
-    )
+
+    def snapshot(repo: str, check_only: bool = False) -> Path:
+        snapshots.append((repo, check_only))
+        return tmp_path
+
+    monkeypatch.setattr(models, "snapshot", snapshot)
+    monkeypatch.setattr("voiced.models.cache.snapshot", snapshot)  # load_pinned's
     with pytest.raises(Loaded):
         KokoroEngine(pin.repo)._load_sync()
-    assert snapshots == [(pin.repo, True)]  # checked, never downloaded
+    assert snapshots == [(pin.repo, True), (pin.repo, True)]  # checked, never downloaded
     patterns = list(pin.patterns)
     assert asked == {"repo": pin.repo, "revision": pin.revision, "allow_patterns": patterns}
 

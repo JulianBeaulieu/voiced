@@ -34,7 +34,7 @@ unpacked wheel, and the watchdog checks settings with it); the download and
 the cache scans import ``huggingface_hub``.
 
 The package: ``catalogue`` (the data a new engine adds to), ``lookup``,
-``lockfile``, ``cache`` (snapshot, download, delete), ``pinning`` and
+``lockfile``, ``errors``, ``cache`` (snapshot, download, delete), ``pinning`` and
 ``commands`` (``python -m voiced.models``). Everything is importable from
 ``voiced.models``.
 """
@@ -43,6 +43,12 @@ from __future__ import annotations
 
 from voiced.models.cache import (
     BYTES_BAR as BYTES_BAR,
+)
+from voiced.models.cache import (
+    DEFAULT_HF_HOME as DEFAULT_HF_HOME,
+)
+from voiced.models.cache import (
+    DISK_HEADROOM as DISK_HEADROOM,
 )
 from voiced.models.cache import (
     REPORT_INTERVAL_S as REPORT_INTERVAL_S,
@@ -57,9 +63,6 @@ from voiced.models.cache import (
     CacheScan as CacheScan,
 )
 from voiced.models.cache import (
-    ModelNotDownloaded as ModelNotDownloaded,
-)
-from voiced.models.cache import (
     Write as Write,
 )
 from voiced.models.cache import (
@@ -72,19 +75,28 @@ from voiced.models.cache import (
     cached_revisions as cached_revisions,
 )
 from voiced.models.cache import (
+    check_disk as check_disk,
+)
+from voiced.models.cache import (
     delete_revisions as delete_revisions,
+)
+from voiced.models.cache import (
+    fetch as fetch,
 )
 from voiced.models.cache import (
     hub_dir as hub_dir,
 )
 from voiced.models.cache import (
-    hub_missing_model as hub_missing_model,
+    load_pinned as load_pinned,
 )
 from voiced.models.cache import (
     missing_files as missing_files,
 )
 from voiced.models.cache import (
     not_downloaded as not_downloaded,
+)
+from voiced.models.cache import (
+    remaining_bytes as remaining_bytes,
 )
 from voiced.models.cache import (
     repo_folder as repo_folder,
@@ -122,6 +134,21 @@ from voiced.models.commands import (
 from voiced.models.commands import (
     main as main,
 )
+from voiced.models.errors import (
+    ModelNotDownloaded as ModelNotDownloaded,
+)
+from voiced.models.errors import (
+    ModelsError as ModelsError,
+)
+from voiced.models.errors import (
+    causes as causes,
+)
+from voiced.models.errors import (
+    classify as classify,
+)
+from voiced.models.errors import (
+    hub_missing_model as hub_missing_model,
+)
 from voiced.models.lockfile import (
     LOCK_FILE as LOCK_FILE,
 )
@@ -133,6 +160,12 @@ from voiced.models.lockfile import (
 )
 from voiced.models.lockfile import (
     LockedFile as LockedFile,
+)
+from voiced.models.lockfile import (
+    Retired as Retired,
+)
+from voiced.models.lockfile import (
+    Source as Source,
 )
 from voiced.models.lockfile import (
     lock as lock,
@@ -153,6 +186,12 @@ from voiced.models.lockfile import (
     read_lock as read_lock,
 )
 from voiced.models.lockfile import (
+    read_retired as read_retired,
+)
+from voiced.models.lockfile import (
+    resolve as resolve,
+)
+from voiced.models.lockfile import (
     write_lock as write_lock,
 )
 from voiced.models.lookup import (
@@ -166,6 +205,9 @@ from voiced.models.lookup import (
 )
 from voiced.models.lookup import (
     find as find,
+)
+from voiced.models.lookup import (
+    is_shared as is_shared,
 )
 from voiced.models.lookup import (
     license_of as license_of,

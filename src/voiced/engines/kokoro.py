@@ -299,20 +299,13 @@ class KokoroEngine(SentenceTTSEngine):
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
 
-        from voiced.models import locked, snapshot
+        from voiced.models import load_pinned, snapshot
 
         # Both at the pinned revision, from the cache; never downloaded here.
         # load_model takes the repo id: mlx-audio tells a Kokoro model by
-        # its name, which a snapshot directory does not always carry. Its
-        # resolve of the same revision and patterns is a cache hit (the
-        # services run with HF_HUB_OFFLINE).
+        # its name, which a snapshot directory does not always carry.
         root = snapshot(self.model_id, check_only=True)
-        entry = locked(self.model_id)
-        model = load_model(
-            entry.repo if entry else self.model_id,
-            revision=entry.revision if entry else None,
-            allow_patterns=list(entry.patterns) if entry else None,
-        )
+        model = load_pinned(load_model, self.model_id)
         _install_yield_points()
         rate = int(model.sample_rate)
         if rate != TTS_SAMPLE_RATE:

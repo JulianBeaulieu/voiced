@@ -22,8 +22,8 @@ app does not: run the commands as `~/.voiced/bin/voiced`, or add
 | `voiced doctor --metal-probe` | Writes `~/.config/voiced/metal-probe.sh`, a script that installs a one-shot LaunchDaemon testing Metal from a real daemon context and removes it again, with its plist inside, and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
 | `voiced uninstall` | Prints the root step that unloads and removes the daemons, then lists what it would delete. `--yes` deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. `--remove-models` deletes the model revisions voiced pinned from the Hugging Face cache, through `huggingface_hub`, and says how many bytes that freed; it keeps other revisions and repositories in the cache, which other tools may use, and a configured model voiced does not pin. When another tool downloaded a model's `main` and `main` is the pinned commit, that is the same revision: the dry run says so before `--yes` deletes it. It refuses to delete anything while a daemon is still loaded. |
 | `voiced models list [--json]` | Every model voiced can download, by engine: licence, download size or size on disk, and state (in use, downloaded, not downloaded, update available, an old version cached). See [Models](#models). |
-| `voiced models download <repo> [--json-progress]` | Downloads a model at its pinned revision, with its engine's shared files (Phonon's voices). A repository voiced does not know is fetched whole at `main`, unpinned, with a notice. |
-| `voiced models delete <repo> [--previous] [--yes] [--json]` | Deletes a model's pinned revision (`--previous`: only its older pinned revisions) from the Hugging Face cache. Refuses the model the config uses and anything voiced does not pin; asks first without `--yes`. |
+| `voiced models download <model> [--json-progress]` | Downloads a model at its pinned revision, with its engine's shared files (Phonon's voices). A repository voiced does not know is fetched whole at `main`, unpinned, with a notice. |
+| `voiced models delete <model> [--previous] [--yes] [--json]` | Deletes a model's pinned revision (`--previous`: only its older pinned revisions) from the Hugging Face cache. Refuses the model the config uses and anything voiced does not pin; asks first without `--yes`. |
 | `voiced watchdog [--once]` | Runs the watchdog in the foreground; `--once` polls once and prints its decisions. |
 | `voiced serve stt\|tts` | Runs one service in the foreground. For development and for trying an engine before installing. |
 | `voiced config` | Prints the effective configuration as JSON. |
@@ -81,8 +81,11 @@ and pins each one in `voiced/models.lock.json` (the repository's commit,
 every file with its size and sha256, and the revisions earlier releases
 pinned).
 They live in the Hugging Face cache, `[install] hf_home` (default
-`~/.cache/huggingface/hub`), which other MLX tools share; files that several
-repositories have in common are stored once.
+`~/.cache/huggingface/hub`; voiced sets `HF_HOME` itself, so
+`XDG_CACHE_HOME` does not move it), which other MLX tools share; with
+`huggingface_hub` 2.x the file contents live once in a store for the whole
+cache (`hub/blobs/`), and each repository's folder links into it. A model
+downloaded while its service runs is loaded by `voiced restart <service>`.
 
 - `voiced install` downloads the configured models; `voiced models
   download` any other. The services never download: they run with
@@ -125,7 +128,7 @@ repositories have in common are stored once.
           "refs": ["main"], "in_use": true
         }
       ],
-      "shared": [{"id": "gradium/phonon-voices", "shared": true}]
+      "shared": [{"id": "gradium/phonon-voices", "shared": true, "...": "as in models"}]
     }
   ]
 }
@@ -137,14 +140,21 @@ are folders of one repository. `downloaded` means every locked file is in
 the snapshot at the pin;
 `previous` lists the older pinned revisions in the cache with their size;
 `refs` the branches pointing at the pin; `in_use` follows the config file.
-A plugin engine voiced does not catalogue is listed with no models.
+`shared` entries have the same fields as `models`. `downloaded` also checks
+each file's size against the lock, so a truncated file reads as missing.
+`on_disk_bytes` is the whole cached revision: models that are folders of
+one repository each show the same revision, while `total_bytes` counts it
+once. A plugin engine voiced does not catalogue is listed with no models.
 
-`voiced models download <repo> --json-progress` writes ADR 0018's events,
+`voiced models download <model> --json-progress` writes ADR 0018's events,
 one JSON object per line on stdout (human output goes to stderr): `hello`,
-then `download` (`model`, `bytes`, `total`) at most four times a second per
-repository, then `done`, or `error` with `code`, `message` and the `repo`,
-`revision` and `path` it was on. SIGTERM ends it with an `error`; the next
-download resumes the partial files. The codes:
+then `download` (`model`, the model's id; `bytes`; `total`, from the lock)
+at most four times a second per model, its shared models after it, then
+`done`, or `error` with `code`, `message` and the `repo` (the model's id),
+`revision` and `path` it was on. Exit 0 with `done`, 1 with `error`. SIGTERM
+(Cancel) ends it at once, with an `error` and exit 143, without waiting
+for the files in flight; the next download resumes the partial files. The
+codes:
 
 | `code` | Meaning |
 |---|---|
@@ -154,18 +164,20 @@ download resumes the partial files. The codes:
 | `network` | Hugging Face could not be reached. |
 | `disk` | Less free space than the bytes still to fetch plus 1 GB, checked first. |
 | `busy` | An install, update or uninstall holds the state directory. |
-| `failed` | Anything else; the message says what. |
+| `failed` | Anything else, a repository that does not exist included; the message says what. |
 
-`voiced models delete <repo> --yes --json` prints what it deleted, or an
-error (`code` `in_use` for the model the config uses, else `busy` or
-`failed`):
+`voiced models delete <model> --yes --json` (`--json` needs `--yes`) prints
+what it deleted, with exit 0; `deleted` is empty when nothing was cached.
+Any refusal or failure is `{"error": {"code": ..., "message": ...}}` with
+exit 1: `in_use` for the model the config uses (or one in the same
+download as it), else `busy` or `failed`.
 
 ```json
 {"model": "gradium/phonon-31m-en",
  "deleted": [{"repo": "gradium/phonon-31m-en", "revision": "8c64b55e...", "bytes": 65049306},
              {"repo": "gradium/phonon-voices", "revision": "da6c9ec0...", "bytes": 9510439}],
  "freed": 74559745,
- "notes": ["Phonon's shared files (gradium/phonon-voices) go with it."]}
+ "notes": ["Phonon's shared files (gradium/phonon-voices) are deleted with it."]}
 ```
 
 ## Installing from a checkout
@@ -278,6 +290,7 @@ each service with a `timeout_s` limit and applies these rules:
 | `starting` while the service's own uptime is below `startup_grace_s` | Nothing. The model is loading. |
 | `starting` beyond `startup_grace_s` | Restart: the load is hung. |
 | `degraded` | Start a timer; restart once it exceeds `degraded_window_s`. |
+| `missing_model` | Nothing; logged once per process. A restart cannot download the model. |
 | Queue not empty for `stall_after_s` with no inference completing | One failure: stalled. |
 | Optional probe request times out after `probe_timeout_s` | One failure: stalled. |
 | Connection refused or timed out after the grace period (or after the process has answered with its model loaded), or a non-health answer | One failure. |
@@ -349,7 +362,7 @@ every 10 s, and a `settings` event follows any change to the config file.
 
 | Operation | Arguments | Result |
 |---|---|---|
-| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
+| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
 | `engines.list` | | installed engines with their `label`, models, languages, voices, `voice_labels` and `voice_languages`, without loading any |
@@ -370,7 +383,10 @@ voice, if the old one does not exist there). Any registered engine can be
 selected; `voiced install` installs the extras they need. A file holding an
 API key is made readable by your user only. Invalid values are refused with
 `invalid_setting` and the field name, and the file is left as it was.
-Errors are `not_installed`, `invalid_setting`, `unknown_op`, `bad_request`,
+A change of engine or model to a catalogued model that is not downloaded is
+refused with `model_not_downloaded`, with `field` and `model`, and a message
+naming the `voiced models download` command. Errors are `not_installed`,
+`invalid_setting`, `model_not_downloaded`, `unknown_op`, `bad_request`,
 `service_unavailable` and `internal`.
 
 `[server] browser_settings = true` adds the same settings as a form on each

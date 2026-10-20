@@ -36,8 +36,9 @@ from typing import Any, Literal
 
 from voiced.audio import float32_to_pcm16
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
+from voiced.engines.registry import ModelRefused
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
-from voiced.models import CATALOGUE, default_model
+from voiced.models import default_model, engine
 
 log = logging.getLogger(__name__)
 
@@ -50,10 +51,12 @@ QUANT = "q8"
 THREADS = 4
 """``ptts``'s CPU thread pool. Its default is every core, efficiency cores
 included, beside the STT's own CPU work; ADR 0021 has the measurement."""
-_PHONON = next(e for e in CATALOGUE if e.name == "phonon")
+_PHONON = engine("phonon")
+if _PHONON is None:  # pragma: no cover - the catalogue ships with the engine
+    raise ImportError("voiced.models.CATALOGUE has no phonon engine")
 VOICES_REPO = _PHONON.shared[0].id
-MODELS_40M = tuple(m.id for m in _PHONON.models if "phonon-40m" in m.id)
-"""The 40M checkpoints in the catalogue; the engine refuses any other."""
+MODELS = tuple(m.id for m in _PHONON.models)
+"""The Phonon models in the catalogue; the engine refuses any other of Gradium's."""
 
 DEFAULT_VOICE = Voice(id="default", name="Default", language="en", gender=None)
 
@@ -122,10 +125,10 @@ class PhononEngine(SentenceTTSEngine):
 
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
-        if "phonon-40m" in self.model_id and self.model_id not in MODELS_40M:
-            raise ValueError(
-                f"{self.model_id} is not in voiced's model catalogue; of the Phonon 40M "
-                f"models it lists {', '.join(MODELS_40M)}"
+        if self.model_id.startswith("gradium/phonon-") and self.model_id not in MODELS:
+            raise ModelRefused(
+                f"{self.model_id} is not in voiced's model catalogue; its Phonon models "
+                f"are {', '.join(MODELS)}"
             )
 
     def _load_sync(self) -> None:

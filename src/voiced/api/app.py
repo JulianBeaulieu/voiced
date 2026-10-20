@@ -37,6 +37,7 @@ from voiced.api.context import (
 from voiced.api.foreign_models import foreign_model_map
 from voiced.config import Settings
 from voiced.context import ServiceContext
+from voiced.control.protocol import MODEL_NOT_DOWNLOADED
 from voiced.engines import registry
 from voiced.engines.base import EngineError, STTEngine, TTSEngine
 from voiced.health import HealthResponse, HealthState
@@ -57,9 +58,6 @@ _HTTP: dict[Outcome, tuple[int, str]] = {
     Outcome.CLIENT_ERROR: (status.HTTP_400_BAD_REQUEST, "invalid_request_error"),
     Outcome.FAILURE: (status.HTTP_500_INTERNAL_SERVER_ERROR, "server_error"),
 }
-
-MODEL_NOT_DOWNLOADED = "model_not_downloaded"
-"""The error type for work sent while the model is not downloaded."""
 
 exit_process: Callable[[int], NoReturn] = os._exit
 """Ends the process without waiting for threads. Replaced in tests."""

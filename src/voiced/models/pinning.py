@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from voiced.models.catalogue import Model
-from voiced.models.lockfile import LOCK_FILE, Locked, LockedFile, read_lock, write_lock
+from voiced.models.lockfile import (
+    LOCK_FILE,
+    Locked,
+    LockedFile,
+    read_lock,
+    read_retired,
+    write_lock,
+)
 from voiced.models.lookup import catalogued
 
 # Pinning (a maintainer's command) -----------------------------------------
@@ -93,9 +100,11 @@ def stale(lock: dict[str, Locked]) -> list[str]:
 
 def pin(models: Iterable[str], revision: str | None = None, path: Path = LOCK_FILE) -> list[str]:
     """Update the lock at ``path`` for ``models`` (none: every stale one,
-    and models the catalogue dropped are removed). Returns what changed."""
+    and models the catalogue dropped move to ``retired`` with their
+    revisions). Returns what changed."""
     named = list(models)
     current = read_lock(path)
+    retired = read_retired(path)
     known = {m.id: m for m in catalogued()}
     targets = named or stale(current)
     unknown = [m for m in targets if m not in known]
@@ -107,7 +116,8 @@ def pin(models: Iterable[str], revision: str | None = None, path: Path = LOCK_FI
         changed.append(model_id)
     if not named:
         for model_id in sorted(set(current) - set(known)):
-            del current[model_id]
+            gone = current.pop(model_id)
+            retired |= {(gone.repo, rev) for rev in gone.revisions}
             changed.append(model_id)
-    write_lock(current, path)
+    write_lock(current, path, retired)
     return changed

@@ -16,36 +16,28 @@ import argparse
 import contextlib
 import functools
 import json
-import shutil
+import os
+import signal
 import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from voiced import models
 from voiced.config import Settings
+from voiced.launchd.progress import ErrorCode, Progress
 from voiced.layout import install_lock
-from voiced.models import CachedRevision, Locked, Model, size_text
+from voiced.models import CachedRevision, Locked, Model, ModelsError, size_text
 
 Echo = Callable[[str], None]
-
-DISK_HEADROOM = 10**9
-"""Free space a download leaves: the bytes still to fetch plus 1 GB."""
 
 BUSY = "voiced is installing or updating; try again when it ends"
 REF_NOTE = (
     "This model is also cached as {refs}, perhaps by another app; "
     "that app downloads it again if it needs it."
 )
-
-
-class ModelsError(Exception):
-    """A refusal with a ``code`` for ``--json-progress`` and ``--json``."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
 
 
 def add_models_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -95,7 +87,7 @@ def hub(settings: Settings) -> Path:
 
 
 def in_use(settings: Settings) -> set[str]:
-    """The configured models and the shared repositories they need."""
+    """The configured models and the shared models they need."""
     return {r for m in (settings.stt.model, settings.tts.model) for r in models.required(m)}
 
 
@@ -223,100 +215,62 @@ def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
 
 # download ------------------------------------------------------------------
 
-
-def remaining_bytes(hub_path: Path, model_ids: list[str]) -> int:
-    """What is still to fetch of ``model_ids`` (0 for an unpinned one, whose size is unknown)."""
-    total = 0
-    for model_id in model_ids:
-        entry = models.locked(model_id)
-        if entry is not None:
-            total += sum(entry.files[name].bytes for name in models.missing_files(hub_path, entry))
-    return total
+CANCELLED = "terminated (SIGTERM); downloading again resumes it"
 
 
-def check_disk(hub_path: Path, needed: int) -> None:
-    existing = next(p for p in (hub_path, *hub_path.parents) if p.exists())
-    free = shutil.disk_usage(existing).free
-    if free < needed + DISK_HEADROOM:
-        raise ModelsError(
-            "disk",
-            f"not enough disk space in {hub_path}: the download needs {size_text(needed)} "
-            f"and 1 GB to spare, {size_text(free)} is free",
-        )
+@contextlib.contextmanager
+def cancel_on_sigterm(progress: Progress, echo: Echo) -> Iterator[None]:
+    """SIGTERM (the app's Cancel) ends the process at once, with an
+    ``error`` event: raising in the main thread would wait for every file the
+    download threads have in flight, a 2.5 GB one included. The partial
+    files stay and the next download resumes them."""
 
+    def handler(signum: int, frame: FrameType | None) -> None:
+        progress.error(CANCELLED)
+        echo(f"download {CANCELLED}")
+        sys.stderr.flush()
+        os._exit(128 + signal.SIGTERM)
 
-def error_code(exc: BaseException) -> str:
-    """The ``code`` of an ``error`` event for what ended a download."""
+    previous = signal.signal(signal.SIGTERM, handler)
     try:
-        from huggingface_hub import get_token
-        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, LocalEntryNotFoundError
-    except ImportError:  # pragma: no cover - the environment always has it
-        return "failed"
-    current: BaseException | None = exc
-    while current is not None:
-        if isinstance(current, ModelsError):
-            return current.code
-        if isinstance(current, HfHubHTTPError) and current.response is not None:
-            status = current.response.status_code
-            if status == 401:
-                return "token_invalid" if get_token() else "token_missing"
-            if status == 403 and isinstance(current, GatedRepoError):
-                return "gated_terms"
-        if isinstance(current, LocalEntryNotFoundError | ConnectionError | TimeoutError):
-            return "network"
-        if type(current).__module__.startswith(("httpx", "httpcore", "requests")):
-            return "network"
-        if isinstance(current, OSError) and current.errno == 28:  # ENOSPC
-            return "disk"
-        current = current.__cause__ or current.__context__
-    return "failed"
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def cmd_download(model_id: str, settings: Settings, echo: Echo, *, json_progress: bool) -> int:
     """With ``--json-progress`` stdout carries only ADR 0018's events: ``hello``,
-    ``download`` per byte report, then ``done`` or ``error`` with a ``code``.
-    SIGTERM (the app's Cancel) ends it with an ``error``; the partly
-    downloaded files resume it next time."""
-    from voiced.launchd.progress import Progress, exit_on_sigterm
-
+    ``download`` per byte report, then ``done`` or ``error`` with a ``code``."""
     progress = Progress(sys.stdout if json_progress else None)
     if json_progress:
         echo = functools.partial(print, file=sys.stderr)
-    write: Callable[[str], None] | None = None
+    write = None
     if json_progress:
 
-        def write(line: str) -> None:
+        def write(line: str) -> None:  # the byte reports become download events
             progress.child_line(line)
 
-    with exit_on_sigterm():
-        progress.hello()
+    progress.hello()
+    with cancel_on_sigterm(progress, echo):
         try:
             with models_lock(settings):
-                if models.find(model_id) is None:
-                    if model_id in {m.id for m in models.catalogued()}:
-                        raise ModelsError(
-                            "failed",
-                            f"{model_id} comes with its engine's models; download one of them",
-                        )
+                if models.find(model_id) is None and not models.is_shared(model_id):
                     echo(
-                        f"{model_id} is not in voiced's catalogue: downloading it whole at `main`, "
-                        "unpinned; voiced never deletes it"
+                        f"{model_id} is not in voiced's catalogue: downloading it whole at "
+                        "`main`, unpinned; voiced never deletes it"
                     )
-                needed = models.required(model_id)
-                hub_path = hub(settings)
-                check_disk(hub_path, remaining_bytes(hub_path, needed))
-                for name in needed:
-                    echo(f"downloading {name} into {hub_path}")
-                    models.snapshot(name, write=write)
-            echo(f"downloaded {model_id}")
-            progress.done()
-        except BaseException as exc:
-            if isinstance(exc, KeyboardInterrupt):
-                raise
-            message = str(exc) or type(exc).__name__
-            progress.error(message, error_code(exc))
+                echo(f"downloading {model_id} into {models.cache_dir()}")
+                models.fetch(model_id, write)
+        except KeyboardInterrupt:
+            progress.error("interrupted")
+            raise
+        except Exception as exc:
+            code, message = models.classify(exc, models.resolve(model_id).repo)
+            progress.error(message, code)
             echo(f"download failed: {message}")
             return 1
+    echo(f"downloaded {model_id}")
+    progress.done()
     return 0
 
 
@@ -337,21 +291,26 @@ def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletio
     if found is None:
         why = (
             "it is deleted with its engine's last model"
-            if model_id in {m.id for m in models.catalogued()}
+            if models.is_shared(model_id)
             else "voiced deletes only the models it pins"
         )
         raise ModelsError("failed", f"{model_id} is not a model voiced can delete: {why}")
     engine, _ = found
-    if not previous and model_id in in_use(settings):
+    used = in_use(settings)
+    if not previous and model_id in used:
         raise ModelsError("in_use", f"{model_id} is in use. Choose another model first.")
     hub_path = hub(settings)
     lock = models.lock()
     entry = lock[model_id]
-    going = {model_id: entry.previous if previous else (entry.revision,)}
+    going: dict[str, tuple[str, ...]] = {
+        model_id: entry.previous if previous else (entry.revision,)
+    }
     others = [m.id for m in engine.models if m.id != model_id]
-    if not previous and not any(_present(hub_path, lock[o], r) for o in others for r in _locked(o)):
-        going |= {s.id: _locked(s.id) for s in engine.shared}
-    _refuse_shared_revisions(hub_path, going)
+    last = not any(_present(hub_path, lock[o], r) for o in others for r in lock[o].revisions)
+    if not previous and last:
+        going |= {s.id: lock[s.id].revisions for s in engine.shared}
+    shared = sorted(m for m in going if m != model_id and _present_any(hub_path, lock[m], going[m]))
+    sharers = _same_download(hub_path, going, used)
     wanted = {(lock[m].repo, r) for m, revisions in going.items() for r in revisions}
     scan = models.cached_revisions(hub_path, {repo for repo, _ in wanted})
     targets = [c for c in scan.revisions if (c.repo, c.revision) in wanted]
@@ -359,46 +318,56 @@ def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletio
     refs = sorted({ref for c in targets if c.repo == entry.repo for ref in c.refs})
     if refs:
         notes.append(REF_NOTE.format(refs=", ".join(f"`{r}`" for r in refs)))
-    shared = sorted(
-        m for m in going if m != model_id and any(_present(hub_path, lock[m], r) for r in going[m])
-    )
     if shared:
         label = engine.name[:1].upper() + engine.name[1:]
-        notes.append(f"{label}'s shared files ({', '.join(shared)}) go with it.")
+        notes.append(f"{label}'s shared files ({', '.join(shared)}) are deleted with it.")
+    if sharers:
+        notes.append(
+            f"{', '.join(sharers)} {'is' if len(sharers) == 1 else 'are'} in the same "
+            "download and deleted with it."
+        )
     freed = models.delete_revisions(hub_path, targets, dry_run=True) if targets else 0
     return Deletion(model_id, targets, freed, entry.bytes, notes)
 
 
-def _refuse_shared_revisions(hub_path: Path, going: dict[str, tuple[str, ...]]) -> None:
-    """``huggingface_hub`` deletes a revision whole, so a revision that
-    another downloaded model takes files from (a folder of the same
-    repository) is not deleted from under it."""
+def _same_download(hub_path: Path, going: dict[str, tuple[str, ...]], used: set[str]) -> list[str]:
+    """``huggingface_hub`` deletes a revision whole, so other models that
+    are folders of a repository being deleted, at the same revision, go too
+    (added to ``going``); refused when one of them is in use."""
     lock = models.lock()
-    for model_id, revisions in going.items():
-        repo = lock[model_id].repo
-        for other in lock.values():
-            if other.id in going or other.repo != repo:
-                continue
-            for revision in revisions:
-                if _present(hub_path, other, revision):
+    added: list[str] = []
+    changed = True
+    while changed:
+        changed = False
+        for model_id, revisions in list(going.items()):
+            repo = lock[model_id].repo
+            for other in lock.values():
+                if other.id in going or other.repo != repo:
+                    continue
+                with_it = tuple(r for r in revisions if _present(hub_path, other, r))
+                if not with_it:
+                    continue
+                if other.id in used:
                     raise ModelsError(
-                        "failed",
-                        f"{model_id} shares {repo} at {revision[:12]} with {other.id}, which is "
-                        f"downloaded; voiced deletes a revision whole, so delete {other.id} too "
-                        "or keep both",
+                        "in_use",
+                        f"{model_id} shares {repo} at {with_it[0][:12]} with {other.id}, which "
+                        "is in use; voiced deletes a revision whole. Choose another model first.",
                     )
+                going[other.id] = with_it
+                added.append(other.id)
+                changed = True
+    return added
 
 
 def _present(hub_path: Path, entry: Locked, revision: str) -> bool:
     """Any of ``entry``'s locked files cached at ``revision``."""
-    return revision in (entry.revision, *entry.previous) and len(
+    return revision in entry.revisions and len(
         models.missing_files(hub_path, entry, revision)
     ) < len(entry.files)
 
 
-def _locked(model_id: str) -> tuple[str, ...]:
-    entry = models.lock()[model_id]
-    return (entry.revision, *entry.previous)
+def _present_any(hub_path: Path, entry: Locked, revisions: tuple[str, ...]) -> bool:
+    return any(_present(hub_path, entry, r) for r in revisions)
 
 
 def cmd_delete(
@@ -407,40 +376,56 @@ def cmd_delete(
     echo: Echo,
     ask: Callable[[str], str] = input,
 ) -> int:
+    """Exit 0 when done or there was nothing to delete, 1 when refused,
+    declined or failed; with ``--json`` every failure is
+    ``{"error": {"code", "message"}}`` on stdout."""
     try:
         with models_lock(settings):
-            plan = plan_delete(args.model, settings, previous=args.previous)
-            if not plan.revisions:
-                what = "older versions" if args.previous else "download"
-                return _done(
-                    args, echo, plan, f"nothing to delete: no {what} of {plan.model} cached"
-                )
-            what = "the old versions of " if args.previous else ""
-            question = (
-                f"Delete {what}{plan.model}? This frees {size_text(plan.freed)}. "
-                f"Downloading it again takes {size_text(plan.download_bytes)}."
-            )
-            if not args.yes:
-                if args.json:
-                    raise ModelsError("failed", "pass --yes with --json")
-                for line in (question, *plan.notes):
-                    echo(line)
-                try:
-                    answer = ask("Delete? [y/N] ")
-                except EOFError:
-                    answer = ""
-                if answer.strip().lower() not in ("y", "yes"):
-                    echo("nothing deleted")
-                    return 1
-            freed = models.delete_revisions(hub(settings), plan.revisions)
-            plan = Deletion(plan.model, plan.revisions, freed, plan.download_bytes, plan.notes)
-            return _done(args, echo, plan, f"deleted {plan.model}, freed {size_text(freed)}")
+            return _delete(args, settings, echo, ask)
+    except KeyboardInterrupt:
+        _refused(args, echo, "failed", "interrupted")
+        raise
     except ModelsError as exc:
+        return _refused(args, echo, exc.code, exc.message)
+    except Exception as exc:
+        return _refused(args, echo, "failed", str(exc) or type(exc).__name__)
+
+
+def _refused(args: argparse.Namespace, echo: Echo, code: ErrorCode, message: str) -> int:
+    if args.json:
+        echo(json.dumps({"error": {"code": code, "message": message}}))
+    else:
+        echo(f"voiced models delete: {message}")
+    return 1
+
+
+def _delete(
+    args: argparse.Namespace, settings: Settings, echo: Echo, ask: Callable[[str], str]
+) -> int:
+    plan = plan_delete(args.model, settings, previous=args.previous)
+    if not plan.revisions:
+        what = "older versions" if args.previous else "download"
+        return _done(args, echo, plan, f"nothing to delete: no {what} of {plan.model} cached")
+    what = "the old versions of " if args.previous else ""
+    question = (
+        f"Delete {what}{plan.model}? This frees {size_text(plan.freed)}. "
+        f"Downloading it again takes {size_text(plan.download_bytes)}."
+    )
+    if not args.yes:
         if args.json:
-            echo(json.dumps({"error": {"code": exc.code, "message": str(exc)}}))
-        else:
-            echo(f"voiced models delete: {exc}")
-        return 1
+            raise ModelsError("failed", "pass --yes with --json")
+        for line in (question, *plan.notes):
+            echo(line)
+        try:
+            answer = ask("Delete? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            echo("nothing deleted")
+            return 1
+    freed = models.delete_revisions(hub(settings), plan.revisions)
+    plan = Deletion(plan.model, plan.revisions, freed, plan.download_bytes, plan.notes)
+    return _done(args, echo, plan, f"deleted {plan.model}, freed {size_text(freed)}")
 
 
 def _done(args: argparse.Namespace, echo: Echo, plan: Deletion, text: str) -> int:
@@ -448,11 +433,8 @@ def _done(args: argparse.Namespace, echo: Echo, plan: Deletion, text: str) -> in
         deleted = [
             {"repo": c.repo, "revision": c.revision, "bytes": c.bytes} for c in plan.revisions
         ]
-        echo(
-            json.dumps(
-                {"model": plan.model, "deleted": deleted, "freed": plan.freed, "notes": plan.notes}
-            )
-        )
+        result = {"model": plan.model, "deleted": deleted, "freed": plan.freed, "notes": plan.notes}
+        echo(json.dumps(result))
     else:
         if args.yes:
             for note in plan.notes:

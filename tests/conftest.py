@@ -46,9 +46,7 @@ def model_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mo
 def models_downloaded(model_cache: Path) -> Path:
     """Every catalogued repository complete at its pin in :func:`model_cache`."""
     for entry in models.lock().values():
-        hf.add_revision(
-            model_cache, entry.repo, entry.revision, {n: n.encode() for n in entry.files}
-        )
+        hf.add_locked(model_cache, entry)
     return model_cache
 
 

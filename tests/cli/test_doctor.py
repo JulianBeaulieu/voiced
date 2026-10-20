@@ -539,7 +539,7 @@ def test_each_services_model_is_downloaded_or_says_what_fetches_it(
     from voiced import models
 
     entry = models.lock()[settings.stt.model]
-    hf.add_revision(model_cache, entry.repo, entry.revision, {n: b"x" for n in entry.files})
+    hf.add_locked(model_cache, entry)
     settings.tts.model = "someone/own-voice"
     stt, tts = doctor.check_models(settings)
     assert (stt.name, stt.result) == ("STT model", "pass")

@@ -24,7 +24,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from voiced.models import DEFAULT_ENGINES, default_model
+from voiced.models import DEFAULT_ENGINES, DEFAULT_HF_HOME, default_model
 
 ENV_PREFIX = "VOICED_"
 ENV_CONFIG_PATH = "VOICED_CONFIG"
@@ -291,7 +291,10 @@ def apply_engine_environment(settings: Settings) -> list[str]:
     for the engines, ``huggingface_hub`` (which reads ``HF_HOME`` on import)
     and every child: one rule for the services, ``doctor`` and the
     installer's model download, whatever the shell exported. The
-    :data:`CLEARED_HF_ENV` variables are removed.
+    :data:`CLEARED_HF_ENV` variables are removed, and without ``[install]
+    hf_home`` ``HF_HOME`` is Hugging Face's default home, so a shell's
+    ``XDG_CACHE_HOME`` cannot move downloads away from where voiced and the
+    services look (``voiced.models.hub_dir``).
 
     Returns a notice for each ``VOICED_ESPEAK_*`` the shell set otherwise
     (voiced's own variables; ``HF_HOME`` is often exported for other tools).
@@ -305,6 +308,7 @@ def apply_engine_environment(settings: Settings) -> list[str]:
     for key in (*ENGINE_ENV, *CLEARED_HF_ENV):
         os.environ.pop(key, None)
     os.environ.update(wanted)
+    os.environ.setdefault(ENV_HF_HOME, str(DEFAULT_HF_HOME))
     return notices
 
 

@@ -453,7 +453,8 @@ can reach a loopback port (DNS rebinding). It reads from
 which take and return the same settings as `settings.get` and
 `settings.set` on the local control channel
 ([operations](operations.md#control-channel)). Changes are written to the
-config file and apply when the service restarts.
+config file and apply when the service restarts. A change to a model that is
+not downloaded is refused with 409 `model_not_downloaded`.
 
 `/metrics.json` is the data behind it:
 

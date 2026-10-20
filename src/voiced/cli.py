@@ -136,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(settings: Settings, service: str) -> int:
     import uvicorn
 
+    from voiced.engines.registry import ModelRefused, UnknownEngine
+
     os.environ[HUB_OFFLINE] = "1"  # before huggingface_hub is imported, which reads it once
     try:
         http_socket = bind_service_ports(settings, service)
@@ -145,7 +147,7 @@ def cmd_serve(settings: Settings, service: str) -> int:
     with http_socket:
         try:
             app = build_service_app(settings, service)
-        except (LookupError, ValueError) as exc:  # UnknownEngine, a model the engine refuses
+        except (UnknownEngine, ModelRefused) as exc:
             log.error("%s: %s", service, exc)
             print(f"voiced serve {service}: {exc}", file=sys.stderr)
             return ENGINE_REFUSED_EXIT

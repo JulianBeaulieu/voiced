@@ -1,17 +1,23 @@
-"""``models.lock.json``: each model's pinned revision, files, sizes and hashes."""
+"""``models.lock.json``: each model's pinned revision, files, sizes and hashes.
+
+The hashes are not checked when loading (``huggingface_hub`` checks sizes,
+and so does :func:`voiced.models.missing_files`); they are there for a
+mirror that serves the files outside the Hub (ADR 0022, "Later").
+``retired`` keeps the revisions of models the catalogue dropped, so
+uninstall still deletes what an earlier release downloaded.
+"""
 
 from __future__ import annotations
 
 import functools
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from voiced.models.catalogue import DEFAULT_ENGINES
 from voiced.models.lookup import default_model, required
-
-# The lock ----------------------------------------------------------------
 
 LOCK_FILE = Path(__file__).with_name("models.lock.json")
 PIN_COMMAND = "python -m voiced.models pin"
@@ -38,6 +44,11 @@ class Locked:
     def bytes(self) -> int:
         return sum(f.bytes for f in self.files.values())
 
+    @property
+    def revisions(self) -> tuple[str, ...]:
+        """The pin, then the earlier ones: every revision voiced may delete."""
+        return (self.revision, *self.previous)
+
     def to_json(self) -> dict[str, Any]:
         return {
             "repo": self.repo,
@@ -51,8 +62,18 @@ class Locked:
         }
 
 
+Retired = set[tuple[str, str]]
+"""``(repo, revision)`` of models no longer in the catalogue."""
+
+
+def _read(path: Path) -> dict[str, Any]:
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
+
+
 def read_lock(path: Path = LOCK_FILE) -> dict[str, Locked]:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    """The lock at ``path``; a missing file is an error (``FileNotFoundError``),
+    never an empty lock that would load every model unpinned."""
     return {
         model_id: Locked(
             model_id,
@@ -62,15 +83,23 @@ def read_lock(path: Path = LOCK_FILE) -> dict[str, Locked]:
             {name: LockedFile(f["bytes"], f["sha256"]) for name, f in entry["files"].items()},
             tuple(entry.get("previous", ())),
         )
-        for model_id, entry in data.get("models", {}).items()
+        for model_id, entry in _read(path)["models"].items()
     }
 
 
-def write_lock(lock: dict[str, Locked], path: Path = LOCK_FILE) -> None:
-    data = {
-        "comment": f"Written by `{PIN_COMMAND}`; see voiced/models.py.",
+def read_retired(path: Path = LOCK_FILE) -> Retired:
+    return {(r["repo"], r["revision"]) for r in _read(path).get("retired", [])}
+
+
+def write_lock(
+    lock: dict[str, Locked], path: Path = LOCK_FILE, retired: Iterable[tuple[str, str]] = ()
+) -> None:
+    data: dict[str, Any] = {
+        "comment": f"Written by `{PIN_COMMAND}`; see voiced/models/catalogue.py.",
         "models": {model_id: lock[model_id].to_json() for model_id in sorted(lock)},
     }
+    if retired:
+        data["retired"] = [{"repo": r, "revision": rev} for r, rev in sorted(set(retired))]
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
@@ -91,9 +120,29 @@ def pinned_revision(model_id: str) -> str | None:
 
 
 def pinned_revisions() -> set[tuple[str, str]]:
-    """Every ``(repo, revision)`` voiced pins or pinned, which is what
-    voiced may delete from the cache."""
-    return {(e.repo, rev) for e in lock().values() for rev in (e.revision, *e.previous)}
+    """Every ``(repo, revision)`` voiced pins or pinned, retired models'
+    included, which is what voiced may delete from the cache."""
+    pins = {(e.repo, rev) for e in lock().values() for rev in e.revisions}
+    return pins | read_retired()
+
+
+@dataclass(frozen=True)
+class Source:
+    """Where a model's files come from: its repository and, when pinned,
+    the commit and the patterns; ``None`` for a model outside the catalogue,
+    which is a repository fetched whole at ``main``."""
+
+    repo: str
+    revision: str | None
+    patterns: list[str] | None
+    entry: Locked | None
+
+
+def resolve(model_id: str) -> Source:
+    entry = locked(model_id)
+    if entry is None:
+        return Source(model_id, None, None, None)
+    return Source(entry.repo, entry.revision, list(entry.patterns), entry)
 
 
 def manifest() -> dict[str, Any]:

@@ -133,17 +133,11 @@ def _load_model(model_id: str) -> Any:
     from mlx_audio.lm.sample_utils import make_sampler
     from mlx_audio.tts.utils import load_model
 
-    from voiced.models import locked, snapshot
+    from voiced.models import load_pinned
 
     # At the pinned revision, from the cache; never downloaded here. As for
-    # Kokoro, mlx-audio is given the repo id, and its resolve is a cache hit.
-    snapshot(model_id, check_only=True)
-    entry = locked(model_id)
-    model = load_model(
-        entry.repo if entry else model_id,
-        revision=entry.revision if entry else None,
-        allow_patterns=list(entry.patterns) if entry else None,
-    )
+    # Kokoro, mlx-audio is given the repo id.
+    model = load_pinned(load_model, model_id)
 
     def stream_generate(
         input_ids: Any,

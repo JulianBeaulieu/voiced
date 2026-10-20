@@ -38,6 +38,12 @@ _local_stt: dict[str, type[STTEngine]] = {}
 _local_tts: dict[str, type[TTSEngine]] = {}
 
 
+class ModelRefused(ValueError):
+    """An engine does not run the model it was given (one outside the
+    catalogue that it knows will not work). ``voiced serve`` says so in one
+    line."""
+
+
 class UnknownEngine(LookupError):
     def __init__(self, kind: str, name: str, available: list[str]) -> None:
         choices = ", ".join(sorted(available)) or "none installed"
@@ -94,8 +100,8 @@ def register_tts_engine(name: str, cls: type[TTSEngine]) -> None:
 
 def create_stt_engine(name: str, model: str) -> STTEngine:
     """An unloaded ``name`` engine for ``model`` (:func:`with_license`).
-    Raises :class:`UnknownEngine`, and whatever the engine raises for a
-    model it refuses (``ValueError``)."""
+    Raises :class:`UnknownEngine`, and :class:`ModelRefused` for a model
+    the engine does not run."""
     return with_license(get_stt_engine(name)(model))
 
 
