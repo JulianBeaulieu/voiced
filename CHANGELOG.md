@@ -11,11 +11,12 @@ uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Installs from the cask or the DMG no longer need Homebrew's espeak-ng.
-  On a Mac without it, which was every Mac set up only with the menu bar
-  app, 0.1.0's text-to-speech failed to start with `EspeakNotFound` ("no
-  espeak-ng library found"). voiced now uses the espeak-ng that comes with
-  its own environment, and Homebrew's only if that one does not work.
-  `voiced doctor` names the copy it will use.
+  0.1.0's text-to-speech failed to start with `EspeakNotFound` ("no
+  espeak-ng library found") unless Homebrew's espeak-ng happened to be
+  installed, because the cask and the DMG do not install it. voiced now
+  uses the espeak-ng that comes with its own environment, and Homebrew's
+  only if that one does not work. `voiced doctor` names the copy it will
+  use.
 - `GET /openapi.json` on the TTS service no longer returns 500, so `/docs`
   shows the API.
 - Two installs within the same second, by `voiced install --source` or the
