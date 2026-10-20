@@ -15,7 +15,7 @@ for local speech services.
 
 ![A terminal sends a speech request to voiced, transcribes a WAV clip and checks both services' health](docs/demo.gif)
 
-The recording's timings are curl fetching a WAV, slower than the streamed benchmark (96 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
+The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
@@ -303,8 +303,9 @@ default_voice = "default"
 
 Then run `~/.voiced/bin/voiced install`, which downloads the model (from
 the service environment, so nothing is rebuilt), and `voiced restart all`.
-Know its limits before you switch. Its first audio takes about 150 to
-220 ms, against Kokoro's 106 ms. It has no rate control, so `speed` is
+Know its limits before you switch. Its first audio varies more than
+Kokoro's from run to run (it samples its tokens); the current numbers are in
+[docs/benchmarks.md](docs/benchmarks.md). It has no rate control, so `speed` is
 accepted and ignored. It has one voice, `default`. It sometimes runs on past
 the end of a sentence; voiced cuts each sentence at a length bound with a
 short fade and logs `soprano: runaway generation`, which can clip the last
@@ -343,70 +344,38 @@ The details are in [ADR 0021](docs/decisions/0021-tts-phonon.md).
 
 ## Benchmarks
 
-Apple M1 Max with 64 GB, macOS 15.7, warm model, local request, each engine
-alone in its process. The end-to-end table further down adds a Mac Studio.
-"First audio" is the time to the first PCM chunk.
+Every engine and model is measured the same way, one command each, and
+rated 1 to 5 for quality and speed:
+[docs/benchmarks.md](docs/benchmarks.md) has every number, the machine and
+commit behind it, and how to rerun it
+([ADR 0024](docs/decisions/0024-engine-benchmarks.md)). On an Apple M1 Max
+with 64 GB, each service alone, 2026-10-21:
 
-| Metric | Measured | Source |
-|---|---|---|
-| Kokoro first audio, multi-sentence text | 106 ms median | Kokoro engine, 2026-10-14 |
-| Kokoro real-time factor | 0.046 | Kokoro engine, 2026-10-14 |
-| Kokoro load including warm-up | 1.9 s | Kokoro engine, 2026-10-14 |
-| Kokoro memory: maximum RSS, MLX active | 469 MB, 326 MB | Kokoro engine, 2026-10-14 |
-| Soprano first audio | 156 to 223 ms median | Soprano engine, 2026-10-14 |
-| Soprano resident memory | 392 MB | Soprano engine, 2026-10-14 |
-| Parakeet batch, 9.4 s clip | 163 ms | Parakeet engine, 2026-10-14 |
-| Parakeet streaming finalize after the 200 ms silence window | about 1 ms median, under 150 ms worst | Parakeet engine, 2026-10-14 |
-| Parakeet first partial after the first word | about 0.7 s | Parakeet engine, 2026-10-14 |
-| Parakeet load including warm-up, warm disk cache | 1.2 s | Parakeet engine, 2026-10-14 |
-| Parakeet memory: after load, serving peak, load peak | 1.28 GB, 2.46 GB, 3.6 to 4.1 GB | Parakeet engine, 2026-10-14 |
+- **Parakeet** (speech to text, default): 2.0% word error rate on 24
+  LibriSpeech clips, batch at 0.023 of real time (about 230 ms for 10 s of
+  audio); streaming finalize 6 ms worst after the endpointer's 200 ms of
+  silence, 115 ms median and 129 ms worst for a push-to-talk client that
+  stops at the last word, which misses the project's 50 ms median target
+  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). 1.52 GB
+  footprint; MLX peaks at 3.4 GB once while loading.
+- **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
+  worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
+  0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.
 
-Parakeet's figures are MLX allocations; its load peak happens once, while
-the fp32 weights are cast to bf16, and is over the 3 GB the two services aim
-to stay under together while serving. Known limits of streaming
-transcription: partial transcripts trail the speaker by about 0.7 s, and a
-pause of about one second inside an utterance can repeat a short word ("set
-the the thermostat").
-Batch transcription is not affected. The measurements are in
-[ADR 0008](docs/decisions/0008-stt-engine-parakeet.md).
+Known limits of streaming transcription: partial transcripts trail the
+speaker by about 0.7 s, and a pause of about one second inside an utterance
+can repeat a short word ("set the the thermostat"). Batch transcription is
+not affected.
 
-### Measured end-to-end
-
-The assembled server measured as one system with `scripts/bench.py`, the
-`openai` client and the WebSocket over real sockets, each service in its own
-process. Method, the complete table and the known misses are in
-[ADR 0015](docs/decisions/0015-integration-results.md).
-
-- First audio: from the request to the first PCM byte, streamed through the
-  `openai` client, for the sentence "Turn on the kitchen lights."
-- Finalize: from the client's `end` message to the `final` event, after 200
-  ms of trailing digital silence (the endpointer's window). A push-to-talk
-  client that sends `end` at the last word sees about 114 ms median instead,
-  worst up to 165 ms and 192 ms while TTS synthesizes (on the Studio 146 to
-  149 ms median, 170 ms worst, and 510 ms worst while TTS synthesizes); that
-  misses the project's 50 ms median target
-  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). Those TTS figures
-  are Kokoro's; while Phonon synthesizes, on the M1 Max, the worst was
-  115 ms ([ADR 0021](docs/decisions/0021-tts-phonon.md)).
-- Memory: the physical footprint (what Activity Monitor counts, GPU buffers
-  included), idle after a long reply, with the MLX peak reached while serving.
-
-| Metric | Apple M1 Max, 64 GB (macOS 15.7.4) | Mac Studio, M1 Max, 32 GB (macOS 27.0.1) |
-|---|---|---|
-| Kokoro first audio | 96 ms median, 112 ms worst | 85 ms median, 89 ms worst |
-| Streaming finalize, 200 ms trailing silence, 32 alignments each at 64 and 100 ms chunks | 1 ms median, 16 ms worst | 3 ms median, 59 ms worst |
-| Batch transcription, 10.1 s clip | 253 ms median | 258 ms median |
-| STT + TTS footprint, idle after use | 2.21 GB; over 3 GB for a moment during a long reply (Kokoro MLX peak 2.16 GB) | 2.36 GB (Kokoro MLX peak 2.16 GB) |
-| Phonon 31M first audio (opt-in, on the CPU) | 28 ms median, 33 ms worst; 19 ms median, 28 ms worst while STT streams | not measured |
-| Phonon 31M footprint, idle after use | 0.26 GB | not measured |
-| End of speech to first audio, STT -> LLM -> TTS | not measured | 436 ms median (STT 7 + LLM 217 + TTS 221), `ministral-3:8b` on Ollama, from a laptop over Wi-Fi |
-
-The Studio ran the services as LaunchDaemons with Ollama's `ministral-3:8b`
-resident on the same GPU. Its rows are measured on the Studio over loopback,
-except the loop row. Over Wi-Fi from a laptop the batch row is about 70 ms
-slower (326 ms median, the upload) and first audio about 20 ms slower (105 ms
-median). On the Studio, finalize is much slower while Kokoro synthesizes
-(179 ms median, 250 ms worst with 200 ms trailing silence); see the ADR.
+The assembled server, both services and an LLM measured as one system with
+`scripts/bench.py` on the laptop and on a Mac Studio (M1 Max, 32 GB), is in
+[ADR 0015](docs/decisions/0015-integration-results.md): idle after use the
+two services take about 2.2 GB together, over 3 GB for a moment during a
+long reply, and on the Studio the end of speech reached the first audio of
+the reply in 436 ms median with `ministral-3:8b` on Ollama, the LLM taking
+217 ms of it. Finalize is slower while Kokoro synthesizes, most on the
+Studio (510 ms worst at the last word); while Phonon synthesizes, on the
+laptop, the worst was 115 ms ([ADR 0021](docs/decisions/0021-tts-phonon.md)).
 
 ## Troubleshooting
 

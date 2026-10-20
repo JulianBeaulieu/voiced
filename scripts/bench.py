@@ -85,6 +85,7 @@ from numpy.typing import NDArray
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WAV = REPO_ROOT / "tests" / "fixtures" / "speech_en.wav"
 STT_SAMPLE_RATE = 16_000
+TTS_SAMPLE_RATE = 24_000  # every engine serves 24 kHz (the audio convention)
 SILENCE_WINDOW_S = 0.2  # the default stt.vad_silence_ms
 STREAMS = 2  # the default stt.streams
 RECV_TIMEOUT_S = 30.0
@@ -162,7 +163,7 @@ def auth_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
-def _openai(url: str, api_key: str) -> Any:
+def openai_client(url: str, api_key: str) -> Any:
     from openai import OpenAI
 
     # The client insists on a key; a server without ``server.api_key`` ignores it.
@@ -182,19 +183,24 @@ def first_audio_ms(client: Any, voice: str, text: str) -> float:
 
 
 def tts_first_audio_ms(url: str, api_key: str, voice: str, trials: int) -> list[float]:
-    client = _openai(url, api_key)
+    client = openai_client(url, api_key)
     first_audio_ms(client, voice, FIRST_AUDIO_TEXT)  # warm
     return [first_audio_ms(client, voice, FIRST_AUDIO_TEXT) for _ in range(trials)]
 
 
-def synthesize_long_reply(url: str, api_key: str, voice: str) -> None:
-    _openai(url, api_key).audio.speech.create(
-        model="voiced", voice=voice, input=LONG_REPLY, response_format="pcm"
-    ).read()
+def synthesize(url: str, api_key: str, voice: str, text: str) -> tuple[bytes, float]:
+    """The whole reply as PCM at :data:`TTS_SAMPLE_RATE`, and the seconds it took."""
+    started = time.perf_counter()
+    pcm = (
+        openai_client(url, api_key)
+        .audio.speech.create(model="voiced", voice=voice, input=text, response_format="pcm")
+        .read()
+    )
+    return pcm, time.perf_counter() - started
 
 
 def batch_transcription_ms(url: str, api_key: str, wav: bytes, trials: int) -> list[float]:
-    client = _openai(url, api_key)
+    client = openai_client(url, api_key)
 
     def once() -> float:
         started = time.perf_counter()
@@ -292,7 +298,7 @@ def tts_busy(url: str, api_key: str, voice: str) -> Iterator[None]:
     stop = threading.Event()
 
     def loop() -> None:
-        client = _openai(url, api_key)
+        client = openai_client(url, api_key)
         while not stop.is_set():
             with client.audio.speech.with_streaming_response.create(
                 model="voiced", voice=voice, input=LONG_REPLY, response_format="pcm"
@@ -329,7 +335,7 @@ def first_audio_while_streaming_ms(
         while not stop.is_set():
             stream_and_finalize(ws_url, api_key, stream, rate, 1024)
 
-    client = _openai(tts_url, api_key)
+    client = openai_client(tts_url, api_key)
     first_audio_ms(client, voice, FIRST_AUDIO_TEXT)  # warm
     gaps = random.Random(0)
     thread = threading.Thread(target=talk, daemon=True)
@@ -373,8 +379,8 @@ def roundtrip(
     from openai import OpenAI
 
     llm = OpenAI(base_url=base, api_key=key, max_retries=0, timeout=30)
-    tts = _openai(tts_url, api_key)
-    ws_url = f"{_ws(stt_url)}/v1/audio/transcriptions/stream"
+    tts = openai_client(tts_url, api_key)
+    ws_url = stream_url(stt_url)
     silence = np.zeros(round(SILENCE_WINDOW_S * rate), dtype="<i2")
     stream_bytes = np.concatenate([samples, silence]).tobytes()
 
@@ -429,8 +435,9 @@ def spoken_text(text: str) -> str:
     return _THINK.sub("", text)
 
 
-def _ws(http_url: str) -> str:
-    return "ws" + http_url[len("http") :]
+def stream_url(http_url: str) -> str:
+    """The streaming transcription WebSocket of the STT service at ``http_url``."""
+    return "ws" + http_url[len("http") :] + "/v1/audio/transcriptions/stream"
 
 
 # -- reporting ---------------------------------------------------------------
@@ -552,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rows.append(Row("Phonon first audio", "skipped (no --phonon-url)", ""))
 
-    ws_url = f"{_ws(args.stt_url)}/v1/audio/transcriptions/stream"
+    ws_url = stream_url(args.stt_url)
     tails = ((SILENCE_WINDOW_S, "200 ms trailing silence"), (0.0, "0 ms trailing silence"))
     for chunk, label in ((1024, "64 ms"), (1600, "100 ms")):
         for trailing, tail in tails:
@@ -621,17 +628,17 @@ def main(argv: list[str] | None = None) -> int:
 
     # Memory after use, not just after warm-up: a long reply on each TTS server
     # (the batch row above has already exercised STT).
-    synthesize_long_reply(args.tts_url, key, kokoro_voice)
+    synthesize(args.tts_url, key, kokoro_voice, LONG_REPLY)
     time.sleep(SETTLE_S)
     stt_mem, tts_mem = memory(args.stt_url), memory(args.tts_url)
     rows.append(Row("STT memory", fmt_mem(stt_mem)))
     rows.append(Row("TTS (Kokoro) memory", fmt_mem(tts_mem)))
     if args.soprano_url:
-        synthesize_long_reply(args.soprano_url, key, "default")
+        synthesize(args.soprano_url, key, "default", LONG_REPLY)
         time.sleep(SETTLE_S)
         rows.append(Row("TTS (Soprano) memory", fmt_mem(memory(args.soprano_url))))
     if args.phonon_url:
-        synthesize_long_reply(args.phonon_url, key, "default")
+        synthesize(args.phonon_url, key, "default", LONG_REPLY)
         time.sleep(SETTLE_S)
         rows.append(Row("TTS (Phonon) memory", fmt_mem(memory(args.phonon_url))))
     field = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"

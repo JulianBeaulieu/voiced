@@ -1,0 +1,35 @@
+{
+  "kind": "tts",
+  "engine": "kokoro",
+  "model": "mlx-community/Kokoro-82M-bf16",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "a9b3c96+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en-US",
+    "en-GB"
+  ],
+  "licence": "Apache-2.0",
+  "size_bytes": 389410807,
+  "load_s": 1.8,
+  "footprint_bytes": 731810880,
+  "mlx_load_peak_bytes": 756114731,
+  "mlx_peak_bytes": 1856828998,
+  "metrics": {
+    "voice": "af_heart",
+    "utmos": 4.52,
+    "first_audio": {
+      "median_ms": 94.5,
+      "worst_ms": 98.2,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 111.7,
+      "worst_ms": 225.6,
+      "n": 30
+    },
+    "rtf": 0.0422
+  }
+}

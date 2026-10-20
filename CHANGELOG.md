@@ -21,6 +21,13 @@ uses [Semantic Versioning](https://semver.org/).
   one, the service says how to add it.
 - `engines.list` gives each voice's language in `voice_languages`, so
   settings UIs can group voices.
+- Benchmarks for every engine and model in
+  [docs/benchmarks.md](docs/benchmarks.md): word error rate, streaming
+  finalize and throughput for speech to text; first audio, throughput and
+  UTMOS naturalness for text to speech; load time, memory and size for both,
+  each row with its machine, commit and date, and a quality and a speed
+  rating from 1 to 5 by fixed limits. `scripts/bench_engine.py` measures one
+  engine with one command and regenerates the document (ADR 0024).
 
 ### Changed
 

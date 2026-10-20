@@ -1,0 +1,35 @@
+{
+  "kind": "tts",
+  "engine": "phonon",
+  "model": "gradium/phonon-31m-en",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "a9b3c96+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en-US",
+    "en-GB"
+  ],
+  "licence": "Apache-2.0",
+  "size_bytes": 65055910,
+  "load_s": 0.6,
+  "footprint_bytes": 255265600,
+  "mlx_load_peak_bytes": null,
+  "mlx_peak_bytes": null,
+  "metrics": {
+    "voice": "default",
+    "utmos": 4.5,
+    "first_audio": {
+      "median_ms": 26.7,
+      "worst_ms": 30.8,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 18.3,
+      "worst_ms": 27.8,
+      "n": 30
+    },
+    "rtf": 0.0385
+  }
+}
