@@ -226,9 +226,10 @@ def cancel_on_sigterm(progress: Progress, echo: Echo) -> Iterator[None]:
     files stay and the next download resumes them."""
 
     def handler(signum: int, frame: FrameType | None) -> None:
-        progress.error(CANCELLED)
+        progress.close_with_error(CANCELLED)
         echo(f"download {CANCELLED}")
-        sys.stderr.flush()
+        for stream in (sys.stdout, sys.stderr):
+            stream.flush()
         os._exit(128 + signal.SIGTERM)
 
     previous = signal.signal(signal.SIGTERM, handler)
@@ -262,15 +263,15 @@ def cmd_download(model_id: str, settings: Settings, echo: Echo, *, json_progress
                 echo(f"downloading {model_id} into {models.cache_dir()}")
                 models.fetch(model_id, write)
         except KeyboardInterrupt:
-            progress.error("interrupted")
+            progress.close_with_error("interrupted")
             raise
         except Exception as exc:
             code, message = models.classify(exc, models.resolve(model_id).repo)
-            progress.error(message, code)
+            progress.close_with_error(message, code)
             echo(f"download failed: {message}")
             return 1
-    echo(f"downloaded {model_id}")
-    progress.done()
+        echo(f"downloaded {model_id}")
+        progress.done()  # still under the handler: a SIGTERM now ends with error, not nothing
     return 0
 
 
@@ -287,6 +288,8 @@ class Deletion:
 
 
 def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletion:
+    from voiced.engines.catalogue import engine_label
+
     found = models.find(model_id)
     if found is None:
         why = (
@@ -309,7 +312,9 @@ def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletio
     last = not any(_present(hub_path, lock[o], r) for o in others for r in lock[o].revisions)
     if not previous and last:
         going |= {s.id: lock[s.id].revisions for s in engine.shared}
-    shared = sorted(m for m in going if m != model_id and _present_any(hub_path, lock[m], going[m]))
+    shared = sorted(
+        m for m in going if m != model_id and any(_present(hub_path, lock[m], r) for r in going[m])
+    )
     sharers = _same_download(hub_path, going, used)
     wanted = {(lock[m].repo, r) for m, revisions in going.items() for r in revisions}
     scan = models.cached_revisions(hub_path, {repo for repo, _ in wanted})
@@ -319,7 +324,7 @@ def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletio
     if refs:
         notes.append(REF_NOTE.format(refs=", ".join(f"`{r}`" for r in refs)))
     if shared:
-        label = engine.name[:1].upper() + engine.name[1:]
+        label = engine_label(engine.name)
         notes.append(f"{label}'s shared files ({', '.join(shared)}) are deleted with it.")
     if sharers:
         notes.append(
@@ -333,30 +338,26 @@ def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletio
 def _same_download(hub_path: Path, going: dict[str, tuple[str, ...]], used: set[str]) -> list[str]:
     """``huggingface_hub`` deletes a revision whole, so other models that
     are folders of a repository being deleted, at the same revision, go too
-    (added to ``going``); refused when one of them is in use."""
+    (added to ``going``); refused when one of them is in use. One pass is
+    enough: what it adds shares a repository and revisions with what is
+    there already."""
     lock = models.lock()
-    added: list[str] = []
-    changed = True
-    while changed:
-        changed = False
-        for model_id, revisions in list(going.items()):
-            repo = lock[model_id].repo
-            for other in lock.values():
-                if other.id in going or other.repo != repo:
-                    continue
-                with_it = tuple(r for r in revisions if _present(hub_path, other, r))
-                if not with_it:
-                    continue
-                if other.id in used:
-                    raise ModelsError(
-                        "in_use",
-                        f"{model_id} shares {repo} at {with_it[0][:12]} with {other.id}, which "
-                        "is in use; voiced deletes a revision whole. Choose another model first.",
-                    )
-                going[other.id] = with_it
-                added.append(other.id)
-                changed = True
-    return added
+    sharing = {
+        other.id: (model_id, tuple(r for r in revisions if _present(hub_path, other, r)))
+        for model_id, revisions in going.items()
+        for other in lock.values()
+        if other.id not in going and other.repo == lock[model_id].repo
+    }
+    added = {other: hit for other, hit in sharing.items() if hit[1]}
+    for other, (model_id, revisions) in added.items():
+        if other in used:
+            raise ModelsError(
+                "in_use",
+                f"{model_id} shares {lock[model_id].repo} at {revisions[0][:12]} with {other}, "
+                "which is in use; voiced deletes a revision whole. Choose another model first.",
+            )
+        going[other] = revisions
+    return list(added)
 
 
 def _present(hub_path: Path, entry: Locked, revision: str) -> bool:
@@ -364,10 +365,6 @@ def _present(hub_path: Path, entry: Locked, revision: str) -> bool:
     return revision in entry.revisions and len(
         models.missing_files(hub_path, entry, revision)
     ) < len(entry.files)
-
-
-def _present_any(hub_path: Path, entry: Locked, revisions: tuple[str, ...]) -> bool:
-    return any(_present(hub_path, entry, r) for r in revisions)
 
 
 def cmd_delete(

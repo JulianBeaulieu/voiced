@@ -114,7 +114,12 @@ def create_engine(kind: Literal["stt", "tts"], name: str, model: str) -> STTEngi
 
 
 def with_license(engine: _E) -> _E:
-    """``engine`` with its model's licence when the catalogue knows the model."""
+    """``engine`` with its model's licence when the catalogue knows the model.
+
+    Catalogued engines still declare ``license`` (from their default model):
+    ``voiced.engines.base``, which is frozen, refuses an engine class without
+    it, and an engine built directly (tests, scripts) needs one. This sets
+    the configured model's on the instance."""
     license = models.license_of(engine.model_id)
     if license is not None:
         engine.license = license

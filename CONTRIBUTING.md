@@ -232,14 +232,14 @@ document and the result files differ.
 ## Adding or moving a model
 
 The models voiced runs are listed by hand in `CATALOGUE` in
-`src/voiced/models.py`: the engine's entry point name, then each model's
+`src/voiced/models/catalogue.py`: the engine's entry point name, then each model's
 repository, licence (from its model card), whether it is gated, and the
 file patterns the engine loads; the first model is the default, and
 `shared` names models every model of the engine needs. A model is known by
 its id, which is what the config's `model` holds and what `voiced models`
 takes; it defaults to the repository, and when several models are folders
 of one repository, give each an `id` and patterns for its folder. The revisions,
-files, sizes and hashes are in `src/voiced/models.lock.json`, which you
+files, sizes and hashes are in `src/voiced/models/models.lock.json`, which you
 never edit by hand:
 
 ```sh

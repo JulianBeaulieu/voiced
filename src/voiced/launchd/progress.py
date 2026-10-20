@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import signal
+import threading
 from collections.abc import Iterator
 from types import FrameType
 from typing import Literal, TextIO
@@ -68,10 +69,14 @@ def exit_on_sigterm() -> Iterator[None]:
 
 class Progress:
     """Writes the protocol's events to ``out``. With ``out`` None (a plain
-    ``voiced install``) every method does nothing."""
+    ``voiced install``) every method does nothing. Events from several
+    threads (a download's byte reports) are written whole, one at a time."""
 
     def __init__(self, out: TextIO | None = None) -> None:
         self.out = out
+        # Reentrant: a signal handler that ends the stream runs in the main
+        # thread, which may be inside emit() already.
+        self._lock = threading.RLock()
         self.step_id: str | None = None
         """The step running now, named by an ``error``."""
         self.fetching: dict[str, object] = {}
@@ -82,10 +87,18 @@ class Progress:
         return self.out is not None
 
     def emit(self, event: str, **fields: object) -> None:
-        if self.out is None:
-            return
-        self.out.write(json.dumps({"event": event, **fields}) + "\n")
-        self.out.flush()
+        with self._lock:
+            if self.out is None:
+                return
+            self.out.write(json.dumps({"event": event, **fields}) + "\n")
+            self.out.flush()
+
+    def close_with_error(self, message: str, code: ErrorCode = "failed") -> None:
+        """The last event: ``error``, after which nothing more is written, so
+        a byte report from another thread cannot follow it."""
+        with self._lock:
+            self.error(message, code)
+            self.out = None
 
     def hello(self) -> None:
         self.emit("hello", protocol=PROTOCOL, version=__version__)

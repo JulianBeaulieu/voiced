@@ -377,3 +377,13 @@ def test_a_port_in_use_fails_before_the_models(
     last = _events(capsys.readouterr().out)[-1]
     assert last["step"] == "ports"
     assert "is in use by nc (pid 4242)" in last["message"]
+
+
+def test_nothing_follows_the_closing_error() -> None:
+    """A download thread's byte report after Cancel's error is dropped, so
+    the last line stays the error (ADR 0018)."""
+    out = io.StringIO()
+    progress = Progress(out)
+    progress.close_with_error("terminated (SIGTERM)")
+    progress.emit("download", model="m", bytes=1, total=2)
+    assert [json.loads(line)["event"] for line in out.getvalue().splitlines()] == ["error"]

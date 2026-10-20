@@ -91,9 +91,9 @@ async def test_a_missing_shared_model_names_the_command_that_fetches_it(
     assert body["status"] == "missing_model"
     for text in (body["last_error"], error):
         assert (
-            "(gradium/phonon-voices missing); run voiced models download gradium/phonon-31m-en"
-            in text
-        )
+            "gradium/phonon-31m-en needs gradium/phonon-voices, which is not downloaded; "
+            "run voiced models download gradium/phonon-31m-en"
+        ) in text
 
 
 async def test_offline_mode_in_a_plugin_is_a_missing_model(settings: Settings) -> None:

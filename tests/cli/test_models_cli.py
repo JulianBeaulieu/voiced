@@ -16,6 +16,7 @@ from voiced import cli_models, models
 from voiced.config import Settings
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.layout import install_lock
+from voiced.models import lockfile
 
 pytest.importorskip("huggingface_hub")
 
@@ -224,7 +225,8 @@ def test_an_interrupted_download_still_ends_with_an_error(
 
 def test_sigterm_ends_a_download_at_once(tmp_path: Path) -> None:
     """The app's Cancel: the event goes out and the process exits 143 while
-    the download thread still has seconds to go."""
+    the download threads still have seconds to go (raising in the main
+    thread would wait for them)."""
     import subprocess
     import sys
     import time
@@ -234,9 +236,14 @@ def test_sigterm_ends_a_download_at_once(tmp_path: Path) -> None:
         "import time, sys\n"
         "from voiced import cli_models\n"
         "from voiced.config import Settings\n"
+        "from concurrent.futures import ThreadPoolExecutor\n"
         "def slow(model_id, *, write=None):\n"
-        "    print('started', file=sys.stderr, flush=True)\n"
-        "    time.sleep(30)\n"
+        "    # As hf_thread_map does: the main thread waits on download threads.\n"
+        "    with ThreadPoolExecutor(2) as pool:\n"
+        "        jobs = [pool.submit(time.sleep, 30) for _ in range(2)]\n"
+        "        print('started', file=sys.stderr, flush=True)\n"
+        "        for job in jobs:\n"
+        "            job.result()\n"
         "import voiced.models.cache as cache\n"
         "cache.snapshot = slow\n"
         "cache.check_disk = lambda hub, needed: None\n"
@@ -396,7 +403,9 @@ def test_models_in_one_download_are_deleted_together_unless_one_is_in_use(
     monkeypatch.setattr(models, "CATALOGUE", catalogue)
     monkeypatch.setattr("voiced.models.lookup.CATALOGUE", catalogue)
     for m, name in ((small, "small/w"), (base, "base/w")):
-        entry = models.Locked(m.id, m.repo, SHA, m.patterns, {name: models.LockedFile(1, "e" * 64)})
+        entry = models.Locked(
+            m.id, m.repo, SHA, m.patterns, {name: lockfile.LockedFile(1, "e" * 64)}
+        )
         monkeypatch.setitem(models.lock(), m.id, entry)
     hf.add_revision(model_cache, "org/assets", SHA, {"small/w": b"s", "base/w": b"b"})
     rows = by_repo(json.loads(_listed(settings)))

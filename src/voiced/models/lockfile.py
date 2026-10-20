@@ -128,21 +128,25 @@ def pinned_revisions() -> set[tuple[str, str]]:
 
 @dataclass(frozen=True)
 class Source:
-    """Where a model's files come from: its repository and, when pinned,
-    the commit and the patterns; ``None`` for a model outside the catalogue,
-    which is a repository fetched whole at ``main``."""
+    """Where a model's files come from: its repository and, when pinned
+    (``entry``), the commit and the patterns; a model outside the catalogue
+    is a repository fetched whole at ``main``."""
 
     repo: str
-    revision: str | None
-    patterns: list[str] | None
     entry: Locked | None
+
+    @property
+    def revision(self) -> str | None:
+        return self.entry.revision if self.entry is not None else None
+
+    @property
+    def patterns(self) -> list[str] | None:
+        return list(self.entry.patterns) if self.entry is not None else None
 
 
 def resolve(model_id: str) -> Source:
     entry = locked(model_id)
-    if entry is None:
-        return Source(model_id, None, None, None)
-    return Source(entry.repo, entry.revision, list(entry.patterns), entry)
+    return Source(entry.repo if entry is not None else model_id, entry)
 
 
 def manifest() -> dict[str, Any]:

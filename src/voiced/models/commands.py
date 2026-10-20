@@ -57,9 +57,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Print the default models as JSON, download the configured ones, or pin.",
     )
     sub = parser.add_subparsers(dest="command")
-    fetch = sub.add_parser("download", help="download the configured models and load each once")
-    fetch.add_argument("--config", type=Path, required=True)
-    fetch.add_argument("--report", action="store_true", help="write byte progress lines")
+    download_parser = sub.add_parser(
+        "download", help="download the configured models and load each once"
+    )
+    download_parser.add_argument("--config", type=Path, required=True)
+    download_parser.add_argument("--report", action="store_true", help="write byte progress lines")
     pins = sub.add_parser("pin", help="lock catalogued models (needs the network)")
     pins.add_argument("models", nargs="*", help="default: every one the lock lacks or has stale")
     pins.add_argument("--revision", help="branch, tag or commit (default: the pin, else main)")

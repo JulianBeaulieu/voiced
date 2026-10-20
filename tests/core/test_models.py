@@ -24,6 +24,7 @@ from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
+from voiced.models import cache, commands, lockfile, pinning
 
 # The catalogue and the lock ---------------------------------------------------
 
@@ -31,9 +32,9 @@ from voiced.launchd.progress import DOWNLOAD_PREFIX
 def test_the_catalogue_and_the_lock_agree() -> None:
     """The one check that the hand-written catalogue and the generated lock
     name the same models, from the same repositories with the same patterns."""
-    lock = models.read_lock()
+    lock = lockfile.read_lock()
     catalogued = {m.id: (m.repo, m.patterns) for m in models.catalogued()}
-    stale = models.stale(lock)
+    stale = pinning.stale(lock)
     dropped = sorted(set(lock) - set(catalogued))
     fix = f"run {models.PIN_COMMAND} {' '.join(stale)}".rstrip()
     assert not stale, f"the lock lacks or has other patterns for {stale}: {fix}"
@@ -55,7 +56,7 @@ def test_the_config_defaults_are_the_default_engines_first_models() -> None:
     assert (defaults.stt.engine, defaults.tts.engine) == ("parakeet", "kokoro")
     assert defaults.stt.model == models.default_model("parakeet").repo
     assert defaults.tts.model == models.default_model("kokoro").repo
-    assert models.manifest()["models"] == [
+    assert lockfile.manifest()["models"] == [
         {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
         for e in (models.lock()[defaults.stt.model], models.lock()[defaults.tts.model])
     ]
@@ -72,7 +73,7 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         "        if top not in sys.stdlib_module_names and top != 'voiced':\n"
         "            raise ImportError(f'not stdlib: {name}')\n"
         "sys.meta_path.insert(0, Block())\n"
-        "from voiced.models import main\n"
+        "from voiced.models.commands import main\n"
         "raise SystemExit(main([]))\n"
     )
     src = str(Path(models.__file__).parents[1])
@@ -82,7 +83,7 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         text=True,
         check=True,
     )
-    assert json.loads(out.stdout) == models.manifest()
+    assert json.loads(out.stdout) == lockfile.manifest()
 
 
 @pytest.mark.parametrize(
@@ -168,7 +169,7 @@ def test_a_file_of_another_size_is_missing(hub: Path) -> None:
 
 def test_a_missing_lock_is_an_error_not_an_empty_lock(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        models.read_lock(tmp_path / "models.lock.json")
+        lockfile.read_lock(tmp_path / "models.lock.json")
 
 
 def test_a_link_whose_blob_is_gone_is_missing(hub: Path) -> None:
@@ -245,7 +246,7 @@ def _lines(written: list[str]) -> list[dict[str, Any]]:
 def test_byte_reports_are_throttled_to_four_a_second() -> None:
     written: list[str] = []
     clock = Clock()
-    report = models.ByteReport("org/m", 100, 1000, written.append, clock)
+    report = cache.ByteReport("org/m", 100, 1000, written.append, clock)
     report.add(0)  # the start, at what was cached
     for _ in range(10):
         clock.now += 0.0625
@@ -261,9 +262,9 @@ def test_byte_reports_are_throttled_to_four_a_second() -> None:
 
 def test_only_the_bar_of_bytes_written_counts() -> None:
     pytest.importorskip("huggingface_hub")
-    report = models.ByteReport("org/m", 0, 10, lambda line: None)
-    counting = models._counting_tqdm(report)
-    written = counting(name=models.BYTES_BAR, total=0, disable=True)
+    report = cache.ByteReport("org/m", 0, 10, lambda line: None)
+    counting = cache._counting_tqdm(report)
+    written = counting(name=cache.BYTES_BAR, total=0, disable=True)
     transfer = counting(name="huggingface_hub.snapshot_download.transfer", disable=True)
     files = counting(total=3, disable=True)  # the file count
     written.update(7)
@@ -293,19 +294,34 @@ class FakeHub:
             ]
         tqdm_class = kwargs.get("tqdm_class")
         if tqdm_class is not None:
-            bar = tqdm_class(name=models.BYTES_BAR, total=70, disable=True)
+            bar = tqdm_class(name=cache.BYTES_BAR, total=70, disable=True)
             bar.update(70)
         return "/hf/hub/models--org--m/snapshots/abc"
 
 
 @pytest.fixture
-def fake_hub(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeHub]:
+def fake_hub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., FakeHub]:
+    """Also ``hf_hub_download``, which writes the file at its locked size
+    (the repair after a snapshot), recording what it was asked for."""
     huggingface_hub = pytest.importorskip("huggingface_hub")
 
-    def make(offline: bool = False) -> FakeHub:
+    def make(offline: bool = False, repairs: bool = True) -> FakeHub:
         fake = FakeHub(offline)
+        fake.repaired = []  # type: ignore[attr-defined]
+
+        def hf_hub_download(repo: str, name: str, *, revision: str, force_download: bool) -> str:
+            fake.repaired.append((repo, name, force_download))  # type: ignore[attr-defined]
+            path = cache.snapshot_dir(Path(cache.cache_dir()), repo, revision) / name
+            if repairs:
+                entry = next(e for e in models.lock().values() if e.repo == repo)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"")
+                os.truncate(path, entry.files[name].bytes)
+            return str(path)
+
         monkeypatch.setattr(huggingface_hub, "snapshot_download", fake)
-        monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: "/hf/hub")
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+        monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(tmp_path / "hf" / "hub"))
         return fake
 
     return make
@@ -328,8 +344,11 @@ def test_a_pinned_model_downloads_its_locked_files_with_byte_progress(
         "kind": "model",
         "repo": KOKORO,
         "revision": entry.revision,
-        "path": "/hf/hub",
+        "path": cache.cache_dir(),
     }
+    # The snapshot left every file missing, so each is fetched again whole.
+    assert sorted(n for _, n, _ in fake.repaired) == sorted(entry.files)  # type: ignore[attr-defined]
+    assert all(force for _, _, force in fake.repaired)  # type: ignore[attr-defined]
     # Starts at what is cached (nothing here); the total is the lock's.
     assert lines[1] == {"kind": "bytes", "repo": KOKORO, "bytes": 0, "total": entry.bytes}
     assert lines[-1] == {
@@ -358,6 +377,21 @@ def test_a_resumed_download_starts_at_what_the_lock_says_is_cached(
         "bytes": done,
         "total": entry.bytes,
     }
+
+
+def test_a_file_that_stays_truncated_fails_the_download(
+    fake_hub: Callable[..., FakeHub],
+) -> None:
+    """huggingface_hub keeps a file that is there whatever its size: a file
+    still short after the fetch again is an error, never done."""
+    fake_hub(repairs=False)
+    with pytest.raises(models.ModelsError) as exc:
+        models.snapshot(KOKORO)
+    assert exc.value.code == "failed"
+    assert exc.value.message.endswith(
+        f"of {KOKORO} did not download whole; delete the model "
+        f"(voiced models delete {KOKORO}) and download it again"
+    )
 
 
 def test_an_unpinned_model_downloads_main_whole(fake_hub: Callable[..., FakeHub]) -> None:
@@ -407,10 +441,12 @@ SHA = "a" * 40
 NEWER = "b" * 40
 
 
-def _files(commit: str) -> Callable[[str, str, Sequence[str]], models.HubFiles]:
-    def files(repo: str, revision: str, patterns: Sequence[str]) -> models.HubFiles:
+def _files(commit: str) -> Callable[[str, str, Sequence[str]], pinning.HubFiles]:
+    def files(repo: str, revision: str, patterns: Sequence[str]) -> pinning.HubFiles:
         files.asked.append(revision)  # type: ignore[attr-defined]
-        return models.HubFiles(commit, {"config.json": (10, None), "w.safetensors": (90, "c" * 64)})
+        return pinning.HubFiles(
+            commit, {"config.json": (10, None), "w.safetensors": (90, "c" * 64)}
+        )
 
     files.asked = []  # type: ignore[attr-defined]
     return files
@@ -420,7 +456,7 @@ def test_pin_resolves_a_revision_and_hashes_the_small_files() -> None:
     model = models.Model("org/m", "MIT", ("*.json", "*.safetensors"))
     hashed: list[str] = []
     files = _files(SHA)
-    entry = models.pin_repo(
+    entry = pinning.pin_repo(
         model, None, None, files=files, sha256=lambda r, c, n: hashed.append(n) or "d" * 64
     )
     assert files.asked == ["main"]  # type: ignore[attr-defined]
@@ -431,8 +467,8 @@ def test_pin_resolves_a_revision_and_hashes_the_small_files() -> None:
         SHA,
         model.patterns,
         {
-            "config.json": models.LockedFile(10, "d" * 64),
-            "w.safetensors": models.LockedFile(90, "c" * 64),
+            "config.json": lockfile.LockedFile(10, "d" * 64),
+            "w.safetensors": lockfile.LockedFile(90, "c" * 64),
         },
     )
     assert entry.bytes == 100
@@ -442,9 +478,11 @@ def test_re_pinning_keeps_the_revision_unless_asked_and_accumulates_previous() -
     model = models.Model("org/m", "MIT", ("*",))
     current = models.Locked("org/m", "org/m", SHA, ("*",), {}, ("0" * 40,))
     files = _files(SHA)
-    same = models.pin_repo(model, current, None, files=files, sha256=lambda *a: "d" * 64)
+    same = pinning.pin_repo(model, current, None, files=files, sha256=lambda *a: "d" * 64)
     assert files.asked == [SHA] and same.previous == ("0" * 40,)  # type: ignore[attr-defined]
-    moved = models.pin_repo(model, current, "main", files=_files(NEWER), sha256=lambda *a: "d" * 64)
+    moved = pinning.pin_repo(
+        model, current, "main", files=_files(NEWER), sha256=lambda *a: "d" * 64
+    )
     assert moved.revision == NEWER and moved.previous == ("0" * 40, SHA)
 
 
@@ -452,29 +490,29 @@ def test_pin_without_repositories_fixes_what_is_stale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     lock = tmp_path / "models.lock.json"
-    shipped = models.read_lock()
+    shipped = lockfile.read_lock()
     gone = models.Locked(
-        "org/dropped", "org/dropped", SHA, ("*",), {"f": models.LockedFile(1, "e" * 64)}
+        "org/dropped", "org/dropped", SHA, ("*",), {"f": lockfile.LockedFile(1, "e" * 64)}
     )
-    stale = models.Locked(KOKORO, KOKORO, SHA, ("other",), {"f": models.LockedFile(1, "e" * 64)})
-    models.write_lock({**shipped, KOKORO: stale, "org/dropped": gone}, lock)
+    stale = models.Locked(KOKORO, KOKORO, SHA, ("other",), {"f": lockfile.LockedFile(1, "e" * 64)})
+    lockfile.write_lock({**shipped, KOKORO: stale, "org/dropped": gone}, lock)
     asked: list[tuple[str, str | None]] = []
 
     def fake_pin(model: models.Model, current: models.Locked | None, revision: str | None) -> Any:
         asked.append((model.id, revision))
         return models.Locked(
-            model.id, model.repo, NEWER, model.patterns, {"f": models.LockedFile(1, "e" * 64)}
+            model.id, model.repo, NEWER, model.patterns, {"f": lockfile.LockedFile(1, "e" * 64)}
         )
 
     monkeypatch.setattr("voiced.models.pinning.pin_repo", fake_pin)
-    assert models.pin([], path=lock) == [KOKORO, "org/dropped"]
+    assert pinning.pin([], path=lock) == [KOKORO, "org/dropped"]
     assert asked == [(KOKORO, None)]
-    written = models.read_lock(lock)
+    written = lockfile.read_lock(lock)
     assert set(written) == set(shipped) and written[KOKORO].revision == NEWER
     # The dropped model's revision stays known, so uninstall still deletes it.
-    assert models.read_retired(lock) == {("org/dropped", SHA)}
+    assert lockfile.read_retired(lock) == {("org/dropped", SHA)}
     with pytest.raises(SystemExit, match="not in the catalogue: org/new"):
-        models.pin(["org/new"], path=lock)
+        pinning.pin(["org/new"], path=lock)
 
 
 # The models step -------------------------------------------------------------
@@ -496,7 +534,7 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     config.write_text(
         '[stt]\nengine = "fake"\nmodel = "org/stt"\n[tts]\nengine = "nope"\nmodel = "org/tts"\n'
     )
-    models.download(config, None)
+    commands.download(config, None)
     assert fetched == ["org/tts"]
 
     loaded: list[str] = []
@@ -509,7 +547,7 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
         '[stt]\nengine = "fake"\n[tts]\nengine = "phonon"\nmodel = "gradium/phonon-40m-en"\n'
     )
     fetched.clear()
-    models.download(config, None)
+    commands.download(config, None)
     assert fetched == ["gradium/phonon-40m-en", "gradium/phonon-voices"]
     assert loaded == ["gradium/phonon-40m-en"]
 
@@ -518,7 +556,7 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     )
     fetched.clear()
     with pytest.raises(ValueError, match="not in voiced's model catalogue"):
-        models.download(config, None)
+        commands.download(config, None)
     assert fetched == []
 
 
@@ -529,7 +567,7 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
 def test_the_lock_is_what_the_hub_has_at_each_pin() -> None:
     """Network only: each locked file's size and, for LFS files, sha256."""
     for entry in models.lock().values():
-        hub = models.hub_files(entry.repo, entry.revision, entry.patterns)
+        hub = pinning.hub_files(entry.repo, entry.revision, entry.patterns)
         assert hub.commit == entry.revision
         assert {n: s for n, (s, _) in hub.files.items()} == {
             n: f.bytes for n, f in entry.files.items()
@@ -545,12 +583,12 @@ def test_a_real_download_reports_its_bytes(tmp_path: Path) -> None:
     from huggingface_hub import snapshot_download
 
     entry = models.lock()[KOKORO]
-    report = models.ByteReport(KOKORO, 0, entry.bytes, lambda line: None)
+    report = cache.ByteReport(KOKORO, 0, entry.bytes, lambda line: None)
     path = snapshot_download(
         KOKORO,
         revision=entry.revision,
         allow_patterns=["config.json"],
         cache_dir=tmp_path / "hub",
-        tqdm_class=models._counting_tqdm(report),
+        tqdm_class=cache._counting_tqdm(report),
     )
     assert report.bytes == (Path(path) / "config.json").stat().st_size > 0

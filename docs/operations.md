@@ -74,17 +74,18 @@ a failed check, not on a warning.
 
 ## Models
 
-voiced knows its models from a catalogue in `voiced/models.py` (each
+voiced knows its models from a catalogue in `voiced/models/catalogue.py` (each
 engine's models, by the id the config uses, with the Hugging Face
 repository, licence, whether it is gated, and the files the engine loads)
-and pins each one in `voiced/models.lock.json` (the repository's commit,
+and pins each one in `voiced/models/models.lock.json` (the repository's commit,
 every file with its size and sha256, and the revisions earlier releases
 pinned).
 They live in the Hugging Face cache, `[install] hf_home` (default
 `~/.cache/huggingface/hub`; voiced sets `HF_HOME` itself, so
 `XDG_CACHE_HOME` does not move it), which other MLX tools share; with
-`huggingface_hub` 2.x the file contents live once in a store for the whole
-cache (`hub/blobs/`), and each repository's folder links into it. A model
+`huggingface_hub` 2.x the contents of files stored with Xet live once in a
+store for the whole cache (`hub/blobs/`), and each repository's folder
+links into it; other files sit in the repository's own folder. A model
 downloaded while its service runs is loaded by `voiced restart <service>`.
 
 - `voiced install` downloads the configured models; `voiced models

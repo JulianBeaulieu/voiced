@@ -1,5 +1,5 @@
 {
-  "comment": "Written by `python -m voiced.models pin`; see voiced/models.py.",
+  "comment": "Written by `python -m voiced.models pin`; see voiced/models/catalogue.py.",
   "models": {
     "gradium/phonon-31m-en": {
       "repo": "gradium/phonon-31m-en",

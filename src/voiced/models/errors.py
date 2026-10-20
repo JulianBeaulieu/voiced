@@ -41,9 +41,13 @@ class ModelNotDownloaded(LookupError):
         self.revision = revision
         self.missing = missing
         self.command = f"voiced models download {model_id}"
-        at = f" at revision {revision}" if revision else ""
-        lacking = f" ({', '.join(missing)} missing)" if missing else ""
-        super().__init__(f"{model_id} is not downloaded{at}{lacking}; run {self.command}")
+        if missing:
+            what = f"{model_id} needs {', '.join(missing)}, which is not downloaded"
+        else:
+            what = f"{model_id} is not downloaded" + (
+                f" at revision {revision}" if revision else ""
+            )
+        super().__init__(f"{what}; run {self.command}")
 
 
 def causes(exc: BaseException) -> Iterator[BaseException]:

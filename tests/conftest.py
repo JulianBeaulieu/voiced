@@ -32,14 +32,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 @pytest.fixture(autouse=True)
 def model_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The Hugging Face cache that :func:`voiced.models.hub_dir` names (the
-    settings checks and ``voiced models``): an empty scratch one, never the
-    real cache, which CI does not have. Tests that pass an ``hf_home`` of
-    their own are not affected."""
-    hub = tmp_path_factory.mktemp("hf") / "hub"
-    real = models.hub_dir
-    monkeypatch.setattr(models, "hub_dir", lambda hf_home: real(hf_home) if hf_home else hub)
-    return hub
+    """The Hugging Face cache that :func:`voiced.models.hub_dir` names without
+    an ``hf_home`` (the settings checks, ``voiced models``, uninstall): an
+    empty scratch one, never the real cache, which CI does not have."""
+    home = tmp_path_factory.mktemp("hf")
+    monkeypatch.setattr("voiced.models.cache.DEFAULT_HF_HOME", home)
+    return home / "hub"
 
 
 @pytest.fixture

@@ -425,15 +425,16 @@ above:
   and the models step use, rather than in each app module.
 - `gradium/phonon-40m-multilingual` is not catalogued: its terms were not
   granted to the account that pins, so its files could not be hashed. The
-  engine refuses it as it refuses the other 40M variants, naming it as not
-  in the catalogue. Pinning it later is one catalogue line and one `pin`.
+  engine refuses it, as it refuses any `gradium/phonon-*` model the
+  catalogue does not list, naming it as not in the catalogue. Pinning it later is one catalogue line and one `pin`.
 - Phonon's voices are pinned as the 37 English presets the engine loads
   (patterns naming each file), not `voices/*`: each file is its own request,
   and all 102 took 78 s here against about 30 s for the 38.
 - `pin` keeps a repository's locked revision unless `--revision` is given,
   so a pattern change does not move a model; without arguments it fixes
-  every repository that is new or has new patterns and drops what the
-  catalogue removed.
+  every repository that is new or has new patterns, and moves a model the
+  catalogue dropped to the lock's `retired` list, which uninstall still
+  reads.
 - `voiced models download` runs in the CLI's own process (it is the
   environment's `voiced`), and its byte reports go through the installer's
   `Progress`, so the events are the installer's. A shared repository is not
@@ -446,7 +447,7 @@ above:
 - A plugin engine the catalogue does not know still downloads in its own
   `load()` during the models step; a catalogued engine with a model outside
   the catalogue fetches that model whole at `main`.
-- After the first review: `voiced.models` is a package whose
+- Revised 2026-10-21: `voiced.models` is a package whose
   `catalogue.py` holds only the data a new engine adds; one classifier
   (`voiced.models.classify`) turns any failed download into a code, and a
   401 for a repository that does not exist is `failed`, not a token code;
@@ -454,7 +455,9 @@ above:
   `voiced.models.fetch`, which checks the disk first; `missing_files`
   compares sizes, so a truncated file is missing (the lock's sha256 is kept
   for the mirror under "Later", not checked when loading); the lock keeps a
-  dropped model's revisions under `retired`; Cancel exits at once (exit 143)
+  dropped model's revisions under `retired`; a file still short after a
+  download is fetched again, and the download fails if it stays short;
+  Cancel exits at once (exit 143)
   instead of waiting for the files in flight. Deleting one of several models
   that are folders of one repository deletes the others with it (the
   revision goes whole), refused while one of them is in use. A missing

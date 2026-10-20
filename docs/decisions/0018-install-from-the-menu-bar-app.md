@@ -1046,4 +1046,5 @@ voiced.models` still prints the default models for `install-manifest.json`,
 from the lock. The models step still runs `python -m voiced.models download
 --config` in the new environment; it now checks the disk first, and the
 progress protocol's `error` event carries a `code` (`failed` for the
-installer's own errors).
+installer's own errors). The `download` event's `model` is the model's id in the
+catalogue, which is its repository for every model so far.
