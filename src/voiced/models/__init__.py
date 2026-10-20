@@ -64,6 +64,7 @@ from voiced.models.lockfile import (
     Locked,
     lock,
     locked,
+    pinned_revision,
     pinned_revisions,
     resolve,
 )
@@ -104,6 +105,7 @@ __all__ = [
     "locked",
     "missing_files",
     "not_downloaded",
+    "pinned_revision",
     "pinned_revisions",
     "repo_folder",
     "required",
