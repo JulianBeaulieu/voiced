@@ -83,11 +83,24 @@ library only (the app's bundle script still reads it from the unpacked
 wheel):
 
 ```python
-Engine(name="parakeet", kind="stt", label="Parakeet", compute="gpu", models=(
-    Model(repo="mlx-community/parakeet-tdt-0.6b-v3",
-          revision="ed2b7e8c...", bytes=2508532829, licence="CC-BY-4.0",
-          gated=False, previous=()),
-)),
+CATALOGUE: tuple[Engine, ...] = (
+    Engine(
+        name="parakeet",
+        kind="stt",
+        label="Parakeet",
+        compute="gpu",
+        models=(
+            Model(
+                repo="mlx-community/parakeet-tdt-0.6b-v3",
+                revision="ed2b7e8c...",
+                bytes=2508532829,
+                licence="CC-BY-4.0",
+                gated=False,
+                previous=(),
+            ),
+        ),
+    ),
+)
 ```
 
 - `name` is the engine's entry point name, which the config's `engine =`
