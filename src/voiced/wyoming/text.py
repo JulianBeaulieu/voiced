@@ -22,13 +22,12 @@ class SentenceAccumulator:
     is left when the stream ends.
     """
 
-    def __init__(self, language: str) -> None:
-        self._language = language
+    def __init__(self) -> None:
         self._buffer = ""
 
     def add(self, text: str) -> list[str]:
         self._buffer += text
-        parts = split_sentences(self._buffer, language=self._language)
+        parts = split_sentences(self._buffer)
         if not parts:
             return []
         last = parts[-1]
@@ -43,4 +42,4 @@ class SentenceAccumulator:
 
     def finish(self) -> list[str]:
         rest, self._buffer = self._buffer, ""
-        return split_sentences(rest, language=self._language)
+        return split_sentences(rest)

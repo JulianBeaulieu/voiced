@@ -7,9 +7,8 @@ such tokens into words so the engines only ever see what a person would read
 aloud. It also strips the Markdown that language models produce.
 
 The function is idempotent in every language: normalizing its output again
-changes nothing. The
-HTTP and Wyoming layers call it before handing text to an engine; engines
-only chunk what they receive.
+changes nothing. The HTTP and Wyoming layers call it before handing text to
+an engine; engines only chunk what they receive.
 
 The rewrites into words are per language and only English has them. Text in
 any other language gets the cleanup that does not depend on the language
@@ -698,9 +697,10 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 def normalize(text: str, *, language: str) -> str:
     """Rewrite ``text`` so a TTS engine reads it the way a person would.
 
-    Numbers, times, dates, money, percentages, temperatures and units become
-    words; acronyms such as ``CO2`` and ``HVAC`` are spelled; Markdown is
-    stripped; smart punctuation and whitespace are tidied. See the module
+    For English voices, numbers, times, dates, money, percentages,
+    temperatures and units become words and acronyms such as ``CO2`` and
+    ``HVAC`` are spelled. For every voice, Markdown is stripped and smart
+    punctuation and whitespace are tidied. See the module
     docstring for the guarantees.
 
     ``language`` is the BCP-47 tag of the voice that will speak the text.

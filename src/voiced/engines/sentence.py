@@ -124,15 +124,13 @@ class SentenceTTSEngine(TTSEngine):
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
         """``text`` is already normalized by the caller; this only splits it
-        into sentences, by the rules of the voice's language, and yields each
-        sentence's pieces as they come."""
+        into sentences and yields each sentence's pieces as they come."""
         self._check_loaded()
         if not self._has_voice(voice):
             raise UnknownVoice(voice)
         if not self.MIN_SPEED <= speed <= self.MAX_SPEED:
             raise EngineError(f"speed must be between {self.MIN_SPEED} and {self.MAX_SPEED}")
-        language = await self._voice_language(voice)
-        for sentence in split_sentences(text, language=language):
+        for sentence in split_sentences(text):
             pieces = self._synth_chunks(sentence, voice, speed)
             try:
                 while (pcm := await run_blocking(next, pieces, None)) is not None:
@@ -141,14 +139,6 @@ class SentenceTTSEngine(TTSEngine):
             finally:
                 # Stops the engine's work for the sentence when the client goes away.
                 await run_blocking(pieces.close)
-
-    async def _voice_language(self, voice: str) -> str:
-        """The language ``voice`` speaks, or the engine's first language for a
-        voice ``voices()`` does not list."""
-        for listed in await self.voices():
-            if listed.id == voice:
-                return listed.language
-        return self.languages[0]
 
     def _check_loaded(self) -> None:
         if self._model is None:

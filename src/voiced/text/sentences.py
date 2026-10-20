@@ -7,10 +7,11 @@ common abbreviations, decimals, quotes and closing brackets, and falls back to
 clause and word boundaries for sentences longer than ``max_len`` characters so
 no chunk ever exceeds what the models accept.
 
-The terminators and the abbreviation list are the same in every language:
-in another language an English abbreviation can only keep two sentences
-together, the cheaper mistake. Only whether a number followed by a period
-ends a sentence depends on the language (ADR 0023).
+The rules are the same in every language, so the splitter takes none. In
+another language an English abbreviation can only keep two sentences
+together, the cheaper mistake; for the same reason a number followed by a
+period ends a sentence only when the number has a decimal point, as an
+integer is an ordinal in German ("am 3. Oktober") (ADR 0023).
 
 Pure Python, no model, no dependencies.
 """
@@ -18,8 +19,6 @@ Pure Python, no model, no dependencies.
 from __future__ import annotations
 
 import re
-
-from voiced.text.language import primary_subtag
 
 __all__ = [
     "CLOSERS",
@@ -102,21 +101,16 @@ ideographic full stop and the fullwidth exclamation and question marks."""
 CLOSERS = "\"')]\u201d\u2019\u300d\u300f\uff09\u300b\u3011\u00bb"
 """Closing quotes and brackets that belong to the sentence before them."""
 
-# Languages in which a number followed by a period and a capitalised word ends
-# the sentence ("It costs 5. Then"). Elsewhere it is often an ordinal ("am 3.
-# Oktober"), so it never ends one.
-_NUMBER_FINAL_LANGUAGES = frozenset({"en"})
-
-# Candidate boundary: a terminator, closing quotes or brackets, and the
-# whitespace after. Group 1 is everything up to the whitespace. A match
-# starts only at the first terminator of a run and nothing in it backtracks,
-# so a long run of "!" costs linear time.
+# Candidate boundary: a run of terminators, closing quotes or brackets, and
+# the whitespace after. Group 1 is everything up to the whitespace. A run with
+# an unspaced terminator in it (a fullwidth "?" then "!") needs no whitespace after; any other
+# run does. A match starts only at the first terminator of a run and nothing
+# in it backtracks, so a long run of "!" costs linear time.
 _SPACED = re.escape(SPACED_TERMINATORS)
 _UNSPACED = re.escape(UNSPACED_TERMINATORS)
-_CLOSER = f"[{re.escape(CLOSERS)}]*+"
+_RUN = f"[{_SPACED}{_UNSPACED}]++[{re.escape(CLOSERS)}]*+"
 _BOUNDARY = re.compile(
-    rf"(?<![{_SPACED}{_UNSPACED}])"
-    rf"([{_SPACED}]++{_CLOSER}(?=\s)|[{_UNSPACED}]++{_CLOSER})\s*"
+    rf"(?<![{_SPACED}{_UNSPACED}])((?=[{_SPACED}]*+[{_UNSPACED}]){_RUN}|{_RUN}(?=\s))\s*"
 )
 
 # Where to cut an over-long sentence, in order of preference.
@@ -124,17 +118,17 @@ _CLAUSE_BREAK = re.compile(r"[,;:\u2014]\s+|\s+-\s+|\s+\u2013\s+")
 _WORD_BREAK = re.compile(r"\s+")
 
 
-def split_sentences(text: str, *, language: str, max_len: int = DEFAULT_MAX_LEN) -> list[str]:
+def split_sentences(text: str, *, max_len: int = DEFAULT_MAX_LEN) -> list[str]:
     """Split ``text`` into sentences of at most ``max_len`` characters.
 
-    ``language`` is the BCP-47 tag of the voice that will speak the text;
-    ``max_len`` is keyword-only so callers never depend on its position.
+    The positional signature is ``split_sentences(text) -> list[str]`` and is
+    stable; ``max_len`` is keyword-only so callers never depend on its position.
 
     Paragraph breaks (newlines) always split. Inside a paragraph, a sentence
     ends at one of :data:`UNSPACED_TERMINATORS`, or at one of
     :data:`SPACED_TERMINATORS` followed by whitespace, unless the period
     belongs to a known abbreviation, an initial (``J. R. R.``) or a number
-    (``3.14``, ``1. item``; outside English, any number). Closing quotes and
+    (``3.14``, ``1. item``, an integer such as ``am 3. Oktober``). Closing quotes and
     brackets stay with the sentence they close. An ellipsis only ends a
     sentence when the next word is capitalised. Sentences longer than
     ``max_len`` are cut at the last clause boundary before the limit, then at
@@ -144,22 +138,21 @@ def split_sentences(text: str, *, language: str, max_len: int = DEFAULT_MAX_LEN)
     """
     if max_len < 1:
         raise ValueError("max_len must be >= 1")
-    numbers_end = primary_subtag(language) in _NUMBER_FINAL_LANGUAGES
     out: list[str] = []
     for paragraph in re.split(r"\s*\n+\s*", text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
-        for sentence in _split_paragraph(paragraph, numbers_end):
+        for sentence in _split_paragraph(paragraph):
             out.extend(cut_to_length(sentence, max_len))
     return out
 
 
-def _split_paragraph(paragraph: str, numbers_end: bool) -> list[str]:
+def _split_paragraph(paragraph: str) -> list[str]:
     sentences: list[str] = []
     start = 0
     for m in _BOUNDARY.finditer(paragraph):
-        if not _is_boundary(paragraph, m, start, numbers_end):
+        if not _is_boundary(paragraph, m, start):
             continue
         sentences.append(paragraph[start : m.end(1)].strip())
         start = m.end()
@@ -169,7 +162,7 @@ def _split_paragraph(paragraph: str, numbers_end: bool) -> list[str]:
     return [s for s in sentences if s]
 
 
-def _is_boundary(text: str, m: re.Match[str], sentence_start: int, numbers_end: bool) -> bool:
+def _is_boundary(text: str, m: re.Match[str], sentence_start: int) -> bool:
     punct = m.group(1)
     before = text[: m.start()]
     after = text[m.end() :]
@@ -194,11 +187,14 @@ def _is_boundary(text: str, m: re.Match[str], sentence_start: int, numbers_end: 
         if lowered in {"etc", "no"} and after[:1].isupper():
             return True
         return False
-    # Numbered list markers and section numbers at the start of a sentence:
-    # "1. Apples", "2.3. Title". Elsewhere a number ends the sentence only
-    # where it cannot be an ordinal: "It costs 5. Then" but "am 3. Oktober".
+    # A number before a capitalised word. At the start of a sentence it is a
+    # list marker or section number ("1. Apples", "2.3. Title"); elsewhere an
+    # integer may be an ordinal ("am 3. Oktober"), so only a decimal ends the
+    # sentence ("Pi is 3.14. Really"). English reaches the engines with its
+    # numbers spelled, so "It costs 5. Then" staying whole only delays the
+    # Wyoming stream (ADR 0023).
     if word.replace(".", "").isdigit() and after[:1].isupper():
-        return numbers_end and before[sentence_start:].strip() != word
+        return "." in word and before[sentence_start:].strip() != word
     return True
 
 

@@ -302,10 +302,9 @@ class PiperEngine(TTSEngine):
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
-        voices = {v.id: v for v in await self.voices()}
-        if voice not in voices:
+        if voice not in {v.id for v in await self.voices()}:
             raise UnknownVoice(voice)
-        for sentence in split_sentences(text, language=voices[voice].language):
+        for sentence in split_sentences(text):
             pcm = await run_blocking(self._synth, sentence, voice, speed)
             yield PCMChunk(data=pcm)  # int16 LE mono 24 kHz
 ```
