@@ -328,23 +328,49 @@ struct InstallStages {
         return info.st_mode & S_IFMT
     }
 
-    /// `envs/<UTC timestamp>`, as ADR 0017 names environments, with a suffix on a collision.
+    /// `envs/<UTC timestamp>`, as ADR 0017 names environments, with `-2`, `-3`... on a
+    /// collision, as `install.new_environment_dir` names them: a build never writes into an
+    /// environment a daemon may be running, and `install.json` never names a path that once
+    /// was another environment.
     func newEnvironmentDirectory(at date: Date = Date()) -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyyMMdd'T'HHmmss"
         let base = formatter.string(from: date)
+        let record = InstallRecord.read(stateDirectory: configuration.paths.stateDirectory)
         var name = base
         var n = 1
-        let fileManager = FileManager.default
-        while ["", ".partial", ".broken"].contains(where: {
-            fileManager.fileExists(atPath: configuration.paths.environments.appendingPathComponent(name + $0).path)
-        }) {
+        while environmentTaken(configuration.paths.environments.appendingPathComponent(name, isDirectory: true), record: record) {
             n += 1
             name = "\(base)-\(n)"
         }
         return configuration.paths.environments.appendingPathComponent(name, isDirectory: true)
+    }
+
+    /// Whether a new environment must not be built at `candidate`: it, its `.partial` or its
+    /// `.broken` is there (a link counts, even a dangling one), or `install.json` names it, as
+    /// the active or the previous environment, even if it is gone (`install.environment_taken`).
+    private func environmentTaken(_ candidate: URL, record: InstallRecord?) -> Bool {
+        let name = candidate.lastPathComponent
+        if ["", ".partial", ".broken"].contains(where: {
+            Self.fileType(candidate.deletingLastPathComponent().appendingPathComponent(name + $0)) != nil
+        }) {
+            return true
+        }
+        let named = [record?.environment, record?.previous].compactMap { $0 }
+        let path = Self.realParentPath(candidate)
+        return named.contains { Self.realParentPath(URL(fileURLWithPath: $0)) == path }
+    }
+
+    /// `url` with its parent resolved through `realpath(3)`, as `os.path.realpath` resolves a
+    /// path whose last component is gone; `resolvingSymlinksInPath()` leaves such a path as
+    /// it is. Unresolved when the parent is not there either.
+    private static func realParentPath(_ url: URL) -> String {
+        let parent = url.deletingLastPathComponent()
+        guard let resolved = realpath(parent.path, nil) else { return url.resolvingSymlinksInPath().path }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true).appendingPathComponent(url.lastPathComponent).path
     }
 
     /// Waits while another install holds the lock.
