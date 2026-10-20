@@ -23,6 +23,10 @@ uses [Semantic Versioning](https://semver.org/).
   DMG). voiced now uses the espeak-ng that comes with its own environment,
   and Homebrew's only if that one does not work. `voiced doctor` names the
   copy it will use.
+- Two `voiced install --source` runs within the same second no longer
+  reuse one environment's name, which could leave a rollback pointing at a
+  deleted environment, or let two concurrent installs build into the same
+  one.
 
 ## [0.1.0] - 2026-10-19
 

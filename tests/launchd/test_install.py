@@ -1069,12 +1069,37 @@ def test_a_new_environment_never_takes_a_moved_or_unfinished_id(tmp_path: Path) 
     (envs / "20261019T000000-3").mkdir()
     assert new_environment_dir(tmp_path, "20261019T000000").name == "20261019T000000-4"
     assert new_environment_dir(tmp_path, "20261019T000001").name == "20261019T000001"
+    # Gone, but install.json still names them.
+    gone = Manifest(
+        source="cli",
+        environment=envs / "20261019T000001",
+        previous=envs / "20261019T000001-2",
+    )
+    assert new_environment_dir(tmp_path, "20261019T000001", gone).name == "20261019T000001-3"
 
 
-def test_a_missing_active_environment_is_no_rollback(settings: Settings, tmp_path: Path) -> None:
+def test_an_install_refuses_a_name_another_one_built_while_it_waited(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Both planned in the same second, before either built: the one that
+    waited for the lock must not build into the other's environment."""
+    first = _plan(settings, tmp_path, source=tmp_path / "checkout")
+    _install(first)
+    with pytest.raises(InstallError, match="while this one waited"):
+        _install(first)
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None and manifest.environment == first.environment
+
+
+def test_a_missing_active_environment_is_no_rollback(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The app moves an environment whose Python is gone to `<id>.broken`
     before it builds a fresh one: the environment that one replaced stays
-    `previous`, and prune keeps it."""
+    `previous`, and prune keeps it. All four installs land in one second,
+    so none may take a name that is there or that install.json names."""
+    now = time.gmtime(1_792_454_400)
+    monkeypatch.setattr("voiced.launchd.install.time.gmtime", lambda secs=None: now)
     first = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
     _install(first)
     second = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
@@ -1091,9 +1116,12 @@ def test_a_missing_active_environment_is_no_rollback(settings: Settings, tmp_pat
     shutil.rmtree(third.environment)
     shutil.rmtree(first.environment)
     fourth = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
+    # Not the third's name nor the first's: both gone, but install.json names them.
+    assert fourth.environment not in (first.environment, third.environment)
     _install(fourth)
     manifest = read_manifest(fourth.state_dir)
-    assert manifest is not None and manifest.previous is None
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (fourth.environment, None)
 
 
 def test_switching_away_from_a_legacy_venv_has_no_previous(
