@@ -19,8 +19,8 @@ The recording's timings are curl fetching a WAV, slower than the streamed benchm
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
-Soprano-80M or Phonon 31M. The numbers below come from two machines, both
-named under [Benchmarks](#benchmarks).
+Soprano-80M, Phonon 31M or Pocket TTS. The numbers below come from two
+machines, both named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -241,6 +241,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
+| [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
@@ -253,6 +254,19 @@ only. They are gated on Hugging Face, so using one means accepting its terms
 on the model page and giving the services a token (see
 [Using Phonon](#using-phonon)). voiced never uses them unless the config
 names one, and `/v1/models` reports the licence of the model in use.
+
+Pocket TTS is by Kyutai ([kyutai/pocket-tts](https://huggingface.co/kyutai/pocket-tts)),
+released under CC-BY-4.0, converted for MLX by mlx-community; its tokenizer
+and voice embeddings come from
+[kyutai/pocket-tts-without-voice-cloning](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning)
+(CC-BY-4.0). Of its voices, voiced offers the six whose recordings allow
+commercial use ([kyutai/tts-voices](https://huggingface.co/kyutai/tts-voices)):
+`alba` by Alba MacKenna (CC-BY-4.0), `marius` and `javert` from the Unmute
+Voice Donation Project (CC0), and `fantine`, `eponine` and `azelma` from
+the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
+`jean` are CC-BY-NC and are not offered. Kyutai's card prohibits voice
+impersonation without consent, deception (including passing generated
+audio off as a real recording) and unlawful or harmful content.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -345,6 +359,26 @@ auth login` with `HF_HOME` set to the Hugging Face home voiced uses
 (`[install] hf_home`, or `~/.cache/huggingface` when unset) before `voiced
 models download gradium/phonon-40m-en`.
 The details are in [ADR 0021](docs/decisions/0021-tts-phonon.md).
+
+### Using Pocket TTS
+
+Pocket TTS is Kyutai's small streaming model, the one Phonon builds on. It
+runs on the GPU, waits for speech-to-text between 80 ms frames, and is
+opt-in. To use it, download the model and its voices (about 240 MB) and
+switch to it:
+
+```sh
+~/.voiced/bin/voiced models download mlx-community/pocket-tts
+~/.voiced/bin/voiced settings set tts.engine=pocket
+~/.voiced/bin/voiced restart tts
+```
+
+The voices are `alba` (the default), `marius`, `javert`, `fantine`,
+`eponine` and `azelma`. It speaks English only: Kyutai's other languages
+have no MLX conversion yet. Like Phonon, it has no rate control, so `speed`
+is accepted and ignored. Choose Pocket TTS over Phonon 31M for Kyutai's own
+model and its CC0 and CC-BY voices on the GPU; choose Phonon to keep the GPU
+for speech-to-text. See [ADR 0028](docs/decisions/0028-tts-pocket.md).
 
 ## Benchmarks
 

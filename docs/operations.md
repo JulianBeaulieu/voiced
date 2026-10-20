@@ -446,6 +446,7 @@ reboots need a person. voiced does not change this setting.
 | tts | Kokoro-82M (default) | 469 MB peak resident |
 | tts | Soprano-80M (opt-in) | 392 MB resident |
 | tts | Phonon 31M (opt-in, on the CPU) | 530 MB resident (260 MB footprint) after a long reply |
+| tts | Pocket TTS (opt-in, on the GPU) | 430 MB resident (680 MB footprint) after a long reply; 968 MB MLX peak while synthesizing |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 
 All figures were measured on an M1 Max, each engine in its own process,
