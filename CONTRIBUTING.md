@@ -20,10 +20,8 @@ welcome. Everyone taking part follows the
 
 CI must be green before a pull request can merge; it runs the
 [checks](#checks) below. The maintainer reviews every pull request and may
-ask for changes. The review looks for tests that run without models, no
-personal data, no emoji, nothing stable changed without an issue, and docs
-updated where behaviour changed (`README.md`, `docs/`,
-`config.example.toml`, `CHANGELOG.md`). Pull requests are squash merged,
+ask for changes. The review checks the conventions, tests that run without
+models, and docs updated where behaviour changed. Pull requests are squash merged,
 and the title becomes the commit message, so it follows the
 [commit format](#conventions).
 
@@ -140,7 +138,7 @@ under 300 KB each, free of personal content. Never commit model weights.
 
 ## Conventions
 
-- Branch off `main` and open a pull request. `main` is protected.
+- `main` is protected.
 - Conventional commit messages: `feat(stt): ...`, `fix(api): ...`,
   `docs: ...`, `chore(ci): ...`, `test(wyoming): ...`. Scopes are the package
   directories (`stt`, `tts`, `api`, `wyoming`, `cli`, `launchd`, `engines`,

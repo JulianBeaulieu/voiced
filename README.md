@@ -23,8 +23,7 @@ listed in [CHANGELOG.md](CHANGELOG.md).
 ## Install
 
 You need an Apple Silicon Mac with macOS 14 or newer. The first install
-downloads about 4.5 GB (models, Python environment and uv's cache) and takes
-several minutes.
+downloads about 4.5 GB, mostly models, and takes several minutes.
 
 Most people want the menu bar app, from [Homebrew](https://brew.sh):
 
@@ -32,11 +31,10 @@ Most people want the menu bar app, from [Homebrew](https://brew.sh):
 brew install --cask julianbeaulieu/voiced/voiced
 ```
 
-Open voiced.app. It installs the services and asks for an administrator
-password once, to install them. The menu bar icon then shows whether both
-services are up. The app also restarts them, opens the logs and changes the
-common settings. It talks only to the watchdog's local control socket,
-never to the network; see [menubar/README.md](menubar/README.md). Moving
+Open voiced.app. It asks for an administrator password once and installs
+the services. The menu bar icon then shows whether both services are up.
+The app also restarts them, opens the logs and changes the common settings;
+see [menubar/README.md](menubar/README.md). Moving
 the app to the Trash leaves the services running: to remove voiced, use
 Settings > About > Uninstall voiced in the app.
 
@@ -66,7 +64,8 @@ Check the services from the terminal. The formula puts `voiced` on your
 `PATH`; after an install by the app, the command is `~/.voiced/bin/voiced`.
 
 ```sh
-voiced status
+voiced status                  # formula
+~/.voiced/bin/voiced status    # app
 ```
 
 Both services report `ok` once their model is warm, a few seconds after the
@@ -83,7 +82,10 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
 ```
 
 To remove a formula install, run `voiced uninstall`
-([docs/operations.md](docs/operations.md#commands)).
+([docs/operations.md](docs/operations.md#commands)). All three ways of
+installing set up the same `~/.voiced` and the same launchd services
+([ADR 0017](docs/decisions/0017-homebrew-packaging.md)), so you can switch
+between them.
 
 ## What you get
 
@@ -161,7 +163,8 @@ Two services, one package. Each service is one process that loads one
 model, serves it over HTTP and Wyoming from the same event loop, and
 serializes GPU work through a bounded queue. launchd restarts a service that
 exits; the watchdog restarts one that is alive but stuck. Engines are
-entry-point plugins behind a frozen interface. Details, including the audio
+entry-point plugins behind a
+[stable interface](CONTRIBUTING.md#what-is-stable). Details, including the audio
 conventions and how to add an engine, are in
 [docs/architecture.md](docs/architecture.md).
 
@@ -192,8 +195,8 @@ Mac itself. Home Assistant on another machine needs `bind = "0.0.0.0"`, which
 exposes the services to your whole network:
 
 - The HTTP API has no authentication unless `api_key` is set. Set it before
-  you bind to the LAN. `/health`, `/` and `/metrics.json` stay open either
-  way. They show latencies, error counts and recent error messages; with
+  you bind to the LAN. `/health`, `/`, `/metrics.json` and `/docs` stay open
+  either way. The first three show latencies, error counts and recent error messages; with
   `api_key` set the error messages are left out, since they can echo what a
   client sent. Without a key, a web page you open can also send requests to
   the services on your own Mac.
@@ -241,7 +244,7 @@ startup with the remedies if none works. With `[tts] espeak_library` set
 and `espeak_data` unset, the wheel's espeak-ng data files are used. Anyone
 redistributing a tts environment redistributes these GPL-3 packages with
 it: shipping a built tts environment (a venv, an app bundle, an image)
-means meeting the GPL-3 terms for it. The voiced source itself stays MIT.
+means meeting the GPL-3 terms for it.
 
 Libraries: `zeroconf` is LGPL-2.1-or-later and is imported as an installed
 package, not vendored; `soxr` and the `libsndfile` build inside `soundfile`
@@ -335,7 +338,8 @@ process. Method, the complete table and the known misses are in
   client that sends `end` at the last word sees about 114 ms median instead,
   worst up to 165 ms and 192 ms while TTS synthesizes (on the Studio 146 to
   149 ms median, 170 ms worst, and 510 ms worst while TTS synthesizes); that
-  misses the 50 ms median goal.
+  misses the project's 50 ms median target
+  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)).
 - Memory: the physical footprint (what Activity Monitor counts, GPU buffers
   included), idle after a long reply, with the MLX peak reached while serving.
 

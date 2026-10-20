@@ -8,7 +8,7 @@ Commands or click-paths a reviewer can follow.
 
 ## Interface questions
 
-Anything that touches a frozen interface, the config schema, the `/health` schema or a port. Write "none" otherwise.
+Anything that touches what CONTRIBUTING lists as stable, or a port. Write "none" otherwise.
 
 ## Checks run
 

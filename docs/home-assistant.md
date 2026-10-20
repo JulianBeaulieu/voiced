@@ -31,8 +31,8 @@ no authentication, so only do this on a trusted network.
 
 By default voiced listens on `127.0.0.1` and Home Assistant on another
 machine cannot reach it. In the menu bar app, open **Settings**,
-**Network**, set **Listen on** to **Local network** and accept the restart the app
-offers. Without the app, in `~/.config/voiced/config.toml`:
+**Network**, set **Listen on** to **Local network** and accept the restart
+the app offers. Without the app, in `~/.config/voiced/config.toml`:
 
 ```toml
 [server]
