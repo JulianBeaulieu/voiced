@@ -1257,6 +1257,26 @@ wheels = [
 ]
 
 [[package]]
+name = "ptts"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d9/5d/3bb8b5005809774991d465882fe54737badd9ee43931bdf3a056bf4eb336/ptts-0.4.0.tar.gz", hash = "sha256:6e0855a213990d93b439e32216b592ce73fd11f1b5c071cdd73528fe5a5406c6", size = 289833, upload-time = "2026-10-20T10:50:01.105Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/b4/852f02ee9514817770e7710bc34f303462ecaaeec2ddb26c3ac791a7c18f/ptts-0.4.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:8fb949edcf908792eb8f181329cfac2b217424ae901a4133d0373483706a2240", size = 6887706, upload-time = "2026-10-20T10:49:46.708Z" },
+    { url = "https://files.pythonhosted.org/packages/04/aa/cc13941ecfbe8f747f000f88b45529aca6622ba8dcafecad4ae6bb398ab2/ptts-0.4.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:6a666c676663599805fe70beea7682b0d857d9dea4366cdaa3ae682d273a5492", size = 6816180, upload-time = "2026-10-20T10:49:48.532Z" },
+    { url = "https://files.pythonhosted.org/packages/14/e6/a7dfeb8fda4c36166749aae8cdff40f3bae068fb3095d137b667ee0fac89/ptts-0.4.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3da1e610b606f20bc0dbfaed8ec30a996b2acd586b83ccc0c2061432ed105726", size = 6790290, upload-time = "2026-10-20T10:49:50.312Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/14/3fac4a711bb258e88fb43254995f7d07c591dde904eea7421ea48229f32c/ptts-0.4.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ad696a58469a8c48a47a09f119e60cb054c03835a52a7856da04b00bd9858bd1", size = 7454208, upload-time = "2026-10-20T10:49:52.295Z" },
+    { url = "https://files.pythonhosted.org/packages/99/ae/584baf3fda138c2cd7de320b3b78f75fb5d93f94f77a6940c59f6cf8fe7d/ptts-0.4.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:8da3ef0a2574f74859fac46abac32a2752cc9ed42351e4af871b2502b47fcdfd", size = 6970454, upload-time = "2026-10-20T10:49:54.085Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/24/10dc18c0df29284dfd5c96349461f12f7e26bf2a88896f882d1fa7ac8ed6/ptts-0.4.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:8860fa8bf2a87ce7524ac8057fc611139f5ac5d7c7cc4d3e7d2c97153c6fbe89", size = 7485393, upload-time = "2026-10-20T10:49:55.736Z" },
+    { url = "https://files.pythonhosted.org/packages/61/b5/c81337ad791720744540ab685319cd23aa08a6d0a056db81a75f68d9e4d9/ptts-0.4.0-cp39-abi3-win_amd64.whl", hash = "sha256:bc51cc4d7adecc73e555dfcd040f0ad6f1c9796452979e068794e07a28ea988f", size = 6824938, upload-time = "2026-10-20T10:49:57.779Z" },
+    { url = "https://files.pythonhosted.org/packages/60/28/dc5a6fc9a355e006af21681d11ef39e4251df7f95d850806b4a76bd88b8a/ptts-0.4.0-cp39-abi3-win_arm64.whl", hash = "sha256:c811898dce9beab77eb12ebecebab94a08414dbf292734b9e19b96a02eb4ac7d", size = 6558657, upload-time = "2026-10-20T10:49:59.814Z" },
+]
+
+[[package]]
 name = "pycparser"
 version = "3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -2008,6 +2028,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+phonon = [
+    { name = "huggingface-hub" },
+    { name = "ptts" },
+]
 stt = [
     { name = "parakeet-mlx" },
 ]
@@ -2037,6 +2061,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "huggingface-hub", marker = "extra == 'phonon'", specifier = ">=1.1" },
     { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=1.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6,<0.7" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
@@ -2044,6 +2069,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "parakeet-mlx", marker = "extra == 'stt'", specifier = ">=0.5,<0.6" },
     { name = "psutil", specifier = ">=5.9" },
+    { name = "ptts", marker = "extra == 'phonon'", specifier = ">=0.4,<0.5" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pysilero-vad", specifier = ">=3.4,<4" },
@@ -2055,7 +2081,7 @@ requires-dist = [
     { name = "wyoming", specifier = ">=1.6" },
     { name = "zeroconf", specifier = ">=0.132" },
 ]
-provides-extras = ["stt", "tts"]
+provides-extras = ["stt", "tts", "phonon"]
 
 [package.metadata.requires-dev]
 build = [{ name = "hatchling", specifier = "==1.32.4" }]

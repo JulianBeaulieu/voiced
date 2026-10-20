@@ -15,12 +15,12 @@ from voiced.engines.kokoro import KokoroEngine
 HEAVY = ("fastapi", "starlette", "numpy", "pysilero_vad", "mlx", "mlx_audio", "voiced.engines")
 
 
-def test_kokoro_catalogue_without_mlx() -> None:
+def test_kokoro_and_phonon_catalogues_without_mlx_or_ptts() -> None:
     code = (
         "import json, sys\n"
         "from voiced.engines.catalogue import main\n"
         "main([])\n"
-        "mlx = [m for m in sys.modules if m.split('.')[0] in ('mlx', 'mlx_audio')]\n"
+        "mlx = [m for m in sys.modules if m.split('.')[0] in ('mlx', 'mlx_audio', 'ptts')]\n"
         "print(json.dumps(mlx))\n"
     )
     out = subprocess.run(
@@ -30,6 +30,8 @@ def test_kokoro_catalogue_without_mlx() -> None:
     voices = tts["kokoro"]["voices"]
     assert "af_heart" in voices and "bf_emma" in voices
     assert not any(v.startswith("jf_") for v in voices)
+    assert tts["phonon"]["voices"][:2] == ["default", "Zoey"]
+    assert tts["phonon"]["models"] == ["gradium/phonon-31m-en"]
     assert json.loads(out[1]) == []
 
 
@@ -42,6 +44,8 @@ def test_labels() -> None:
     assert tts["kokoro"]["voice_labels"]["bm_george"] == "George (British English, male)"
     assert set(tts["kokoro"]["voice_labels"]) == set(tts["kokoro"]["voices"])
     assert tts["soprano"]["voice_labels"] == {"default": "Default"}
+    assert tts["phonon"]["voice_labels"]["Easton"] == "Easton (American English, male)"
+    assert tts["phonon"]["voice_labels"]["The Snow Queen"] == "The Snow Queen"
     assert stt["parakeet"] == {
         "name": "parakeet",
         "label": "Parakeet",

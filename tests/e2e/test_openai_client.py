@@ -1,7 +1,7 @@
 """The unmodified ``openai`` Python client against a live voiced server.
 
 Covers both endpoints and every response format each advertises, synthesis
-streamed and non-streamed, and the Kokoro and Soprano engines.
+streamed and non-streamed, and the Kokoro, Soprano and Phonon engines.
 """
 
 from __future__ import annotations
@@ -187,6 +187,23 @@ def test_soprano_audio_says_the_words(
     # Soprano can clip the last word; require the content, not a perfect match.
     assert word_accuracy(heard, SENTENCE) >= 0.6, heard
     assert {"kitchen", "thermostat"} <= set(words(heard)), heard
+
+
+@pytest.mark.parametrize("voice", ["Easton", "Captain Silas Blackwater"])
+def test_phonon_audio_says_the_words(
+    tts_phonon_service: LiveService, stt_service: LiveService, voice: str
+) -> None:
+    """A preset by its catalogue name, spaces and all; streamed as it is decoded."""
+    client = tts_phonon_service.openai_client()
+    streamed: list[bytes] = []
+    with client.audio.speech.with_streaming_response.create(
+        model="voiced", voice=voice, input=SENTENCE, response_format="wav"
+    ) as response:
+        streamed += [chunk for chunk in response.iter_bytes(chunk_size=4096) if chunk]
+    audio = b"".join(streamed)
+    assert len(streamed) > 1 and _audio_signature_ok("wav", audio)
+    heard = _transcribe(stt_service, audio, "wav")
+    assert word_accuracy(heard, SENTENCE) >= 0.8, heard
 
 
 # --- discovery --------------------------------------------------------------

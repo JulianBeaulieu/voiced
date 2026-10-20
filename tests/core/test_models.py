@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from voiced import models
 from voiced.config import Settings
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.parakeet import ParakeetEngine
+from voiced.engines.phonon import PhononEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 
 
@@ -27,6 +29,15 @@ def test_the_default_models_are_pinned_to_commits() -> None:
         assert pin.bytes > 0
     assert models.pinned_revision(defaults.stt.model) == models.PINS[0].revision
     assert models.pinned_revision("someone/else") is None
+
+
+def test_optional_pins_are_loaded_at_their_revision_but_not_installed_by_default() -> None:
+    """Phonon's: pinned, not in the manifest; only its 40M checkpoints are gated."""
+    assert not {p.repo for p in models.PINS} & {p.repo for p in models.OPTIONAL_PINS}
+    for pin in models.OPTIONAL_PINS:
+        assert models.pin(pin.repo) == pin and len(pin.revision) == 40 and pin.bytes > 0
+    gated = {p.repo for p in (*models.PINS, *models.OPTIONAL_PINS) if p.gated}
+    assert gated == {"gradium/phonon-40m-en", "gradium/phonon-40m-multilingual"}
 
 
 def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
@@ -60,6 +71,7 @@ def test_the_engines_name_what_they_load() -> None:
     # The config, the weights and voices/*.safetensors; not the sample WAVs or the .pt copies.
     assert models.download_patterns(KokoroEngine) == ["config.json", "*.safetensors"]
     assert models.download_patterns(object) is None
+    assert models.extra_downloads(object) == {}
 
 
 class Clock:
@@ -191,6 +203,29 @@ def test_without_write_there_is_no_dry_run_and_no_report(hub: Callable[..., Fake
     assert fake.calls[0]["revision"] == models.PINS[0].revision
 
 
+def test_a_gated_model_says_how_to_get_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    import httpx
+    from huggingface_hub import constants
+    from huggingface_hub.errors import GatedRepoError
+
+    def gated(repo: str, **kwargs: Any) -> Any:
+        request = httpx.Request("GET", f"https://huggingface.co/{repo}")
+        raise GatedRepoError("401", response=httpx.Response(401, request=request))
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", gated)
+    monkeypatch.setattr(constants, "HF_HOME", str(tmp_path))
+    with pytest.raises(RuntimeError) as exc:
+        models.snapshot("gradium/phonon-40m-en", ["config.json"])
+    message = str(exc.value)
+    assert "https://huggingface.co/gradium/phonon-40m-en" in message
+    hf = shlex.quote(str(Path(sys.executable).parent / "hf"))  # voiced's environment's
+    assert f"HF_HOME={tmp_path} {hf} auth login" in message
+    assert str(tmp_path / "token") in message
+
+
 def test_offline_the_download_goes_to_the_cache_without_bytes(
     hub: Callable[..., FakeHub],
 ) -> None:
@@ -231,6 +266,10 @@ def test_the_models_step_fetches_what_each_engine_names_then_loads_it(
         def download_patterns(cls) -> list[str]:
             return ["*.json"]
 
+        @classmethod
+        def extra_downloads(cls) -> dict[str, list[str]]:
+            return {"org/voices": ["voices/*"]}
+
         async def load(self) -> None:
             loaded.append(self.model_id)
 
@@ -240,7 +279,7 @@ def test_the_models_step_fetches_what_each_engine_names_then_loads_it(
     config.write_text('[stt]\nmodel = "org/stt"\n[tts]\nengine = "fake"\n')
     fetched.clear()
     models.download(config, None)
-    assert fetched == [("org/stt", ["*.json"])]
+    assert fetched == [("org/stt", ["*.json"]), ("org/voices", ["voices/*"])]
     assert loaded == ["org/stt"]
 
 
@@ -250,12 +289,18 @@ def test_the_pins_are_the_sizes_of_what_the_engines_load() -> None:
     from huggingface_hub import HfApi
     from huggingface_hub.utils import filter_repo_objects
 
-    engines = {models.PINS[0].repo: ParakeetEngine, models.PINS[1].repo: KokoroEngine}
-    for pin in models.PINS:
+    phonon = models.download_patterns(PhononEngine)
+    patterns = {
+        models.PINS[0].repo: models.download_patterns(ParakeetEngine),
+        models.PINS[1].repo: models.download_patterns(KokoroEngine),
+        **{p.repo: phonon for p in models.OPTIONAL_PINS if p.repo.startswith("gradium/phonon-")},
+        **models.extra_downloads(PhononEngine),
+    }
+    for pin in (*models.PINS, *models.OPTIONAL_PINS):
+        # Gated repositories list their files to anyone signed in or not.
         info = HfApi().model_info(pin.repo, revision=pin.revision, files_metadata=True)
         sizes = {f.rfilename: f.size or 0 for f in info.siblings or []}
-        patterns = models.download_patterns(engines[pin.repo])
-        wanted = filter_repo_objects(list(sizes), allow_patterns=patterns)
+        wanted = filter_repo_objects(list(sizes), allow_patterns=patterns[pin.repo])
         assert sum(sizes[name] for name in wanted) == pin.bytes, pin.repo
 
 

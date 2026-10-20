@@ -11,10 +11,17 @@ names at that revision, so a model repository changing upstream changes
 nothing installed. A model that is not pinned (one the config names) loads
 its ``main`` revision, as before.
 
+:data:`OPTIONAL_PINS` fixes the revision of models an engine loads that
+are not installed by default (Phonon's, ADR 0021): the engine loads that
+revision and ``download`` fetches it when the config names it, but the
+manifest leaves it out.
+
 An engine may declare a ``download_patterns()`` classmethod returning the
-Hugging Face file patterns it loads. Like ``catalogue_voices`` it is not
-part of the frozen interface in ``voiced.engines.base``: an engine without
-it downloads in its own ``load()``.
+Hugging Face file patterns it loads, and an ``extra_downloads()`` classmethod
+naming other repositories it loads from, each with its patterns. Like
+``catalogue_voices`` they are not part of the frozen interface in
+``voiced.engines.base``: an engine without them downloads in its own
+``load()``.
 
 ``python -m voiced.models download --config FILE [--report]`` is the
 models step of ``voiced install``, run in the new environment: it fetches
@@ -31,6 +38,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import shlex
 import sys
 import threading
 import time
@@ -50,6 +58,7 @@ class Pin:
     # The revisions earlier releases pinned, newest first: re-pinning moves
     # the old revision here, so uninstall still knows it is voiced's.
     previous: tuple[str, ...] = ()
+    gated: bool = False  # needs its licence accepted and a Hugging Face token
 
 
 PINS: tuple[Pin, ...] = (
@@ -61,6 +70,22 @@ PINS: tuple[Pin, ...] = (
     Pin("mlx-community/Kokoro-82M-bf16", "a71e4d38b236d968966a2002c4c895dbd12b1c3c", 355322783),
 )
 
+OPTIONAL_PINS: tuple[Pin, ...] = (
+    # config.json, tokenizer.json, model.q8.gguf and default-voice.safetensors,
+    # at the revisions ptts 0.4.0 names as its defaults
+    Pin("gradium/phonon-31m-en", "8c64b55ec301728e2d1695bfea87a08a267d0c2d", 65049306),
+    # voices.jsonl and the 37 English voices/*.safetensors
+    Pin("gradium/phonon-voices", "da6c9ec0d47be8df5c87c730a3aa97187f3229c3", 9510439),
+    # The 40M checkpoints: CC BY-NC 4.0, gated
+    Pin("gradium/phonon-40m-en", "9b95393286eaeeebf1330b2ae90a14a2074c415d", 75090522, gated=True),
+    Pin(
+        "gradium/phonon-40m-multilingual",
+        "1267486cbcb55d2eaa61ba521c2ed8e4d22923c2",
+        75090344,
+        gated=True,
+    ),
+)
+
 REPORT_INTERVAL_S = 0.25
 """At most four byte reports a second."""
 
@@ -70,7 +95,7 @@ BYTES_BAR = "huggingface_hub.snapshot_download"
 
 
 def pin(repo: str) -> Pin | None:
-    return next((p for p in PINS if p.repo == repo), None)
+    return next((p for p in (*PINS, *OPTIONAL_PINS) if p.repo == repo), None)
 
 
 def pinned_revision(repo: str) -> str | None:
@@ -82,7 +107,7 @@ def pinned_revision(repo: str) -> str | None:
 def pinned_revisions() -> set[tuple[str, str]]:
     """Every ``(repo, revision)`` voiced pins or pinned, which is what
     ``voiced uninstall --remove-models`` may delete."""
-    return {(p.repo, rev) for p in PINS for rev in (p.revision, *p.previous)}
+    return {(p.repo, rev) for p in (*PINS, *OPTIONAL_PINS) for rev in (p.revision, *p.previous)}
 
 
 def manifest() -> dict[str, Any]:
@@ -93,6 +118,25 @@ def download_patterns(engine: type) -> list[str] | None:
     """The files ``engine`` loads, or None when it does not say."""
     declared = getattr(engine, "download_patterns", None)
     return list(declared()) if callable(declared) else None
+
+
+def extra_downloads(engine: type) -> dict[str, list[str]]:
+    """Other repositories ``engine`` loads from, with their file patterns."""
+    declared = getattr(engine, "extra_downloads", None)
+    return dict(declared()) if callable(declared) else {}
+
+
+def login_hint(repo: str, hf_home: Path) -> str:
+    """What to do when ``repo`` is gated and the services cannot read it.
+    The command is huggingface_hub's, from voiced's environment when this
+    runs in it."""
+    found = Path(sys.executable).parent / "hf"
+    hf = shlex.quote(str(found)) if found.is_file() else "hf"
+    return (
+        f"{repo} is gated: accept its licence at https://huggingface.co/{repo}, then, as "
+        f"the user the services run as, run `HF_HOME={shlex.quote(str(hf_home))} {hf} auth "
+        f"login`, which saves the token to {hf_home / 'token'}"
+    )
 
 
 Write = Callable[[str], None]
@@ -165,6 +209,17 @@ def snapshot(repo: str, patterns: list[str] | None, *, write: Write | None = Non
     local = Path(repo).expanduser()
     if local.is_dir():
         return local
+    from huggingface_hub.errors import GatedRepoError
+
+    try:
+        return _snapshot(repo, patterns, write)
+    except GatedRepoError as exc:
+        from huggingface_hub import constants
+
+        raise RuntimeError(login_hint(repo, Path(constants.HF_HOME))) from exc
+
+
+def _snapshot(repo: str, patterns: list[str] | None, write: Write | None) -> Path:
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import DryRunError
 
@@ -314,6 +369,8 @@ def download(config: Path, write: Write | None) -> None:
         patterns = download_patterns(cls)
         if patterns is not None:
             snapshot(model, patterns, write=write)
+        for repo, extra in extra_downloads(cls).items():
+            snapshot(repo, extra, write=write)
         engine = cls(model)
         asyncio.run(engine.load())
         print(f"  loaded {engine.name} ({engine.model_id})", flush=True)

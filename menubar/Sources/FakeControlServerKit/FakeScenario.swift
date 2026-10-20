@@ -126,6 +126,14 @@ extension FakeState {
                     TTSEngineInfo(
                         name: "soprano", label: "Soprano", models: ["mlx-community/Soprano-80M-bf16"],
                         voices: ["default"], voiceLabels: ["default": "Default"], languages: ["en"]),
+                    TTSEngineInfo(
+                        name: "phonon", label: "Phonon", models: ["gradium/phonon-31m-en"],
+                        voices: ["default", "Easton", "Maeve", "The Snow Queen"],
+                        voiceLabels: [
+                            "default": "Default", "Easton": "Easton (American English, male)",
+                            "Maeve": "Maeve (British English, female)", "The Snow Queen": "The Snow Queen",
+                        ],
+                        languages: ["en"]),
                     // No labels, as from an engine (or a server) that does not send them.
                     TTSEngineInfo(name: "fake", models: ["fake"], voices: ["fake"]),
                 ]),

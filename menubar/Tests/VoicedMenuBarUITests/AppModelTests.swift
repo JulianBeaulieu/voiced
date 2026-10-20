@@ -260,6 +260,22 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.restartRequired, [])
     }
 
+    func testSwitchingToPhononTakesItsModelAndDefaultVoiceThenAPresetByName() async throws {
+        let server = try startServer()
+        defer { server.stop() }
+        let model = try await connectedModel(server)
+        defer { model.stop() }
+
+        _ = await model.apply(.ttsEngine("phonon"))
+        XCTAssertEqual(
+            server.requests.last { $0.op == "settings.set" }?.args,
+            ["tts.engine": "phonon", "tts.model": "gradium/phonon-31m-en", "tts.voice": "default"])
+        // Voice ids are the catalogue's names, spaces and all.
+        _ = await model.apply(.ttsVoice("The Snow Queen"))
+        XCTAssertEqual(server.requests.last { $0.op == "settings.set" }?.args, ["tts.voice": "The Snow Queen"])
+        XCTAssertEqual(model.settings?.tts.voice, "The Snow Queen")
+    }
+
     func testARestartByAnyoneClearsTheRestartNotice() async throws {
         let server = try startServer()
         defer { server.stop() }

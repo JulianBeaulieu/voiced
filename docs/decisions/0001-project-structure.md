@@ -32,6 +32,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.engines.sentence` | `SentenceTTSEngine`: `load()`, the loaded, voice and speed checks, and the split-synthesize-yield loop shared by sentence-at-a-time TTS engines. |
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
 | `voiced.engines.soprano` | The Soprano TTS engine, selectable, not default (repetition penalty and a per-sentence bound against runaways); see ADR 0010. |
+| `voiced.engines.phonon` | The Phonon TTS engine on the CPU through `ptts`, selectable, not default (chunks streamed within a sentence, pinned model and voices); see ADR 0021. |
 | `voiced.engines.parakeet` | The Parakeet TDT STT engine (`parakeet-mlx`): batch, and streaming through a planner (gate, grid, speculative final call) and a thin library seam; see ADR 0008. |
 | `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |
 | `voiced.api` | FastAPI app factories, one per modality; `api.context` holds `Ctx`, `APIError` and the `/v1` dependencies; `api.ffmpeg` decodes uploads and encodes mp3/opus through ffmpeg; `api.formats` renders transcripts (json, text, verbose_json, srt, vtt); `api.foreign_models` rejects a `model` that names another installed engine; `api.responses` holds `ClosingStreamingResponse`; `api.status_page` serves `/` and `/metrics.json`. |

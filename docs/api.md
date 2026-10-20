@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 | `input` | yes | Text to speak, not empty, at most `tts.max_input_chars` (default 4096). Numbers, times, units and acronyms are spelled out before synthesis and Markdown is stripped. |
 | `model` | no | See [The `model` field](#the-model-field). |
 | `voice` | no | An id from [`/v1/audio/voices`](#get-v1audiovoices). Defaults to `tts.default_voice` (`af_heart`). |
-| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano has no rate control and ignores it. |
+| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano and Phonon have no rate control and ignore it. |
 | `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
 
 | Format | `Content-Type` | Body |
@@ -322,6 +322,23 @@ a language and gender code: `af_` and `am_` are American English female and
 male, `bf_` and `bm_` British. Version 1 serves the 28 English voices.
 Soprano, when selected, has one voice, `default`.
 
+Phonon, when selected, has `default` (the model's own voice) and Gradium's 37
+English presets, each named as Gradium's catalogue names it, spaces
+included. The language is the preset's accent, `en` for the character
+voices:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "voice", "id": "default", "name": "Default", "language": "en", "gender": null},
+    {"object": "voice", "id": "Easton", "name": "Easton", "language": "en-US", "gender": "male"},
+    {"object": "voice", "id": "Maeve", "name": "Maeve", "language": "en-GB", "gender": "female"},
+    {"object": "voice", "id": "The Snow Queen", "name": "The Snow Queen", "language": "en", "gender": null}
+  ]
+}
+```
+
 ## GET /v1/models
 
 Available on both services. Lists the one model the service runs, with the
@@ -348,7 +365,10 @@ curl -s http://127.0.0.1:8880/v1/models
 }
 ```
 
-The stt service reports `"task": "transcription"`.
+The stt service reports `"task": "transcription"`. `license` is the
+configured model's: with Phonon it is `Apache-2.0` for the default
+`gradium/phonon-31m-en` and `CC-BY-NC-4.0` (non-commercial) for the
+`gradium/phonon-40m-*` models.
 
 ```python
 from openai import OpenAI
