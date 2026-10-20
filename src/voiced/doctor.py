@@ -236,13 +236,14 @@ def check_config_file(path: Path) -> Check:
 def check_espeak(required: bool = True) -> Check:
     """Does the Kokoro engine find an espeak-ng library?
 
-    Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`):
-    ``[tts] espeak_library`` when set (``VOICED_ESPEAK_LIBRARY``), else the
-    Homebrew keg, which is found whether or not it is linked. An ``espeak-ng`` binary on ``PATH`` is
-    irrelevant: the engine loads the library. ``required`` is whether the
-    configured TTS engine needs it; if not, any problem is only a warning.
-    The library is found, not loaded: the engine's phonemizer self-test runs
-    only in the service.
+    Uses the engine's own lookup (:func:`voiced.engines.kokoro.espeak_candidates`)
+    and reports the copy it tries first: ``[tts] espeak_library`` when set
+    (``VOICED_ESPEAK_LIBRARY``), else the ``espeakng-loader`` wheel's in this
+    environment, else the Homebrew keg, which is found whether or not it is
+    linked. An ``espeak-ng`` binary on ``PATH`` is irrelevant: the engine loads
+    the library. ``required`` is whether the configured TTS engine needs it;
+    if not, any problem is only a warning. The library is found, not loaded:
+    the engine's phonemizer self-test runs only in the service.
     """
     name = "espeak-ng"
     result: Result = "fail" if required else "warn"
@@ -252,16 +253,21 @@ def check_espeak(required: bool = True) -> Check:
         return Check(name, result, str(exc))
     if found:
         library, data = found[0]
-        override = library == os.environ.get(ENV_ESPEAK_LIBRARY)
-        detail = f"found {library} ({'[tts] espeak_library' if override else 'Homebrew'})"
+        if library == os.environ.get(ENV_ESPEAK_LIBRARY):
+            detail = f"found {library} ([tts] espeak_library)"
+        elif data is None:  # only the wheel's comes without its data path
+            detail = f"found {library} (espeakng-loader wheel; data copied to a short path)"
+        else:
+            detail = f"found {library} (Homebrew)"
         if data:
             detail += f", data {data}"
         return Check(name, "pass", detail)
     return Check(
         name,
         result,
-        f"library not found; Kokoro needs it: {ESPEAK_INSTALL_HINT} "
-        "(or set [tts] espeak_library to libespeak-ng.dylib)",
+        "library not found (no espeakng-loader wheel in this environment, no "
+        f"Homebrew keg); Kokoro needs it: reinstall voiced with its tts extra, or "
+        f"{ESPEAK_INSTALL_HINT} (or set [tts] espeak_library to libespeak-ng.dylib)",
     )
 
 

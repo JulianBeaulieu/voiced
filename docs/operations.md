@@ -57,8 +57,8 @@ not root. An install with another state directory, config path or
 uninstall` say so, and such a layout runs with `voiced serve` instead.
 
 `voiced doctor` checks Apple Silicon, the macOS version, Python, the
-espeak-ng library Kokoro would load (the Homebrew keg or `[tts]
-espeak_library`), ffmpeg, memory, the four ports (and which process
+espeak-ng library Kokoro would load (the `espeakng-loader` wheel's in
+voiced's environment, else the Homebrew keg, or `[tts] espeak_library`), ffmpeg, memory, the four ports (and which process
 holds them), FileVault, whether the daemons are installed and loaded, Metal
 from the service environment, and the last `--metal-probe` result. It exits
 non-zero only on a failed check, not on a warning.

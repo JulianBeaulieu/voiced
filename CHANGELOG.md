@@ -10,6 +10,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 - `GET /openapi.json` on the TTS service no longer returns 500,
   so `/docs` shows the API.
+- Text-to-speech no longer fails to start with `EspeakNotFound` ("no
+  espeak-ng library found") on a Mac where Homebrew's espeak-ng is not
+  installed, which was every Mac set up only with the menu bar app (cask or
+  DMG). voiced now uses the espeak-ng that comes with its own environment,
+  and Homebrew's only if that one does not work. `voiced doctor` names the
+  copy it will use.
 
 ## [0.1.0] - 2026-10-19
 

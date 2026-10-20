@@ -69,9 +69,35 @@ def _keg(root: Path) -> Path:
     return root
 
 
+@pytest.fixture
+def no_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This environment has no espeakng-loader wheel."""
+    monkeypatch.setattr(kokoro, "_bundled_espeak", lambda: None)
+
+
+def test_espeak_wheel_passes_without_homebrew(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The wheel's library is what Kokoro tries first, so it passes with no keg."""
+    library = tmp_path / "espeakng_loader" / "libespeak-ng.dylib"
+    library.parent.mkdir()
+    library.write_bytes(b"")
+    monkeypatch.setattr(
+        kokoro, "_bundled_espeak", lambda: (str(library), str(tmp_path / "data"), "0.2.4")
+    )
+    monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
+    check = doctor.check_espeak()
+    assert check == doctor.Check(
+        "espeak-ng",
+        "pass",
+        f"found {library} (espeakng-loader wheel; data copied to a short path)",
+    )
+
+
+@pytest.mark.usefixtures("no_wheel")
 def test_espeak_unlinked_keg_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The engine loads the keg under opt/, linked or not, so that is what passes.
-    Whether an ``espeak-ng`` binary is on PATH is not looked at."""
+    """Without the wheel the engine loads the keg under opt/, linked or not, so
+    that is what passes. Whether an ``espeak-ng`` binary is on PATH is not looked at."""
     keg = _keg(tmp_path / "opt" / "espeak-ng")
     monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"), str(keg)))
     check = doctor.check_espeak()
@@ -82,6 +108,7 @@ def test_espeak_unlinked_keg_passes(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     )
 
 
+@pytest.mark.usefixtures("no_wheel")
 def test_espeak_missing_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(kokoro, "HOMEBREW_PREFIXES", (str(tmp_path / "absent"),))
     check = doctor.check_espeak()

@@ -7,13 +7,14 @@ the phoneme string is fed straight to the MLX model together with the
 voice's style vector. mlx-audio's own pipeline (misaki G2P) is bypassed.
 
 espeak-ng is an external, GPL-3 program and is never vendored. The engine
-uses the Homebrew installation (``brew install espeak-ng``), or the library
-and data directory named by ``VOICED_ESPEAK_LIBRARY`` and
-``VOICED_ESPEAK_DATA`` when those are set (the services set them from
-``[tts] espeak_library`` and ``espeak_data``), and fails at ``load()`` with the
-install command if neither works. When no data directory is named, the
-tokenizer reads the data of the espeak-ng copy in the ``espeakng-loader``
-wheel; that copy is cloned to a short path first (``_espeak_data``).
+uses the copy in the ``espeakng-loader`` wheel that ``kokoro-onnx`` installs
+(its data cloned to a short path first, ``_espeak_data``), else the Homebrew
+installation (``brew install espeak-ng``), or only the library and data
+directory named by ``VOICED_ESPEAK_LIBRARY`` and ``VOICED_ESPEAK_DATA`` when
+those are set (the services set them from ``[tts] espeak_library`` and
+``espeak_data``), and fails at ``load()`` with the install command if none
+works (ADR 0018). When no data directory is named, the tokenizer reads the
+wheel's data, through the same short clone.
 
 Each residual block of a sentence's graph is submitted to the GPU as soon as
 it is built, after waiting for any speech-to-text encoder call that holds the
@@ -180,8 +181,10 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
     ``VOICED_ESPEAK_LIBRARY`` (with optional ``VOICED_ESPEAK_DATA``), which
     ``voiced`` sets from ``[tts] espeak_library`` and ``espeak_data``, is the one
     override and is the only candidate when set; a path that does not exist
-    is an error naming it. Otherwise the Homebrew keg for Apple Silicon and
-    for Intel, whichever exists.
+    is an error naming it. Otherwise the library in the ``espeakng-loader``
+    wheel, so every install runs the version in the lock, with no data path
+    (``_espeak_data`` clones the wheel's), then the Homebrew keg for Apple
+    Silicon and for Intel, whichever exists.
     """
     override = os.environ.get(ENV_ESPEAK_LIBRARY)
     if override:
@@ -191,7 +194,9 @@ def espeak_candidates() -> list[tuple[str, str | None]]:
         if data and not Path(data).is_dir():
             raise EspeakNotFound(f"[tts] espeak_data {data} is not a directory")
         return [(override, data)]
-    return [
+    bundled = _bundled_espeak()
+    wheel = [(bundled[0], None)] if bundled and Path(bundled[0]).is_file() else []
+    return wheel + [
         (f"{prefix}/lib/libespeak-ng.dylib", f"{prefix}/share/espeak-ng-data")
         for prefix in HOMEBREW_PREFIXES
         if Path(f"{prefix}/lib/libespeak-ng.dylib").is_file()
@@ -315,9 +320,9 @@ class KokoroEngine(SentenceTTSEngine):
 # -- blocking helpers ----------------------------------------------------------
 
 
-def _bundled_espeak() -> tuple[str, str] | None:
-    """``(data, version)`` of the espeak-ng in the ``espeakng-loader`` wheel,
-    or ``None`` when it is not installed."""
+def _bundled_espeak() -> tuple[str, str, str] | None:
+    """``(library, data, version)`` of the espeak-ng in the ``espeakng-loader``
+    wheel, or ``None`` when it is not installed."""
     try:
         import espeakng_loader
     except ImportError:
@@ -326,7 +331,7 @@ def _bundled_espeak() -> tuple[str, str] | None:
         version = importlib.metadata.version("espeakng-loader")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
-    return str(espeakng_loader.get_data_path()), version
+    return espeakng_loader.get_library_path(), str(espeakng_loader.get_data_path()), version
 
 
 def _user_cache_dir() -> Path | None:
@@ -412,13 +417,13 @@ def _espeak_data(data: str | None) -> str | None:
         bundled = _bundled_espeak()
         if bundled is None:
             return None
-        data = _short_espeak_copy(*bundled)
+        data = _short_espeak_copy(*bundled[1:])
     resolved = os.path.realpath(data)
     size = len(resolved.encode())
     if size > MAX_ESPEAK_DATA_PATH:
         raise EspeakNotFound(
             f"espeak-ng data path {resolved} is {size} bytes, longer than the "
-            f"{MAX_ESPEAK_DATA_PATH} the espeak-ng from espeakng-loader accepts. Use "
+            f"{MAX_ESPEAK_DATA_PATH} the espeak-ng from espeakng-loader accepts. Install "
             f"Homebrew's espeak-ng (`{ESPEAK_INSTALL_HINT}`), or set [tts] espeak_data "
             f"to a copy at a path of {MAX_ESPEAK_DATA_PATH} bytes or less."
         )
@@ -431,9 +436,11 @@ def _load_espeak() -> Any:
 
     errors: list[str] = []
     for library, configured in espeak_candidates():
-        # Raises on its own: a data path that is too long or cannot be copied
-        # is not a missing espeak-ng.
-        data = _espeak_data(configured)
+        try:
+            data = _espeak_data(configured)
+        except EspeakNotFound as exc:  # too long or not copied: try the next one
+            errors.append(f"{library}: {exc}")
+            continue
         try:
             tokenizer = Tokenizer(EspeakConfig(lib_path=library, data_path=data))
             probe = tokenizer.phonemize("hello", "en-us")
@@ -448,11 +455,15 @@ def _load_espeak() -> Any:
         in_use = os.environ.get("PHONEMIZER_ESPEAK_LIBRARY") or library
         log.info("kokoro: espeak-ng at %s, data %s", in_use, data)
         return tokenizer
-    detail = "; ".join(errors) if errors else "no espeak-ng library found"
+    problem = (
+        f"no espeak-ng it tried works ({'; '.join(errors)})"
+        if errors
+        else "it is not installed (no espeakng-loader wheel, no Homebrew keg)"
+    )
     raise EspeakNotFound(
-        "Kokoro needs espeak-ng for pronunciation but it is not installed or not "
-        f"working ({detail}). Install it with `{ESPEAK_INSTALL_HINT}`, or point "
-        "[tts] espeak_library and espeak_data at a working copy."
+        f"Kokoro needs espeak-ng for pronunciation but {problem}. Install it with "
+        f"`{ESPEAK_INSTALL_HINT}`, or point [tts] espeak_library and espeak_data at "
+        "a working copy."
     )
 
 

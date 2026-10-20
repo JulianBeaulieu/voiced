@@ -393,6 +393,20 @@ path phonemizes correctly. The wheel's copy comes first, so every Mac runs
 the version in the lock; Homebrew's keg (first in ADR 0009) becomes the
 fallback, and the explicit `VOICED_ESPEAK_*` variables still override both.
 
+2026-10-20: until now only the data half of this was in the code:
+`espeak_candidates()` listed the override or the Homebrew kegs and never
+the wheel's library, so the 0.1.0 cask and DMG installs, which do not
+install Homebrew's espeak-ng, failed text-to-speech at load with
+`EspeakNotFound` on a Mac without the keg. The code now matches this
+section: the wheel's library (`espeakng_loader.get_library_path()`) is the
+first candidate, with no data path so `_espeak_data` clones the wheel's
+data to the short path, then the kegs; `VOICED_ESPEAK_LIBRARY` is still the
+only candidate when set. A wheel copy whose data cannot be cloned or is
+too long is skipped for the next candidate rather than ending the load.
+`voiced doctor` names the copy it found (the wheel's, the keg or the
+override). The cask needs no espeak-ng dependency; the formula's
+`depends_on "espeak-ng"` is now only the fallback.
+
 ### Models: pinned and downloaded with real progress
 
 The defaults are `mlx-community/parakeet-tdt-0.6b-v3` (one file of
