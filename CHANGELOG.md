@@ -55,6 +55,14 @@ uses [Semantic Versioning](https://semver.org/).
 - A `dependency-locks` workflow regenerates the shipped locks and NOTICE on
   Dependabot's `uv` pull requests and pushes them, so those pull requests
   pass CI once their runs are approved, with no repository secret.
+- Pocket TTS text-to-speech engine, opt-in: `engine = "pocket"`,
+  `model = "mlx-community/pocket-tts"`, Kyutai's English model (CC-BY-4.0)
+  on the GPU through mlx-audio. It streams every 80 ms frame as it is
+  decoded and waits for speech-to-text encoder calls between frames. Voices
+  are the six whose recordings allow commercial use (`alba`, `marius`,
+  `javert`, `fantine`, `eponine`, `azelma`). The model, its tokenizer and
+  the voices are pinned (`voiced models download mlx-community/pocket-tts`);
+  the new `pocket` extra adds `sentencepiece`.
 
 ### Changed
 

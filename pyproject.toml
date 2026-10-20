@@ -55,6 +55,9 @@ tts = ["mlx-audio>=0.5.8,<0.5.10", "kokoro-onnx>=0.4", "huggingface-hub>=1.1", "
 # pinned to the minor release the engine was checked against (stream(),
 # add_voice(), voice_catalog= and its default model and voice revisions).
 phonon = ["ptts>=0.4,<0.5", "huggingface-hub>=1.1"]
+# Pocket TTS on MLX (ADR 0028): mlx-audio's pocket_tts at the tts extra's pin,
+# whose tokenizer needs sentencepiece, so it installs on its own too.
+pocket = ["mlx-audio>=0.5.8,<0.5.10", "sentencepiece>=0.2,<0.3", "huggingface-hub>=1.1"]
 
 [dependency-groups]
 dev = [
@@ -92,6 +95,7 @@ fake = "voiced.testing.fakes:FakeTTSEngine"
 kokoro = "voiced.engines.kokoro:KokoroEngine"
 soprano = "voiced.engines.soprano:SopranoEngine"
 phonon = "voiced.engines.phonon:PhononEngine"
+pocket = "voiced.engines.pocket:PocketEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

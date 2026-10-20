@@ -33,6 +33,7 @@ def test_kokoro_and_phonon_catalogues_without_mlx_or_ptts() -> None:
     assert tts["phonon"]["voices"][:2] == ["default", "Zoey"]
     # The catalogue's models, the default first.
     assert tts["phonon"]["models"] == ["gradium/phonon-31m-en", "gradium/phonon-40m-en"]
+    assert tts["pocket"]["voices"][0] == "alba"
     assert json.loads(out[1]) == []
 
 
@@ -48,6 +49,7 @@ def test_labels() -> None:
     assert tts["phonon"]["voice_labels"]["Easton"] == "Easton (American English, male)"
     assert tts["phonon"]["voice_labels"]["The Snow Queen"] == "The Snow Queen"
     assert tts["phonon"]["voice_languages"]["Maeve"] == "en-GB"
+    assert tts["pocket"]["voice_labels"]["javert"] == "Javert (English, male)"
     assert tts["kokoro"]["voice_languages"]["bm_george"] == "en-GB"
     assert set(tts["kokoro"]["voice_languages"]) == set(tts["kokoro"]["voices"])
     assert stt["parakeet"] == {

@@ -97,6 +97,11 @@ PHONON_VOICES = (
 """The English presets of ``gradium/phonon-voices`` that Phonon loads, by file
 id (``voiced.engines.phonon`` names them; a test keeps the two in step)."""
 
+POCKET_VOICES = ("alba", "marius", "javert", "fantine", "eponine", "azelma")
+"""The voices of ``kyutai/pocket-tts-without-voice-cloning`` that Pocket TTS
+loads, the six whose recordings allow commercial use (``voiced.engines.pocket``
+names them; a test keeps the two in step)."""
+
 CATALOGUE: tuple[Engine, ...] = (
     Engine(
         "parakeet",
@@ -171,6 +176,22 @@ CATALOGUE: tuple[Engine, ...] = (
                 "gradium/phonon-voices",
                 "Apache-2.0",
                 ("voices.jsonl", *(f"voices/{v}.safetensors" for v in PHONON_VOICES)),
+            ),
+        ),
+    ),
+    Engine(
+        "pocket",
+        "tts",
+        # The config and the weights mlx-audio's Pocket TTS model reads.
+        models=(
+            Model("mlx-community/pocket-tts", "CC-BY-4.0", ("config.json", "model.safetensors")),
+        ),
+        # The tokenizer the config names and the voice embeddings (ADR 0028).
+        shared=(
+            Model(
+                "kyutai/pocket-tts-without-voice-cloning",
+                "CC-BY-4.0",
+                ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICES)),
             ),
         ),
     ),

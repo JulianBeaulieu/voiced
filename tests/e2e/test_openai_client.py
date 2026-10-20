@@ -1,7 +1,7 @@
 """The unmodified ``openai`` Python client against a live voiced server.
 
 Covers both endpoints and every response format each advertises, synthesis
-streamed and non-streamed, and the Kokoro, Soprano and Phonon engines.
+streamed and non-streamed, and the Kokoro, Soprano, Phonon and Pocket TTS engines.
 """
 
 from __future__ import annotations
@@ -195,6 +195,23 @@ def test_phonon_audio_says_the_words(
 ) -> None:
     """A preset by its catalogue name, spaces and all; streamed as it is decoded."""
     client = tts_phonon_service.openai_client()
+    streamed: list[bytes] = []
+    with client.audio.speech.with_streaming_response.create(
+        model="voiced", voice=voice, input=SENTENCE, response_format="wav"
+    ) as response:
+        streamed += [chunk for chunk in response.iter_bytes(chunk_size=4096) if chunk]
+    audio = b"".join(streamed)
+    assert len(streamed) > 1 and _audio_signature_ok("wav", audio)
+    heard = _transcribe(stt_service, audio, "wav")
+    assert word_accuracy(heard, SENTENCE) >= 0.8, heard
+
+
+@pytest.mark.parametrize("voice", ["alba", "javert"])
+def test_pocket_audio_says_the_words(
+    tts_pocket_service: LiveService, stt_service: LiveService, voice: str
+) -> None:
+    """Streamed frame by frame while the STT service shares the GPU."""
+    client = tts_pocket_service.openai_client()
     streamed: list[bytes] = []
     with client.audio.speech.with_streaming_response.create(
         model="voiced", voice=voice, input=SENTENCE, response_format="wav"

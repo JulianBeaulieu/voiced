@@ -258,6 +258,50 @@
       },
       "previous": []
     },
+    "kyutai/pocket-tts-without-voice-cloning": {
+      "repo": "kyutai/pocket-tts-without-voice-cloning",
+      "revision": "d4fdd22ae8c8e1cb3634e150ebeff1dab2d16df3",
+      "patterns": [
+        "tokenizer.model",
+        "embeddings/alba.safetensors",
+        "embeddings/marius.safetensors",
+        "embeddings/javert.safetensors",
+        "embeddings/fantine.safetensors",
+        "embeddings/eponine.safetensors",
+        "embeddings/azelma.safetensors"
+      ],
+      "files": {
+        "embeddings/alba.safetensors": {
+          "bytes": 512088,
+          "sha256": "ad234695323e4030336b6afc8a050c97e3110603e11ecd8226d9562488300a50"
+        },
+        "embeddings/azelma.safetensors": {
+          "bytes": 659544,
+          "sha256": "ef33fad34437cb187d2702f0a946d8ba7a01efdb8efbc8088c770d49c181ba73"
+        },
+        "embeddings/eponine.safetensors": {
+          "bytes": 573528,
+          "sha256": "bb31940f62da665391de139da2e57d740757df26b73d7ec24152c78a3b8ac0c5"
+        },
+        "embeddings/fantine.safetensors": {
+          "bytes": 540760,
+          "sha256": "b6918a2ece002d2d9037ff53c4ea38730175e8798786658b0958443edf49d355"
+        },
+        "embeddings/javert.safetensors": {
+          "bytes": 512088,
+          "sha256": "2e857904ee76657e083b0e92664d21bd133e37df320af6eb04f752e679422d91"
+        },
+        "embeddings/marius.safetensors": {
+          "bytes": 512088,
+          "sha256": "33f75e45fac0005630671f4b1bb632d51b6a083b18417de94855bbd7596a0630"
+        },
+        "tokenizer.model": {
+          "bytes": 59339,
+          "sha256": "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
+        }
+      },
+      "previous": []
+    },
     "mlx-community/Kokoro-82M-bf16": {
       "repo": "mlx-community/Kokoro-82M-bf16",
       "revision": "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
@@ -543,6 +587,25 @@
         "model.safetensors": {
           "bytes": 2508288736,
           "sha256": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592"
+        }
+      },
+      "previous": []
+    },
+    "mlx-community/pocket-tts": {
+      "repo": "mlx-community/pocket-tts",
+      "revision": "cbf71d5f6657bbc3f4bc02f85ee408261225bec7",
+      "patterns": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "files": {
+        "config.json": {
+          "bytes": 1664,
+          "sha256": "403ff12260596fbfa348c7b07237c378b9ad8db9d8acd04d671470421954a68e"
+        },
+        "model.safetensors": {
+          "bytes": 235739497,
+          "sha256": "60ddd85019dddbe6c1d220e311ca5fc753972978a89f563c0bbe1ae943120072"
         }
       },
       "previous": []

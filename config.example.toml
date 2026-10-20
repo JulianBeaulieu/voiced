@@ -85,6 +85,9 @@ wyoming_port = 10200
 # "gradium/phonon-40m-en" model is CC-BY-NC-4.0 (non-commercial) and needs a
 # Hugging Face token (ADR 0021). The services never download a model: run
 # `voiced models download <model>` first (`voiced models list` shows them).
+# Pocket TTS (engine "pocket") runs on the GPU: model
+# "mlx-community/pocket-tts" (CC-BY-4.0, English) with default_voice "alba"
+# or another of its six voices (ADR 0028).
 engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"

@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
 | `input` | yes | Text to speak, not empty, at most `tts.max_input_chars` (default 4096). Markdown is stripped before synthesis; for an English voice, numbers, times, units and acronyms are spelled out, and other languages keep them as written. |
 | `model` | no | See [The `model` field](#the-model-field). |
 | `voice` | no | An id from [`/v1/audio/voices`](#get-v1audiovoices). Defaults to `tts.default_voice` (`af_heart`). |
-| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano and Phonon have no rate control and ignore it. |
+| `speed` | no | Multiplier from 0.25 to 4. A value of 0 or less, or above 4, fails validation; one between 0 and 0.25 is refused by the engine. Both are 400 `invalid_request_error`. Defaults to `tts.speed` (1.0). Soprano, Phonon and Pocket TTS have no rate control and ignore it. |
 | `response_format` | no | `wav` (default), `pcm`, `mp3`, `opus`. |
 
 | Format | `Content-Type` | Body |
@@ -335,6 +335,21 @@ voices:
     {"object": "voice", "id": "Easton", "name": "Easton", "language": "en-US", "gender": "male"},
     {"object": "voice", "id": "Maeve", "name": "Maeve", "language": "en-GB", "gender": "female"},
     {"object": "voice", "id": "The Snow Queen", "name": "The Snow Queen", "language": "en", "gender": null}
+  ]
+}
+```
+
+Pocket TTS, when selected, has six of Kyutai's voices, by their lowercase
+names: `alba` (the default), `marius`, `javert`, `fantine`, `eponine` and
+`azelma`. Kyutai's `cosette` and `jean` are non-commercial and not offered.
+Their language is `en`:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "voice", "id": "alba", "name": "Alba", "language": "en", "gender": "female"},
+    {"object": "voice", "id": "javert", "name": "Javert", "language": "en", "gender": "male"}
   ]
 }
 ```

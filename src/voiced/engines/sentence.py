@@ -21,6 +21,11 @@ pieces; each ``next()`` and its ``close()`` run in a worker thread, so the
 first piece goes out before the sentence is done. By default it is the
 sentence from ``_synth_sentence`` as one piece.
 
+Every blocking step goes through ``_run``, :func:`run_blocking` by default.
+An engine whose model state is bound to the thread that made it (MLX arrays
+kept from one step of a sentence to the next) overrides it to run every step
+on its own :class:`~voiced.threads.ModelThread`.
+
 ``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``. An engine without rate
 control may ignore ``speed`` within the bounds, as ``TTSEngine.synthesize``
 allows.
@@ -29,8 +34,8 @@ allows.
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import AsyncIterator, Generator
-from typing import Any, ClassVar
+from collections.abc import AsyncIterator, Callable, Generator
+from typing import Any, ClassVar, ParamSpec, TypeVar
 
 from voiced.engines.base import (
     TTS_SAMPLE_RATE,
@@ -44,6 +49,9 @@ from voiced.text.sentences import split_sentences
 from voiced.threads import run_blocking
 
 __all__ = ["SentenceTTSEngine"]
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 WARMUP_TEXT = "Warming up."
 
@@ -90,7 +98,11 @@ class SentenceTTSEngine(TTSEngine):
         self._model: Any = None
 
     async def load(self) -> None:
-        await run_blocking(self._load_and_bound_cache)
+        await self._run(self._load_and_bound_cache)
+
+    async def _run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
+        """Run one blocking step (the load, a piece, a close) off the event loop."""
+        return await run_blocking(fn, *args, **kwargs)
 
     def _load_and_bound_cache(self) -> None:
         # The cap is set first so the warm-up's transient is bounded too; the
@@ -133,12 +145,12 @@ class SentenceTTSEngine(TTSEngine):
         for sentence in split_sentences(text):
             pieces = self._synth_chunks(sentence, voice, speed)
             try:
-                while (pcm := await run_blocking(next, pieces, None)) is not None:
+                while (pcm := await self._run(next, pieces, None)) is not None:
                     if pcm:
                         yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
             finally:
                 # Stops the engine's work for the sentence when the client goes away.
-                await run_blocking(pieces.close)
+                await self._run(pieces.close)
 
     def _check_loaded(self) -> None:
         if self._model is None:
