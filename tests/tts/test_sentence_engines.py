@@ -345,7 +345,7 @@ def test_synthesis_keeps_the_mlx_cache_bounded(
     assert mx.set_cache_limit(MLX_CACHE_LIMIT_BYTES) == MLX_CACHE_LIMIT_BYTES
 
     async def drain() -> None:
-        async for _ in engine.synthesize(normalize(LONG_REPLY), voice, 1.0):
+        async for _ in engine.synthesize(normalize(LONG_REPLY, language="en"), voice, 1.0):
             pass
 
     asyncio.run(drain())

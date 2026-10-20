@@ -71,9 +71,12 @@ _SYNTHESIS_EVENTS = (Synthesize, SynthesizeStart, SynthesizeChunk, SynthesizeSto
 class _Stream:
     voice: Voice
     sentences: asyncio.Queue[str | None] = field(default_factory=asyncio.Queue)
-    accumulator: SentenceAccumulator = field(default_factory=SentenceAccumulator)
+    accumulator: SentenceAccumulator = field(init=False)
     worker: asyncio.Task[None] | None = None
     chars: int = 0
+
+    def __post_init__(self) -> None:
+        self.accumulator = SentenceAccumulator(self.voice.language)
 
 
 def _require_text(text: object, event: Event) -> None:

@@ -117,8 +117,6 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 ignore = ["RUF012"]
-# CJK punctuation that voiced.text splits and normalizes on, named in its code and tests.
-allowed-confusables = ["！", "？", "："]
 
 [tool.mypy]
 python_version = "3.11"

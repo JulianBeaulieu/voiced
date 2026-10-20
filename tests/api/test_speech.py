@@ -130,9 +130,11 @@ async def test_default_voice_and_speed_from_settings(settings: Settings) -> None
 
 
 async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> None:
-    """Numbers become English words for an English voice only; a German voice
-    gets the digits, which it reads in German."""
+    """Numbers become English words for an English voice only; a German voice,
+    named or the configured default (Home Assistant's path), gets the digits,
+    which it reads in German."""
     settings.tts.languages = ["en", "de"]
+    settings.tts.default_voice = "de_anna"
     texts: dict[str, str] = {}
 
     class Bilingual(FakeTTSEngine):
@@ -153,7 +155,10 @@ async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> 
         for voice in ("de_anna", "af_heart"):
             r = await c.post("/v1/audio/speech", json={"input": "20 Euro", "voice": voice})
             assert r.status_code == 200
-    assert texts == {"de_anna": "20 Euro.", "af_heart": "twenty Euro."}
+        assert texts == {"de_anna": "20 Euro.", "af_heart": "twenty Euro."}
+        r = await c.post("/v1/audio/speech", json={"input": "3,5 Euro"})
+        assert r.status_code == 200
+    assert texts["de_anna"] == "3,5 Euro."
 
 
 async def test_unknown_voice_is_400(

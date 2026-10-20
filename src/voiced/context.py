@@ -17,6 +17,7 @@ from voiced.engines.base import (
 from voiced.health import HealthResponse, HealthState
 from voiced.metrics import Metrics
 from voiced.queue import Admission, InferenceQueue
+from voiced.text import primary_subtag
 
 
 @dataclass
@@ -56,7 +57,7 @@ class ServiceContext:
         out: list[str] = []
         for configured in self._configured:
             for engine_tag in self.engine.languages:
-                if _base(configured) == _base(engine_tag):
+                if primary_subtag(configured) == primary_subtag(engine_tag):
                     tag = _norm(max(configured, engine_tag, key=_depth))
                     if tag.lower() not in {t.lower() for t in out}:
                         out.append(tag)
@@ -64,8 +65,8 @@ class ServiceContext:
 
     async def voices(self) -> list[Voice]:
         """The TTS engine's voices whose language matches :attr:`languages`."""
-        bases = {_base(t) for t in self.languages}
-        return [v for v in await self.tts_engine.voices() if _base(v.language) in bases]
+        bases = {primary_subtag(t) for t in self.languages}
+        return [v for v in await self.tts_engine.voices() if primary_subtag(v.language) in bases]
 
     def check_language(self, language: str | None) -> str | None:
         """Resolve a client's language hint to the engine's own code.
@@ -81,14 +82,14 @@ class ServiceContext:
         if language is None:
             return None
         want = _norm(language).lower()
-        base = _base(language)
-        if base not in {_base(t) for t in self.languages}:
+        base = primary_subtag(language)
+        if base not in {primary_subtag(t) for t in self.languages}:
             raise UnsupportedLanguage(f"language {language!r} is not served; try {self.languages}")
-        engine_tags = [t for t in self.engine.languages if _base(t) == base]
+        engine_tags = [t for t in self.engine.languages if primary_subtag(t) == base]
         for tag in engine_tags:
             if _norm(tag).lower() == want:  # exact match
                 return tag
-        advertised = {_norm(t).lower() for t in self.languages if _base(t) == base}
+        advertised = {_norm(t).lower() for t in self.languages if primary_subtag(t) == base}
         for tag in engine_tags:
             if _norm(tag).lower() in advertised:  # the tag we advertise for this base
                 return tag
@@ -140,10 +141,6 @@ class ServiceContext:
 
 def _norm(tag: str) -> str:
     return tag.replace("_", "-")
-
-
-def _base(tag: str) -> str:
-    return _norm(tag).split("-")[0].lower()
 
 
 def _depth(tag: str) -> int:

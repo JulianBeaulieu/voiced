@@ -79,8 +79,9 @@ rather than waiting for a load thread that cannot be interrupted.
 2. The transport validates and decodes the input outside the GPU slot:
    ffmpeg turns an upload into mono float32 16 kHz; `voiced.audio` converts
    Wyoming PCM of any width, channel count and rate to the same format;
-   `voiced.text.normalize` spells out numbers, times, units and acronyms and
-   strips Markdown before TTS. Errors here (a bad field, an oversized
+   `voiced.text.normalize` strips Markdown before TTS and, for English
+   voices, spells out numbers, times, units and acronyms; other languages
+   keep digits and symbols as written (ADR 0023). Errors here (a bad field, an oversized
    upload) never reach metrics or health.
 3. The engine call runs inside `async with inference(ctx, operation):` from
    `voiced.inference`. It takes the queue slot, times the block, records the
@@ -301,9 +302,10 @@ class PiperEngine(TTSEngine):
     async def synthesize(
         self, text: str, voice: str, speed: float = 1.0
     ) -> AsyncIterator[PCMChunk]:
-        if voice not in {v.id for v in await self.voices()}:
+        voices = {v.id: v for v in await self.voices()}
+        if voice not in voices:
             raise UnknownVoice(voice)
-        for sentence in split_sentences(text):
+        for sentence in split_sentences(text, language=voices[voice].language):
             pcm = await run_blocking(self._synth, sentence, voice, speed)
             yield PCMChunk(data=pcm)  # int16 LE mono 24 kHz
 ```
@@ -323,6 +325,11 @@ Then in `~/.config/voiced/config.toml`:
 engine = "piper"
 languages = ["en", "de"]
 ```
+
+`synthesize` receives text already normalized for the voice's language:
+English voices get numbers, units and acronyms as words, any other language
+gets its digits and symbols as written, for the engine's own front end to
+read (ADR 0023).
 
 `voiced.testing.fakes` is the smallest complete implementation of both
 interfaces and a good template; `voiced.engines.kokoro` is a real one built
