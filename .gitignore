@@ -22,7 +22,7 @@ htmlcov/
 
 # Local config and models
 config.toml
-models/
+/models/
 *.safetensors
 *.onnx
 

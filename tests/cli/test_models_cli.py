@@ -274,7 +274,9 @@ def test_a_revision_another_downloaded_model_shares_is_not_deleted(
     small = models.Model("org/assets", "MIT", ("small/*",), id="org/assets-small")
     base = models.Model("org/assets", "MIT", ("base/*",), id="org/assets-base")
     engine = models.Engine("assets", "stt", models=(small, base))
-    monkeypatch.setattr(models, "CATALOGUE", (*models.CATALOGUE, engine))
+    catalogue = (*models.CATALOGUE, engine)
+    monkeypatch.setattr(models, "CATALOGUE", catalogue)
+    monkeypatch.setattr("voiced.models.lookup.CATALOGUE", catalogue)
     for m, name in ((small, "small/w"), (base, "base/w")):
         entry = models.Locked(m.id, m.repo, SHA, m.patterns, {name: models.LockedFile(1, "e" * 64)})
         monkeypatch.setitem(models.lock(), m.id, entry)

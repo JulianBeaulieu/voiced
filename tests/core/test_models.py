@@ -134,7 +134,7 @@ def _cache(hub: Path, repo: str, skip: Sequence[str] = ()) -> Path:
 @pytest.fixture
 def hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "hub"
-    monkeypatch.setattr(models, "cache_dir", lambda: str(path))
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(path))
     return path
 
 
@@ -291,7 +291,7 @@ def fake_hub(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeHub]:
     def make(offline: bool = False) -> FakeHub:
         fake = FakeHub(offline)
         monkeypatch.setattr(huggingface_hub, "snapshot_download", fake)
-        monkeypatch.setattr(models, "cache_dir", lambda: "/hf/hub")
+        monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: "/hf/hub")
         return fake
 
     return make
@@ -424,7 +424,7 @@ def test_pin_without_repositories_fixes_what_is_stale(
             model.id, model.repo, NEWER, model.patterns, {"f": models.LockedFile(1, "e" * 64)}
         )
 
-    monkeypatch.setattr(models, "pin_repo", fake_pin)
+    monkeypatch.setattr("voiced.models.pinning.pin_repo", fake_pin)
     assert models.pin([], path=lock) == [KOKORO, "org/dropped"]
     assert asked == [(KOKORO, None)]
     written = models.read_lock(lock)
@@ -444,8 +444,8 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     engine is not installed is fetched whole; a model the engine refuses
     fails before anything is fetched."""
     fetched: list[str] = []
-    monkeypatch.setattr(models, "cache_dir", lambda: "/hf/hub")
-    monkeypatch.setattr(models, "snapshot", lambda repo, write: fetched.append(repo))
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.commands.snapshot", lambda repo, write: fetched.append(repo))
     config = tmp_path / "config.toml"
     config.write_text(
         '[stt]\nengine = "fake"\nmodel = "org/stt"\n[tts]\nengine = "nope"\nmodel = "org/tts"\n'
