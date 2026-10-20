@@ -1,6 +1,6 @@
 # 0017: Homebrew packaging and the shared install layout
 
-Date: 2026-10-15, revised 2026-10-18. Status: accepted.
+Date: 2026-10-15, revised 2026-10-18 and 2026-10-20. Status: accepted.
 
 ## Context
 
@@ -95,6 +95,18 @@ the same `envs/<timestamp>`. Environments still being built
 (`envs/<id>.partial`, ADR 0018) are never pruned; uninstall, which holds
 the lock the builder holds, removes them, so an interrupted build does not
 keep `~/.voiced` forever.
+
+**Environment names (2026-10-20).** The lock alone does not keep two
+installs out of one `envs/<id>`: `voiced install --source` picks the name
+when it plans, before it waits for the lock. An `<id>` is a UTC timestamp
+(`20261020T120000`), with `-2`, `-3` appended when that name is taken.
+Taken means the directory, its `.partial` or its `.broken` exists, or
+`install.json` names it as `environment` or `previous`, even if it is gone.
+So `previous` never equals the new environment: the install records only
+one of the manifest's two named paths there, and the new name avoids both.
+A CLI install that waited for the lock refuses to build when another
+install took its name meanwhile, and says to run it again. The app applies
+the same rule when it picks a name, which it does under its lock.
 
 **One install mode.** Without `--source`, the environment is `sys.prefix`
 of the running `voiced`, and `voiced install` links `bin/voiced` to its

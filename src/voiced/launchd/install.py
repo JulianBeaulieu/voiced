@@ -65,6 +65,7 @@ from voiced.layout import (
     legacy_venv_paths,
     link_entry_point,
     partial_environments,
+    read_manifest,
     same_path,
     sha256_file,
     stable_environment,
@@ -550,17 +551,31 @@ ENGINE_CHECK = (
 )
 
 
-def new_environment_dir(state_dir: Path, stamp: str | None = None) -> Path:
-    """A fresh ``envs/<id>``: a build never writes into an environment a
-    daemon may be running. An id whose ``.partial`` or ``.broken`` (the
-    app's, ADR 0018) is there is taken too, so ``install.json`` never names
-    a path that once was another environment."""
-    base = state_dir / ENVS / (stamp or time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
-    candidate, n = base, 1
-    while any(
+def environment_taken(candidate: Path, manifest: Manifest | None) -> bool:
+    """Whether a new environment must not be built at ``candidate``: it, its
+    ``.partial`` or its ``.broken`` (the app's, ADR 0018) is there, or
+    ``install.json`` names it, as the active or the previous environment,
+    even if it is gone (ADR 0017). The app keeps the same rule in Swift
+    (``InstallStages.environmentTaken`` / ``newEnvironmentDirectory``):
+    change both together."""
+    if any(
         os.path.lexists(candidate.with_name(candidate.name + suffix))
         for suffix in ("", PARTIAL_SUFFIX, ".broken")
     ):
+        return True
+    named = [] if manifest is None else [manifest.environment, manifest.previous]
+    return any(same_path(candidate, p) for p in named if p is not None)
+
+
+def new_environment_dir(
+    state_dir: Path, stamp: str | None = None, manifest: Manifest | None = None
+) -> Path:
+    """A fresh ``envs/<id>``: a build never writes into an environment a
+    daemon may be running, and ``install.json`` never names a path that once
+    was another environment. Two installs within a second get ``<id>-2``."""
+    base = state_dir / ENVS / (stamp or time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
+    candidate, n = base, 1
+    while environment_taken(candidate, manifest):
         n += 1
         candidate = base.with_name(f"{base.name}-{n}")
     return candidate
@@ -592,7 +607,13 @@ def plan_install(
         environment, found = stable_environment(sys.prefix if prefix is None else prefix)
     else:
         source = source.expanduser().absolute()
-        environment, found = new_environment_dir(state), "cli"
+        try:
+            manifest = read_manifest(state)
+        except ManifestError:
+            # Safe to ignore here: run_install reads it again before it
+            # writes anything, and refuses it.
+            manifest = None
+        environment, found = new_environment_dir(state, manifest=manifest), "cli"
     return InstallPlan(
         user=installing_user(),
         home=home or Path.home(),
@@ -711,8 +732,9 @@ def rollback_target(
     install replaces, which prune keeps (ADR 0018's "Roll back")."""
     if previous is None or previous.environment is None:
         return None
-    if unchanged:
-        return previous.previous
+    if unchanged:  # kept, unless it was deleted since
+        kept = previous.previous
+        return kept if kept is not None and kept.exists() else None
     old = previous.environment
     if same_path(old, plan.state_dir):
         return None  # a legacy venv, removed by this install: nothing to go back to
@@ -942,6 +964,11 @@ def run_install(
         plan.state_dir, lambda: say(f"waiting for another install in {plan.state_dir}")
     ):
         previous = current_manifest(plan)  # what the other install left
+        if plan.source is not None and environment_taken(plan.environment, previous):
+            raise InstallError(
+                f"Another install built {plan.environment} while this one waited: "
+                "run this one again."
+            )
         steps = install_steps(
             plan,
             previous,
