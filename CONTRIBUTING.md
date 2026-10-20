@@ -216,9 +216,10 @@ uv run python scripts/bench_engine.py tts --engine <name> [--model <repo>]
 ```
 
 It starts the service itself, prints the row and the ratings, writes
-`docs/benchmarks/<kind>-<engine>-<model>-<machine>.json` and regenerates
+`docs/benchmarks/<kind>-<engine>-<model>-<hardware>.json` and regenerates
 [docs/benchmarks.md](docs/benchmarks.md). Commit both. Run it on a quiet Mac:
-other services or benchmarks running beside it change the numbers. The
+other services or benchmarks running beside it change the numbers, and it
+warns when it sees voiced services running. Only a complete run is saved. The
 protocol and the rating limits are in
 [ADR 0024](docs/decisions/0024-engine-benchmarks.md). If two branches both
 changed the document, take either side and run

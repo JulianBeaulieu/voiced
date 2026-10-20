@@ -350,16 +350,16 @@ commit behind it, and how to rerun it
 ([ADR 0024](docs/decisions/0024-engine-benchmarks.md)). On an Apple M1 Max
 with 64 GB, each service alone, 2026-10-21:
 
-- **Parakeet** (speech to text, default): 2.0 % word error rate on 24
-  LibriSpeech clips, batch at 0.024 of real time (about 240 ms for 10 s of
-  audio); streaming finalize 2 ms worst after the endpointer's 200 ms of
-  silence, 101 ms median and 123 ms worst for a push-to-talk client that
+- **Parakeet** (speech to text, default): 2.0% word error rate on 24
+  LibriSpeech clips, batch at 0.023 of real time (about 230 ms for 10 s of
+  audio); streaming finalize 6 ms worst after the endpointer's 200 ms of
+  silence, 115 ms median and 129 ms worst for a push-to-talk client that
   stops at the last word, which misses the project's 50 ms median target
-  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). 1.55 GB
-  footprint; MLX peaks at 3.6 GB once while loading.
-- **Kokoro** (text to speech, default): first audio 96 ms median, 99 ms
-  worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 32 ms median,
-  0.24 GB. **Soprano** (opt-in): 126 ms median, 392 ms worst.
+  ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). 1.52 GB
+  footprint; MLX peaks at 3.4 GB once while loading.
+- **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
+  worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
+  0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.
 
 Known limits of streaming transcription: partial transcripts trail the
 speaker by about 0.7 s, and a pause of about one second inside an utterance

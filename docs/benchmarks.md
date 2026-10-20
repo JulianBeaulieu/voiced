@@ -23,13 +23,19 @@ It writes the result to `docs/benchmarks/` and regenerates this file;
 
 WER: word error rate over 24 clips of LibriSpeech test-clean (Panayotov et al. 2015, CC BY 4.0, openslr.org/12), after normalizing case and punctuation. Finalize: from the client's `end` to the final transcript, streaming in real time in 64 and 100 ms chunks. RTF: processing time over audio time.
 
-No results yet.
+| Model | Engine | Quality | Speed | WER | Finalize after 200 ms silence, median / worst | Finalize at the last word, median / worst | Batch RTF | Load | Footprint | MLX peak, load / after use | Size | Languages | Licence | Machine | Version (commit), date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `mlx-community/parakeet-tdt-0.6b-v3` | parakeet | 5 of 5 | 5 of 5 | 2.0% | 1 / 6 ms | 115 / 129 ms | 0.023 | 1.0 s | 1.52 GB | 3.38 GB / 3.38 GB | 2.5 GB | 25 languages | CC-BY-4.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 
 ## Text to speech
 
 UTMOS: predicted naturalness, 1 to 5, the mean over three fixed sentences. First audio: from the request to the first audio byte for "Turn on the kitchen lights." Every engine serves 24 kHz mono 16-bit audio.
 
-No results yet.
+| Model | Engine | Quality | Speed | UTMOS | First audio, median / worst | First audio while STT streams | RTF | Voice | Load | Footprint | MLX peak, load / after use | Size | Languages | Licence | Machine | Version (commit), date |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `mlx-community/Kokoro-82M-bf16` | kokoro | 5 of 5 | 5 of 5 | 4.52 | 94 / 98 ms | 112 / 226 ms | 0.042 | `af_heart` | 1.8 s | 0.73 GB | 0.76 GB / 1.86 GB | 389.4 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
+| `gradium/phonon-31m-en` | phonon | 5 of 5 | 5 of 5 | 4.50 | 27 / 31 ms | 18 / 28 ms | 0.038 | `default` | 0.6 s | 0.26 GB | none / none | 65.1 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
+| `mlx-community/Soprano-80M-bf16` | soprano | 4 of 5 | 5 of 5 | 4.25 | 97 / 156 ms | 142 / 219 ms | 0.071 | `default` | 2.1 s | 0.39 GB | 0.23 GB / 0.29 GB | 220.6 MB | en-US | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 
 ## Ratings
 

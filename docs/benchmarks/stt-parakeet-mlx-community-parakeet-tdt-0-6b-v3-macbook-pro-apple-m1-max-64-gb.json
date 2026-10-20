@@ -1,0 +1,58 @@
+{
+  "kind": "stt",
+  "engine": "parakeet",
+  "model": "mlx-community/parakeet-tdt-0.6b-v3",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "a9b3c96+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en",
+    "bg",
+    "cs",
+    "da",
+    "de",
+    "el",
+    "es",
+    "et",
+    "fi",
+    "fr",
+    "hr",
+    "hu",
+    "it",
+    "lt",
+    "lv",
+    "mt",
+    "nl",
+    "pl",
+    "pt",
+    "ro",
+    "ru",
+    "sk",
+    "sl",
+    "sv",
+    "uk"
+  ],
+  "licence": "CC-BY-4.0",
+  "size_bytes": 2509044141,
+  "load_s": 1.0,
+  "footprint_bytes": 1519952384,
+  "mlx_load_peak_bytes": 3381157880,
+  "mlx_peak_bytes": 3381157880,
+  "metrics": {
+    "wer_percent": 2.03,
+    "clips": 24,
+    "batch_rtf": 0.0229,
+    "finalize_after_silence": {
+      "median_ms": 1.1,
+      "worst_ms": 6.0,
+      "n": 64
+    },
+    "finalize_at_last_word": {
+      "median_ms": 114.8,
+      "worst_ms": 128.7,
+      "n": 64
+    }
+  }
+}
