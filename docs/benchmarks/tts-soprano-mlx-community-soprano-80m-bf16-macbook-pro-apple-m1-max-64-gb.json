@@ -1,0 +1,31 @@
+{
+  "kind": "tts",
+  "engine": "soprano",
+  "model": "mlx-community/Soprano-80M-bf16",
+  "machine": "MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4",
+  "commit": "67aa19f",
+  "date": "2026-10-21",
+  "languages": [
+    "en-US"
+  ],
+  "licence": "Apache-2.0",
+  "size_bytes": 220642837,
+  "load_s": 2.1,
+  "footprint_bytes": 403851840,
+  "mlx_peak_bytes": 291084382,
+  "metrics": {
+    "voice": "default",
+    "utmos": 4.35,
+    "first_audio": {
+      "median_ms": 126.1,
+      "worst_ms": 391.8,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 130.2,
+      "worst_ms": 351.9,
+      "n": 30
+    },
+    "rtf": 0.079
+  }
+}

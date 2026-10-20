@@ -323,7 +323,8 @@ reboots need a person. voiced does not change this setting.
 | tts | Phonon 31M (opt-in, on the CPU) | 530 MB resident (260 MB footprint) after a long reply |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 
-All figures were measured on an M1 Max. Parakeet's are MLX allocations
+All figures were measured on an M1 Max; every engine's current footprint and
+MLX peak are in [benchmarks.md](benchmarks.md). Parakeet's are MLX allocations
 (`mx.get_peak_memory()`). Batch input longer than 20 s is transcribed in
 overlapping 20 s chunks and MLX's buffer cache is emptied after each request,
 so the serving peak holds for any input length. The load peak is a transient:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark one engine and keep docs/benchmarks.md in step with it (ADR 0023).
+"""Benchmark one engine and keep docs/benchmarks.md in step with it (ADR 0024).
 
 One command per engine kind; it starts the service itself, measures it, and
 rates it::
@@ -18,7 +18,7 @@ regenerates; a test fails when the document and the results differ.
 ``bench.py``, this is a standalone script, so the ``openai`` client and the
 measurement code stay off the daemon's path.
 
-What a run measures (the protocol is ADR 0023's):
+What a run measures (the protocol is ADR 0024's):
 
 * the service started twice in a row, the second start timed from spawn to
   ``/health`` answering 200 (the first downloads a missing model and warms
@@ -378,7 +378,7 @@ DOC_HEADER = """\
 
 Every engine and model voiced ships, measured the same way on named Macs, so
 you can choose one by its numbers. The protocol, the clip set and why the
-ratings are what they are: [ADR 0023](decisions/0023-engine-benchmarks.md).
+ratings are what they are: [ADR 0024](decisions/0024-engine-benchmarks.md).
 Each row names its machine, the commit measured and the date; numbers from
 different machines do not compare.
 
@@ -806,7 +806,8 @@ def memory_after_use(url: str) -> tuple[int | None, int | None]:
     time.sleep(bench.SETTLE_S)
     mem = bench.memory(url)
     mlx = mem.get("mlx")
-    return mem.get("footprint_bytes"), (mlx["peak_bytes"] if mlx else None)
+    # A process that never allocates through MLX (Phonon, on the CPU) reports 0.
+    return mem.get("footprint_bytes"), (mlx["peak_bytes"] or None) if mlx else None
 
 
 def run(args: argparse.Namespace) -> Result:
@@ -897,7 +898,7 @@ def report(result: Result) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Benchmark one engine and regenerate docs/benchmarks.md (ADR 0023)."
+        description="Benchmark one engine and regenerate docs/benchmarks.md (ADR 0024)."
     )
     sub = parser.add_subparsers(dest="kind", required=True)
     for kind in ("stt", "tts"):

@@ -207,6 +207,24 @@ in [docs/architecture.md](docs/architecture.md#adding-an-engine). Engines
 bundled with voiced follow the same path; the only difference is that their
 entry points are declared in this repository's `pyproject.toml`.
 
+Then run the benchmark and add the rows. Commit the engine first, so the rows
+name the commit they measured, then run, for each model the engine offers:
+
+```sh
+uv run python scripts/bench_engine.py stt --engine <name> [--model <repo>]
+uv run python scripts/bench_engine.py tts --engine <name> [--model <repo>]
+```
+
+It starts the service itself, prints the row and the ratings, writes
+`docs/benchmarks/<kind>-<engine>-<model>-<machine>.json` and regenerates
+[docs/benchmarks.md](docs/benchmarks.md). Commit both. Run it on a quiet Mac:
+other services or benchmarks running beside it change the numbers. The
+protocol and the rating limits are in
+[ADR 0024](docs/decisions/0024-engine-benchmarks.md). If two branches both
+changed the document, take either side and run
+`uv run python scripts/bench_engine.py render`; a test fails while the
+document and the result files differ.
+
 ## Cutting a release
 
 Maintainers only. `.github/workflows/release.yml` builds everything from the

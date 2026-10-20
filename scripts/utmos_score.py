@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Predict the naturalness (MOS, 1 to 5) of WAV files with UTMOS22 (ADR 0023).
+"""Predict the naturalness (MOS, 1 to 5) of WAV files with UTMOS22 (ADR 0024).
 
 ``scripts/bench_engine.py tts`` runs this in a throwaway environment that
 uv builds from its ``SCORER_PINS``, so torch never enters voiced's lock::

@@ -1,4 +1,4 @@
-"""``scripts/bench_engine.py``: WER, ratings and the generated document (ADR 0023).
+"""``scripts/bench_engine.py``: WER, ratings and the generated document (ADR 0024).
 
 The harness itself needs models and runs by hand; these check what decides
 the numbers and the ratings, and that docs/benchmarks.md is what its
