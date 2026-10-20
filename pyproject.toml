@@ -9,7 +9,7 @@ authors = [{ name = "Julian Beaulieu" }]
 requires-python = ">=3.11,<3.14"
 keywords = ["speech-to-text", "text-to-speech", "mlx", "apple-silicon", "home-assistant", "wyoming", "openai"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: No Input/Output (Daemon)",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",

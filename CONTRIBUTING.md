@@ -1,7 +1,39 @@
 # Contributing
 
-Thanks for your interest. voiced is pre-alpha and the ground still moves,
-but the engine interfaces are frozen and the conventions below are stable.
+Thanks for your interest. Bug reports, fixes, docs and new engines are all
+welcome. Everyone taking part follows the
+[code of conduct](CODE_OF_CONDUCT.md).
+
+## How to contribute
+
+1. Find an [issue](https://github.com/JulianBeaulieu/voiced/issues), or
+   open one. Questions go in
+   [Discussions](https://github.com/JulianBeaulieu/voiced/discussions).
+2. Say in the issue that you are taking it, so nobody does the same work
+   twice.
+3. Fork the repository and branch from `main`.
+4. Make one change per pull request. A small fix, such as a typo or an
+   obvious bug, can go straight to a pull request without an issue.
+5. Open the pull request and fill in the template.
+
+CI must be green before a pull request can merge; it runs the
+[checks](#checks) below. The maintainer reviews every pull request and may
+ask for changes. Pull requests are squash merged, and the title becomes the
+commit message, so it follows the [commit format](#conventions).
+
+voiced has one maintainer, who works on it part time. Expect a first reply
+within a week, and longer at times. A friendly ping on a pull request that
+has waited two weeks is welcome.
+
+## What is stable
+
+These are stable, and other projects may build on them: the engine
+interfaces in `src/voiced/engines/base.py`, the config schema, the HTTP and
+Wyoming API, and the conventions below. A change to one of them starts as
+an issue. Non-obvious choices get an ADR under `docs/decisions/`, and
+anything a user would notice gets a line in [CHANGELOG.md](CHANGELOG.md).
+While the version starts with 0, a minor release can still change them; the
+changelog then says what changed and what to do.
 
 ## Development setup
 

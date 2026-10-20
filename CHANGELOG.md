@@ -6,6 +6,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- The README leads with what voiced is and how to install the 0.1.0
+  release. CONTRIBUTING.md explains how to contribute and what is stable,
+  and the repository has a security policy (SECURITY.md), a code of conduct
+  and issue forms that ask how voiced was installed.
+
 ### Fixed
 
 - `GET /openapi.json` on the TTS service no longer returns 500,

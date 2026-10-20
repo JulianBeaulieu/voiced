@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question
-    url: https://github.com/JulianBeaulieu/voiced/issues/new?labels=question&title=Question%3A+
-    about: Ask how something works. Use a bug report if the docs say one thing and voiced does another.
+    url: https://github.com/JulianBeaulieu/voiced/discussions
+    about: Ask how something works in Discussions. Use a bug report if the docs say one thing and voiced does another.
+  - name: Security vulnerability
+    url: https://github.com/JulianBeaulieu/voiced/security/advisories/new
+    about: Report it privately, never in a public issue. See SECURITY.md.
   - name: Home Assistant Wyoming integration
     url: https://www.home-assistant.io/integrations/wyoming/
     about: Problems inside Home Assistant itself, after voiced answers on its ports, usually belong there.

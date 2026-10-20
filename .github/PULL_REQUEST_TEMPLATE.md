@@ -25,7 +25,7 @@ uv run pytest
 - [ ] Tests pass without any model installed (the fake engines cover the new code)
 - [ ] Tests that need models carry `@pytest.mark.model`
 - [ ] No personal data: no hostnames, IPs, usernames, tokens
-- [ ] No emoji; conventional commit messages; no AI attribution trailers
+- [ ] No emoji; conventional commit messages and a conventional pull request title (it becomes the squash commit); no AI attribution trailers
 - [ ] Docs updated where behaviour changed (`README.md`, `docs/`, `config.example.toml`)
 - [ ] `CHANGELOG.md` has a line under Unreleased if a user would notice
 - [ ] New non-obvious decisions have an ADR under `docs/decisions/`

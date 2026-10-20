@@ -17,6 +17,8 @@ htmlcov/
 .env.*
 *.pem
 *.key
+*.p12
+*.p8
 
 # Local config and models
 config.toml
