@@ -1060,6 +1060,13 @@ def test_the_manifest_records_the_environment_it_replaced(
     assert manifest is not None
     assert (manifest.environment, manifest.previous) == (first.environment, second.environment)
     assert second.environment.exists()
+    # Re-running install after the previous environment was deleted by hand
+    # has nothing to go back to.
+    shutil.rmtree(second.environment)
+    _install(_plan(settings, tmp_path, prefix=first.environment, origin="app"))
+    manifest = read_manifest(first.state_dir)
+    assert manifest is not None
+    assert (manifest.environment, manifest.previous) == (first.environment, None)
 
 
 def test_a_new_environment_never_takes_a_moved_or_unfinished_id(tmp_path: Path) -> None:
@@ -1116,8 +1123,10 @@ def test_a_missing_active_environment_is_no_rollback(
     shutil.rmtree(third.environment)
     shutil.rmtree(first.environment)
     fourth = _plan(settings, tmp_path, source=tmp_path / "checkout", origin="app")
-    # Not the third's name nor the first's: both gone, but install.json names them.
+    # Not the first's name, which is gone but install.json names; `-2` is
+    # free again, since the third install pruned `<id>-2.broken`.
     assert fourth.environment not in (first.environment, third.environment)
+    assert fourth.environment.name.endswith("-2")
     _install(fourth)
     manifest = read_manifest(fourth.state_dir)
     assert manifest is not None
