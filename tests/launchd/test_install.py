@@ -734,12 +734,14 @@ def test_remove_models_reports_a_repository_the_scan_cannot_read(
     p = plan_install(settings, home=tmp_path)
     targets = uninstall_targets(p, settings, logs=False, models=True, config=False)
     assert targets.models is not None
-    assert [repo for repo, _ in targets.models.broken] == [PARAKEET.repo]
+    assert targets.models.broken == [PARAKEET.repo]
     said: list[str] = []
     assert remove_targets(targets, p, said.append) == 0
     [note] = said
-    assert note.startswith(f"cannot remove {PARAKEET.repo}: the cache scan could not read it (")
-    assert note.endswith(f"(`hf cache rm --cache-dir {hub} model/{PARAKEET.repo}` removes it)")
+    assert note == (
+        f"cannot remove {PARAKEET.repo}: the cache scan could not read it; run `voiced install` "
+        f"again to finish the download, or `rm -r {hf.repo_dir(hub, PARAKEET.repo)}`"
+    )
 
 
 def test_plan_uses_the_real_account_not_logname(

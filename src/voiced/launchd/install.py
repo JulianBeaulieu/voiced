@@ -1021,6 +1021,11 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     return None
 
 
+def repo_folder(repo: str) -> str:
+    """A model repository's folder in the Hugging Face cache."""
+    return f"models--{repo.replace('/', '--')}"
+
+
 def hf_hub(hf_home: Path | None) -> Path:
     """The Hugging Face cache the services use (``[install] hf_home``)."""
     return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
@@ -1033,13 +1038,13 @@ class ModelTargets:
     another revision (other tools share the cache), and the bytes that
     frees. ``unpinned``: repositories the config names that voiced does not
     pin, which are kept. ``broken``: voiced's repositories the cache scan
-    could not read, with why. ``refused``: why nothing can be deleted."""
+    could not read. ``refused``: why nothing can be deleted."""
 
     hub: Path
     revisions: list[CachedRevision] = field(default_factory=list)
     freed: int = 0
     unpinned: list[str] = field(default_factory=list)
-    broken: list[tuple[str, str]] = field(default_factory=list)
+    broken: list[str] = field(default_factory=list)
     refused: str | None = None
 
     def notes(self) -> list[str]:
@@ -1053,8 +1058,9 @@ class ModelTargets:
             for repo in self.unpinned
         ]
         notes += [
-            f"cannot remove {repo}: the cache scan could not read it ({why}) " + remove.format(repo)
-            for repo, why in self.broken
+            f"cannot remove {repo}: the cache scan could not read it; run `voiced install` "
+            f"again to finish the download, or `rm -r {q(self.hub / repo_folder(repo))}`"
+            for repo in self.broken
         ]
         return notes
 
@@ -1076,7 +1082,7 @@ def model_targets(plan: InstallPlan, settings: Settings) -> ModelTargets:
         revisions=revisions,
         freed=freed,
         unpinned=sorted({c.repo for c in scan.revisions if c.repo not in pinned_repos}),
-        broken=[(repo, why) for repo, why in scan.broken if repo in pinned_repos],
+        broken=[repo for repo in scan.broken if repo in pinned_repos],
     )
 
 

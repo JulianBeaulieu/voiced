@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import re
 import sys
 import threading
 import time
@@ -211,10 +210,13 @@ class CachedRevision:
 
 @dataclass(frozen=True)
 class CacheScan:
+    """``revisions``: what the cache holds of the repositories asked for.
+    ``broken``: those of them whose folder is there but which the scan
+    could not read (a download interrupted before any snapshot, say), so
+    nothing of them can be deleted through the library."""
+
     revisions: list[CachedRevision]
-    # Repositories the scan could not read (a download interrupted before
-    # any snapshot, say), with the reason; nothing of them can be deleted.
-    broken: list[tuple[str, str]]
+    broken: list[str]
 
 
 def cached_revisions(hub: Path, repos: set[str]) -> CacheScan:
@@ -234,14 +236,10 @@ def cached_revisions(hub: Path, repos: set[str]) -> CacheScan:
         if repo.repo_type == "model" and repo.repo_id in repos
         for rev in repo.revisions
     )
-    # The scan reports a repository it cannot read as a warning naming a
-    # path in its folder, and leaves it out of info.repos.
-    folders = {repo: f"models--{repo.replace('/', '--')}" for repo in repos}
+    # The scan leaves a repository it cannot read out of info.repos.
+    read = {repo.repo_id for repo in info.repos if repo.repo_type == "model"}
     broken = sorted(
-        (repo, str(warning))
-        for warning in info.warnings
-        for repo, folder in folders.items()
-        if re.search(rf"/{re.escape(folder)}(?![\w.-])", str(warning))
+        repo for repo in repos - read if (hub / f"models--{repo.replace('/', '--')}").is_dir()
     )
     return CacheScan(revisions, broken)
 

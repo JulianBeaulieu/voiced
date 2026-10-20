@@ -153,4 +153,8 @@ model the config names that voiced does not pin; uninstall prints the `hf
 cache rm` command for those. A pinned revision is the same revision when
 another tool downloaded the repository's `main` and `main` is the pinned
 commit (Kokoro's is today): uninstall deletes it and that `main`, and its
-dry run names the branches that point at each revision it would delete.
+dry run names the branches that point at each revision it would delete. A pinned
+repository whose folder the scan cannot read (a download interrupted
+before any snapshot) cannot be deleted through the library, and `hf cache
+rm` uses the same scan: uninstall names it and says to run `voiced install`
+again to finish the download, or to remove the folder.
