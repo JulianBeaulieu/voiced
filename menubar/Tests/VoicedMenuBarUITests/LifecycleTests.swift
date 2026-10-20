@@ -694,6 +694,30 @@ final class LifecycleTests: XCTestCase {
         try FileManager.default.createDirectory(at: envs.appendingPathComponent("20261019T000000.broken"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: envs.appendingPathComponent("20261019T000000-2.partial"), withIntermediateDirectories: true)
         XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261019T000000-3")
+        try FileManager.default.createDirectory(at: envs.appendingPathComponent("20261019T000000-3"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: envs.appendingPathComponent("20261019T000000-4"), withDestinationURL: home.appendingPathComponent("gone"))
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261019T000000-5")
+    }
+
+    /// Two builds in the same second, the first's environment deleted since: the second must
+    /// not take its name while `install.json` still names it, as the active environment or as
+    /// the rollback target.
+    func testANewEnvironmentNeverTakesAnIDInstallJSONStillNames() throws {
+        let stages = InstallStages(configuration: makeInstallerConfiguration(), runner: runner)
+        let date = Date(timeIntervalSince1970: 1_792_454_400)  // 2026-10-20T00:00:00Z
+        let first = stages.newEnvironmentDirectory(at: date)
+        XCTAssertEqual(first.lastPathComponent, "20261020T000000")
+        try writeRecord(environment: first, version: "0.1.0", previous: current)
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000-2")
+
+        let second = envs.appendingPathComponent("20261020T000000-2", isDirectory: true)
+        try writeRecord(environment: second, version: "0.1.0", previous: first)
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000-3")
+
+        // Unreadable, it names nothing, as for `install.plan_install`.
+        try Data("{not json".utf8).write(to: state.appendingPathComponent("install.json"))
+        XCTAssertEqual(stages.newEnvironmentDirectory(at: date).lastPathComponent, "20261020T000000")
     }
 
     /// The app's own removal never goes through a link.
