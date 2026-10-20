@@ -13,6 +13,10 @@ anyone logging in and restart themselves after a crash or a hang. Home
 Assistant talks to it over Wyoming, the protocol its Assist pipelines use
 for local speech services.
 
+![A terminal sends a speech request to voiced, transcribes a WAV clip and checks both services' health](docs/demo.gif)
+
+The recording's timings are curl fetching a WAV, slower than the streamed benchmark (96 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
+
 voiced 0.1.0 is the first release. It transcribes with Parakeet TDT 0.6B v3
 and speaks with Kokoro-82M, or with the optional Soprano-80M. The numbers
 below come from two machines, both named under [Benchmarks](#benchmarks).
