@@ -136,6 +136,9 @@ def test_an_integer_before_a_period_is_not_a_sentence_end() -> None:
     assert split_sentences("Seite 12. Dann weiter.") == ["Seite 12. Dann weiter."]
     assert split_sentences("1. Erstens. 2. Zweitens.") == ["1. Erstens.", "2. Zweitens."]
     assert split_sentences("Es sind 2.5. Dann weiter.") == ["Es sind 2.5.", "Dann weiter."]
+    # Thousands separators do not make an integer a decimal.
+    assert split_sentences("Total 1,000. Next.") == ["Total 1,000. Next."]
+    assert split_sentences("Total 1000. Next.") == ["Total 1000. Next."]
 
 
 @pytest.mark.parametrize(

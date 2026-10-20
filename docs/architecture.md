@@ -81,8 +81,8 @@ rather than waiting for a load thread that cannot be interrupted.
    Wyoming PCM of any width, channel count and rate to the same format;
    `voiced.text.normalize` strips Markdown before TTS and, for English
    voices, spells out numbers, times, units and acronyms; other languages
-   keep digits and symbols as written (ADR 0023). Errors here (a bad field, an oversized
-   upload) never reach metrics or health.
+   keep digits and symbols as written (ADR 0023). Errors here (a bad field,
+   an oversized upload) never reach metrics or health.
 3. The engine call runs inside `async with inference(ctx, operation):` from
    `voiced.inference`. It takes the queue slot, times the block, records the
    outcome in health and metrics, and re-raises. It is the only code that

@@ -42,24 +42,24 @@ language.
   whitespace after them, as CJK is written; `.`, `!`, `?`, the ellipsis,
   the Arabic question mark `؟` and the Devanagari danda `।` and double
   danda `॥` end one when whitespace follows. A run that mixes the two
-  (`？!`) is one terminator and needs no whitespace. Closing quotes and brackets
-  after a terminator, CJK (`」』）》】`) and Arabic (`»`) included, stay
-  with the sentence. `normalize` adds no `.` after any terminator, and
-  drops a trailing CJK or Arabic comma, semicolon or colon as it drops a
-  Latin one.
+  (`？!`) is one terminator and needs no whitespace. Closing quotes and
+  brackets after a terminator, CJK (`」』）》】`) and Arabic (`»`) included,
+  stay with the sentence. `normalize` adds no `.` after any terminator,
+  and drops a trailing CJK or Arabic comma, semicolon or colon as it drops
+  a Latin one.
 - **Numbers before a period.** "Am 3. Oktober ist Feiertag" is one
   sentence in German, where an integer with a period is an ordinal, and
-  German digits now reach the splitter unspelled. So an integer followed by
-  a period and a capitalised word never ends a sentence, in any language;
-  a decimal ("Pi is 3.14. Really") still does, as an ordinal never has a
-  decimal point. A list marker or section number at the start of a
-  sentence ("1. Erstens", "2.3. Title") stays with its item, as before.
-  "It costs 5. Then 6." is now one chunk where it was two, but audible
-  English is unchanged: `normalize` spells the digits ("five.") before the
-  engine splits. Only raw English over the Wyoming stream, which splits
-  before normalizing, gets a longer first chunk, the cheaper mistake.
-  German "Seite 12. Dann weiter." staying one sentence is the known
-  ambiguity.
+  German digits now reach the splitter unspelled. So an integer (thousands
+  separators allowed, "1,000.") followed by a period and a capitalised
+  word never ends a sentence, in any language; a decimal ("Pi is 3.14.
+  Really") still does, as an ordinal never has a decimal point. A list
+  marker or section number at the start of a sentence ("1. Erstens", "2.3.
+  Title") stays with its item, as before. "It costs 5. Then 6." is now one
+  chunk where it was two, but audible English is unchanged: `normalize`
+  spells the digits ("five.") before the engine splits. Only raw English
+  over the Wyoming stream, which splits before normalizing, gets a longer
+  first chunk, the cheaper mistake. German "Seite 12. Dann weiter."
+  staying one sentence is the known ambiguity.
 - **Abbreviations.** The list is English and applies to every language: in
   another language a word on it ("mar" in Spanish) can only keep two
   sentences together.

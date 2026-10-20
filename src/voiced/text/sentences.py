@@ -101,11 +101,12 @@ ideographic full stop and the fullwidth exclamation and question marks."""
 CLOSERS = "\"')]\u201d\u2019\u300d\u300f\uff09\u300b\u3011\u00bb"
 """Closing quotes and brackets that belong to the sentence before them."""
 
-# Candidate boundary: a run of terminators, closing quotes or brackets, and
-# the whitespace after. Group 1 is everything up to the whitespace. A run with
-# an unspaced terminator in it (a fullwidth "?" then "!") needs no whitespace after; any other
-# run does. A match starts only at the first terminator of a run and nothing
-# in it backtracks, so a long run of "!" costs linear time.
+# Candidate boundary: a run of terminators, closing quotes or brackets, and the
+# whitespace after. Group 1 is everything up to the whitespace. A run
+# containing any unspaced terminator (a fullwidth "?" then "!") ends a sentence
+# without whitespace after it; any other run needs whitespace. A match starts
+# only at the first terminator of a run and nothing in it backtracks, so a long
+# run of "!" costs linear time.
 _SPACED = re.escape(SPACED_TERMINATORS)
 _UNSPACED = re.escape(UNSPACED_TERMINATORS)
 _RUN = f"[{_SPACED}{_UNSPACED}]++[{re.escape(CLOSERS)}]*+"
@@ -127,12 +128,14 @@ def split_sentences(text: str, *, max_len: int = DEFAULT_MAX_LEN) -> list[str]:
     Paragraph breaks (newlines) always split. Inside a paragraph, a sentence
     ends at one of :data:`UNSPACED_TERMINATORS`, or at one of
     :data:`SPACED_TERMINATORS` followed by whitespace, unless the period
-    belongs to a known abbreviation, an initial (``J. R. R.``) or a number
-    (``3.14``, ``1. item``, an integer such as ``am 3. Oktober``). Closing quotes and
-    brackets stay with the sentence they close. An ellipsis only ends a
-    sentence when the next word is capitalised. Sentences longer than
-    ``max_len`` are cut at the last clause boundary before the limit, then at
-    the last space, then hard.
+    belongs to a known abbreviation, an initial (``J. R. R.``), a decimal
+    inside a sentence (``3.14``), a list marker at the start of one (``1.
+    item``) or an integer anywhere (``am 3. Oktober``, ``1,000. Next``); a
+    decimal followed by a period still ends a sentence (``Pi is 3.14.
+    Really``). Closing quotes and brackets stay with the sentence they close.
+    An ellipsis only ends a sentence when the next word is capitalised.
+    Sentences longer than ``max_len`` are cut at the last clause boundary
+    before the limit, then at the last space, then hard.
 
     Returns stripped, non-empty strings; an empty or blank input gives ``[]``.
     """
@@ -189,11 +192,11 @@ def _is_boundary(text: str, m: re.Match[str], sentence_start: int) -> bool:
         return False
     # A number before a capitalised word. At the start of a sentence it is a
     # list marker or section number ("1. Apples", "2.3. Title"); elsewhere an
-    # integer may be an ordinal ("am 3. Oktober"), so only a decimal ends the
-    # sentence ("Pi is 3.14. Really"). English reaches the engines with its
-    # numbers spelled, so "It costs 5. Then" staying whole only delays the
-    # Wyoming stream (ADR 0023).
-    if word.replace(".", "").isdigit() and after[:1].isupper():
+    # integer, with or without thousands separators, may be an ordinal ("am
+    # 3. Oktober"), so only a decimal ends the sentence ("Pi is 3.14. Really").
+    # English reaches the engines with its numbers spelled, so "It costs 5.
+    # Then" staying whole only delays the Wyoming stream (ADR 0023).
+    if word.replace(".", "").replace(",", "").isdigit() and after[:1].isupper():
         return "." in word and before[sentence_start:].strip() != word
     return True
 

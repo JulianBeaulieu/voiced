@@ -22,7 +22,9 @@ def test_accumulator_newlines_are_boundaries() -> None:
 def test_accumulator_keeps_abbreviations_and_numbers_with_their_sentence() -> None:
     """The streaming split follows voiced.text.split_sentences: "Dr." does not
     end a sentence, so "Call Dr." is not released before "Smith" arrives, and
-    an integer before a period does not either (it may be an ordinal)."""
+    an integer before a period does not either (it may be an ordinal). For
+    raw English that only makes the first chunk longer: normalize spells the
+    digits before the engine splits again (ADR 0023)."""
     acc = SentenceAccumulator()
     assert acc.add("Call Dr. ") == []
     assert acc.add("Smith at 3. ") == []
