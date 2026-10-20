@@ -17,9 +17,10 @@ for local speech services.
 
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (96 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
-voiced 0.1.0 is the first release. It transcribes with Parakeet TDT 0.6B v3
-and speaks with Kokoro-82M, or with the optional Soprano-80M. The numbers
-below come from two machines, both named under [Benchmarks](#benchmarks).
+voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
+with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
+Soprano-80M. The numbers below come from two machines, both named under
+[Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
