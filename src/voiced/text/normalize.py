@@ -6,13 +6,17 @@ espeak reads ``CO2`` as "co two", Soprano lowercases and strips ``8:14`` into
 such tokens into words so the engines only ever see what a person would read
 aloud. It also strips the Markdown that language models produce.
 
-The function is idempotent: ``normalize(normalize(s)) == normalize(s)``. The
-HTTP and Wyoming layers call it before handing text to an engine; engines
-only chunk what they receive.
+The function is idempotent in every language: normalizing its output again
+changes nothing. The HTTP and Wyoming layers call it before handing text to
+an engine; engines only chunk what they receive.
 
-Pure Python, no model, no dependencies. Only English is implemented; the
-``language`` parameter exists so other languages can be added behind the
-same call without changing callers.
+The rewrites into words are per language and only English has them. Text in
+any other language gets the cleanup that does not depend on the language
+(Markdown, symbols, control characters, punctuation and whitespace) and keeps
+its digits as digits: an engine that speaks the language reads them better
+than English words (ADR 0023).
+
+Pure Python, no model, no dependencies.
 """
 
 from __future__ import annotations
@@ -21,8 +25,10 @@ import re
 import unicodedata
 from collections.abc import Callable
 
+from voiced.text.language import primary_subtag
+from voiced.text.sentences import CLOSERS, SPACED_TERMINATORS, UNSPACED_TERMINATORS
+
 __all__ = [
-    "SUPPORTED_LANGUAGES",
     "normalize",
     "number_to_words",
     "ordinal_to_words",
@@ -256,7 +262,11 @@ _BLOCKQUOTE = re.compile(r"^\s*>\s?")
 _HRULE = re.compile(r"^\s*([-*_]\s*){3,}$")
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 _TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
-_TERMINAL = ".!?:;,\u2026"
+# Commas, semicolons and colons: Latin, CJK (fullwidth and the ideographic
+# comma) and Arabic. A block that ends with one gets no period, and the final
+# cleanup drops it.
+_CLAUSE_MARKS = ",;:\uff0c\u3001\uff1b\uff1a\u060c\u061b"
+_TERMINAL = _CLAUSE_MARKS + SPACED_TERMINATORS + UNSPACED_TERMINATORS
 
 
 def _strip_markdown(text: str) -> str:
@@ -311,7 +321,7 @@ def _end_block(text: str) -> str:
     """Add a sentence-final period unless one is already there (possibly behind
     a closing quote or bracket)."""
     text = text.strip()
-    last = text.rstrip("\"')]")[-1:]
+    last = text.rstrip(CLOSERS)[-1:]
     if last and last not in _TERMINAL:
         text += "."
     return text
@@ -612,31 +622,44 @@ _NUMBER_PASSES: tuple[_Pass, ...] = (
     (re.compile(r"(?<![\w.])(\d+(?:,\d{3})*)(?:\.(\d+))?(?!\w|\.\d)"), _number),
 )
 
+# After "#5" became "number five" and before "C# + F#" becomes "C plus F".
+_DROP_HASH: _Pass = (re.compile(r"#"), "")
+
 # Acronyms and symbols.
 _SYMBOL_PASSES: tuple[_Pass, ...] = (
     (_SHOUTING, _unshout),
     (re.compile(r"(?<![\w'])((?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,6})('?s)?(?![\w'])"), _acronym),
     (re.compile(r"\s*&\s*"), " and "),
-    (re.compile(r"#"), ""),
+    _DROP_HASH,
     (re.compile(r"(\w)\s*\+\s*(\w)"), r"\1 plus \2"),
     (re.compile(r"\s*=\s*"), " equals "),
     (re.compile(r"\s*(?:->|\u2192)\s*"), " to "),
     (re.compile(r"\u2248\s*"), "about "),
     (re.compile(r"~(?=\w)"), "about "),
     (re.compile(r"(\w)\s*\u00d7\s*(\w)"), r"\1 by \2"),
+)
+
+# Rewrites into words, per primary language subtag. A language without an
+# entry keeps its numbers, dates and symbols as written.
+_SPELLING_PASSES: dict[str, tuple[_Pass, ...]] = {
+    "en": (
+        _ABBREVIATION_PASSES
+        + _WEB_PASSES
+        + _DATE_PASSES
+        + _TIME_PASSES
+        + _QUANTITY_PASSES
+        + _NUMBER_PASSES
+        + _SYMBOL_PASSES
+    ),
+}
+
+# Punctuation an engine reads badly in any language, after the spelling.
+# English has dropped "#" already, in its place among the symbol passes.
+_PUNCTUATION_PASSES: tuple[_Pass, ...] = (
+    _DROP_HASH,
     (re.compile(r"_"), " "),
     (re.compile(r"\s*\u2014\s*|\s+[-\u2013]\s+"), ", "),
     (re.compile(r"\u2026"), "..."),
-)
-
-_PASSES: tuple[_Pass, ...] = (
-    _ABBREVIATION_PASSES
-    + _WEB_PASSES
-    + _DATE_PASSES
-    + _TIME_PASSES
-    + _QUANTITY_PASSES
-    + _NUMBER_PASSES
-    + _SYMBOL_PASSES
 )
 
 _KEEP_SYMBOLS = frozenset("\u00b0")  # the degree sign is a symbol too
@@ -662,7 +685,7 @@ _PUNCT_CLEANUP: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"([.!?])\s*,"), r"\1"),
     (re.compile(r",\s*([.!?])"), r"\1"),
     (re.compile(r"^[\s,.;:]+"), ""),
-    (re.compile(r"[\s,;:]+$"), ""),
+    (re.compile(rf"[\s{_CLAUSE_MARKS}]+$"), ""),
     (re.compile(r"\s+"), " "),
 )
 
@@ -670,26 +693,22 @@ _PUNCT_CLEANUP: tuple[tuple[re.Pattern[str], str], ...] = (
 # C0 control characters except tab and newline; a NUL byte stops espeak.
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-SUPPORTED_LANGUAGES = frozenset({"en"})
 
-
-def normalize(text: str, *, language: str = "en") -> str:
+def normalize(text: str, *, language: str) -> str:
     """Rewrite ``text`` so a TTS engine reads it the way a person would.
 
-    Numbers, times, dates, money, percentages, temperatures and units become
-    words; acronyms such as ``CO2`` and ``HVAC`` are spelled; Markdown is
-    stripped; smart punctuation and whitespace are tidied. See the module
+    For English voices, numbers, times, dates, money, percentages,
+    temperatures and units become words and acronyms such as ``CO2`` and
+    ``HVAC`` are spelled. For every voice, Markdown is stripped and smart
+    punctuation and whitespace are tidied. See the module
     docstring for the guarantees.
 
-    ``language`` is a BCP-47 tag; only English (``en`` and any ``en-*``) is
-    implemented and anything else raises ``ValueError``.
+    ``language`` is the BCP-47 tag of the voice that will speak the text.
+    Only the rewrites into words depend on it: English (``en`` and any
+    ``en-*``) has them, and any other language keeps its digits and symbols
+    as written.
     """
-    if language.split("-")[0].lower() not in SUPPORTED_LANGUAGES:
-        # A programmer error: the API layer resolves the client's language
-        # against the engine before any text reaches here, so this guards an
-        # internal invariant rather than client input. voiced.text stays free
-        # of a dependency on voiced.engines, so it does not raise EngineError.
-        raise ValueError(f"no text normalizer for language {language!r}")
+    spelling = _SPELLING_PASSES.get(primary_subtag(language), ())
     text = _CONTROL_CHARS.sub("", text)
     text = unicodedata.normalize("NFC", text)
     text = text.translate(_SUBSCRIPT_DIGITS).translate(_SUPERSCRIPT_DIGITS).translate(_QUOTES)
@@ -697,7 +716,7 @@ def normalize(text: str, *, language: str = "en") -> str:
     for pattern, literal in _INLINE_MARKDOWN:
         text = pattern.sub(literal, text)
     text = _strip_symbols(text)
-    for pattern, replacement in _PASSES:
+    for pattern, replacement in spelling + _PUNCTUATION_PASSES:
         text = pattern.sub(replacement, text)
     for pattern, literal in _PUNCT_CLEANUP:
         text = pattern.sub(literal, text)

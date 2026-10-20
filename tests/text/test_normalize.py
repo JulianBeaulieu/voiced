@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from voiced.text import normalize
+from voiced.text import normalize, primary_subtag
 from voiced.text.normalize import number_to_words, ordinal_to_words, year_to_words
 
 CASES: list[tuple[str, str]] = [
@@ -130,13 +130,14 @@ CASES: list[tuple[str, str]] = [
 
 @pytest.mark.parametrize(("text", "expected"), CASES, ids=[c[0][:40] for c in CASES])
 def test_normalize(text: str, expected: str) -> None:
-    assert normalize(text) == expected
+    assert normalize(text, language="en") == expected
 
 
 @pytest.mark.parametrize(("text", "expected"), CASES, ids=[c[0][:40] for c in CASES])
 def test_normalize_is_idempotent(text: str, expected: str) -> None:
-    assert normalize(expected) == expected
-    assert normalize(normalize(text)) == normalize(text)
+    assert normalize(expected, language="en") == expected
+    once = normalize(text, language="en")
+    assert normalize(once, language="en") == once
 
 
 @pytest.mark.parametrize(
@@ -204,17 +205,80 @@ def test_year_to_words(year: int, words: str) -> None:
 
 def test_language_parameter() -> None:
     assert normalize("5 cats", language="en-GB") == "five cats."
-    with pytest.raises(ValueError, match="de"):
-        normalize("5 Katzen", language="de")
+
+
+def test_language_tags_match_on_the_primary_subtag() -> None:
+    assert normalize("5 cats", language="en_US") == "five cats."
+    assert normalize("5 cats", language="EN") == "five cats."
+    assert [primary_subtag(t) for t in ("en-US", "en_GB", "EN", "zh-Hans-CN")] == [
+        "en",
+        "en",
+        "en",
+        "zh",
+    ]
+
+
+def test_hash_in_symbols_is_dropped_after_the_symbol_words() -> None:
+    assert normalize("C# + F#", language="en") == "C plus F."
+    assert normalize("C# + F#", language="de") == "C + F."
+
+
+# Fullwidth exclamation, question mark and comma, and the ideographic comma.
+FW_EXCL, FW_QUEST, FW_COMMA, IDEO_COMMA = "\uff01", "\uff1f", "\uff0c", "\u3001"
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "expected"),
+    [
+        # Digits stay digits outside English; the engine reads them in its language.
+        ("Ich habe 20 Euro", "de", "Ich habe 20 Euro."),
+        ("3,5", "de-DE", "3,5."),
+        (
+            "Am 2026-10-14 um 8:14 kostet es $5 & 45%.",
+            "de",
+            "Am 2026-10-14 um 8:14 kostet es $5 & 45%.",
+        ),
+        ("Der CO2-Wert, z.B. heute.", "de", "Der CO2-Wert, z.B. heute."),
+        # The language-neutral cleanup still applies.
+        ("**Hallo** \u2014 Welt\U0001f600", "de", "Hallo, Welt."),
+        # No period after a sentence-final CJK, Arabic or Devanagari mark,
+        # also behind a closing quote.
+        ("小雨。", "zh", "小雨。"),
+        (f"下雨了吗{FW_QUEST}", "zh-CN", f"下雨了吗{FW_QUEST}"),
+        (f"太好了{FW_EXCL}", "ja", f"太好了{FW_EXCL}"),
+        ("هل تمطر؟", "ar", "هل تمطر؟"),
+        ("बारिश हो रही है।", "hi", "बारिश हो रही है।"),
+        ("नमस्ते॥", "hi", "नमस्ते॥"),
+        ("「小雨。」", "ja", "「小雨。」"),
+        ("«مرحبا؟»", "ar", "«مرحبا؟»"),
+        ("小雨", "zh", "小雨."),
+        # A trailing comma, semicolon or colon is dropped, as in English.
+        (f"你好{FW_COMMA}", "zh", "你好."),
+        (f"你好{IDEO_COMMA}", "zh", "你好."),
+        ("مرحبا،", "ar", "مرحبا."),
+        ("بخير؛", "ar", "بخير."),
+    ],
+)
+def test_other_languages_keep_digits_and_their_terminators(
+    text: str, language: str, expected: str
+) -> None:
+    assert normalize(text, language=language) == expected
+    assert normalize(expected, language=language) == expected
+
+
+def test_mixed_script_follows_the_voice_language() -> None:
+    text = "It costs 20 euros. 小雨。"
+    assert normalize(text, language="en") == "It costs twenty euros. 小雨。"
+    assert normalize(text, language="zh") == "It costs 20 euros. 小雨。"
 
 
 def test_output_has_no_digits_for_plain_prose() -> None:
     text = "On 2026-10-14 at 8:14 pm, 3 people paid $5.50 each for 2.5 kg, a 45% discount."
-    assert not any(ch.isdigit() for ch in normalize(text))
+    assert not any(ch.isdigit() for ch in normalize(text, language="en"))
 
 
 def test_long_input_is_handled() -> None:
     text = "Sentence number 1. " * 500
-    out = normalize(text)
+    out = normalize(text, language="en")
     assert out.startswith("Sentence number one.")
     assert out.count("Sentence number one.") == 500

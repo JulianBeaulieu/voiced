@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from voiced.text import split_sentences
@@ -30,7 +32,8 @@ CASES: list[tuple[str, list[str]]] = [
     ),
     # decimals and numbers
     ("Version 2.0 is out. Try it.", ["Version 2.0 is out.", "Try it."]),
-    ("It costs 5. Then 6. Done.", ["It costs 5.", "Then 6.", "Done."]),
+    # An integer may be an ordinal ("am 3. Oktober"), so it never ends a sentence.
+    ("It costs 5. Then 6. Done.", ["It costs 5. Then 6. Done."]),
     ("1. First item. 2. Second item.", ["1. First item.", "2. Second item."]),
     ("Pi is 3.14159. Really.", ["Pi is 3.14159.", "Really."]),
     # quotes and brackets
@@ -89,6 +92,63 @@ def test_default_max_len_is_respected() -> None:
 def test_max_len_must_be_positive() -> None:
     with pytest.raises(ValueError):
         split_sentences("x", max_len=0)
+
+
+# Fullwidth exclamation and question marks and colon.
+FW_EXCL, FW_QUEST, FW_COLON = "\uff01", "\uff1f", "\uff1a"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            f"下雨了。我们走吧{FW_EXCL}你来吗{FW_QUEST}",
+            ["下雨了。", f"我们走吧{FW_EXCL}", f"你来吗{FW_QUEST}"],
+        ),
+        ("下雨了。 我们走吧。", ["下雨了。", "我们走吧。"]),
+        (
+            f"他说{FW_COLON}\u201c下雨了。\u201d我们走吧。",
+            [f"他说{FW_COLON}\u201c下雨了。\u201d", "我们走吧。"],
+        ),
+        ("「你好。」我走了。", ["「你好。」", "我走了。"]),
+        # A run that mixes CJK and Latin marks is one terminator.
+        (f"真的{FW_QUEST}!我不信。", [f"真的{FW_QUEST}!", "我不信。"]),
+        ("هل تمطر؟ نعم، إنها تمطر.", ["هل تمطر؟", "نعم، إنها تمطر."]),
+        ("«مرحبا؟» نعم.", ["«مرحبا؟»", "نعم."]),
+        ("बारिश हो रही है। चलो चलते हैं।", ["बारिश हो रही है।", "चलो चलते हैं।"]),
+        ("नमस्ते॥ ठीक है।", ["नमस्ते॥", "ठीक है।"]),
+        (
+            "Dr. Smith said hi. 小雨。Then he left. هل تمطر؟ Yes.",
+            ["Dr. Smith said hi.", "小雨。", "Then he left.", "هل تمطر؟", "Yes."],
+        ),
+    ],
+)
+def test_cjk_arabic_and_devanagari_terminators(text: str, expected: list[str]) -> None:
+    assert split_sentences(text) == expected
+
+
+def test_an_integer_before_a_period_is_not_a_sentence_end() -> None:
+    assert split_sentences("Am 3. Oktober ist Feiertag. Gut.") == [
+        "Am 3. Oktober ist Feiertag.",
+        "Gut.",
+    ]
+    # The known ambiguity: "Seite 12." could end a sentence.
+    assert split_sentences("Seite 12. Dann weiter.") == ["Seite 12. Dann weiter."]
+    assert split_sentences("1. Erstens. 2. Zweitens.") == ["1. Erstens.", "2. Zweitens."]
+    assert split_sentences("Es sind 2.5. Dann weiter.") == ["Es sind 2.5.", "Dann weiter."]
+    # Thousands separators do not make an integer a decimal.
+    assert split_sentences("Total 1,000. Next.") == ["Total 1,000. Next."]
+    assert split_sentences("Total 1000. Next.") == ["Total 1000. Next."]
+
+
+@pytest.mark.parametrize(
+    "text", ["!" * 20_000, "\u3002" * 20_000, "!)" * 10_000, "Done!" + "!" * 20_000 + " a"]
+)
+def test_long_runs_of_terminators_are_linear(text: str) -> None:
+    # Quadratic matching took about 4 s on 20,000 "!" with nothing after them.
+    start = time.perf_counter()
+    split_sentences(text)
+    assert time.perf_counter() - start < 2.0
 
 
 def test_no_empty_chunks() -> None:

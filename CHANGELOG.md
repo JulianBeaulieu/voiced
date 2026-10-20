@@ -22,8 +22,24 @@ uses [Semantic Versioning](https://semver.org/).
 - `engines.list` gives each voice's language in `voice_languages`, so
   settings UIs can group voices.
 
+### Changed
+
+- `voiced.text.normalize` requires the language of the voice that will
+  speak the text: `normalize(text, language=voice.language)`. A third-party
+  engine or tool that called `normalize(text)` must pass it; English rules
+  apply only to `en` and `en-*` tags.
+
 ### Fixed
 
+- Text for a voice in a language other than English is no longer spelled
+  as English: digits stay digits ("Ich habe 20 Euro", not "twenty Euro";
+  "3,5", not "three,five"), and English abbreviations and symbols are left
+  alone; an integer followed by a period no longer ends a sentence, so a
+  German ordinal date stays whole ("am 3. Oktober"). Sentences now also
+  end at `。`, `！`, `？`, `؟`, `।` and `॥`, also inside closing quotes such
+  as `」` and `»`, so a Chinese, Arabic or Hindi paragraph streams sentence
+  by sentence, and no `.` is added after them or after a trailing CJK or
+  Arabic comma.
 - `voiced uninstall --remove-models` (and the app's Uninstall with Models
   ticked) now frees the models' disk space. It removed each model's folder
   in the Hugging Face cache, but with `huggingface_hub` 2.x that folder

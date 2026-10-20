@@ -709,8 +709,8 @@ async def test_british_voice_uses_en_gb(kokoro_engine: Any) -> None:
 @pytest.mark.model
 def test_co2_is_pronounced_see_oh_two(kokoro_engine: Any) -> None:
     """The reason for the espeak path: misaki read CO2 as "co two"."""
-    spelled = kokoro_engine.phonemize(normalize("CO2"), "af_heart")
-    spoken = kokoro_engine.phonemize(normalize("see oh two"), "af_heart")
+    spelled = kokoro_engine.phonemize(normalize("CO2", language="en"), "af_heart")
+    spoken = kokoro_engine.phonemize(normalize("see oh two", language="en"), "af_heart")
     assert spelled == spoken
     assert kokoro_engine.phonemize("CO2", "af_heart") != spoken
 
@@ -725,7 +725,7 @@ async def test_voices_after_load(kokoro_engine: Any) -> None:
 @pytest.mark.model
 async def test_long_sentence_is_chunked_within_context(kokoro_engine: Any) -> None:
     # 300 characters of acronyms produce far more than 510 phonemes.
-    text = normalize(" ".join(["HVAC"] * 60))
+    text = normalize(" ".join(["HVAC"] * 60), language="en")
     chunks = [c async for c in kokoro_engine.synthesize(text, "af_heart")]
     assert _pcm_seconds(chunks) > 10
 

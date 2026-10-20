@@ -6,7 +6,7 @@ import asyncio
 import json
 import struct
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import openai
 import psutil
@@ -24,6 +24,7 @@ from tests.api.conftest import (
 from voiced.api import ffmpeg
 from voiced.config import Settings
 from voiced.engines import registry
+from voiced.engines.base import PCMChunk, Voice
 from voiced.testing import FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
 
@@ -126,6 +127,38 @@ async def test_default_voice_and_speed_from_settings(settings: Settings) -> None
         )
         assert r.status_code == 200
     assert calls == [("Hi.", "bf_emma", 1.5), ("Yo.", "am_adam", 0.5)]
+
+
+async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> None:
+    """Numbers become English words for an English voice only; a German voice,
+    named or the configured default (Home Assistant's path), gets the digits,
+    which it reads in German."""
+    settings.tts.languages = ["en", "de"]
+    settings.tts.default_voice = "de_anna"
+    texts: dict[str, str] = {}
+
+    class Bilingual(FakeTTSEngine):
+        languages = ["en", "de"]
+
+        async def voices(self) -> list[Voice]:
+            german = Voice(id="de_anna", name="Anna", language="de-DE", gender="female")
+            return [*await super().voices(), german]
+
+        async def synthesize(  # type: ignore[override]
+            self, text: str, voice: str, speed: float = 1.0
+        ) -> AsyncIterator[PCMChunk]:
+            texts[voice] = text
+            yield PCMChunk(data=bytes(480), sample_rate=24_000)
+
+    app = build_tts_app(settings, Bilingual())
+    async with lifespan_client(app) as c:
+        for voice in ("de_anna", "af_heart"):
+            r = await c.post("/v1/audio/speech", json={"input": "20 Euro", "voice": voice})
+            assert r.status_code == 200
+        assert texts == {"de_anna": "20 Euro.", "af_heart": "twenty Euro."}
+        r = await c.post("/v1/audio/speech", json={"input": "3,5 Euro"})
+        assert r.status_code == 200
+    assert texts["de_anna"] == "3,5 Euro."
 
 
 async def test_unknown_voice_is_400(

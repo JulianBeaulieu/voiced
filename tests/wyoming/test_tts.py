@@ -19,7 +19,7 @@ from wyoming.tts import (
 )
 
 from voiced import __version__
-from voiced.engines.base import PCMChunk
+from voiced.engines.base import PCMChunk, Voice
 from voiced.inference import ClientTimeout
 from voiced.testing import FakeTTSEngine
 from voiced.testing.fakes import FAKE_VOICES
@@ -101,6 +101,56 @@ async def test_default_and_named_voice_selection(
         await c.write_event(Synthesize(text="Hi.", voice=SynthesizeVoice(name="bf_emma")).event())
         await read_until(c, "audio-stop")
     assert seen == ["af_heart", "bf_emma"]
+
+
+async def test_text_is_normalized_for_the_voice_language(
+    tts_app: FastAPI, tts_listener: WyomingListener
+) -> None:
+    """Plain and streamed requests: a German voice keeps the digits and its
+    ordinals, a Chinese one splits at the ideographic full stop, an English
+    one gets English words."""
+    engine: FakeTTSEngine = tts_app.state.ctx.engine
+    tts_app.state.ctx.settings.tts.languages = ["en", "de", "zh"]
+    engine.languages = ["en", "de", "zh"]
+    german = Voice(id="de_anna", name="Anna", language="de-DE", gender="female")
+    chinese = Voice(id="zh_li", name="Li", language="zh-CN", gender="female")
+    seen: list[tuple[str, str]] = []
+    original = engine.synthesize
+
+    async def voices() -> list[Voice]:
+        return [*FAKE_VOICES, german, chinese]
+
+    def spy(text: str, voice: str, speed: float = 1.0) -> AsyncIterator[PCMChunk]:
+        seen.append((voice, text))
+        return original(text, "af_heart", speed)
+
+    engine.voices = voices  # type: ignore[method-assign]
+    engine.synthesize = spy  # type: ignore[method-assign]
+    async with client(tts_listener) as c:
+        await c.write_event(
+            Synthesize(text="20 Euro", voice=SynthesizeVoice(name="de_anna")).event()
+        )
+        await read_until(c, "audio-stop")
+        await c.write_event(SynthesizeStart(voice=SynthesizeVoice(name="de_anna")).event())
+        await c.write_event(SynthesizeChunk(text="Am 3. Oktober kostet es 3,5 Euro. Gut").event())
+        await c.write_event(SynthesizeStop().event())
+        await read_until(c, "synthesize-stopped")
+        await c.write_event(SynthesizeStart(voice=SynthesizeVoice(name="zh_li")).event())
+        await c.write_event(SynthesizeChunk(text="下雨了。我们走吧").event())
+        await c.write_event(SynthesizeStop().event())
+        await read_until(c, "synthesize-stopped")
+        await c.write_event(
+            Synthesize(text="20 euros", voice=SynthesizeVoice(name="af_heart")).event()
+        )
+        await read_until(c, "audio-stop")
+    assert seen == [
+        ("de_anna", "20 Euro."),
+        ("de_anna", "Am 3. Oktober kostet es 3,5 Euro."),
+        ("de_anna", "Gut."),
+        ("zh_li", "下雨了。"),
+        ("zh_li", "我们走吧."),
+        ("af_heart", "twenty euros."),
+    ]
 
 
 async def test_empty_text_yields_start_and_stop(tts_listener: WyomingListener) -> None:
