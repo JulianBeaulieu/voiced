@@ -414,3 +414,16 @@ def stt_qwen3_service(e2e_tmp: Path) -> Iterator[LiveService]:
     service = start_service("stt", settings)
     yield service
     service.stop()
+
+
+@pytest.fixture(scope="package")
+def stt_moonshine_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    pytest.importorskip("moonshine_voice")  # macOS 15 and the moonshine extra only
+    settings = _settings_for(
+        "stt",
+        e2e_tmp / "moonshine",
+        **{"engine": '"moonshine"', "model": '"moonshine-ai/moonshine-streaming-small"'},
+    )
+    service = start_service("stt", settings)
+    yield service
+    service.stop()

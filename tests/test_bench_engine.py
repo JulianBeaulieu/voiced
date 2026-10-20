@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from tests import hf_cache_support as hf
 from tests.scripts_support import load
 
 
@@ -425,6 +426,27 @@ def test_started_refuses_a_model_that_is_not_downloaded(
         be.started("tts", "kokoro", "mlx-community/Kokoro-82M-bf16", tmp_path),
     ):
         pass
+
+
+def test_size_is_the_models_own_files_also_in_a_shared_repository(
+    be: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Moonshine's models are folders of one repository: each row gives the
+    size of its own folder, not of every folder cached."""
+    from huggingface_hub import constants
+
+    from voiced import models
+
+    monkeypatch.setattr(constants, "HF_HOME", str(tmp_path / "hf"))
+    hub = tmp_path / "hf" / "hub"
+    small, tiny = "moonshine-ai/moonshine-streaming-small", "moonshine-ai/moonshine-streaming-tiny"
+    assert be.size_on_disk(small) is None
+    for model in (small, tiny):
+        snapshot = hf.add_locked(hub, models.lock()[model])
+    assert be.size_on_disk(small) == models.lock()[small].bytes
+    assert be.size_on_disk(tiny) == models.lock()[tiny].bytes
+    (snapshot / next(iter(models.lock()[tiny].files))).unlink()
+    assert be.size_on_disk(tiny) is None  # not the rest of the repository
 
 
 def test_free_ports_are_distinct(be: ModuleType) -> None:

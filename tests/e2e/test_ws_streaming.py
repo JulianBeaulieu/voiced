@@ -139,3 +139,21 @@ async def test_streaming_rejects_a_bad_sample_rate(stt_service: LiveService) -> 
             await ws.recv()
     assert excinfo.value.rcvd is not None
     assert excinfo.value.rcvd.code == 1008
+
+
+# Moonshine runs a last decoding pass after ``end`` on the CPU: about 100 to
+# 200 ms on an M1 Max (ADR 0024, known misses). One run is held to this
+# ceiling, which only catches a regression.
+MOONSHINE_FINALIZE_CEILING_S = 0.5
+
+
+async def test_moonshine_streams_partials_and_finalizes_on_end(
+    stt_moonshine_service: LiveService,
+) -> None:
+    run = await collect_stream(stt_moonshine_service.ws_url, chunk_samples=1600)
+    print(
+        f"\nWS moonshine: finalize {run.finalize_s * 1000:.1f} ms, text {run.final.get('text')!r}"
+    )
+    assert EXPECTED_WORDS <= set(words(run.final["text"])), run.final["text"]
+    assert run.partials and run.first_partial_lead_s is not None and run.first_partial_lead_s > 0
+    assert run.finalize_s < MOONSHINE_FINALIZE_CEILING_S

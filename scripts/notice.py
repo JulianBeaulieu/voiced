@@ -22,7 +22,7 @@ import sys
 import urllib.request
 from dataclasses import dataclass
 
-from lock_target import ROOT, installed
+from lock_target import MACOS_VERSIONS, ROOT, installed
 
 NOTICE = ROOT / "NOTICE"
 
@@ -190,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="only check NOTICE against the lock")
     args = parser.parse_args(argv)
-    packages = installed()
+    # What an install downloads on any supported macOS.
+    packages = sorted({p for macos in MACOS_VERSIONS for p in installed(macos=macos)})
     if args.check:
         problems = check(NOTICE.read_text() if NOTICE.exists() else "", packages)
         for problem in problems:

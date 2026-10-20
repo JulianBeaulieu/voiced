@@ -967,19 +967,23 @@ def commit() -> str:
 
 
 def size_on_disk(model: str) -> int | None:
-    """Bytes of ``model``'s pinned revision in the Hugging Face cache, else
-    of the revision ``main`` points at, else of the largest one cached."""
+    """Bytes of a locked ``model``'s files, its own also when it is one folder
+    of a repository other models share; None unless the cache holds them
+    all. For a model outside the lock: of the revision ``main`` points at in
+    the Hugging Face cache, else of the largest one cached."""
     from huggingface_hub import constants
 
-    from voiced.models import cached_revisions, pinned_revision
+    from voiced.models import cached_revisions, locked, missing_files
 
     # The hub under the HF_HOME bench_config() gives the service.
-    revisions = cached_revisions(Path(constants.HF_HOME) / "hub", {model}).revisions
+    hub = Path(constants.HF_HOME) / "hub"
+    entry = locked(model)
+    if entry is not None:
+        return None if missing_files(hub, entry) else entry.bytes
+    revisions = cached_revisions(hub, {model}).revisions
     if not revisions:
         return None
-    pinned = pinned_revision(model)
-    chosen = next((r for r in revisions if r.revision == pinned), None)
-    chosen = chosen or next((r for r in revisions if "main" in r.refs), None)
+    chosen = next((r for r in revisions if "main" in r.refs), None)
     return (chosen or max(revisions, key=lambda r: r.bytes)).bytes
 
 

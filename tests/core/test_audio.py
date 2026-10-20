@@ -9,12 +9,13 @@ import pytest
 from voiced.audio import (
     PCMConverter,
     UnsupportedAudioFormat,
+    clip_segment,
     float32_to_pcm16,
     pcm16_to_float32,
     resample,
     wav_header,
 )
-from voiced.engines.base import EngineError
+from voiced.engines.base import EngineError, Segment
 
 RNG = np.random.default_rng(0)
 
@@ -149,3 +150,12 @@ def _encode(x: np.ndarray, width: int) -> bytes:
     if width == 2:
         return float32_to_pcm16(x)
     return np.rint(x * 2147483647).astype("<i4").tobytes()
+
+
+def test_clip_segment_keeps_times_inside_the_input() -> None:
+    assert clip_segment(0.1234, 0.5678, "a", 1.0) == Segment(0.123, 0.568, "a")
+    assert clip_segment(-0.2, 0.3, "a", 1.0) == Segment(0.0, 0.3, "a")
+    assert clip_segment(0.5, 0.2, "a", 1.0) == Segment(0.5, 0.5, "a")  # end never before start
+    assert clip_segment(0.8, 1.4, "a", 1.0) == Segment(0.8, 1.0, "a")
+    assert clip_segment(1.2, 1.4, "a", 1.0) == Segment(1.0, 1.0, "a")
+    assert clip_segment(1.2, 1.4, "a", 0.0) == Segment(1.2, 1.4, "a")  # no known length

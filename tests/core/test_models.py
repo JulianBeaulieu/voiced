@@ -21,6 +21,7 @@ from voiced import models, ratings
 from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.moonshine import MoonshineEngine
 from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.qwen3_asr import Qwen3ASREngine
@@ -91,12 +92,19 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
 
 @pytest.mark.parametrize(
     "cls",
-    [ParakeetEngine, KokoroEngine, SopranoEngine, PhononEngine, Qwen3ASREngine],
+    [
+        ParakeetEngine,
+        KokoroEngine,
+        SopranoEngine,
+        PhononEngine,
+        Qwen3ASREngine,
+        MoonshineEngine,
+    ],
     ids=lambda c: c.name,
 )
 def test_each_catalogued_engine_takes_its_defaults_from_the_catalogue(cls: Any) -> None:
     default = models.default_model(cls.name)
-    assert (cls.model_id, cls.license) == (default.repo, default.license)
+    assert (cls.model_id, cls.license) == (default.id, default.license)
     assert models.engine(cls.name) is not None
     kind = models.engine(cls.name).kind  # type: ignore[union-attr]
     found = registry.list_stt_engines() if kind == "stt" else registry.list_tts_engines()

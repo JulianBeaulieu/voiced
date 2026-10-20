@@ -59,6 +59,16 @@ def test_labels() -> None:
         "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
         "languages": stt["parakeet"]["languages"],
     }
+    assert stt["moonshine"] == {
+        "name": "moonshine",
+        "label": "Moonshine",
+        "models": [
+            "moonshine-ai/moonshine-streaming-small",
+            "moonshine-ai/moonshine-streaming-tiny",
+            "moonshine-ai/moonshine-streaming-medium",
+        ],
+        "languages": ["en"],
+    }
     assert voice_label(Voice("x", "X", "xx-XX", "male")) == "X (xx-XX, male)"
 
 

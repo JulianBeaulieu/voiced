@@ -187,7 +187,9 @@ fastapi==0.143.0 \
 filelock==4.1.1 \
     --hash=sha256:3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089 \
     --hash=sha256:7ba0927482c5a814b0a7f391d029ccdb8010f576f0a74c0dcde1811e8bc4c1b6
-    # via huggingface-hub
+    # via
+    #   huggingface-hub
+    #   moonshine-voice
 flatbuffers==25.12.19 \
     --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
     # via onnxruntime
@@ -195,6 +197,15 @@ fsspec==2026.9.0 \
     --hash=sha256:0f08147951c8cb31d844c3547d631053b127863b60be04cf06e121333ee0e2fe \
     --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f
     # via huggingface-hub
+google-crc32c==1.9.0 ; platform_release >= '24' and sys_platform == 'darwin' \
+    --hash=sha256:457d0d9a4718fd52b1494eac5c200ad25beeadbdc91843d550a003910838589f \
+    --hash=sha256:53fdafef58e230d0c946ab5f8446d123d9f548230a73b29c8b41c9546f268bc1 \
+    --hash=sha256:7b8c84c3d159ab6817fe3f74e6e6cef099c3f95dcec3abc0d8afb1404642efbe \
+    --hash=sha256:8b91f41645b15a720357183fa5716682ada441873e3c462c15f9714be36f146b \
+    --hash=sha256:ccfe40021fd6afe23361175cf7551e3cef5fd34dc1ebe319f14993a83579e0eb \
+    --hash=sha256:f1dc17d987ddcc5eba12a7ce48f0eb93141dea236b170c1101151396edf2f0cf \
+    --hash=sha256:f894a2877650b56201d26a012a257b76d54a68834dc3913a93830ca8a047b075
+    # via moonshine-voice
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
@@ -363,6 +374,9 @@ mlx-metal==0.32.3 ; sys_platform == 'darwin' \
     --hash=sha256:fdba88ed9131448cf163be2c7ad6374746d8818205f28657aa91b6c69050f691 \
     --hash=sha256:feea99fe4d01f9e9f33ca73d869f988219a1725de1c18870baa7d5cd5aef6cb3
     # via mlx
+moonshine-voice==0.1.5 ; platform_release >= '24' and sys_platform == 'darwin' \
+    --hash=sha256:9866b1956d12fff11923ad42f1140bcb314bf05bf8d8576fb7b3aa819ec40e51
+    # via voiced
 msgpack==1.2.3 \
     --hash=sha256:07c9733089d1b176c3dd2f7fa268452f9d5d784d076473499d754a58e8d1fbbb \
     --hash=sha256:186e6c602b8a9968b8e864c67d622a69279f7d1e55ae25f40e3bff7e815b2b62 \
@@ -477,6 +491,7 @@ numpy==2.4.6 ; python_full_version < '3.12' \
     #   kokoro-onnx
     #   librosa
     #   mlx-audio
+    #   moonshine-voice
     #   numba
     #   onnxruntime
     #   parakeet-mlx
@@ -515,6 +530,7 @@ numpy==2.5.4 ; python_full_version >= '3.12' \
     #   kokoro-onnx
     #   librosa
     #   mlx-audio
+    #   moonshine-voice
     #   numba
     #   onnxruntime
     #   parakeet-mlx
@@ -568,7 +584,9 @@ phonemizer==3.4.0 \
 platformdirs==4.13.0 \
     --hash=sha256:1aa0b0d3f224c1f07c295121e312a5a24a180d6ae5a8425ea1784b3e3863e9c0 \
     --hash=sha256:3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1
-    # via pooch
+    # via
+    #   moonshine-voice
+    #   pooch
 pooch==1.9.0 \
     --hash=sha256:de46729579b9857ffd3e741987a2f6d5e0e03219892c167c6578c0091fb511ed \
     --hash=sha256:f265597baa9f760d25ceb29d0beb8186c243d6607b0f60b83ecf14078dbc703b
@@ -802,7 +820,9 @@ regex==2026.9.29 \
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
-    # via pooch
+    # via
+    #   moonshine-voice
+    #   pooch
 rich==15.0.0 \
     --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb \
     --hash=sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36
@@ -963,7 +983,9 @@ sounddevice==0.5.6 \
     --hash=sha256:c8ae19173e5f27f8c12d4b5eee2dbfe542cee125d591e663e0fb4dfb75246d45 \
     --hash=sha256:de099612311ad81e55d31ccbd83f43ea6bf4d87b48f9b6ea55a1fbcde0eee4e0 \
     --hash=sha256:e3aef00ad8b1d1740eb66d9a7671eab88a4d2b8fa4ab33498d742e63b65c309c
-    # via mlx-audio
+    # via
+    #   mlx-audio
+    #   moonshine-voice
 soundfile==0.14.0 \
     --hash=sha256:0a6ae43c50c71b4e020cc55382925cb89451c1ed1a0c3d0f5d802da269226849 \
     --hash=sha256:19be05428da76ed61a4cad29b8e4bcf43a3e5c100089d2ec81dc961eed1b0dd4 \
@@ -1025,6 +1047,7 @@ tqdm==4.70.1 \
     # via
     #   huggingface-hub
     #   mlx-audio
+    #   moonshine-voice
     #   transformers
 transformers==5.19.0 \
     --hash=sha256:87f38dd25e4521151b97e94520ac457f44a0ae8a8358a5b112daff6c64a822d6 \

@@ -111,6 +111,31 @@ def test_the_real_lock_has_a_file_for_every_entry(app_manifest: ModuleType) -> N
     assert size > 50_000_000
 
 
+def test_a_package_only_newer_macos_installs_is_counted_once(
+    app_manifest: ModuleType, tmp_path: Path
+) -> None:
+    """moonshine-voice installs on macOS 15 and later: its macOS 15 wheel is
+    counted on top of the floor's download."""
+    uv_lock = tmp_path / "uv.lock"
+    uv_lock.write_text(
+        UV_LOCK
+        + """
+[[package]]
+name = "moonshine-voice"
+version = "0.1.5"
+wheels = [
+    { url = "moonshine_voice-0.1.5-py3-none-macosx_15_0_arm64.whl", hash = "sha256:10", size = 7 },
+]
+"""
+    )
+    lock = tmp_path / "requirements.lock"
+    lock.write_text(
+        LOCK + "moonshine-voice==0.1.5 ; platform_release >= '24' \\\n    --hash=sha256:10\n"
+    )
+    python = load("lock_target").python_version()
+    assert app_manifest.wheels_bytes(lock, uv_lock, python) == 300 + 40 + 5 + 7
+
+
 def test_a_lock_entry_missing_from_uv_lock(
     app_manifest: ModuleType, files: dict[str, Path]
 ) -> None:

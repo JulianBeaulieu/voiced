@@ -71,6 +71,17 @@ tts = [
 # pinned to the minor release the engine was checked against (stream(),
 # add_voice(), voice_catalog= and its default model and voice revisions).
 phonon = ["ptts>=0.4,<0.5", "huggingface-hub>=1.1"]
+# Moonshine on the CPU (ADR 0024): moonshine-voice bundles ONNX Runtime. Its only
+# wheel is for macOS 15 and later (Darwin 24), so the marker lets a macOS 14
+# install skip it; the engine then says so at load. Pinned to the release the
+# engine was checked against: Stream.stop() completes the open line, and on a
+# failed pass returns None and tells only the listeners; events carry .line or
+# .error; create_stream(update_interval=); any streaming ModelArch loads any
+# streaming folder through its streaming_config.json.
+moonshine = [
+    'moonshine-voice>=0.1.5,<0.2; sys_platform == "darwin" and platform_release >= "24"',
+    "huggingface-hub>=1.1",
+]
 
 [dependency-groups]
 dev = [
@@ -103,6 +114,7 @@ voiced = "voiced.entry:main"
 fake = "voiced.testing.fakes:FakeSTTEngine"
 parakeet = "voiced.engines.parakeet:ParakeetEngine"
 qwen3-asr = "voiced.engines.qwen3_asr:Qwen3ASREngine"
+moonshine = "voiced.engines.moonshine:MoonshineEngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"
@@ -146,7 +158,7 @@ warn_unreachable = true
 
 # torch.*: scripts/utmos_score.py, which runs in its own uv environment (ADR 0024).
 [[tool.mypy.overrides]]
-module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*", "imageio_ffmpeg.*", "ptts.*", "torch.*"]
+module = ["wyoming.*", "parakeet_mlx.*", "mlx_audio.*", "kokoro_onnx.*", "espeakng_loader.*", "mlx.*", "huggingface_hub.*", "scipy.*", "imageio_ffmpeg.*", "ptts.*", "torch.*", "moonshine_voice.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
