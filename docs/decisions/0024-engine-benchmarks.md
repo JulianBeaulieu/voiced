@@ -182,7 +182,7 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   whose `kind` is its engine's kind, whose `engine` and `model` are the
   catalogue's, and whose machine without the macOS version is "MacBook Pro,
   Apple M1 Max, 64 GB" (`Result.hardware()`). `quality` and `speed` are
-  written by hand from that row, and `tests/test_models.py` gains one test
+  written by hand from that row, and `tests/core/test_models.py` gains one test
   that, for every catalogue model, loads the result files with
   `bench_engine.load_results`, finds the reference row and asserts
   `(quality, speed) == (rate(row.metrics).quality, rate(row.metrics).speed)`,
