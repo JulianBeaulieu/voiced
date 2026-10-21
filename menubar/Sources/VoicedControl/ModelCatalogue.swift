@@ -342,7 +342,7 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     /// configured engine and model in `settings`. `downloading` is the id in flight; `ready`
     /// whether the service has loaded what it runs.
     public static func rows(
-        _ list: ModelList, kind: ServiceKind, settings: SettingsPayload, downloading: String?, ready: Bool = true
+        _ list: ModelList, kind: ServiceKind, settings: SettingsPayload, downloading: String?, ready: Bool
     ) -> [ModelRow] {
         let (current, configured) = settings.selection(for: kind)
         return list.engines(of: kind).flatMap { engine -> [ModelRow] in

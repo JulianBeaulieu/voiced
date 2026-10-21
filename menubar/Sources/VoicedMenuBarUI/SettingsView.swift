@@ -380,8 +380,8 @@ public struct SettingsView: View {
                     }
                 }
                 if let installer, managed {
-                    // Update and Repair wait for a model download (ADR 0022).
-                    let working = installer.isWorking || models.isDownloading
+                    // Update and Repair wait for a model download or delete (ADR 0022).
+                    let working = installer.isWorking || models.isBusy
                     if case .differs = launch?.installMatch {
                         Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
                     }

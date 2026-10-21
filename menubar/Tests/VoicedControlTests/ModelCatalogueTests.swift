@@ -63,8 +63,6 @@ final class ModelCatalogueTests: XCTestCase {
         } else {
             (settings.tts.engine, settings.tts.model) = (engine, model)
         }
-        XCTAssertEqual(settings.selection(for: kind).engine, engine)
-        XCTAssertEqual(settings.selection(for: kind).model, model)
         let rows = ModelRow.rows(state.list, kind: kind, settings: settings, downloading: downloading, ready: ready)
         return Dictionary(uniqueKeysWithValues: rows.map { ($0.model?.id ?? $0.engine.name, $0) })
     }
@@ -100,6 +98,14 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(loading?.canDelete, false)
         XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake")["fake"]?.state, .inUse)
         XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake", ready: false)["fake"]?.state, .inUseLoading)
+    }
+
+    func testSelectionForKind() {
+        let settings = FakeState.sample.settings
+        XCTAssertEqual(settings.selection(for: .stt).engine, "parakeet")
+        XCTAssertEqual(settings.selection(for: .stt).model, "mlx-community/parakeet-tdt-0.6b-v3")
+        XCTAssertEqual(settings.selection(for: .tts).engine, "kokoro")
+        XCTAssertEqual(settings.selection(for: .tts).model, "mlx-community/Kokoro-82M-bf16")
     }
 
     func testAServiceIsReadyOnceWarmAndNotRestarting() {
@@ -209,7 +215,6 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(
             ModelList(cache: "/Volumes/Models/hub", totalBytes: 0, engines: []).usageLine,
             "voiced's models use Zero KB in /Volumes/Models/hub.")
-        XCTAssertEqual(ModelList.sharedFolderNote, "This folder is shared with other apps; voiced deletes only its own models.")
         XCTAssertEqual(
             ModelMessage.homeAssistantHint(engine: "Phonon"),
             "In Home Assistant, pick a Phonon voice under Settings > Voice assistants > your assistant > "

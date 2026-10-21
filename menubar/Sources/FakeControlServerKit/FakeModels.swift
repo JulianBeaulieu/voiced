@@ -9,7 +9,9 @@ public struct FakeModelState: Codable, Sendable, Equatable {
     /// Model id to an ADR 0022 error code (`token_missing`, `network`, ...). Edit the file by
     /// hand to make another download fail.
     public var failures: [String: String]
-    /// The models the fake config uses.
+    /// The models the fake config uses, which `delete` refuses. Configured models only: the
+    /// real command also refuses a model in the same download as one of them, which the
+    /// fake catalogue has none of, and shared models are never deleted alone.
     public var inUse: [String]
 
     public init(list: ModelList, failures: [String: String] = [:], inUse: [String] = []) {

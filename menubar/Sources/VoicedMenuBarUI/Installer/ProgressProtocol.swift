@@ -161,6 +161,15 @@ struct InstallSession {
     private var greeted = false
     /// The first `done` or `error`; anything after it changes nothing.
     private var terminal: InstallEvent?
+
+    /// `done` arrived, whatever the exit status turns out to be.
+    var isDone: Bool { terminal == .done }
+
+    /// The `error` event that arrived, if any.
+    var reportedError: (message: String, code: String?)? {
+        guard case .error(_, let message, let code)? = terminal else { return nil }
+        return (message.isEmpty ? "\(command) failed." : message, code)
+    }
     private(set) var samples: [String: [(at: ContinuousClock.Instant, bytes: Int64)]] = [:]
 
     /// A download with bytes to go whose bytes have not grown for `timeout`.

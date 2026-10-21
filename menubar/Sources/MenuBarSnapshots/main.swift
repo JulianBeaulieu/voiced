@@ -111,7 +111,7 @@ func modelManager(_ model: AppModel, socket: String, steps: [ModelStep]) async -
             }
         case .use(let kind, let id):
             guard let list = manager.list, let settings = model.settings else { continue }
-            let rows = ModelRow.rows(list, kind: kind, settings: settings, downloading: nil)
+            let rows = ModelRow.rows(list, kind: kind, settings: settings, downloading: nil, ready: true)
             if let row = rows.first(where: { $0.model?.id == id }) { await manager.use(row, for: kind) }
         }
     }

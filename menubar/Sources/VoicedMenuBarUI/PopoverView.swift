@@ -106,8 +106,8 @@ public struct PopoverView: View {
         self.models = models
     }
 
-    /// Update and Repair wait for a model download (ADR 0022).
-    private var downloading: Bool { models.isDownloading }
+    /// Update and Repair wait for a model download or delete (ADR 0022).
+    private var downloading: Bool { models.isBusy }
 
     public var body: some View {
         let dashboard = model.dashboard

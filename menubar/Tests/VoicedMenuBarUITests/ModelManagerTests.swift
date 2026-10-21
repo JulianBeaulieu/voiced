@@ -140,7 +140,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: true)
                 .first { $0.model?.id == phonon31 })
         // The server refuses a model that is not downloaded.
         let refused = await f.app.apply(.ttsEngine("phonon", model: phonon31))
@@ -166,7 +166,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .stt, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .stt, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: true)
                 .first { $0.model == nil })
         await f.models.use(row, for: .stt)
         // The engine's own model, from `engines.list`, as an engine switch has always sent.
@@ -179,7 +179,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: true)
                 .first { $0.model?.id == "gradium/phonon-40m-en" })
         await f.models.use(row, for: .tts)
         XCTAssertFalse(f.server.requests.contains { $0.op == "settings.set" })
@@ -218,7 +218,7 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertEqual(f.models.list?.model(kokoro)?.model.downloaded, true)
         // After Use moves away from it, it can go.
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: true)
                 .first { $0.model?.id == phonon31 })
         await f.models.use(row, for: .tts)
         await f.models.delete(kokoro)
@@ -248,6 +248,7 @@ final class ModelManagerTests: XCTestCase {
         let delete = Task { await f.models.delete(kokoro, previous: true) }
         let deleting = await eventually { f.models.deleting != nil }
         XCTAssertTrue(deleting)
+        XCTAssertTrue(f.models.isBusy, "Update and Repair wait for a delete too")
         let started = await f.models.download(phonon31)
         XCTAssertFalse(started)
         delete.cancel()
@@ -263,12 +264,30 @@ final class ModelManagerTests: XCTestCase {
                     .map(ProcessOutput.stdout), hangs: true)
         }
         let download = Task { await f.models.download(phonon31) }
-        let finished = await eventually { f.models.download?.progress?.isFinished == true }
-        XCTAssertTrue(finished)
-        try await Task.sleep(for: .milliseconds(50))
+        let reported = await eventually { f.models.download?.isDone == true }
+        XCTAssertTrue(reported)
         f.models.cancelDownload()
         let done = await download.value
         XCTAssertTrue(done, "the model is on disk: Use goes on")
+    }
+
+    func testACancelThatLandsAfterAnErrorKeepsTheError() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        f.runner.respond = { command in
+            guard command.arguments.contains("download") else { return .models(command.arguments, in: f.cache) }
+            return .init(
+                [RecordedProgress.hello, #"{"event": "error", "code": "network", "message": "offline"}"#]
+                    .map(ProcessOutput.stdout), hangs: true)
+        }
+        let download = Task { await f.models.download(phonon31) }
+        let ended = await eventually { f.models.download?.hasEnded == true }
+        XCTAssertTrue(ended)
+        f.models.cancelDownload()
+        let done = await download.value
+        XCTAssertFalse(done)
+        XCTAssertEqual(
+            f.models.messages[phonon31]?.text, "Hugging Face could not be reached. Check the connection and try again.")
     }
 
     func testAListThisAppCannotReadIsNotCalledAnOldVoiced() async throws {
@@ -306,7 +325,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture(.missingModel)
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: true)
                 .first { $0.model?.id == kokoro })
         XCTAssertEqual(row.state, .inUseMissing)
         XCTAssertEqual(row.downloadTitle, "Download")
@@ -329,4 +348,3 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertFalse(f.server.requests.contains { $0.op == "service.restart" })
     }
 }
-

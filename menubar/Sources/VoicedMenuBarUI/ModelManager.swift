@@ -14,6 +14,10 @@ public final class ModelManager {
     public struct Download: Sendable, Equatable {
         public var model: String
         public var progress: InstallProgress.Download?
+        /// The command reported `done`: the model is on disk.
+        public var isDone = false
+        /// The command reported `done` or an `error`: a cancel now changes nothing.
+        public var hasEnded = false
     }
 
     public private(set) var list: ModelList?
@@ -28,6 +32,8 @@ public final class ModelManager {
     public private(set) var switchedVoiceEngine: String?
 
     public var isDownloading: Bool { download != nil }
+    /// A download or a delete runs: Update and Repair wait for it.
+    public var isBusy: Bool { download != nil || deleting != nil }
 
     public let executable: String
     private let runner: InstallRunner
@@ -146,6 +152,8 @@ public final class ModelManager {
                     guard session.receive(line: line, at: .now) else { break reading }
                     let downloads = session.progress.downloads
                     download?.progress = downloads.last { !$0.isFinished } ?? downloads.last
+                    download?.isDone = session.isDone
+                    download?.hasEnded = session.isDone || session.reportedError != nil
                 case .stderr(let text): session.receive(stderr: text)
                 case .exit(let code): status = code
                 }
@@ -154,8 +162,15 @@ public final class ModelManager {
             messages[id] = ModelMessage(text: "Cannot run \(executable): \(error.localizedDescription)")
             return false
         }
-        // Cancel landing after `done`: the model is on disk all the same.
-        if Task.isCancelled { return session.finish(status: 0) == .done }
+        // A cancel racing the end: `done` still counts and an error still shows; only a
+        // download cut short before either is a silent stop.
+        if Task.isCancelled {
+            if session.isDone { return true }
+            if let error = session.reportedError {
+                messages[id] = ModelMessage.failure(code: error.code, message: error.message, model: model(id))
+            }
+            return false
+        }
         switch session.finish(status: status) {
         case .done:
             return true

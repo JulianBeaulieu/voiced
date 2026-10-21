@@ -11,8 +11,7 @@ Home Assistant discovery, the API key), Speech to Text and Text to Speech
 (a row per model, grouped by engine, to download, delete or use it, and the
 voice of the engine in use; see [Models](#models)), About (versions, the
 control socket, the config file and logs, the third-party notices) and, once
-"Show Debug pane"
-in General turns it on, Debug (the app, its pins, the installed environment,
+"Show Debug pane" in General turns it on, Debug (the app, its pins, the installed environment,
 the installer's state, each service's Login Items status and every path,
 with "Copy Diagnostics"). The window ends with the app's
 version. When voiced is not installed the window offers the
@@ -152,9 +151,9 @@ takes five seconds; SIGTERM ends it with exit 143), the fake server reads it:
 `in_use`. To try other failures, edit the file's `failures` (model id to an
 error code such as `network` or `disk`); while `<socket>.models.json.busy`
 exists, download and delete fail with `busy`. Pointed at a development
-checkout's `voiced`, the rows run
-the real command; `VOICED_REAL_CLI=<voiced> swift test --filter RealCLITests`
-runs a list, a cancelled download and a download through the app's code.
+checkout's `voiced`, the rows run the real command; `VOICED_REAL_CLI=<voiced>
+swift test --filter RealCLITests` runs a list, a cancelled download and a
+download through the app's code.
 
 | Scenario | State |
 |---|---|
