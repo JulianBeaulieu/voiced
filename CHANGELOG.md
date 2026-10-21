@@ -114,6 +114,11 @@ uses [Semantic Versioning](https://semver.org/).
   longer waits behind the synthesis it abandoned. For an engine that renders
   half a second of audio at a time this was up to that half second of extra
   first audio. The hang-up is still counted as a `disconnect`.
+- An HTTP speech client that hangs up before the first audio arrives, or
+  while its request waits in the queue, is now noticed at once. The first
+  sentence used to be synthesized for nobody (about 0.1 s with Kokoro, a
+  second or more with OmniVoice), after waiting out the whole queue, and
+  the next request waited behind it. It is counted as a `disconnect`.
 - Text for a voice in a language other than English is no longer spelled
   as English: digits stay digits ("Ich habe 20 Euro", not "twenty Euro";
   "3,5", not "three,five"), and English abbreviations and symbols are left

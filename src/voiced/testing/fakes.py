@@ -205,8 +205,9 @@ PIECE_GAP_S = STEP_S * STEPS_PER_PIECE
 class SteppedTTSEngine(SentenceTTSEngine):
     """``SentenceTTSEngine`` whose sentences are an audio piece, then
     ``steps_per_piece`` empty steps (:data:`STEPS_PER_PIECE` by default),
-    then another piece. It counts the steps run, so a test can tell how soon
-    a synthesis stopped. A test that synthesizes to the end sets fewer steps:
+    then another piece; with ``steps_before_first``, that many empty steps
+    come before the first piece. It counts the steps run, so a test can tell
+    how soon a synthesis stopped. A test that synthesizes to the end sets fewer steps:
     on a CI runner a step has taken up to eight times :data:`STEP_S`."""
 
     name = "stepped"
@@ -215,10 +216,15 @@ class SteppedTTSEngine(SentenceTTSEngine):
     license = "MIT"
 
     def __init__(
-        self, model_id: str | None = None, *, steps_per_piece: int = STEPS_PER_PIECE
+        self,
+        model_id: str | None = None,
+        *,
+        steps_per_piece: int = STEPS_PER_PIECE,
+        steps_before_first: int = 0,
     ) -> None:
         super().__init__(model_id)
         self.steps_per_piece = steps_per_piece
+        self.steps_before_first = steps_before_first
         self.steps = 0
         self._lock = threading.Lock()
 
@@ -242,10 +248,14 @@ class SteppedTTSEngine(SentenceTTSEngine):
     def _synth_chunks(
         self, sentence: str, voice: str, speed: float
     ) -> Generator[bytes, None, None]:
+        yield from self._steps(self.steps_before_first)
         yield bytes(4800)
-        for _ in range(self.steps_per_piece):
+        yield from self._steps(self.steps_per_piece)
+        yield bytes(4800)
+
+    def _steps(self, n: int) -> Generator[bytes, None, None]:
+        for _ in range(n):
             time.sleep(STEP_S)
             with self._lock:
                 self.steps += 1
             yield b""
-        yield bytes(4800)

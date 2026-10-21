@@ -46,6 +46,7 @@ from starlette.types import Message, Receive
 from voiced.api import ffmpeg, formats
 from voiced.api.context import WS_CLOSE, APIError, Ctx, close_ws
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
+from voiced.api.responses import ClientGoneResponse
 from voiced.audio import PCMConverter
 from voiced.context import ServiceContext
 from voiced.engines.base import STT_SAMPLE_RATE, AudioInput, EngineError
@@ -61,9 +62,6 @@ PARTIAL_INTERVAL_S = 0.25
 """Minimum time between two ``partial`` events on the WebSocket."""
 
 MB = 1024 * 1024
-
-CLIENT_CLOSED_REQUEST = 499
-"""Status for a request the client abandoned (nginx's convention); never delivered."""
 
 UPLOAD_SLACK_BYTES = 64 * 1024
 """Multipart framing allowance on top of ``stt.max_upload_mb``."""
@@ -164,11 +162,9 @@ async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> 
     except _PayloadTooLarge:
         raise _too_large(limit_mb) from None
     except ClientDisconnect:
-        # The client hung up mid-upload. Not an error, and there is no one to
-        # answer: return quietly (the server discards this response) rather
-        # than raise, which would make the server log a traceback.
+        # The client hung up mid-upload: not an error (see ClientGoneResponse).
         log.debug("client went away during the upload")
-        return Response(status_code=CLIENT_CLOSED_REQUEST)
+        return ClientGoneResponse()
 
     try:
         # Decoding runs outside the slot, so it is bounded on its own: each

@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import openai
 import psutil
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from httpx import AsyncClient
 
@@ -22,11 +23,12 @@ from tests.api.conftest import (
     wait_for_depth,
 )
 from voiced.api import ffmpeg
+from voiced.cli import uvicorn_config
 from voiced.config import Settings
 from voiced.engines import registry
-from voiced.engines.base import PCMChunk, Voice
+from voiced.engines.base import EngineError, PCMChunk, Voice
 from voiced.testing import FakeTTSEngine, lifespan_client
-from voiced.testing.fakes import PIECE_GAP_S, SteppedTTSEngine
+from voiced.testing.fakes import PIECE_GAP_S, STEPS_PER_PIECE, SteppedTTSEngine
 from voiced.tts import build_tts_app
 
 TEXT = "Hello there. This is a test."
@@ -335,6 +337,106 @@ async def test_a_hang_up_frees_the_slot_at_the_next_step_not_the_next_chunk(
         counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
         assert counts["disconnect"] == 1 and counts["ok"] == 1
         assert app.state.ctx.health.snapshot(0).status == "ok"
+
+
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_a_hang_up_before_the_first_audio_frees_the_slot_at_the_next_step(
+    settings: Settings, spec_version: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first audio piece is two seconds of steps away; a client that hangs
+    up before it frees the slot at the engine's next step, gets no response
+    started, and is counted as one disconnect, not an error."""
+    engine = SteppedTTSEngine(steps_before_first=STEPS_PER_PIECE)
+    app = build_tts_app(settings, engine)
+    async with loaded(app):
+        disconnect = asyncio.Event()
+        first = asyncio.create_task(
+            _asgi_post(
+                app, {"input": "Hello there."}, disconnect=disconnect, spec_version=spec_version
+            )
+        )
+        await _wait_until(lambda: engine.steps > 0)
+        disconnect.set()
+        hung_up = time.perf_counter()
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        run = await asyncio.wait_for(first, 2.0)
+        # Under 2.4 the send to the closed connection raises and nothing is recorded.
+        assert run.status in (0, 499) and not any(run.bodies)
+        assert engine.steps < 10, "the synthesis stopped at its next step"
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 0
+        assert app.state.ctx.health.snapshot(0).status == "ok"
+    assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+async def test_a_hang_up_before_the_first_audio_over_a_real_socket(settings: Settings) -> None:
+    """The same hang-up through uvicorn as ``voiced serve`` runs it: the
+    server, not a test double, has to report the closed socket from
+    ``receive()``."""
+    settings.server.bind = "127.0.0.1"
+    engine = SteppedTTSEngine(steps_before_first=STEPS_PER_PIECE)
+    app = build_tts_app(settings, engine)
+    server = uvicorn.Server(uvicorn_config(app, settings, port=0))
+    serving = asyncio.create_task(server.serve())
+    try:
+        await _wait_until(lambda: server.started)
+        await asyncio.wait_for(app.state.load_task, 5.0)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        body = json.dumps({"input": "Hello there."}).encode()
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"POST /v1/audio/speech HTTP/1.1\r\nHost: voiced\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+        )
+        await writer.drain()
+        await _wait_until(lambda: engine.steps > 0)
+        writer.close()
+        await writer.wait_closed()
+        hung_up = time.perf_counter()
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        assert engine.steps < 10
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 0
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(serving, 5.0)
+
+
+async def test_a_queued_request_that_hangs_up_leaves_the_queue(settings: Settings) -> None:
+    """A request waiting for the slot is gone from the queue as soon as its
+    client hangs up, without an engine call; the one holding the slot goes on."""
+    engine = GatedTTSEngine()
+    app = build_tts_app(settings, engine)
+    async with loaded(app):
+        running = asyncio.create_task(_asgi_post(app, {"input": "Hi.", "response_format": "pcm"}))
+        await wait_for_depth(app, 1)
+        disconnect = asyncio.Event()
+        queued = asyncio.create_task(_asgi_post(app, {"input": "Hi."}, disconnect=disconnect))
+        await wait_for_depth(app, 2)
+        disconnect.set()
+        await _wait_until(lambda: app.state.ctx.queue.depth == 1)
+        assert (await asyncio.wait_for(queued, 2.0)).status == 499
+        engine.gate.set()
+        assert (await asyncio.wait_for(running, 2.0)).status == 200
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 1
+
+
+async def test_an_engine_error_before_any_audio_is_400(settings: Settings) -> None:
+    class Refuses(FakeTTSEngine):
+        async def synthesize(self, text, voice, speed=1.0):  # type: ignore[no-untyped-def, override]
+            raise EngineError("cannot say that")
+            yield
+
+    app = build_tts_app(settings, Refuses())
+    async with loaded(app):
+        run = await _asgi_post(app, {"input": "Hi."})
+        assert run.status == 400 and b"cannot say that" in b"".join(run.bodies)
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["client_error"] == 1 and counts["disconnect"] == 0
 
 
 @pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
