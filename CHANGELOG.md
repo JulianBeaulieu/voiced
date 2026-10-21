@@ -38,6 +38,9 @@ uses [Semantic Versioning](https://semver.org/).
 - A `missing_model` health status: a service whose model is not in the cache
   stays up, answers 503 `model_not_downloaded` and names the command that
   downloads it, instead of exiting and being restarted every 10 s.
+- A `dependency-locks` workflow regenerates the shipped locks and NOTICE on
+  Dependabot's `uv` pull requests and pushes them, so those pull requests
+  pass CI once their runs are approved, with no repository secret.
 
 ### Changed
 

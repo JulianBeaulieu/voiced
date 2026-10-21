@@ -1,6 +1,6 @@
 # 0017: Homebrew packaging and the shared install layout
 
-Date: 2026-10-15, revised 2026-10-18 and 2026-10-20. Status: accepted.
+Date: 2026-10-15, revised 2026-10-18, 2026-10-20 and 2026-10-21. Status: accepted.
 
 ## Context
 
@@ -157,9 +157,7 @@ once restored.
 `voiced/build-requirements.lock` (a `build` dependency group pins
 `hatchling`, so it is in `uv.lock` with hashes). A test fails when either
 differs from `uv.lock`, so CI catches a stale one, and names the one command
-that rewrites both and NOTICE, `scripts/refresh_locks.py`; a Dependabot
-pull request, which changes only `pyproject.toml` and `uv.lock`, lands after
-a maintainer runs it on its branch (CONTRIBUTING.md, "Updating a dependency"). Every path runs
+that rewrites both and NOTICE, `scripts/refresh_locks.py`. Every path runs
 `uv pip install --require-hashes --no-deps -r requirements.lock`, then
 `uv pip install --no-deps --build-constraints build-requirements.lock
 <voiced>`; uv verifies the hashes of build dependencies in constraints.
@@ -170,6 +168,23 @@ The build backend stays a lock of its own, not folded into the runtime one
 with `--no-build-isolation`: it is only needed to build voiced, and in the
 runtime lock `hatchling` and its dependencies would be installed into
 every environment, the keg included, for nothing.
+
+**Dependabot's pull requests (2026-10-21).** They change only
+`pyproject.toml` and `uv.lock`, so the shipped locks and NOTICE disagree
+with `uv.lock` and CI fails. `.github/workflows/dependency-locks.yml` runs
+`scripts/refresh_locks.py` on Dependabot's `uv` branches and pushes the
+result, with no repository secret. A Dependabot-triggered `pull_request` run
+gets a read-only token by default, which the workflow's `permissions` key
+may raise; a push with `GITHUB_TOKEN` that updates a pull request starts its
+CI in an approval-required state, which one click from someone with write
+access releases (GitHub's "Triggering a workflow" documentation). The job
+that regenerates runs the branch's code (`uv lock` may build an sdist), so
+it holds a read-only token; a second job, on another runner and running
+nothing from the branch, copies the generated files over its checkout,
+commits and pushes, not forced. The commit carries `[dependabot skip]`, so
+Dependabot keeps rebasing the branch, and the workflow runs again on each
+rebase. Not yet exercised on a real Dependabot pull request: the first
+`uv` one after this change is its test.
 
 **The watchdog follows a replaced environment.** At start it records the
 files it runs from, `sys.prefix`, `sys.base_prefix` and `sys.executable`,
@@ -357,20 +372,17 @@ differ per install path (switching would need root), the control socket
 would live inside the keg, and the menu bar app would no longer find it at
 `~/.voiced/control.sock`. Rejected.
 
-**A workflow that regenerates the locks on Dependabot's pull requests.** It
-would save checking out the branch, but it needs to push to it. A workflow
-triggered by Dependabot's `pull_request` gets a read-only token and no
-secrets, so it would need `pull_request_target` (or `workflow_run`) with
-`contents: write`, running `uv lock` and `uv export` on a checkout of the
-pull request's code with a write token in reach: exactly what zizmor flags
-as dangerous-triggers, and safe only with the regenerating job holding no
-token and a second job committing its artefact. A commit pushed with
-`GITHUB_TOKEN` also does not start CI again, so the pull request would stay
-red without a personal access token or an app key as a repository secret.
-That is two jobs, a long-lived credential and a privileged trigger, to save
-one command a month. Dropping the `uv` ecosystem from Dependabot was the
-other way out; it keeps proposing updates and grouping them, which is the
-useful part, so it stays.
+**A maintainer runs the command on every Dependabot pull request.** The
+first version of this decision: check out the branch, run
+`scripts/refresh_locks.py`, commit and push, once a month or more. It
+rejected the workflow on two grounds that do not hold, that a Dependabot run
+needs `pull_request_target` for a write token, and that a push with
+`GITHUB_TOKEN` never starts CI, so a personal access token would be needed
+(2026-10-21: replaced by the workflow above). Generating the locks at build
+time instead is no way out: the formula and `voiced install --source` read
+them from the source tree before anything is built, and NOTICE needs PyPI.
+Dropping the `uv` ecosystem from Dependabot was the other; it proposes
+updates and groups them, which is the useful part, so it stays.
 
 ## Consequences
 

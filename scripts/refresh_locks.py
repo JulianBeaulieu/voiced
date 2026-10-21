@@ -3,11 +3,11 @@
     uv run python scripts/refresh_locks.py
 
 Run it after any change to uv.lock: after ``uv lock`` (which it runs first, so
-an edit to pyproject.toml is enough), and on a dependency update pull request,
-whose change is only pyproject.toml and uv.lock. Check out the branch, run
-this, commit what it changed and push. Tests fail while any of these files
-says something other than uv.lock (``tests/launchd/test_install.py`` for the
-locks, ``tests/test_notice.py`` for NOTICE). NOTICE asks PyPI for licences.
+an edit to pyproject.toml is enough). On Dependabot's pull requests, whose
+change is only pyproject.toml and uv.lock, the dependency-locks workflow runs
+it and pushes the result. Tests fail while any of these files says something
+other than uv.lock (``tests/launchd/test_install.py`` for the locks,
+``tests/test_notice.py`` for NOTICE). NOTICE asks PyPI for licences.
 """
 
 from __future__ import annotations
@@ -19,7 +19,8 @@ import notice
 from lock_target import ROOT
 
 # Each shipped lock and the `uv export` flags that write it (ADR 0017, "One lock
-# for all paths"). The test that keeps them in step with uv.lock uses these.
+# for all paths"). The test that keeps them in step with uv.lock uses these,
+# and .github/workflows/dependency-locks.yml commits them (a test checks it).
 EXPORTS = {
     "src/voiced/requirements.lock": [
         "--no-dev",
