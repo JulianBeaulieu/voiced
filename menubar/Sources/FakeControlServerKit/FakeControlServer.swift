@@ -39,6 +39,10 @@ public final class FakeControlServer: @unchecked Sendable {
         /// is still accepted while one service can restart, with the refusal in `detail`,
         /// as the real server does.
         public var refusedRestarts: [ServiceKind: String] = [:]
+        /// The fake's Hugging Face cache, written with the scenario's models at start. With it,
+        /// `settings.set` refuses a model that is not downloaded and a restarted service
+        /// without its model reports `missing_model`, as the real ones do (ADR 0022).
+        public var modelsFile: URL?
 
         public init() {}
     }
@@ -91,6 +95,7 @@ public final class FakeControlServer: @unchecked Sendable {
     // MARK: - Public controls
 
     public func start() throws {
+        if let file = options.modelsFile { FakeModels(file: file).write(scenario.initialModels) }
         try queue.sync { try listen() }
     }
 
@@ -431,6 +436,14 @@ public final class FakeControlServer: @unchecked Sendable {
         guard tts.voices.isEmpty || tts.voices.contains(next.settings.tts.voice) else {
             return invalid("tts.voice", "\(next.settings.tts.voice) is not a \(tts.name) voice")
         }
+        for (field, model, changed) in [
+            ("stt.model", next.settings.stt.model, keys.contains(.sttEngine) || keys.contains(.sttModel)),
+            ("tts.model", next.settings.tts.model, keys.contains(.ttsEngine) || keys.contains(.ttsModel)),
+        ] where changed && isMissing(model) {
+            return .failure(RemoteError(
+                code: "model_not_downloaded",
+                message: "\(model) is not downloaded; run voiced models download \(model)", field: field))
+        }
         state = next
 
         var restart = Set<String>()
@@ -495,12 +508,20 @@ public final class FakeControlServer: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + options.restartDuration) { [weak self] in
             guard let self else { return }
             for kind in accepted where self.state[kind].state == .starting {
-                self.state[kind].state = .running
-                self.state[kind].warm = true
+                let missing = self.isMissing(kind == .stt ? self.state.settings.stt.model : self.state.settings.tts.model)
+                self.state[kind].state = missing ? .missingModel : .running
+                self.state[kind].warm = !missing
+                self.state[kind].engine = kind == .stt ? self.state.settings.stt.engine : self.state.settings.tts.engine
+                self.state[kind].model = kind == .stt ? self.state.settings.stt.model : self.state.settings.tts.model
             }
             self.broadcastStatus()
         }
         return .success(["accepted": true, "detail": .object(detail)])
+    }
+
+    /// A catalogued model that the fake cache does not hold.
+    private func isMissing(_ model: String) -> Bool {
+        options.modelsFile.flatMap { FakeModels(file: $0).read()?.isMissing(model) } ?? false
     }
 
     private func tail(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {

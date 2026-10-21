@@ -81,7 +81,7 @@ private struct Screen<Content: View, Buttons: View>: View {
     }
 }
 
-private struct Working: View {
+struct Working: View {
     let text: String
 
     var body: some View {
@@ -94,7 +94,7 @@ private struct Working: View {
 
 enum ByteText {
     static func size(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        Formatting.bytes(bytes)
     }
 
     static func line(_ download: InstallProgress.Download) -> String {

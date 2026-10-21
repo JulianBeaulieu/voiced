@@ -228,7 +228,9 @@ shows them all, with their licence, size and state). The services never
 download; a service whose model is missing stays up and reports
 `missing_model` with the command that fetches it. `voiced models delete
 <model>` removes a model voiced pins and nothing else in the cache, which
-other tools share ([docs/operations.md](docs/operations.md#models)). Silero
+other tools share ([docs/operations.md](docs/operations.md#models)). The menu
+bar app does the same from its Speech to Text and Text to Speech panes, with
+Use to switch to a model. Silero
 VAD is the exception: it ships inside the `pysilero-vad` wheel.
 
 | Model | Role | Default | License |
@@ -305,6 +307,8 @@ then switch to it (`settings set` picks the engine's model and voice):
 ~/.voiced/bin/voiced settings set tts.engine=soprano
 ~/.voiced/bin/voiced restart tts
 ```
+
+Or press Use on its row in the menu bar app's Text to Speech pane.
 Know its limits before you switch. Its first audio varies more than
 Kokoro's from run to run (it samples its tokens); the current numbers are in
 [docs/benchmarks.md](docs/benchmarks.md). It has no rate control, so `speed` is

@@ -13,6 +13,18 @@ import Foundation
 public enum DevelopmentOverride {
     public static let key = "installSource"
 
+    /// In a debug build, `VOICED_EXECUTABLE` names the program the model rows run in place of
+    /// `~/.voiced/bin/voiced`: the fake (`.build/debug/voiced-fake-control`, which serves
+    /// `models` from the fake server's state) or a development checkout's `voiced`.
+    public static func voicedExecutable(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        #if DEBUG
+            guard let path = environment["VOICED_EXECUTABLE"], !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
+        #else
+            return nil
+        #endif
+    }
+
     public static func installSource(defaults: UserDefaults = .standard) -> URL? {
         #if DEBUG
             guard let path = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespaces), !path.isEmpty

@@ -14,6 +14,7 @@ struct VoicedMenuBarApp: App {
         let model = AppModel()
         model.start()
         _model = State(initialValue: model)
+        Install.models = ModelManager(app: model, runner: Install.runner)
         let resources = InstallResources.inBundle()
         let installSource = DevelopmentOverride.installSource()
         Install.installer = resources.map {
@@ -32,16 +33,19 @@ struct VoicedMenuBarApp: App {
             PopoverView(
                 model: model, canInstall: Install.installer != nil, launch: launch,
                 update: Install.installer.map { installer in { installer.update() } },
-                repair: Install.installer.map { installer in { installer.repair() } })
+                repair: Install.installer.map { installer in { installer.repair() } }, models: Install.models)
         } label: {
-            MenuBarIcon(dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false)
+            MenuBarIcon(
+                dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false,
+                downloading: Install.models?.isDownloading ?? false)
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
         }
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(model: model, loginItem: loginItem, launch: launch, installer: Install.installer)
+            SettingsView(
+                model: model, loginItem: loginItem, launch: launch, installer: Install.installer, models: Install.models)
         }
         .windowResizability(.contentSize)
 
@@ -61,12 +65,13 @@ struct VoicedMenuBarApp: App {
     }
 }
 
-/// The installer, when the bundle carries what it needs (ADR 0018), and the runner whose
-/// children are terminated when the app quits.
+/// The installer, when the bundle carries what it needs (ADR 0018), the model rows' runner of
+/// `voiced models` (ADR 0022), and the runner whose children are terminated when the app quits.
 @MainActor
 enum Install {
     static let runner = SystemInstallRunner()
     static var installer: Installer?
+    static var models: ModelManager?
 }
 
 /// Opens "What's new" once the services run this app's pins after running others. It lives
@@ -107,6 +112,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The bundle sets LSUIElement; this covers `swift run`, which has no Info.plist.
         NSApplication.shared.setActivationPolicy(.accessory)
+    }
+
+    /// Quitting while a model downloads asks first; the next download resumes the files.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard Install.models?.isDownloading == true else { return .terminateNow }
+            let alert = NSAlert()
+            alert.messageText = "Quit while a model downloads?"
+            alert.informativeText = "Quitting stops the download. Downloading it again later resumes where it stopped."
+            alert.addButton(withTitle: "Keep Downloading")
+            alert.addButton(withTitle: "Quit")
+            NSApplication.shared.activate()
+            return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+        }
     }
 
     /// Quitting mid-install stops the installer's children (SIGTERM to their process groups,

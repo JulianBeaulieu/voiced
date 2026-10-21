@@ -36,6 +36,8 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case newerProtocol = "newer-protocol"
     /// Moves through running, starting, degraded and stopped every few seconds.
     case cycle
+    /// Text to speech up but its model (Kokoro) not downloaded: `missing_model` (ADR 0022).
+    case missingModel = "missing-model"
 
     public var helloProtocol: Int { self == .newerProtocol ? 2 : 1 }
 
@@ -49,6 +51,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .lanWithoutKey: "bound to the LAN with no API key"
         case .newerProtocol: "hello with protocol 2"
         case .cycle: "cycles through the states every few seconds"
+        case .missingModel: "text to speech up, its model not downloaded"
         }
     }
 
@@ -57,6 +60,13 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         switch self {
         case .running, .newerProtocol, .cycle:
             break
+        case .missingModel:
+            state[.tts] = ServiceStatus(
+                state: .missingModel, pid: 4243,
+                health: [
+                    "status": "missing_model",
+                    "last_error": "mlx-community/Kokoro-82M-bf16 is not downloaded; run voiced models download mlx-community/Kokoro-82M-bf16",
+                ], engine: "kokoro", model: "mlx-community/Kokoro-82M-bf16", uptime: 30)
         case .starting:
             state[.tts] = ServiceStatus(
                 state: .starting, pid: 4243, engine: "kokoro",
@@ -81,6 +91,20 @@ public enum FakeScenario: String, CaseIterable, Sendable {
             state.apiKey = ""
         }
         return state
+    }
+
+    /// What the fake's cache holds at the start: every row state in `FakeModelState.sample`,
+    /// and for `missing-model` the configured Kokoro gone with its old version.
+    public var initialModels: FakeModelState {
+        var models = FakeModelState.sample
+        if self == .missingModel {
+            models.setDownloaded("mlx-community/Kokoro-82M-bf16", false)
+            for e in models.list.engines.indices where models.list.engines[e].name == "kokoro" {
+                models.list.engines[e].models[0].previous = []
+            }
+            models.recount()
+        }
+        return models
     }
 }
 
@@ -127,7 +151,7 @@ extension FakeState {
                         name: "soprano", label: "Soprano", models: ["mlx-community/Soprano-80M-bf16"],
                         voices: ["default"], voiceLabels: ["default": "Default"], languages: ["en"]),
                     TTSEngineInfo(
-                        name: "phonon", label: "Phonon", models: ["gradium/phonon-31m-en"],
+                        name: "phonon", label: "Phonon", models: ["gradium/phonon-31m-en", "gradium/phonon-40m-en"],
                         voices: ["default", "Easton", "Maeve", "The Snow Queen"],
                         voiceLabels: [
                             "default": "Default", "Easton": "Easton (American English, male)",

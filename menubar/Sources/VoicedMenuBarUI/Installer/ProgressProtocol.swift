@@ -1,15 +1,18 @@
 import Foundation
 import VoicedControl
 
-/// One line of `voiced install --json-progress` (ADR 0018, protocol 1). Unknown events and
-/// unknown fields are ignored, so either side can add them without a new protocol number.
+/// One line of `voiced install --json-progress` or `voiced models download --json-progress`
+/// (ADR 0018, protocol 1). Unknown events and unknown fields are ignored, so either side can
+/// add them without a new protocol number.
 public enum InstallEvent: Sendable, Equatable {
     case hello(protocol: Int)
     case step(id: String, state: StepState, shown: String)
     case download(model: String, bytes: Int64, total: Int64)
     case log(String)
     case done
-    case error(step: String?, message: String)
+    /// `code` is ADR 0022's (`token_missing`, `network`, `busy`, ...), sent by `voiced models
+    /// download`; `voiced install` sends none.
+    case error(step: String?, message: String, code: String? = nil)
 
     public enum StepState: String, Sendable {
         case start, done
@@ -47,7 +50,9 @@ public enum InstallEvent: Sendable, Equatable {
             self = .done
         case "error":
             let message = fields["message"]?.stringValue ?? ""
-            self = .error(step: fields["step"]?.stringValue, message: message.isEmpty ? "voiced install failed." : message)
+            self = .error(
+                step: fields["step"]?.stringValue, message: message.isEmpty ? "voiced install failed." : message,
+                code: fields["code"]?.stringValue)
         default:
             return nil
         }
@@ -118,13 +123,23 @@ public struct InstallProgress: Sendable, Equatable {
     public var current: Step? { steps.last { !$0.isDone } }
 }
 
-/// Reads one run of `voiced install --json-progress`: checks the hello, folds the events into
-/// `progress`, keeps the last lines of output for a failure, and decides the outcome from the
-/// last event and the exit status, which must agree.
+/// Reads one run of `voiced install --json-progress` (or `voiced models download`, which
+/// speaks the same protocol): checks the hello, folds the events into `progress`, keeps the
+/// last lines of output for a failure, and decides the outcome from the last event and the
+/// exit status, which must agree.
 struct InstallSession {
     enum Outcome: Equatable {
         case done
-        case failed(step: String?, cause: String)
+        case failed(step: String?, cause: String, code: String? = nil)
+    }
+
+    /// The command and what it reports, for the outcome's wording.
+    let command: String
+    let reports: String
+
+    init(command: String = "voiced install", reports: String = "install progress") {
+        self.command = command
+        self.reports = reports
     }
 
     /// How far back the download speed is averaged.
@@ -166,7 +181,7 @@ struct InstallSession {
                 return true
             }
             guard case .hello(let number) = event else {
-                refusal = "voiced install did not start with a progress hello. Update voiced."
+                refusal = "\(command) did not start with a progress hello. Update voiced."
                 return false
             }
             if let reason = InstallEvent.refusal(protocol: number) {
@@ -205,17 +220,17 @@ struct InstallSession {
     func finish(status: Int32) -> Outcome {
         if let refusal { return .failed(step: nil, cause: refusal) }
         if !greeted {
-            return .failed(step: nil, cause: "This voiced does not report install progress. Update voiced.")
+            return .failed(step: nil, cause: "This voiced does not report \(reports). Update voiced.")
         }
         switch terminal {
-        case .error(let step, let message)?:
-            return .failed(step: step, cause: message)
+        case .error(let step, let message, let code)?:
+            return .failed(step: step, cause: message, code: code)
         case .done? where status == 0:
             return .done
         case .done?:
-            return .failed(step: nil, cause: "voiced install reported done but exited with status \(status).")
+            return .failed(step: nil, cause: "\(command) reported done but exited with status \(status).")
         default:
-            let cause = status == 0 ? "voiced install ended without reporting done." : "voiced install exited with status \(status)."
+            let cause = status == 0 ? "\(command) ended without reporting done." : "\(command) exited with status \(status)."
             return .failed(step: progress.current?.id, cause: cause)
         }
     }

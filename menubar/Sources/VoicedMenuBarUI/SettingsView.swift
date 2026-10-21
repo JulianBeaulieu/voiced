@@ -8,6 +8,9 @@ public enum SettingsPane: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
+    /// The panes with model rows.
+    public var hasModels: Bool { self == .speechToText || self == .textToSpeech }
+
     /// The user default holding the selected pane, so the window reopens where it was and
     /// other windows can choose the pane before opening it.
     public static let storageKey = "settingsPane"
@@ -56,6 +59,9 @@ public struct SettingsView: View {
     let loginItem: LoginItem
     let launch: LaunchChecks?
     let installer: Installer?
+    /// The model rows of the Speech to Text and Text to Speech panes; nil shows the
+    /// configured model only.
+    let models: ModelManager?
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -66,12 +72,13 @@ public struct SettingsView: View {
 
     public init(
         model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, installer: Installer? = nil,
-        pane: SettingsPane? = nil
+        models: ModelManager? = nil, pane: SettingsPane? = nil
     ) {
         self.model = model
         self.loginItem = loginItem
         self.launch = launch
         self.installer = installer
+        self.models = models
         self.fixedPane = pane
     }
 
@@ -102,12 +109,18 @@ public struct SettingsView: View {
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
                 .disabled(model.isSaving)
+                // Pinned below the scrolling rows (ADR 0022).
+                if let list = models?.list, pane.hasModels, model.settings != nil {
+                    Divider()
+                    ModelFooter(list: list)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(width: 700, height: 500)
         .navigationTitle(pane.title)
         .onAppear { loginItem.refresh() }
+        .task(id: pane) { if pane.hasModels { await models?.refresh() } }
     }
 
     private var selection: Binding<SettingsPane?> {
@@ -273,45 +286,35 @@ public struct SettingsView: View {
 
     @ViewBuilder
     private func speechToText(_ settings: SettingsPayload) -> some View {
-        let catalogue = model.engines
         Section {
-            Picker("Engine", selection: binding(settings.stt.engine) { .sttEngine($0) }) {
-                ForEach(options(catalogue?.stt.map(\.name), current: settings.stt.engine), id: \.self) { name in
-                    Text(catalogue?.sttEngine(named: name)?.displayName ?? name).tag(name)
-                }
-            }
-            LabeledContent("Model", value: settings.stt.model)
+            if models == nil { LabeledContent("Model", value: settings.stt.model) }
             LabeledContent("Language", value: Self.languageName(settings.stt.language))
         } header: {
             Text("Speech to text")
         } footer: {
-            Text("Switching the engine selects its own model. The service loads it after a restart.").footnote()
+            Text("Use switches to a model, downloading it first if needed, and restarts the service.").footnote()
         }
+        if let models { ModelSections(models: models, app: model, kind: .stt, settings: settings) }
     }
 
     @ViewBuilder
     private func textToSpeech(_ settings: SettingsPayload) -> some View {
-        let catalogue = model.engines
-        let engine = catalogue?.ttsEngine(named: settings.tts.engine)
+        let engine = model.engines?.ttsEngine(named: settings.tts.engine)
         Section {
-            Picker("Engine", selection: binding(settings.tts.engine) { .ttsEngine($0) }) {
-                ForEach(options(catalogue?.tts.map(\.name), current: settings.tts.engine), id: \.self) { name in
-                    Text(catalogue?.ttsEngine(named: name)?.displayName ?? name).tag(name)
-                }
-            }
             Picker("Voice", selection: binding(settings.tts.voice) { .ttsVoice($0) }) {
                 ForEach(options(engine?.voices, current: settings.tts.voice), id: \.self) { voice in
                     Text(engine?.voiceName(voice) ?? voice).tag(voice)
                 }
             }
-            LabeledContent("Model", value: settings.tts.model)
+            if models == nil { LabeledContent("Model", value: settings.tts.model) }
             LabeledContent("Speed", value: Self.speedText(settings.tts.speed))
         } header: {
             Text("Text to speech")
         } footer: {
-            Text("The voice is the default for requests that do not name one. Switching the engine selects its own model and voice.")
+            Text("The voice is the default for requests that do not name one; the list is the engine in use's. Use switches to a model, downloading it first if needed, and restarts the service.")
                 .footnote()
         }
+        if let models { ModelSections(models: models, app: model, kind: .tts, settings: settings) }
     }
 
     // MARK: - About
@@ -380,7 +383,8 @@ public struct SettingsView: View {
                     }
                 }
                 if let installer, managed {
-                    let working = installer.isWorking
+                    // Update and Repair wait for a model download (ADR 0022).
+                    let working = installer.isWorking || models?.isDownloading == true
                     if case .differs = launch?.installMatch {
                         Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
                     }

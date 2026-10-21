@@ -1,6 +1,6 @@
 # 0022: Models and engines on demand from the app
 
-Date: 2026-10-20. Status: accepted (implementation notes at the end).
+Date: 2026-10-20. Status: accepted; the CLI side and the app side have both landed (implementation notes at the end).
 
 ## Context
 
@@ -468,3 +468,27 @@ above:
   reads "Phonon's shared files (gradium/phonon-voices) are deleted with
   it." rather than section 5's "Phonon's voices are deleted with it.": the
   catalogue names shared models, not what they hold.
+
+### The app side (2026-10-21)
+
+The model rows landed in the menu bar app as section 5 describes, with the
+token sheet and keychain still "Later". Where the code differs from the
+text above:
+
+- The rows mark the model in use from the settings the control socket
+  pushes, not the list's `in_use`: both follow the config file, and the
+  settings change without running the list again.
+- Use sends `settings.set`, then restarts that service itself; the row in
+  use reads "In use, loading" until `status` says it is warm.
+- The delete confirmation's "frees" is the revision's `on_disk_bytes`, plus
+  the engine's shared repositories for its last downloaded model: the list
+  carries no expected freed size. Its notes follow the CLI's wording.
+- "Update available" offers "Update (size)", which is Download; a plugin
+  engine without catalogued models has one row with Use only.
+- `token_missing` and `gated_terms` show the gated row's `hf auth login`
+  text with the model card; `token_invalid` asks to log in again.
+- A model download has no stall timeout, unlike the installer's: the row
+  has Cancel. While it runs, the app's Update and Repair are not offered.
+- The fake control server reads a fake cache file that a fake `voiced
+  models` (`voiced-fake-control models ...`) changes, so `model_not_downloaded`
+  and `missing_model` come from the same state the rows show.

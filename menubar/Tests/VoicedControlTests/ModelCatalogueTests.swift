@@ -1,0 +1,220 @@
+import FakeControlServerKit
+import Foundation
+import TestSupport
+import XCTest
+
+@testable import VoicedControl
+
+final class ModelCatalogueTests: XCTestCase {
+    /// docs/operations.md's example, with a field this app does not know.
+    static let documented = #"""
+        {
+          "cache": "/Users/you/.cache/huggingface/hub",
+          "total_bytes": 2864000000,
+          "future": 1,
+          "engines": [
+            {
+              "name": "phonon", "label": "Phonon", "kind": "tts", "installed": true,
+              "languages": ["en-US", "en-GB"], "voices": ["default", "Zoey"],
+              "models": [
+                {
+                  "id": "gradium/phonon-31m-en", "repo": "gradium/phonon-31m-en", "shared": false,
+                  "license": "Apache-2.0", "url": "https://huggingface.co/gradium/phonon-31m-en",
+                  "gated": false, "revision": "8c64b55e", "download_bytes": 65049306,
+                  "on_disk_bytes": 65049306, "downloaded": true,
+                  "previous": [{"revision": "1a2b", "bytes": 64000000}],
+                  "refs": ["main"], "in_use": true
+                }
+              ],
+              "shared": [{"id": "gradium/phonon-voices", "shared": true, "license": "Apache-2.0",
+                          "download_bytes": 9510439, "on_disk_bytes": 9510439, "downloaded": true}]
+            },
+            {"name": "plugin", "label": "Plugin", "kind": "stt", "installed": true, "models": [], "shared": []}
+          ]
+        }
+        """#
+
+    func testTheDocumentedListDecodes() throws {
+        let list = try decodeJSON(ModelList.self, Self.documented)
+        XCTAssertEqual(list.cache, "/Users/you/.cache/huggingface/hub")
+        XCTAssertEqual(list.totalBytes, 2_864_000_000)
+        let phonon = try XCTUnwrap(list.engines.first)
+        XCTAssertEqual(phonon.voices, ["default", "Zoey"])
+        let model = try XCTUnwrap(phonon.models.first)
+        XCTAssertEqual(model.name, "phonon-31m-en")
+        XCTAssertEqual(model.cardURL?.absoluteString, "https://huggingface.co/gradium/phonon-31m-en")
+        XCTAssertEqual(model.previous, [.init(revision: "1a2b", bytes: 64_000_000)])
+        XCTAssertEqual(model.refs, ["main"])
+        XCTAssertEqual(phonon.shared.map(\.id), ["gradium/phonon-voices"])
+        XCTAssertEqual(list.engines(of: .stt).map(\.name), ["plugin"])
+        XCTAssertEqual(list.model("gradium/phonon-31m-en")?.engine.name, "phonon")
+        XCTAssertNil(list.model("gradium/phonon-voices"), "shared models are not rows")
+    }
+
+    // MARK: - Rows
+
+    private func rows(
+        _ state: FakeModelState = .sample, kind: ServiceKind, engine: String, model: String, downloading: String? = nil
+    ) -> [String: ModelRow] {
+        let rows = ModelRow.rows(state.list, kind: kind, engine: engine, model: model, downloading: downloading)
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.model?.id ?? $0.engine.name, $0) })
+    }
+
+    private let kokoro = "mlx-community/Kokoro-82M-bf16"
+
+    func testEveryRowStateFromTheSample() {
+        let tts = rows(kind: .tts, engine: "kokoro", model: kokoro)
+        XCTAssertEqual(tts[kokoro]?.state, .inUse)
+        XCTAssertEqual(tts["mlx-community/Soprano-80M-bf16"]?.state, .oldVersion)
+        XCTAssertEqual(tts["gradium/phonon-31m-en"]?.state, .notDownloaded)
+        XCTAssertEqual(tts["gradium/phonon-40m-en"]?.state, .gated)
+        XCTAssertEqual(tts["fake"]?.state, .downloaded, "a plugin engine: Use only")
+        XCTAssertNil(tts["gradium/phonon-voices"])
+
+        let stt = rows(kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")
+        XCTAssertEqual(stt["mlx-community/parakeet-tdt-0.6b-v3"]?.state, .inUse)
+        XCTAssertEqual(stt["fake"]?.stateLabel, "Manages its own model")
+
+        let downloading = rows(kind: .tts, engine: "kokoro", model: kokoro, downloading: "gradium/phonon-31m-en")
+        XCTAssertEqual(downloading["gradium/phonon-31m-en"]?.state, .downloading)
+
+        let missing = rows(FakeScenario.missingModel.initialModels, kind: .tts, engine: "kokoro", model: kokoro)
+        XCTAssertEqual(missing[kokoro]?.state, .inUseMissing)
+    }
+
+    func testEachStateOffersItsActions() {
+        let tts = rows(kind: .tts, engine: "kokoro", model: kokoro)
+        let inUse = tts[kokoro]
+        XCTAssertNil(inUse?.downloadTitle)
+        XCTAssertEqual(inUse?.canUse, false)
+        XCTAssertEqual(inUse?.canDelete, false, "Delete is disabled on the model in use")
+        XCTAssertEqual(inUse?.sizeLine, "389.4 MB on disk")
+        XCTAssertEqual(inUse?.deleteOldTitle, "Delete Old Version (341 MB)", "offered on the row in use too")
+
+        let old = tts["mlx-community/Soprano-80M-bf16"]
+        XCTAssertEqual(old?.downloadTitle, "Update (220.6 MB)")
+        XCTAssertEqual(old?.canUse, true)
+        XCTAssertEqual(old?.sizeLine, "220.6 MB download")
+        XCTAssertNotNil(old?.deleteOldTitle)
+
+        let new = tts["gradium/phonon-31m-en"]
+        XCTAssertEqual(new?.downloadTitle, "Download")
+        XCTAssertEqual(new?.canUse, true)
+        XCTAssertEqual(new?.canDelete, false)
+        XCTAssertNil(new?.deleteOldTitle)
+
+        XCTAssertEqual(tts["gradium/phonon-40m-en"]?.downloadTitle, "Download")
+
+        var downloaded = FakeModelState.sample
+        downloaded.setDownloaded("gradium/phonon-31m-en", true)
+        let row = rows(downloaded, kind: .tts, engine: "kokoro", model: kokoro)["gradium/phonon-31m-en"]
+        XCTAssertEqual(row?.state, .downloaded)
+        XCTAssertNil(row?.downloadTitle)
+        XCTAssertEqual(row?.canUse, true)
+        XCTAssertEqual(row?.canDelete, true)
+
+        let missing = rows(FakeScenario.missingModel.initialModels, kind: .tts, engine: "kokoro", model: kokoro)[kokoro]
+        XCTAssertEqual(missing?.downloadTitle, "Download")
+        XCTAssertEqual(missing?.canUse, false)
+
+        let downloading = rows(kind: .tts, engine: "kokoro", model: kokoro, downloading: "gradium/phonon-31m-en")
+        XCTAssertNil(downloading["gradium/phonon-31m-en"]?.downloadTitle)
+        XCTAssertEqual(downloading["gradium/phonon-31m-en"]?.canUse, false)
+    }
+
+    func testAnEngineThatIsNotInstalledCannotBeUsed() throws {
+        var state = FakeModelState.sample
+        let index = try XCTUnwrap(state.list.engines.firstIndex { $0.name == "soprano" })
+        state.list.engines[index].installed = false
+        XCTAssertEqual(rows(state, kind: .tts, engine: "kokoro", model: kokoro)["mlx-community/Soprano-80M-bf16"]?.canUse, false)
+    }
+
+    func testTheDeleteConfirmationNamesWhatGoes() throws {
+        let tts = rows(kind: .tts, engine: "parakeet", model: "x")
+        let kokoroDelete = try XCTUnwrap(tts[kokoro]?.deleteConfirmation())
+        XCTAssertEqual(kokoroDelete.title, "Delete Kokoro-82M-bf16?")
+        XCTAssertEqual(
+            kokoroDelete.message,
+            "This frees 389.4 MB. Downloading it again takes 355.3 MB. This model is also cached as main, "
+                + "perhaps by another app; that app downloads it again if it needs it.")
+
+        // Phonon's last downloaded model takes the voices with it; with the other one
+        // downloaded too, it does not.
+        var state = FakeModelState.sample
+        state.setDownloaded("gradium/phonon-31m-en", true)
+        state.setDownloaded("gradium/phonon-voices", true)
+        let last = try XCTUnwrap(rows(state, kind: .tts, engine: "kokoro", model: kokoro)["gradium/phonon-31m-en"]?.deleteConfirmation())
+        XCTAssertEqual(
+            last.message,
+            "This frees 74.6 MB. Downloading it again takes 65 MB. Phonon's shared files (gradium/phonon-voices) "
+                + "are deleted with it.")
+        state.setDownloaded("gradium/phonon-40m-en", true)
+        let notLast = try XCTUnwrap(rows(state, kind: .tts, engine: "kokoro", model: kokoro)["gradium/phonon-31m-en"]?.deleteConfirmation())
+        XCTAssertEqual(notLast.message, "This frees 65 MB. Downloading it again takes 65 MB.")
+    }
+
+    // MARK: - Messages
+
+    func testErrorCodesAreDecodedIntoWhatToDo() {
+        let model = CatalogueModel(id: "gradium/phonon-40m-en", license: "CC-BY-NC-4.0", gated: true, downloadBytes: 1, downloaded: false)
+        let token = ModelMessage.failure(code: "token_missing", message: "401", model: model)
+        XCTAssertEqual(token, .needsToken(model))
+        XCTAssertEqual(token.command, "hf auth login")
+        XCTAssertEqual(token.link?.absoluteString, "https://huggingface.co/gradium/phonon-40m-en")
+        XCTAssertEqual(ModelMessage.failure(code: "gated_terms", message: "403", model: model), .needsToken(model))
+        XCTAssertTrue(ModelMessage.failure(code: "token_invalid", message: "", model: model).text.contains("rejected the token"))
+        XCTAssertTrue(ModelMessage.failure(code: "network", message: "", model: nil).text.contains("could not be reached"))
+        XCTAssertEqual(
+            ModelMessage.failure(code: "disk", message: "Needs 2.1 GB free.", model: nil).text,
+            "Not enough free disk space. Needs 2.1 GB free.")
+        XCTAssertEqual(
+            ModelMessage.failure(code: "busy", message: "", model: nil).text,
+            "voiced is installing or updating; try again when it ends.")
+        XCTAssertEqual(ModelMessage.failure(code: "in_use", message: "", model: nil).text, "In use. Choose another model first.")
+        XCTAssertEqual(ModelMessage.failure(code: "failed", message: "No such repo.", model: nil).text, "No such repo.")
+        XCTAssertEqual(ModelMessage.failure(code: "from_the_future", message: "Something new.", model: nil).text, "Something new.")
+    }
+
+    // MARK: - missing_model
+
+    func testAMissingModelIsItsOwnStateWithTheModelToDownload() throws {
+        let status = try decodeJSON(
+            StatusPayload.self,
+            #"{"installed": true, "services": {"stt": {"state": "running", "warm": true}, "tts": {"state": "missing_model", "pid": 7, "engine": "kokoro", "model": "mlx-community/Kokoro-82M-bf16", "health": {"status": "missing_model"}}}}"#)
+        XCTAssertEqual(status[.tts]?.state, .missingModel)
+        let dashboard = DashboardReducer.reduce(connection: .connected(version: nil), status: status, socketPath: "/s")
+        XCTAssertEqual(dashboard.headline, "Model not downloaded")
+        XCTAssertEqual(dashboard.health, .attention)
+        XCTAssertFalse(dashboard.isBusy)
+        let row = try XCTUnwrap(dashboard.rows.first { $0.kind == .tts })
+        XCTAssertEqual(row.stateLabel, "Model not downloaded")
+        XCTAssertEqual(row.tone, .bad)
+        XCTAssertEqual(row.missingModel, "mlx-community/Kokoro-82M-bf16")
+        XCTAssertNil(dashboard.rows.first { $0.kind == .stt }?.missingModel)
+        XCTAssertEqual(MenuBarIconStatus(dashboard: dashboard, installing: false).state, .error)
+    }
+
+    func testTheIconIsBusyWhileAModelDownloads() {
+        let running = Dashboard(health: .running, headline: "Running")
+        XCTAssertEqual(MenuBarIconStatus(dashboard: running, installing: false).state, .idle)
+        let downloading = MenuBarIconStatus(dashboard: running, installing: false, downloading: true)
+        XCTAssertEqual(downloading.state, .busy)
+        XCTAssertEqual(downloading.accessibilityLabel, "voiced: Downloading a model")
+    }
+
+    // MARK: - Use
+
+    func testUseSendsTheEngineAndTheModelTogether() {
+        let current = FakeState.sample.settings
+        let engines = FakeState.sample.engines
+        XCTAssertEqual(
+            SettingsEdit.ttsEngine("phonon", model: "gradium/phonon-40m-en").arguments(current: current, engines: engines),
+            ["tts.engine": "phonon", "tts.model": "gradium/phonon-40m-en", "tts.voice": "default"])
+        XCTAssertEqual(
+            SettingsEdit.sttEngine("parakeet", model: "other").arguments(current: current, engines: engines),
+            ["stt.engine": "parakeet", "stt.model": "other"], "the same engine with another model sends both")
+        XCTAssertEqual(
+            SettingsEdit.ttsEngine("kokoro", model: "mlx-community/Kokoro-82M-bf16").arguments(current: current, engines: engines),
+            [:])
+    }
+}

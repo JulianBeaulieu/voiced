@@ -1,4 +1,5 @@
 import CryptoKit
+import FakeControlServerKit
 import Foundation
 import VoicedControl
 import VoicedMenuBarUI
@@ -15,6 +16,8 @@ public final class FakeInstallRunner: InstallRunner {
         /// Never exits after its outputs; only cancelling ends it.
         public var hangs = false
         public var cannotStart = false
+        /// Runs once every output is out, not when the run is cancelled first.
+        public var completion: (@MainActor @Sendable () -> Void)?
 
         public init(_ outputs: [ProcessOutput], delay: Duration = .zero, hangs: Bool = false, cannotStart: Bool = false) {
             self.outputs = outputs
@@ -81,6 +84,7 @@ public final class FakeInstallRunner: InstallRunner {
                     if Task.isCancelled { return }
                     continuation.yield(output)
                 }
+                response.completion?()
                 if !response.hangs { continuation.finish() }
             }
             continuation.onTermination = { termination in
@@ -100,6 +104,24 @@ public final class FakeInstallRunner: InstallRunner {
     }
 
     public func isReachable(_ url: URL) async -> Bool { isOnline }
+}
+
+extension FakeInstallRunner.Response {
+    /// The fake `voiced models` (`arguments` start with `models`) answering from `models`, as
+    /// `voiced-fake-control models` does. Its changes to the file land once every line is
+    /// out, so a cancelled download changes nothing, as a real one leaves only partial files.
+    @MainActor
+    public static func models(_ arguments: [String], in models: FakeModels, delay: Duration = .zero) -> Self {
+        let scratch = FakeModels(file: models.file.appendingPathExtension(UUID().uuidString))
+        defer { try? FileManager.default.removeItem(at: scratch.file) }
+        if let state = models.read() { scratch.write(state) }
+        var lines: [String] = []
+        let status = scratch.run(Array(arguments.dropFirst()), output: { lines.append($0) }, pause: {})
+        let result = scratch.read()
+        var response = Self(lines.map(ProcessOutput.stdout) + [.exit(status)], delay: delay)
+        response.completion = { if let result { models.write(result) } }
+        return response
+    }
 }
 
 /// What a bundle would carry, in `directory`: a lock and a wheel with the hashes the manifest
