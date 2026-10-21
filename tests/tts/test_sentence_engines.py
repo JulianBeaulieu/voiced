@@ -19,6 +19,7 @@ from voiced.engines.base import (
     UnknownVoice,
     Voice,
 )
+from voiced.engines.chatterbox import ChatterboxEngine
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.pocket import PocketEngine
@@ -26,7 +27,13 @@ from voiced.engines.sentence import SentenceTTSEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.queue import InferenceQueue
 
-ENGINES: list[type[SentenceTTSEngine]] = [KokoroEngine, SopranoEngine, PhononEngine, PocketEngine]
+ENGINES: list[type[SentenceTTSEngine]] = [
+    KokoroEngine,
+    SopranoEngine,
+    PhononEngine,
+    PocketEngine,
+    ChatterboxEngine,
+]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
 

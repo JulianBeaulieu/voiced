@@ -52,6 +52,19 @@ class Engine:
     shared: tuple[Model, ...] = ()
 
 
+CHATTERBOX = (
+    "config.json",
+    "model.safetensors*",
+    "conds.safetensors",
+    "added_tokens.json",
+    "merges.txt",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+    "vocab.json",
+)
+"""Chatterbox Turbo's config, weights, text tokenizer and default voice
+(``conds.safetensors``); not the model card."""
+
 PHONON = ("config.json", "tokenizer.json", "model.q8.gguf", "default-voice.safetensors")
 """Phonon's config, tokenizer, q8 weights and default voice; not the other weight formats."""
 
@@ -199,6 +212,30 @@ CATALOGUE: tuple[Engine, ...] = (
                 "kyutai/pocket-tts-without-voice-cloning",
                 "CC-BY-4.0",
                 ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICE_FILES)),
+            ),
+        ),
+    ),
+    Engine(
+        "chatterbox",
+        "tts",
+        # The conversions' cards say Apache-2.0, but Resemble AI released the
+        # weights under MIT (ADR 0029). 4-bit is the default, provisionally.
+        models=(
+            Model(
+                "mlx-community/chatterbox-turbo-4bit",
+                "MIT",
+                CHATTERBOX,
+                quality=4,
+                speed=3,
+                note="One expressive English voice that performs tags like [laugh]",
+            ),
+            Model(
+                "mlx-community/chatterbox-turbo-fp16",
+                "MIT",
+                CHATTERBOX,
+                quality=4,
+                speed=3,
+                note="Chatterbox Turbo at full precision: three times the memory of 4-bit",
             ),
         ),
     ),

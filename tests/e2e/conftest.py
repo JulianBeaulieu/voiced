@@ -386,3 +386,19 @@ def tts_pocket_service(e2e_tmp: Path) -> Iterator[LiveService]:
     service = start_service("tts", settings)
     yield service
     service.stop()
+
+
+@pytest.fixture(scope="package")
+def tts_chatterbox_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "tts",
+        e2e_tmp / "chatterbox",
+        **{
+            "engine": '"chatterbox"',
+            "model": '"mlx-community/chatterbox-turbo-4bit"',
+            "default_voice": '"default"',
+        },
+    )
+    service = start_service("tts", settings)
+    yield service
+    service.stop()

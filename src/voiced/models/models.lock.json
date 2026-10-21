@@ -572,6 +572,108 @@
       },
       "previous": []
     },
+    "mlx-community/chatterbox-turbo-4bit": {
+      "repo": "mlx-community/chatterbox-turbo-4bit",
+      "revision": "c63817725071d7b5269c7b558772d6e8cbf59cec",
+      "patterns": [
+        "config.json",
+        "model.safetensors*",
+        "conds.safetensors",
+        "added_tokens.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "files": {
+        "added_tokens.json": {
+          "bytes": 418,
+          "sha256": "72e4ab6acb0d9309ac3df4b526ae5fd80a2da5bc5ab7bb02d85096a374f69193"
+        },
+        "conds.safetensors": {
+          "bytes": 164884,
+          "sha256": "df9ad2c54848027d94cf01f9fc0ed22bc5d3165df6e6a85c903c1124b8a78a4a"
+        },
+        "config.json": {
+          "bytes": 2565,
+          "sha256": "8b99a849d4a1bae2576b70f0a4c67bd48faf3f4164b8774d6f12f4cdd2533b7e"
+        },
+        "merges.txt": {
+          "bytes": 456318,
+          "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+        },
+        "model.safetensors": {
+          "bytes": 414992166,
+          "sha256": "59603c7f62272b72d4b1d7870e0bf546b5f88561a367daf6fd6282da997a54a4"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 252012,
+          "sha256": "e5ef5ca8e996c3ce3fbca268784942d10150628d20bf8ca8608bac02c87cf3ea"
+        },
+        "special_tokens_map.json": {
+          "bytes": 470,
+          "sha256": "92ba8063bf40aa163eadebbfe0de07c2aebe44cf0d4a9e8726580b0781fd2640"
+        },
+        "tokenizer_config.json": {
+          "bytes": 3878,
+          "sha256": "bca16a2ac1ddbd78b8d6228f0031884cc74b6ea54b967d6f6d2ebae9ccde23e6"
+        },
+        "vocab.json": {
+          "bytes": 999186,
+          "sha256": "f6bd25a65e4e63ca31360e9fb11c7e4f9a391a78385d640acd814092dd6eee4f"
+        }
+      },
+      "previous": []
+    },
+    "mlx-community/chatterbox-turbo-fp16": {
+      "repo": "mlx-community/chatterbox-turbo-fp16",
+      "revision": "b2d0a13aa7cfff0a06d9acb247ae91c8f19a6d75",
+      "patterns": [
+        "config.json",
+        "model.safetensors*",
+        "conds.safetensors",
+        "added_tokens.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "files": {
+        "added_tokens.json": {
+          "bytes": 418,
+          "sha256": "72e4ab6acb0d9309ac3df4b526ae5fd80a2da5bc5ab7bb02d85096a374f69193"
+        },
+        "conds.safetensors": {
+          "bytes": 164884,
+          "sha256": "df9ad2c54848027d94cf01f9fc0ed22bc5d3165df6e6a85c903c1124b8a78a4a"
+        },
+        "config.json": {
+          "bytes": 2059,
+          "sha256": "aacce8af47c9c930636e47da981339fe0d30e08623d19226aa9a43bd3425b736"
+        },
+        "merges.txt": {
+          "bytes": 456318,
+          "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+        },
+        "model.safetensors": {
+          "bytes": 2985990960,
+          "sha256": "9f70328a3f6c5257257aea76e9b14c34d8225745d133e4c1e83aa31f3f72a80b"
+        },
+        "special_tokens_map.json": {
+          "bytes": 470,
+          "sha256": "92ba8063bf40aa163eadebbfe0de07c2aebe44cf0d4a9e8726580b0781fd2640"
+        },
+        "tokenizer_config.json": {
+          "bytes": 3878,
+          "sha256": "bca16a2ac1ddbd78b8d6228f0031884cc74b6ea54b967d6f6d2ebae9ccde23e6"
+        },
+        "vocab.json": {
+          "bytes": 999186,
+          "sha256": "f6bd25a65e4e63ca31360e9fb11c7e4f9a391a78385d640acd814092dd6eee4f"
+        }
+      },
+      "previous": []
+    },
     "mlx-community/parakeet-tdt-0.6b-v3": {
       "repo": "mlx-community/parakeet-tdt-0.6b-v3",
       "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",

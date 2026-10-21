@@ -1,0 +1,34 @@
+{
+  "kind": "tts",
+  "engine": "chatterbox",
+  "model": "mlx-community/chatterbox-turbo-4bit",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "3cf32fe+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en"
+  ],
+  "licence": "MIT",
+  "size_bytes": 416875430,
+  "load_s": 2.6,
+  "footprint_bytes": 898305728,
+  "mlx_load_peak_bytes": 987473294,
+  "mlx_peak_bytes": 1465813042,
+  "metrics": {
+    "voice": "default",
+    "utmos": 4.03,
+    "first_audio": {
+      "median_ms": 317.2,
+      "worst_ms": 319.5,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 338.9,
+      "worst_ms": 447.2,
+      "n": 30
+    },
+    "rtf": 0.4304
+  }
+}

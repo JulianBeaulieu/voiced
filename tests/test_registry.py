@@ -26,7 +26,7 @@ def test_entry_points_find_fakes() -> None:
 
 
 def test_unknown_engine_lists_available() -> None:
-    with pytest.raises(UnknownEngine, match="available: fake"):
+    with pytest.raises(UnknownEngine, match=r"available: (.*, )?fake"):
         get_tts_engine("nope")
 
 

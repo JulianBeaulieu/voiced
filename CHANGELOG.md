@@ -63,6 +63,13 @@ uses [Semantic Versioning](https://semver.org/).
   `javert`, `fantine`, `eponine`, `azelma`). The model, its tokenizer and
   the voices are pinned (`voiced models download mlx-community/pocket-tts`);
   the `tts` extra adds `sentencepiece`, its tokenizer.
+- Chatterbox Turbo text-to-speech engine, opt-in: `engine = "chatterbox"`,
+  `model = "mlx-community/chatterbox-turbo-4bit"` (MIT), with its one
+  bundled voice, `default`. It runs on the GPU, waits for speech-to-text
+  like Kokoro, and streams each sentence in pieces as its speech tokens are
+  rendered. Tags such as `[laugh]` or `[sigh]` in the text are performed,
+  not read. `mlx-community/chatterbox-turbo-fp16` works as `model` too.
+  Both are in the model catalogue (`voiced models download <model>`).
 
 ### Changed
 
