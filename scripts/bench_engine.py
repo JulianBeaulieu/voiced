@@ -657,7 +657,11 @@ def render(results: Sequence[Result]) -> str:
             TTS_HEADERS,
             "UTMOS: predicted naturalness, 1 to 5, the mean over three fixed "
             "sentences. First audio: from the request to the first audio byte for "
-            '"Turn on the kitchen lights." Every engine serves 24 kHz mono 16-bit audio.',
+            '"Turn on the kitchen lights." Every engine serves 24 kHz mono 16-bit audio. '
+            "The requests run back to back and each closes after its first byte; until "
+            "the service stops a closed request at once, an engine whose pieces come far "
+            "apart shows the previous request's next piece in its first audio too: "
+            "Chatterbox's cells include about 0.3 s of that (ADR 0029).",
         ),
     )
     for kind, title, headers, legend in sections:

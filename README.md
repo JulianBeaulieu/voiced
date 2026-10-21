@@ -268,6 +268,7 @@ the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
 `jean` are CC-BY-NC and are not offered. Kyutai's card prohibits voice
 impersonation without consent, deception (including passing generated
 audio off as a real recording) and unlawful or harmful content.
+
 Chatterbox Turbo is Resemble AI's, MIT for the weights, the default voice and
 the code. The cards of the mlx-community conversions voiced loads say
 Apache-2.0, but Resemble AI released the weights under MIT, which is the
@@ -385,6 +386,7 @@ have no MLX conversion yet. Like Phonon, it has no rate control, so `speed`
 is accepted and ignored. Choose Pocket TTS over Phonon 31M for Kyutai's own
 model and its CC0 and CC-BY voices on the GPU; choose Phonon to keep the GPU
 for speech-to-text. See [ADR 0028](docs/decisions/0028-tts-pocket.md).
+
 ### Using Chatterbox Turbo
 
 Chatterbox Turbo is a 350M text-to-speech model from Resemble AI that runs
@@ -404,8 +406,8 @@ from your own clip is not supported yet. It has no rate control, so `speed`
 is accepted and ignored. It performs tags such as `[laugh]`, `[chuckle]`,
 `[sigh]` or `[whispering]` in the text instead of reading them.
 `mlx-community/chatterbox-turbo-fp16` works too (`tts.model=` in the
-`settings set`): it scored a little higher for naturalness here (UTMOS 3.82
-against 3.70), is no faster and holds about 3 GB. The details are in
+`settings set`): it scored no better for naturalness here (UTMOS 4.01
+against 4-bit's 4.14), is no faster and holds about 3 GB. The details are in
 [ADR 0029](docs/decisions/0029-tts-chatterbox-turbo.md).
 
 ## Benchmarks

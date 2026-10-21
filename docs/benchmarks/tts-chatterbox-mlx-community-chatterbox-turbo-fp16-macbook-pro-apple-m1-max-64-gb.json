@@ -4,7 +4,7 @@
   "model": "mlx-community/chatterbox-turbo-fp16",
   "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
   "macos": "15.7.4",
-  "commit": "aeed440+",
+  "commit": "65d6ab8+",
   "version": "0.1.1",
   "date": "2026-10-21",
   "languages": [
@@ -12,23 +12,23 @@
   ],
   "licence": "MIT",
   "size_bytes": 2987621715,
-  "load_s": 2.6,
-  "footprint_bytes": 2988121856,
-  "mlx_load_peak_bytes": 3252401802,
-  "mlx_peak_bytes": 3640316627,
+  "load_s": 2.5,
+  "footprint_bytes": 2986532544,
+  "mlx_load_peak_bytes": 3253139082,
+  "mlx_peak_bytes": 3668497359,
   "metrics": {
     "voice": "default",
-    "utmos": 3.82,
+    "utmos": 4.01,
     "first_audio": {
-      "median_ms": 707.7,
-      "worst_ms": 727.0,
+      "median_ms": 691.1,
+      "worst_ms": 732.1,
       "n": 10
     },
     "first_audio_while_stt_streams": {
-      "median_ms": 394.7,
-      "worst_ms": 502.1,
+      "median_ms": 388.7,
+      "worst_ms": 516.7,
       "n": 30
     },
-    "rtf": 0.4726
+    "rtf": 0.4723
   }
 }

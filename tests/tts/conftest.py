@@ -50,6 +50,11 @@ def pocket_engine() -> Iterator[object]:
     from voiced.engines.pocket import PocketEngine
 
     engine = PocketEngine()
+    asyncio.run(engine.load())
+    yield engine
+
+
+@pytest.fixture(scope="session")
 def chatterbox_engine() -> Iterator[object]:
     """A loaded Chatterbox engine shared by the model tests. Loaded synchronously
     so it can be session scoped regardless of the per-test event loop."""

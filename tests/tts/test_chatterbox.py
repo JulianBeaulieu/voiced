@@ -8,6 +8,7 @@ import asyncio
 import logging
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -196,17 +197,23 @@ class _T3:
     def __init__(self, n: int) -> None:
         self.n = n
         self.kwargs: dict[str, Any] = {}
+        self.threads: set[int] = set()
 
     def inference_turbo_stream(self, **kwargs: Any) -> Iterator[tuple[np.ndarray, bool]]:
         self.kwargs = kwargs
         for i in range(min(self.n, kwargs["max_gen_len"])):
+            self.threads.add(threading.get_ident())  # T3 keeps its KV cache between steps
             yield np.array([[i]]), False
 
 
 class _S3Gen:
+    def __init__(self) -> None:
+        self.threads: set[int] = set()
+
     def inference_stream(
         self, *, speech_tokens: np.ndarray, prev_audio_samples: int, **_: Any
     ) -> tuple[np.ndarray, int]:
+        self.threads.add(threading.get_ident())
         total = speech_tokens.shape[-1] * SAMPLES_PER_TOKEN
         return np.zeros((1, max(0, total - prev_audio_samples)), dtype=np.float32), total
 
@@ -264,6 +271,30 @@ def test_a_runaway_cut_at_the_bound_is_logged(caplog: pytest.LogCaptureFixture) 
     assert [r.getMessage() for r in caplog.records] == [
         "chatterbox: runaway generation for 'Hi.': cut at the 34-token bound"
     ]
+
+
+@pytest.mark.usefixtures("fake_mlx")
+async def test_every_step_of_a_sentence_runs_on_the_engine_thread() -> None:
+    """T3 holds unevaluated MLX arrays from one token to the next, and MLX
+    arrays belong to the thread that made them: a sentence whose steps ran on
+    two threads of a busy shared pool crashed. Every step and render of every
+    sentence must run on the engine's one thread."""
+    model = _model(_T3(n=FIRST_TOKENS + CHUNK_TOKENS + 5))
+    engine = ChatterboxEngine()
+    engine._model = model
+
+    async def busy_pool() -> None:
+        await asyncio.gather(*(asyncio.to_thread(time.sleep, 0.002) for _ in range(8)))
+
+    async def speak_twice() -> None:
+        for _ in range(2):
+            async for _chunk in engine.synthesize("One sentence. And another one.", "default"):
+                await asyncio.sleep(0)
+
+    await asyncio.gather(busy_pool(), speak_twice(), busy_pool())
+    threads = model.t3.threads | model.s3gen.threads
+    assert len(threads) == 1
+    assert threading.get_ident() not in threads
 
 
 # -- the speech tokenizer --------------------------------------------------------

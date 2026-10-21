@@ -352,6 +352,8 @@ Their language is `en`:
     {"object": "voice", "id": "javert", "name": "Javert", "language": "en", "gender": "male"}
   ]
 }
+```
+
 Chatterbox Turbo, when selected, has one voice, `default`, the one the
 model ships with (`"language": "en"`). Text for it may carry tags such as
 `[laugh]`, `[sigh]` or `[whispering]`, which it performs instead of reading:

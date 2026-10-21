@@ -76,12 +76,13 @@ inside `load()`.
   `check_only`, so the service never downloads. **The 4-bit default was
   chosen without a listening test and is provisional until one is done.**
   Two measurements stand in for it: UTMOS, the benchmark's predicted
-  naturalness, gives fp16 3.82 and 4-bit 3.70 (docs/benchmarks.md), and in
-  a round trip of twelve household sentences through Parakeet, 4-bit had no
-  word errors in 82 and fp16 one ("three fifteen" heard as "thirty
-  fifteen"); both read a 70-word reply word for word. On those, 4-bit loses
-  little and holds a third of fp16's memory, which keeps it beside Parakeet
-  under the 3 GB budget.
+  naturalness, gives 4-bit 4.14 and fp16 4.01 (docs/benchmarks.md; one
+  run each over three sentences, which ranged from 3.80 to 4.40, so the
+  two are level), and in a round trip of twelve household sentences
+  through Parakeet, 4-bit had no word errors in 82 and fp16 one ("three
+  fifteen" heard as "thirty fifteen"); both read a 70-word reply word for
+  word. On those, 4-bit loses nothing measurable and holds a third of
+  fp16's memory, which keeps it beside Parakeet under the 3 GB budget.
 - **Streaming, voiced's own loop.** The engine does not call
   `stream_generate`. It drives mlx-audio's T3 token stream
   (`t3.inference_turbo_stream`, one token at a time) and S3Gen's
@@ -97,12 +98,21 @@ inside `load()`.
   waveforms), and the step at the join reached 0.11, as large as the
   clip's largest sample-to-sample steps. So the last 20 ms of
   every render but the final one are held back and crossfaded into the next
-  render's version of them. 15 tokens is the smallest first
+  render's version of them. Before the crossfade the benchmark's UTMOS was
+  3.70 (4-bit) and 3.82 (fp16); after it, 4.14 and 4.01. 15 tokens is the smallest first
   chunk that kept playback fed: at 10, first audio was about 40 ms earlier
   but the second piece came 60 to 160 ms after the first had played out.
   Owning the loop also gives the GPU yield points below and a per-sentence
   token bound, and skips `stream_generate`'s own sentence split, which
   voiced has already done.
+- **One thread.** T3 keeps its KV cache and unevaluated MLX arrays from one
+  token to the next, and MLX arrays belong to the thread that made them: a
+  sentence whose steps landed on two threads of the shared pool died with
+  "There is no Stream(gpu, 0) in current thread". The load, every step and
+  the close of every sentence run on the engine's own `ModelThread`, which
+  `SentenceTTSEngine` gives every engine (ADR 0028); a test steps a
+  sentence while the shared pool is busy and checks every T3 step and
+  S3Gen render ran on that one thread.
 - **GPU, under the lock.** Before each T3 step and each render the engine
   calls the sentence's `voiced.gpu.Yielder`, as Kokoro does before each of
   its blocks (ADR 0019): it waits while an STT encoder call holds the lock,
@@ -187,10 +197,10 @@ bench.py labels Phonon:
 An earlier run the same way measured the 0 ms finalize at median 102 /
 worst 124 ms alone and 129 / 143 ms while Chatterbox synthesized; the
 difference between the two runs is as large as Chatterbox's effect.
-`scripts/bench_engine.py` (ADR 0024) gave first audio 638 / 652 ms back
-to back and 350 / 463 ms while STT streams for 4-bit, 708 / 727 and 395 /
-502 ms for fp16, real-time factors 0.43 and 0.47, and footprints 0.90 and
-2.99 GB (docs/benchmarks.md).
+`scripts/bench_engine.py` (ADR 0024) on the shipped code gave first audio
+638 / 665 ms back to back and 357 / 460 ms while STT streams for 4-bit,
+691 / 732 and 389 / 517 ms for fp16, real-time factors 0.43 and 0.47,
+UTMOS 4.14 and 4.01, and footprints 0.90 and 2.99 GB (docs/benchmarks.md).
 
 The back-to-back first audio is not the engine's: both benchmarks read the
 first piece of each request and close it, and the HTTP route notices a

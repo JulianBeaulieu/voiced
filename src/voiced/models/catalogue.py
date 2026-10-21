@@ -213,6 +213,9 @@ CATALOGUE: tuple[Engine, ...] = (
                 "CC-BY-4.0",
                 ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICE_FILES)),
             ),
+        ),
+    ),
+    Engine(
         "chatterbox",
         "tts",
         # The conversions' cards say Apache-2.0, but Resemble AI released the
@@ -222,7 +225,7 @@ CATALOGUE: tuple[Engine, ...] = (
                 "mlx-community/chatterbox-turbo-4bit",
                 "MIT",
                 CHATTERBOX,
-                quality=3,
+                quality=4,
                 speed=2,
                 note="One expressive English voice that performs tags like [laugh]",
             ),
@@ -230,7 +233,7 @@ CATALOGUE: tuple[Engine, ...] = (
                 "mlx-community/chatterbox-turbo-fp16",
                 "MIT",
                 CHATTERBOX,
-                quality=3,
+                quality=4,
                 speed=2,
                 note="Chatterbox Turbo at full precision: three times the memory of 4-bit",
             ),
