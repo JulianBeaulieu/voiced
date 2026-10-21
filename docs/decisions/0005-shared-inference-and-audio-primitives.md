@@ -99,8 +99,9 @@ sample width or rate is a client error on every transport.
   Run the engine inside `async with inference(...)` in its own task that
   hands chunks to the body through a queue; the body is an async generator
   the route primes with one `anext()`. When the body stops early it sets a
-  flag, and the task raises a disconnect (`ClientDisconnect`) at the next
-  chunk, which `inference()` counts. Do not put `inference()` in the body
+  flag, and the task raises a disconnect at the engine's next step, which
+  `inference()` counts (see the amendment of 2026-10-21; it was the next
+  chunk before). Do not put `inference()` in the body
   generator itself: a server stops a response by cancelling its task, and
   that `CancelledError` lands inside the block, which records nothing (see
   Cancellation). The protocol between the two: the task forwards its
@@ -211,3 +212,72 @@ the watchdog could not tell apart from a crash.
 - Errors raised outside any `inference()` block (request validation, auth, a
   bug in a route) reach neither metrics nor health; Wyoming follows the same
   rule.
+
+## Amendment (2026-10-21)
+
+A hang-up ends the synthesis at the engine's next step.
+
+The flag between an HTTP speech body and its synthesis task was checked once
+per chunk. A sentence engine drops its empty pieces, so for an engine that
+renders its audio every few hundred generation steps (about half a second
+apart) the abandoned synthesis kept the slot until its next render, and the
+request a client sent after hanging up (a barge-in, or a benchmark reading
+only the first chunk) waited behind it. Wyoming had the same delay: a plain
+`Synthesize`, and the end of a stream after `SynthesizeStop`, run inside
+`handle`, so nothing read the connection until a write to it failed.
+
+The flag is now a `voiced.inference.HangUp`, given to `inference()`, which
+enters it around the slot, so it ends the wait for the slot too:
+
+```python
+hang_up = HangUp()
+async with inference(ctx, Operation.SPEECH, hang_up):
+    ...
+```
+
+`hang_up.set()`, called by whoever sees the client go, cancels the block's
+current await and raises `ClientHungUp`, a `ConnectionError` and so a
+`disconnect`. It is built on `asyncio.timeout`, which already turns its own
+cancel into an exception and tells it apart from any other cancel of the
+task: a server's or teardown's cancel still passes through as
+`CancelledError` and records nothing, as above. A `HangUp` set before its
+block raises `ClientHungUp` on entry, without waiting for the slot or
+starting an engine call (an expired `asyncio.timeout` would cancel only at
+the first await that suspends, by which time the first call is already on
+the model thread). `set()` after the block does nothing, so a hang-up after
+synthesis finished still records `ok`.
+
+The seam is the await every engine already has: `run_blocking` and
+`ModelThread` wait for the current thread call to finish before the cancel
+propagates, so the GPU is idle when the slot is released, and
+`SentenceTTSEngine`'s `finally` closes the sentence's piece generator (a
+failure to close is logged, so it cannot turn the disconnect into a
+failure). Each `next()` of `_synth_chunks` is one such call, so an engine
+that yields between generation steps (empty pieces included) stops at the
+next step; one that renders a sentence in one call (`_synth_sentence`:
+Kokoro, Soprano) stops when that sentence is done. No engine or
+`TTSEngine.synthesize` contract changed. A stop flag passed to the sentence
+loop was the alternative; it would have meant a new `synthesize()` parameter
+for every engine, for the same granularity.
+
+Who calls `set()`:
+
+- HTTP: the body's `finally`. Under ASGI spec 2.4 Starlette does not listen
+  for `http.disconnect`, so the body learns of a hang-up only when a send
+  fails, at the next chunk; uvicorn reports spec 2.3.
+- Wyoming, while `handle` waits (a plain `Synthesize`, or a stream's
+  remaining sentences after `SynthesizeStop`):
+  `VoicedEventHandler.on_close` reads the next event ahead, with no idle
+  bound, and reacts to a close, a reset, or an event left half sent for
+  `server.session_idle_s` (a client as good as gone). An event it reads is the next one
+  handled, so pipelined events keep their order, and the idle bound on it
+  still runs from the end of the request.
+- Wyoming, while a stream's text is still arriving: the loop reads the close
+  and the handler's `disconnect()` closes the stream instead of cancelling
+  its worker.
+
+On Wyoming, and over HTTP once the response has started, the sentence being
+spoken or waiting for the slot is counted as a `disconnect` (a waiting one
+without any engine call), and later sentences are dropped. Before the HTTP
+route's priming `anext()` returns no response has started, so nothing
+watches for `http.disconnect` yet.
