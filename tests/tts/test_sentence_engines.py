@@ -21,6 +21,7 @@ from voiced.engines.base import (
 )
 from voiced.engines.chatterbox import ChatterboxEngine
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.marvis import MarvisEngine
 from voiced.engines.omnivoice import OmniVoiceEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.pocket import PocketEngine
@@ -35,6 +36,7 @@ ENGINES: list[type[SentenceTTSEngine]] = [
     PocketEngine,
     ChatterboxEngine,
     OmniVoiceEngine,
+    MarvisEngine,
 ]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
@@ -408,6 +410,7 @@ async def test_aclose_mid_sentence_closes_the_engine_stream_off_the_loop() -> No
         ("kokoro_engine", "af_heart"),
         ("soprano_engine", "default"),
         ("omnivoice_engine", "en-US-female"),
+        ("marvis_engine", "conversational_a"),
     ],
 )
 def test_synthesis_keeps_the_mlx_cache_bounded(

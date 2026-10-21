@@ -68,6 +68,10 @@ stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.5.10"]
 # OmniVoice (ADR 0030) calls the model's private _tokenize_style_and_text and
 # _prepare_inference_inputs, generation.iterative_unmask by its keywords
 # (cond_input_ids, cond_audio_mask, T, num_steps) and duration.RuleDurationEstimator.
+# Marvis (ADR 0031) builds the sesame Model from its config (text_tokenizer
+# rewritten), calls its private _tokenize_text_segment, _tokenize_audio,
+# model.generate_frame, model.reset_caches and _streaming_decoder, and replaces
+# hf_hub_download in mlx_audio.codec.models.mimi.mimi while the model is built.
 # scipy (also an mlx-audio dependency) is declared because voiced.audio.resample uses
 # it to take Soprano's 32 kHz output to 24 kHz; sentencepiece is Pocket TTS's
 # tokenizer, which mlx-audio does not declare.
@@ -136,6 +140,7 @@ phonon = "voiced.engines.phonon:PhononEngine"
 pocket = "voiced.engines.pocket:PocketEngine"
 chatterbox = "voiced.engines.chatterbox:ChatterboxEngine"
 omnivoice = "voiced.engines.omnivoice:OmniVoiceEngine"
+marvis = "voiced.engines.marvis:MarvisEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

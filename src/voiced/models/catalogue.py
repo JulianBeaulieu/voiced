@@ -135,6 +135,24 @@ MOONSHINE_FILES = (
 without word timestamps (ADR 0026)."""
 
 
+MARVIS_TOKENIZER = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+)
+"""Marvis's text tokenizer, which its MLX conversions name by repository."""
+
+MARVIS_VOICES = ("conversational_a", "conversational_b", "conversational_fr", "conversational_de")
+"""The reference clips Marvis ships as voices, each a WAV and its transcript
+(``voiced.engines.marvis`` names them; a test keeps the two in step)."""
+
+MIMI = "tokenizer-e351c8d8-checkpoint125.safetensors"
+"""Mimi, Kyutai's audio codec, which Marvis speaks in and mlx-audio fetches
+from ``kyutai/moshiko-pytorch-bf16``."""
+
+
 def _moonshine(size: str, quality: int, speed: int, note: str) -> Model:
     """A Moonshine English streaming model: one folder of the publisher's
     asset repository, named by its model card."""
@@ -382,6 +400,46 @@ CATALOGUE: tuple[Engine, ...] = (
                 note="Streaming, English only; a lower error rate in English than Nemotron 3.5",
                 languages=("en-US",),
             ),
+        ),
+    ),
+    Engine(
+        "marvis",
+        "tts",
+        # The config and the weights mlx-audio's sesame model reads; Mimi, its
+        # codec, is Kyutai's (ADR 0031).
+        models=(
+            Model(
+                "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit",
+                "Apache-2.0; codec: CC-BY-4.0",
+                ("config.json", "model.safetensors*"),
+                quality=4,
+                speed=3,
+                note="French and German voices, Apache-2.0; 3.04 GB with Parakeet, over the budget",
+            ),
+            # Not the default: no better here, more memory, and its French
+            # voice runs on to the length bound more often (ADR 0031).
+            Model(
+                "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
+                "Apache-2.0; codec: CC-BY-4.0",
+                ("config.json", "model.safetensors*"),
+                quality=3,
+                speed=3,
+                note="Larger, no better here; 3.23 GB beside Parakeet; one French line runs on",
+            ),
+        ),
+        # The text tokenizer and the voices' reference clips, the same in the
+        # 250M and 100M repositories but for the French and German clips only
+        # the 250M has; and Mimi's weights.
+        shared=(
+            Model(
+                "Marvis-AI/marvis-tts-250m-v0.2",
+                "Apache-2.0",
+                (
+                    *MARVIS_TOKENIZER,
+                    *(f"prompts/{v}.{e}" for v in MARVIS_VOICES for e in ("wav", "txt")),
+                ),
+            ),
+            Model("kyutai/moshiko-pytorch-bf16", "CC-BY-4.0", (MIMI,)),
         ),
     ),
 )

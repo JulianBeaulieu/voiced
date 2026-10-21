@@ -456,6 +456,7 @@ reboots need a person. voiced does not change this setting.
 | tts | Pocket TTS (opt-in, on the GPU) | 430 MB resident (680 MB footprint) after a long reply; 968 MB MLX peak while synthesizing |
 | tts | Chatterbox Turbo 4-bit (opt-in) | 0.89 GB footprint after a long reply (fp16: 2.99 GB) |
 | tts | OmniVoice (opt-in) | 1.59 GB MLX active, 3.19 GB MLX peak (2.14 GB footprint) after a long reply; 3.87 GB beside Parakeet, over the 3 GB budget for both |
+| tts | Marvis 100M (opt-in) | 1.23 GB footprint, 2.31 GB MLX peak after use (benchmark row); 3.04 GB beside Parakeet in the bench.py run, over the 3 GB budget for both (250M: 1.45 GB, 3.23 GB) |
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 | stt | Qwen3-ASR 0.6B with the aligner (opt-in) | 2.29 GB after load, 3.75 GB serving peak on a 30 s turn |
 | stt | Moonshine Small (opt-in, on the CPU) | 330 MB footprint (1.32 GB resident, mostly the memory-mapped model) after use; Tiny 177 MB and Medium 789 MB resident after load |

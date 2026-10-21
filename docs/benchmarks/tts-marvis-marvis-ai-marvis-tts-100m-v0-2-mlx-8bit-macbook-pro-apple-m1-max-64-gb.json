@@ -1,0 +1,36 @@
+{
+  "kind": "tts",
+  "engine": "marvis",
+  "model": "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "70d3cfa+",
+  "version": "0.2.0",
+  "date": "2026-10-21",
+  "languages": [
+    "en",
+    "fr",
+    "de"
+  ],
+  "licence": "Apache-2.0; codec: CC-BY-4.0",
+  "size_bytes": 452419326,
+  "load_s": 2.8,
+  "footprint_bytes": 1232081408,
+  "mlx_load_peak_bytes": 2314130665,
+  "mlx_peak_bytes": 2314130665,
+  "metrics": {
+    "voice": "conversational_a",
+    "utmos": 4.27,
+    "first_audio": {
+      "median_ms": 89.0,
+      "worst_ms": 89.3,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 79.2,
+      "worst_ms": 114.1,
+      "n": 30
+    },
+    "rtf": 0.4899
+  }
+}

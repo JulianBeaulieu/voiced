@@ -74,3 +74,14 @@ def omnivoice_engine() -> Iterator[object]:
     engine = OmniVoiceEngine()
     asyncio.run(engine.load())
     yield engine
+
+
+@pytest.fixture(scope="session")
+def marvis_engine() -> Iterator[object]:
+    """A loaded Marvis engine shared by the model tests. Loaded synchronously
+    so it can be session scoped regardless of the per-test event loop."""
+    from voiced.engines.marvis import MarvisEngine
+
+    engine = MarvisEngine()
+    asyncio.run(engine.load())
+    yield engine

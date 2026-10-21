@@ -1,6 +1,126 @@
 {
   "comment": "Written by `python -m voiced.models pin`; see voiced/models/catalogue.py.",
   "models": {
+    "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit": {
+      "repo": "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit",
+      "revision": "430e4b9810cf6fd9ead5963cdbbc24b68690818a",
+      "patterns": [
+        "config.json",
+        "model.safetensors*"
+      ],
+      "files": {
+        "config.json": {
+          "bytes": 8995,
+          "sha256": "9c33863f23164fc8942d6d7fd199aebdf393e5502daf85bcd88b0e9848da4613"
+        },
+        "model.safetensors": {
+          "bytes": 452387648,
+          "sha256": "3f8d878877e1568b3145c8472dd1b289cfb115637acf2e1fd84bf44af6f19953"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 22683,
+          "sha256": "b30776c3bdd3012f9d0a9314b1a198a970b409d2ffce28b4c3320821bce77059"
+        }
+      },
+      "previous": []
+    },
+    "Marvis-AI/marvis-tts-250m-v0.2": {
+      "repo": "Marvis-AI/marvis-tts-250m-v0.2",
+      "revision": "15b7c3a7740d29148d60aa01051770d2d9d59916",
+      "patterns": [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.json",
+        "merges.txt",
+        "prompts/conversational_a.wav",
+        "prompts/conversational_a.txt",
+        "prompts/conversational_b.wav",
+        "prompts/conversational_b.txt",
+        "prompts/conversational_fr.wav",
+        "prompts/conversational_fr.txt",
+        "prompts/conversational_de.wav",
+        "prompts/conversational_de.txt"
+      ],
+      "files": {
+        "merges.txt": {
+          "bytes": 466391,
+          "sha256": "0b54e8aa4e53d5383e2e4bc635a56b43f9647f7b13832d5d9ecd8f82dac4f510"
+        },
+        "prompts/conversational_a.txt": {
+          "bytes": 231,
+          "sha256": "6c13540f491289bcc625a06920cec1d07f0ae2a0556d51eb9f6de5cd901ada7b"
+        },
+        "prompts/conversational_a.wav": {
+          "bytes": 636564,
+          "sha256": "5901d2ee3a8282fefac96d28bea2f843da5b1c9673b6d3264ccdc3c6dbec5d2e"
+        },
+        "prompts/conversational_b.txt": {
+          "bytes": 231,
+          "sha256": "6c13540f491289bcc625a06920cec1d07f0ae2a0556d51eb9f6de5cd901ada7b"
+        },
+        "prompts/conversational_b.wav": {
+          "bytes": 635540,
+          "sha256": "478de94e01ee64b69b4865d6b64540c5840bb2aca9513ececca379a8cd633532"
+        },
+        "prompts/conversational_de.txt": {
+          "bytes": 64,
+          "sha256": "1b30e196d3d3825463d83ef134b4a5a9e7572e9eb636dff7212a51e3406b2aaa"
+        },
+        "prompts/conversational_de.wav": {
+          "bytes": 200768,
+          "sha256": "ea5f7cce5506dc9707dc5048a056fe67cf0da0cae528e4e69c4662c74e75f9a3"
+        },
+        "prompts/conversational_fr.txt": {
+          "bytes": 111,
+          "sha256": "8d6fa75f44b6e91c2f074d889ce0ba83d6ec06ab4b3190f4e7b953cd12e53439"
+        },
+        "prompts/conversational_fr.wav": {
+          "bytes": 333680,
+          "sha256": "985f00a09b6e66866b162c8155c7f5505a99972d5dfa2e35f86710842719120b"
+        },
+        "special_tokens_map.json": {
+          "bytes": 599,
+          "sha256": "cf447163c62cff3e63447705798604b1ad473a8d79570c053c68346b64d7380b"
+        },
+        "tokenizer.json": {
+          "bytes": 3523993,
+          "sha256": "05e0c4dbf3b0d768c82058441fb78d84340fd056fb4949cd216229ca18334bd0"
+        },
+        "tokenizer_config.json": {
+          "bytes": 3684,
+          "sha256": "0098212d730c9fd5bad0cf3f8f49c9053962a7b431a6a8872555b7657b1768de"
+        },
+        "vocab.json": {
+          "bytes": 800662,
+          "sha256": "82b84012e3add4d01d12ba14442026e49b8cbbaead1f79ecf3d919784f82dc79"
+        }
+      },
+      "previous": []
+    },
+    "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit": {
+      "repo": "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
+      "revision": "f564ede427b7ec816b229b8c1c2f129817dc4a95",
+      "patterns": [
+        "config.json",
+        "model.safetensors*"
+      ],
+      "files": {
+        "config.json": {
+          "bytes": 9068,
+          "sha256": "cab5d957e2ef33e3e85c172c5b8e83d5727aaea34a8cb674cd64004410325363"
+        },
+        "model.safetensors": {
+          "bytes": 665515046,
+          "sha256": "2225809b10196ed07fb3f2a577701ce174c014f6d8fe16e999417051f3ec140d"
+        },
+        "model.safetensors.index.json": {
+          "bytes": 19055,
+          "sha256": "bbc9b484769852f792b2ca1d796f5482a81791b7c647291d5df377765f5c49c2"
+        }
+      },
+      "previous": []
+    },
     "gradium/phonon-31m-en": {
       "repo": "gradium/phonon-31m-en",
       "revision": "8c64b55ec301728e2d1695bfea87a08a267d0c2d",
@@ -313,6 +433,20 @@
         "tokenizer_config.json": {
           "bytes": 533,
           "sha256": "49f78845596a82bf15c83673794bdf9f76f812b11f60ab6a2239d9be65b00676"
+        }
+      },
+      "previous": []
+    },
+    "kyutai/moshiko-pytorch-bf16": {
+      "repo": "kyutai/moshiko-pytorch-bf16",
+      "revision": "2bfc9ae6e89079a5cc7ed2a68436010d91a3d289",
+      "patterns": [
+        "tokenizer-e351c8d8-checkpoint125.safetensors"
+      ],
+      "files": {
+        "tokenizer-e351c8d8-checkpoint125.safetensors": {
+          "bytes": 384644900,
+          "sha256": "09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"
         }
       },
       "previous": []
