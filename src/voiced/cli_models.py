@@ -7,7 +7,9 @@ ADR 0018's byte progress (``--json-progress``), and ``delete`` removes a
 model's pinned revision (``--previous``: its older locked ones) through
 ``huggingface_hub``, never a path of its own. Both take the install lock
 without waiting, so they never run beside an install, an update or an
-uninstall. "In use" follows the config file.
+uninstall. "In use" follows the config file. An engine that cannot run on
+this Mac (the engine catalogue's ``unavailable_reason``) is listed with the
+reason, and ``download`` refuses its models.
 """
 
 from __future__ import annotations
@@ -153,6 +155,7 @@ def listing(settings: Settings) -> dict[str, Any]:
                 "label": engine_label(engine.name),
                 "kind": engine.kind,
                 "installed": found is not None,
+                "unavailable_reason": found["unavailable_reason"] if found else None,
                 "languages": found["languages"] if found else [],
                 "voices": found.get("voices", []) if found else [],
                 "models": [view(m, lock[m.id], shared=False) for m in engine.models],
@@ -166,6 +169,7 @@ def listing(settings: Settings) -> dict[str, Any]:
                 "label": found["label"],
                 "kind": kind,
                 "installed": True,
+                "unavailable_reason": found["unavailable_reason"],
                 "languages": found["languages"],
                 "voices": found.get("voices", []),
                 "models": [],
@@ -177,7 +181,7 @@ def listing(settings: Settings) -> dict[str, Any]:
     return {"cache": str(hub_path), "total_bytes": total, "engines": engines}
 
 
-def _state(model: dict[str, Any]) -> str:
+def _state(model: dict[str, Any], engine: dict[str, Any]) -> str:
     if model["in_use"]:
         state = "in use" if model["downloaded"] else "in use, not downloaded"
     elif model["downloaded"]:
@@ -189,7 +193,11 @@ def _state(model: dict[str, Any]) -> str:
     old = sum(p["bytes"] for p in model["previous"])
     if old:
         state += f"; old version {size_text(old)}"
-    return state + ("; gated" if model["gated"] and not model["downloaded"] else "")
+    if model["gated"] and not model["downloaded"]:
+        state += "; gated"
+    if engine["unavailable_reason"] is not None:
+        state += f"; cannot run here: {engine['unavailable_reason']}"
+    return state
 
 
 def _rating(n: int | None) -> str:
@@ -217,7 +225,7 @@ def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
                     _rating(model["quality"]),
                     _rating(model["speed"]),
                     f"{size_text(size)} {where}",
-                    _state(model),
+                    _state(model, engine),
                 )
             )
     echo(render_table(("ENGINE", "MODEL", "LICENSE", "QUALITY", "SPEED", "SIZE", "STATE"), rows))
@@ -253,6 +261,29 @@ def cancel_on_sigterm(progress: Progress, echo: Echo) -> Iterator[None]:
         signal.signal(signal.SIGTERM, previous)
 
 
+def refuse_unavailable(model_id: str) -> None:
+    """A catalogued model whose engine cannot run on this Mac is not
+    downloaded: it could never be used here. This reads the engine
+    registry, so a broken plugin entry point fails every download, as it
+    fails ``list``."""
+    from voiced.engines import registry
+    from voiced.engines.catalogue import unavailable_reason
+
+    found = models.find(model_id)
+    if found is None:
+        return
+    engine = found[0]
+    try:
+        cls = registry.get_engine(engine.kind, engine.name)
+    except registry.UnknownEngine:
+        return
+    reason = unavailable_reason(cls)
+    if reason is not None:
+        raise ModelsError(
+            "failed", f"the {engine.name} engine {reason}, so {model_id} cannot run here"
+        )
+
+
 def cmd_download(model_id: str, settings: Settings, echo: Echo, *, json_progress: bool) -> int:
     """With ``--json-progress`` stdout carries only ADR 0018's events: ``hello``,
     ``download`` per byte report, then ``done`` or ``error`` with a ``code``."""
@@ -274,6 +305,7 @@ def cmd_download(model_id: str, settings: Settings, echo: Echo, *, json_progress
                         f"{model_id} is not in voiced's catalogue: downloading it whole at "
                         "`main`, unpinned; voiced never deletes it"
                     )
+                refuse_unavailable(model_id)
                 echo(f"downloading {model_id} into {models.cache_dir()}")
                 models.fetch(model_id, write)
         except KeyboardInterrupt:

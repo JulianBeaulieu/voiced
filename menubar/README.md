@@ -143,17 +143,18 @@ VOICED_CONTROL_SOCKET=/tmp/voiced-fake.sock \
 `voiced-fake-control models ...` in place of `~/.voiced/bin/voiced`. The
 fake's cache is a file next to the socket (`<socket>.models.json`), written
 with the scenario's models at start: one model in each state, Phonon's gated
-40m failing with `token_missing`. The fake command changes it (a download
-takes five seconds; SIGTERM ends it with exit 143), the fake server reads it:
-`settings.set` refuses a model that is not downloaded with
-`model_not_downloaded`, and a restarted service without its model reports
-`missing_model`; the fake `delete` refuses the configured models with
-`in_use`. To try other failures, edit the file's `failures` (model id to an
-error code such as `network` or `disk`); while `<socket>.models.json.busy`
-exists, download and delete fail with `busy`. Pointed at a development
-checkout's `voiced`, the rows run the real command; `VOICED_REAL_CLI=<voiced>
-swift test --filter RealCLITests` runs a list, a cancelled download and a
-download through the app's code.
+40m failing with `token_missing`, Nemotron's English model serving only
+`en-US`, and Moonshine listed as unable to run on this Mac, as on macOS 14.
+The fake command changes it (a download takes five seconds; SIGTERM ends it
+with exit 143), the fake server reads it: `settings.set` refuses a model that
+is not downloaded with `model_not_downloaded`, and a restarted service without
+its model reports `missing_model`; the fake `delete` refuses the configured
+models with `in_use`. To try other failures, edit the file's `failures` (model
+id to an error code such as `network` or `disk`); while
+`<socket>.models.json.busy` exists, download and delete fail with `busy`.
+Pointed at a development checkout's `voiced`, the rows run the real command;
+`VOICED_REAL_CLI=<voiced> swift test --filter RealCLITests` runs a list, a
+cancelled download and a download through the app's code.
 
 | Scenario | State |
 |---|---|

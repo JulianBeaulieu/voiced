@@ -285,8 +285,20 @@ public struct SettingsView: View {
 
     @ViewBuilder
     private func speechToText(_ settings: SettingsPayload) -> some View {
+        let languages = SpeechLanguages(
+            settings.stt, engine: model.engines?.sttEngine(named: settings.stt.engine), name: Self.languageName)
         Section {
-            LabeledContent("Language", value: Self.languageName(settings.stt.language))
+            // `line` carries the wording; a language the model does not serve also gets the symbol.
+            LabeledContent("Language") {
+                if languages.isServed {
+                    Text(languages.line)
+                } else {
+                    Label(languages.line, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+            }
+            if !languages.served.isEmpty {
+                LabeledContent("Model languages", value: languages.served.joined(separator: ", "))
+            }
         } header: {
             Text("Speech to text")
         } footer: {

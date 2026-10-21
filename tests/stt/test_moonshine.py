@@ -79,6 +79,23 @@ async def test_without_the_runtime_load_says_what_is_missing(
         await engine.stream()
 
 
+@pytest.mark.parametrize(
+    ("system", "release", "reason"),
+    [
+        ("Darwin", "23.6.0", "needs macOS 15 or later"),
+        ("Darwin", "24.0.0", None),
+        ("Darwin", "25.1.0", None),
+        ("Linux", "6.1.0", None),
+    ],
+)
+def test_it_cannot_run_below_macos_15(
+    monkeypatch: pytest.MonkeyPatch, system: str, release: str, reason: str | None
+) -> None:
+    monkeypatch.setattr(moonshine.platform, "system", lambda: system)
+    monkeypatch.setattr(moonshine.platform, "release", lambda: release)
+    assert MoonshineEngine.unavailable_reason() == reason
+
+
 # --- a stand-in moonshine_voice ----------------------------------------------
 
 

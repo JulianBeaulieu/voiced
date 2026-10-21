@@ -203,15 +203,14 @@ was 135, 211 and 170 ms in three runs, Medium's 442 and 212 ms in two.
   ms, against 365 and 448 ms in an earlier version that queued the waiting
   audio and handed it to the stream in one call; this one hands it over
   chunk by chunk, as it arrives.
-- **macOS 14** cannot run it. The engine and its three models are still
-  listed there (the module imports without the runtime, and the catalogue
-  does not know the platform), so the app offers them: a download of 45 to
-  269 MB succeeds, and the service then fails at `load()` with "the
+- **macOS 14** cannot run it. The engine's `unavailable_reason()` says
+  "needs macOS 15 or later" below Darwin 24, so `engines.list` and `voiced
+  models list` mark it unavailable with that reason, `voiced models
+  download` refuses its models, and the app offers neither Download nor Use
+  ([#85](https://github.com/JulianBeaulieu/voiced/issues/85), ADR 0022's
+  app note). A config that names it still fails at `load()` with "the
   moonshine engine needs macOS 15 or later". Each model's note says
-  "macOS 15+". Hiding it below macOS 15 is a small change left for
-  [#85](https://github.com/JulianBeaulieu/voiced/issues/85): an optional
-  `available()` classmethod that the listing reads the way it reads
-  `catalogue_voices`.
+  "macOS 15+".
 - **The model tier needs macOS 15.** CI's manual `model-tests` job runs on
   macos-14 by default, where the package is not installed and the Moonshine
   tests skip; run it with a macOS 15 runner to cover them.

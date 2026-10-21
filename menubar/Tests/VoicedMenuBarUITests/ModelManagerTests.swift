@@ -114,6 +114,22 @@ final class ModelManagerTests: XCTestCase {
             f.models.messages[phonon31]?.text, "voiced is busy installing, updating or changing models; try again when it ends.")
     }
 
+    /// The fake command refuses the model of an engine that cannot run here, as the real one does.
+    func testTheFakeRefusesADownloadForAnEngineThatCannotRunHere() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        let moonshine = "moonshine-ai/moonshine-streaming-small"
+        var lines: [String] = []
+        let status = f.cache.run(["download", moonshine, "--json-progress"], output: { lines.append($0) }, pause: {})
+        XCTAssertEqual(status, 1)
+        let error = try XCTUnwrap(lines.last.flatMap { try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] })
+        XCTAssertEqual(error["event"] as? String, "error")
+        XCTAssertEqual(error["code"] as? String, "failed")
+        XCTAssertEqual(
+            error["message"] as? String, "the moonshine engine needs macOS 15 or later, so \(moonshine) cannot run here")
+        XCTAssertEqual(f.cache.read()?.list.model(moonshine)?.model.downloaded, false)
+    }
+
     func testCancelEndsTheDownloadAndLeavesTheModelAsItWas() async throws {
         let f = try await fixture()
         defer { f.stop() }

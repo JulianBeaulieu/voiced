@@ -14,6 +14,7 @@ import pytest
 from tests import hf_cache_support as hf
 from voiced import cli_models, models
 from voiced.config import Settings
+from voiced.engines import moonshine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.layout import install_lock
 from voiced.models import lockfile
@@ -25,6 +26,7 @@ KOKORO = "mlx-community/Kokoro-82M-bf16"
 P31 = "gradium/phonon-31m-en"
 P40 = "gradium/phonon-40m-en"
 VOICES = "gradium/phonon-voices"
+MOONSHINE = "moonshine-ai/moonshine-streaming-small"
 OLD = "0" * 40
 
 
@@ -127,6 +129,44 @@ def test_an_older_locked_revision_is_an_update(
     assert out[-1] == "This folder is shared with other apps; voiced deletes only its own models."
 
 
+@pytest.fixture
+def macos_14(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(moonshine.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(moonshine.platform, "release", lambda: "23.6.0")
+
+
+@pytest.mark.usefixtures("macos_14")
+def test_list_marks_an_engine_that_cannot_run_here(settings: Settings, model_cache: Path) -> None:
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    engines = {e["name"]: e for e in json.loads(out[0])["engines"]}
+    assert engines["moonshine"]["unavailable_reason"] == "needs macOS 15 or later"
+    assert engines["phonon"]["unavailable_reason"] is None
+    assert engines["fake"]["unavailable_reason"] is None
+    out.clear()
+    cli_models.cmd_list(settings, out.append, as_json=False)
+    lines = out[0].splitlines()
+    assert any(MOONSHINE in line and "cannot run here: needs macOS 15" in line for line in lines)
+    assert not any(P31 in line and "cannot run here" in line for line in lines)
+
+
+@pytest.mark.usefixtures("macos_14")
+def test_an_engine_that_is_not_installed_is_not_marked(
+    settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catalogued, not installed: nothing says it cannot run here."""
+    from voiced.engines import catalogue
+
+    listed = catalogue.engines_list()
+    listed["stt"] = [e for e in listed["stt"] if e["name"] != "moonshine"]
+    monkeypatch.setattr(catalogue, "engines_list", lambda: listed)
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    moonshine = next(e for e in json.loads(out[0])["engines"] if e["name"] == "moonshine")
+    assert not moonshine["installed"]
+    assert moonshine["unavailable_reason"] is None
+
+
 # download --------------------------------------------------------------------
 
 
@@ -210,6 +250,20 @@ def test_a_shared_repository_is_not_downloaded_alone(
 ) -> None:
     assert cli_models.cmd_download(VOICES, settings, print, json_progress=True) == 1
     assert fake_hub.got == [] and events(capsys)[-1]["code"] == "failed"
+
+
+@pytest.mark.usefixtures("macos_14")
+def test_download_refuses_a_model_whose_engine_cannot_run_here(
+    settings: Settings, fake_hub: FakeHub, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli_models.cmd_download(MOONSHINE, settings, print, json_progress=True) == 1
+    assert fake_hub.got == []
+    error = events(capsys)[-1]
+    assert (error["event"], error["code"]) == ("error", "failed")
+    assert error["message"] == (
+        f"the moonshine engine needs macOS 15 or later, so {MOONSHINE} cannot run here"
+    )
+    assert cli_models.cmd_download(P31, settings, print, json_progress=True) == 0
 
 
 def _http_error(cls: type[Exception], status: int) -> Exception:

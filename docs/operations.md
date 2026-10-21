@@ -118,6 +118,7 @@ downloaded while its service runs is loaded by `voiced restart <service>`.
   "engines": [
     {
       "name": "phonon", "label": "Phonon", "kind": "tts", "installed": true,
+      "unavailable_reason": null,
       "languages": ["en-US", "en-GB"], "voices": ["default", "Zoey"],
       "models": [
         {
@@ -154,6 +155,12 @@ each file's size against the lock, so a truncated file reads as missing.
 `on_disk_bytes` is the whole cached revision: models that are folders of
 one repository each show the same revision, while `total_bytes` counts it
 once. A plugin engine voiced does not catalogue is listed with no models.
+`unavailable_reason` says why an installed engine cannot run on this Mac,
+as a phrase that follows its name ("needs macOS 15 or later" for Moonshine
+on macOS 14), and is null for one that can, and for one that is not
+installed; the unavailable engine's models are still listed, so a download
+can be deleted, the table's state says "cannot run here", and `download`
+refuses them.
 
 `voiced models download <model> --json-progress` writes ADR 0018's events,
 one JSON object per line on stdout (human output goes to stderr): `hello`,
@@ -374,7 +381,7 @@ every 10 s, and a `settings` event follows any change to the config file.
 | `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
-| `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's; the app reads it in a follow-up), voices, `voice_labels` and `voice_languages`, without loading any |
+| `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's, which the app shows for the model in use), `unavailable_reason` (why the engine cannot run on this Mac, such as Moonshine's "needs macOS 15 or later" below macOS 15; null when it can), voices, `voice_labels` and `voice_languages`, without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
 | `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
 | `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |

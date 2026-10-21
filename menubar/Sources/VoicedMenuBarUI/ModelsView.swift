@@ -42,6 +42,8 @@ struct ModelSections: View {
                 } footer: {
                     if !engine.installed {
                         Text("This engine is not in the installed voiced; update voiced to use it.").footnote()
+                    } else if let note = engine.unavailableNote {
+                        Text(note).footnote()
                     }
                 }
             }

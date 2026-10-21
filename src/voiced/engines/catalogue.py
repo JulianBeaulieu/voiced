@@ -6,11 +6,18 @@ returning its :class:`~voiced.engines.base.Voice` list; it must not load
 weights or import MLX. It is not part of the frozen interface in
 ``voiced.engines.base``: an engine without it lists no voices, and the
 running service's ``voices()`` stays the authority on what can be
-synthesized. Models come from ``voiced.models.CATALOGUE`` (the default
-first), or ``model_id`` for an engine it does not know; languages from
-``languages``, and ``model_languages`` gives each model's own (the
-catalogue's, else the engine's), so a settings UI offers the languages of
-the model selected.
+synthesized. Any engine may declare an ``unavailable_reason()`` classmethod
+the same way, returning why it cannot run on this Mac, as a phrase that
+follows the engine's name ("needs macOS 15 or later" for Moonshine below
+macOS 15), or None; without it an engine can run. The listing carries it as
+``unavailable_reason`` (null: can run), so the app offers neither Download
+nor Use, and ``voiced models download`` refuses the engine's models. A hook
+that raises fails the whole listing, as ``catalogue_voices`` does.
+
+Models come from ``voiced.models.CATALOGUE`` (the default first), or
+``model_id`` for an engine it does not know; languages from ``languages``,
+and ``model_languages`` gives each model's own (the catalogue's, else the
+engine's), so a settings UI shows the languages of the model in use.
 
 Display labels are built here, in one place: an engine's label is its
 registry name capitalised, and a voice with a gender is labelled
@@ -72,6 +79,14 @@ def catalogue_voices(cls: type[TTSEngine]) -> list[Voice]:
     return [v for v in voices if isinstance(v, Voice)]
 
 
+def unavailable_reason(cls: type[STTEngine] | type[TTSEngine]) -> str | None:
+    declared = getattr(cls, "unavailable_reason", None)
+    if not callable(declared):
+        return None
+    reason = declared()
+    return reason if isinstance(reason, str) and reason else None
+
+
 def engine_models(name: str, cls: type[STTEngine] | type[TTSEngine]) -> list[str]:
     catalogued = models.engine(name)
     if catalogued is not None:
@@ -90,6 +105,7 @@ def _common(name: str, cls: type[STTEngine] | type[TTSEngine]) -> dict[str, Any]
         "models": engine_models(name, cls),
         "languages": languages,
         "model_languages": {m: own.get(m) or languages for m in engine_models(name, cls)},
+        "unavailable_reason": unavailable_reason(cls),
     }
 
 

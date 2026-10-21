@@ -8,9 +8,11 @@ import sys
 
 import pytest
 
+from voiced.engines import moonshine
 from voiced.engines.base import Voice
-from voiced.engines.catalogue import engines_list, voice_label
+from voiced.engines.catalogue import engines_list, unavailable_reason, voice_label
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.parakeet import ParakeetEngine
 
 HEAVY = ("fastapi", "starlette", "numpy", "pysilero_vad", "mlx", "mlx_audio", "voiced.engines")
 
@@ -38,7 +40,8 @@ def test_kokoro_and_phonon_catalogues_without_mlx_or_ptts() -> None:
     assert json.loads(out[1]) == []
 
 
-def test_labels() -> None:
+def test_labels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(moonshine.platform, "release", lambda: "24.6.0")
     result = engines_list()
     tts = {e["name"]: e for e in result["tts"]}
     stt = {e["name"]: e for e in result["stt"]}
@@ -62,6 +65,7 @@ def test_labels() -> None:
         "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
         "languages": stt["parakeet"]["languages"],
         "model_languages": {"mlx-community/parakeet-tdt-0.6b-v3": stt["parakeet"]["languages"]},
+        "unavailable_reason": None,
     }
     assert stt["moonshine"] == {
         "name": "moonshine",
@@ -80,6 +84,7 @@ def test_labels() -> None:
                 "moonshine-ai/moonshine-streaming-medium",
             ]
         },
+        "unavailable_reason": None,
     }
     nemotron = stt["nemotron"]
     assert nemotron["models"] == [
@@ -93,6 +98,32 @@ def test_labels() -> None:
     }
 
     assert voice_label(Voice("x", "X", "xx-XX", "male")) == "X (xx-XX, male)"
+
+
+def test_an_engine_that_cannot_run_here_is_listed_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(moonshine.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(moonshine.platform, "release", lambda: "23.6.0")
+    stt = {e["name"]: e for e in engines_list()["stt"]}
+    assert stt["moonshine"]["unavailable_reason"] == "needs macOS 15 or later"
+    assert stt["moonshine"]["models"]  # still listed: its downloads can be deleted
+    assert stt["parakeet"]["unavailable_reason"] is None
+
+
+def test_the_hook_is_optional_and_only_a_reason_counts() -> None:
+    assert unavailable_reason(ParakeetEngine) is None  # no hook: available
+
+    class Blank(ParakeetEngine):
+        @classmethod
+        def unavailable_reason(cls) -> str | None:
+            return ""
+
+    class NotCallable(ParakeetEngine):
+        unavailable_reason = "says nothing"  # type: ignore[assignment]
+
+    assert unavailable_reason(Blank) is None
+    assert unavailable_reason(NotCallable) is None
 
 
 def test_the_watchdog_imports_no_engine_plugins() -> None:

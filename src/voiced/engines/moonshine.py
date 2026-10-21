@@ -111,6 +111,14 @@ class MoonshineEngine(STTEngine):
         self._thread = ModelThread("moonshine")
 
     @classmethod
+    def unavailable_reason(cls) -> str | None:
+        """The engine catalogue's hook: no ``moonshine-voice`` below macOS 15."""
+        darwin = platform.release().split(".")[0]
+        if platform.system() == "Darwin" and darwin.isdigit() and int(darwin) < MIN_MACOS_DARWIN:
+            return "needs macOS 15 or later"
+        return None
+
+    @classmethod
     def normalize_language(cls, language: str | None) -> str:
         """``"en-US"`` to ``"en"``; raise :class:`UnsupportedLanguage` otherwise."""
         if language is None:
@@ -268,9 +276,9 @@ class MoonshineStreamSession(STTStreamSession):
 
 
 def _missing_runtime() -> str:
-    darwin = platform.release().split(".")[0]
-    if platform.system() == "Darwin" and darwin.isdigit() and int(darwin) < MIN_MACOS_DARWIN:
-        return "the moonshine engine needs macOS 15 or later (moonshine-voice has no older wheel)"
+    reason = MoonshineEngine.unavailable_reason()
+    if reason is not None:
+        return f"the moonshine engine {reason} (moonshine-voice has no older wheel)"
     return (
         "the moonshine engine needs the moonshine extra, which is not installed "
         "(from a checkout: uv sync --extra moonshine)"

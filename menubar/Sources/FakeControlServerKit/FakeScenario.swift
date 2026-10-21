@@ -141,6 +141,16 @@ extension FakeState {
                     STTEngineInfo(
                         name: "parakeet", label: "Parakeet",
                         models: ["mlx-community/parakeet-tdt-0.6b-v3"], languages: ["en"]),
+                    // The engine's languages, and its English model's own.
+                    STTEngineInfo(
+                        name: "nemotron", label: "Nemotron",
+                        models: [nemotron, nemotronEnglish], languages: ["en-US", "en-GB", "de-DE", "es-US"],
+                        modelLanguages: [
+                            nemotron: ["en-US", "en-GB", "de-DE", "es-US"], nemotronEnglish: ["en-US"],
+                        ]),
+                    STTEngineInfo(
+                        name: "moonshine", label: "Moonshine", models: [moonshineSmall], languages: ["en"],
+                        modelLanguages: [moonshineSmall: ["en"]]),
                     STTEngineInfo(name: "fake", label: "Fake", models: ["fake"], languages: ["en"]),
                 ],
                 tts: [
@@ -167,6 +177,10 @@ extension FakeState {
             apiKey: "sample-key")
     }
 }
+
+let nemotron = "mlx-community/nemotron-3.5-asr-streaming-0.6b"
+let nemotronEnglish = "nvidia/nemotron-speech-streaming-en-0.6b"
+let moonshineSmall = "moonshine-ai/moonshine-streaming-small"
 
 private let kokoroVoices = [
     "af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael",

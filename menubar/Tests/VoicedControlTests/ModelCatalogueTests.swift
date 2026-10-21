@@ -15,6 +15,7 @@ final class ModelCatalogueTests: XCTestCase {
           "engines": [
             {
               "name": "phonon", "label": "Phonon", "kind": "tts", "installed": true,
+              "unavailable_reason": null,
               "languages": ["en-US", "en-GB"], "voices": ["default", "Zoey"],
               "models": [
                 {
@@ -43,6 +44,8 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(list.totalBytes, 2_864_000_000)
         let phonon = try XCTUnwrap(list.engines.first)
         XCTAssertEqual(phonon.voices, ["default", "Zoey"])
+        XCTAssertTrue(phonon.available)
+        XCTAssertNil(phonon.unavailableNote)
         let model = try XCTUnwrap(phonon.models.first)
         XCTAssertEqual(model.name, "phonon-31m-en")
         XCTAssertEqual(model.cardURL?.absoluteString, "https://huggingface.co/gradium/phonon-31m-en")
@@ -93,6 +96,8 @@ final class ModelCatalogueTests: XCTestCase {
     }
 
     private let kokoro = "mlx-community/Kokoro-82M-bf16"
+    private let nemotron = "mlx-community/nemotron-3.5-asr-streaming-0.6b"
+    private let moonshineSmall = "moonshine-ai/moonshine-streaming-small"
 
     func testEveryRowStateFromTheSample() {
         let tts = rows(kind: .tts, engine: "kokoro", model: kokoro)
@@ -225,6 +230,41 @@ final class ModelCatalogueTests: XCTestCase {
         let index = try XCTUnwrap(state.list.engines.firstIndex { $0.name == "soprano" })
         state.list.engines[index].installed = false
         XCTAssertEqual(rows(state, kind: .tts, engine: "kokoro", model: kokoro)["mlx-community/Soprano-80M-bf16"]?.canUse, false)
+    }
+
+    /// Moonshine on macOS 14: its rows show why under the engine and offer neither Download
+    /// nor Use; a download already on disk can still be deleted.
+    func testAnEngineThatCannotRunHereOffersNoDownloadOrUse() throws {
+        let engine = try XCTUnwrap(FakeModelState.sample.list.engines.first { $0.name == "moonshine" })
+        XCTAssertFalse(engine.available)
+        XCTAssertEqual(engine.unavailableNote, "Moonshine needs macOS 15 or later, so it cannot run on this Mac.")
+        let row = try XCTUnwrap(rows(kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")[moonshineSmall])
+        XCTAssertEqual(row.state, .notDownloaded)
+        XCTAssertNil(row.downloadTitle)
+        XCTAssertFalse(row.canUse)
+
+        var state = FakeModelState.sample
+        state.setDownloaded(moonshineSmall, true)
+        let downloaded = rows(state, kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")[moonshineSmall]
+        XCTAssertEqual(downloaded?.canUse, false)
+        XCTAssertEqual(downloaded?.canDelete, true)
+
+        let nemotronRow = rows(kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")[nemotron]
+        XCTAssertEqual(nemotronRow?.downloadTitle, "Download", "an engine that can run here is unchanged")
+        XCTAssertEqual(nemotronRow?.canUse, true)
+    }
+
+    /// A voiced from before `unavailable_reason` lists every engine as one that can run.
+    func testAnEngineCanRunUnlessItSaysWhyNot() throws {
+        let older = try decodeJSON(ModelEngine.self, #"{"name": "e", "kind": "stt", "models": []}"#)
+        XCTAssertTrue(older.available)
+        XCTAssertNil(older.unavailableNote)
+        let null = try decodeJSON(ModelEngine.self, #"{"name": "e", "kind": "stt", "unavailable_reason": null}"#)
+        XCTAssertTrue(null.available)
+        let cannot = try decodeJSON(
+            ModelEngine.self, #"{"name": "e", "label": "E", "kind": "stt", "unavailable_reason": "needs a GPU"}"#)
+        XCTAssertFalse(cannot.available)
+        XCTAssertEqual(cannot.unavailableNote, "E needs a GPU, so it cannot run on this Mac.")
     }
 
     func testTheDeleteConfirmationNamesWhatGoes() throws {
