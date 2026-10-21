@@ -19,14 +19,14 @@ final class RealCLITests: XCTestCase {
             executable: (path as NSString).expandingTildeInPath)
         await models.refresh()
         XCTAssertNil(models.listError)
-        XCTAssertNotNil(models.list?.model(id))
+        let before = try XCTUnwrap(models.list?.model(id)?.model.downloaded)
 
         let cancelled = Task { await models.download(id) }
         _ = await eventually(timeout: .seconds(60)) { models.download?.progress != nil }
         models.cancelDownload()
         let first = await cancelled.value
         XCTAssertNil(models.messages[id], "a cancel is not a failure")
-        if !first { XCTAssertEqual(models.list?.model(id)?.model.downloaded, false) }
+        if !first { XCTAssertEqual(models.list?.model(id)?.model.downloaded, before, "a cancel changes nothing") }
 
         let done = await models.download(id)
         XCTAssertTrue(done, "\(models.messages[id]?.text ?? "")")
