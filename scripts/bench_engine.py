@@ -667,8 +667,8 @@ def render(results: Sequence[Result]) -> str:
     parts.append(
         "\n## Ratings\n\nQuality and speed, 1 to 5, come from the numbers above by "
         "these limits (`voiced.ratings`). Speed is the lower of its two ratings (the "
-        "latency and the throughput a user waits on). The app's model list will show "
-        "them (ADR 0024 section 5).\n\n"
+        "latency and the throughput a user waits on). The app's model list and `voiced models "
+        "list` show them (ADR 0024 section 5).\n\n"
     )
     parts.append(markdown_table(["Rating", "Measure", "5", "4", "3", "2", "1"], _scale_rows()))
     return "".join(parts)
