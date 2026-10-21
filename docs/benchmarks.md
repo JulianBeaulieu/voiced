@@ -50,7 +50,7 @@ UTMOS: predicted naturalness, 1 to 5, the mean over three fixed sentences. First
 
 ## Ratings
 
-Quality and speed, 1 to 5, come from the numbers above by these limits (`voiced.ratings`). Speed is the lower of its two ratings (the latency and the throughput a user waits on). The app's model list will show them (ADR 0024 section 5).
+Quality and speed, 1 to 5, come from the numbers above by these limits (`voiced.ratings`). Speed is the lower of its two ratings (the latency and the throughput a user waits on). The app's model list and `voiced models list` show them (ADR 0024 section 5).
 
 | Rating | Measure | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|---|
