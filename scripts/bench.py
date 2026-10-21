@@ -7,14 +7,15 @@ command, and keeping it out of the CLI keeps its measurement code and the
 ``openai`` dependency off the daemon's path. See ADR 0015.
 
 Start the servers first (``uv run voiced serve stt`` and ``uv run voiced serve
-tts``, plus optionally more TTS servers running Soprano and Phonon on other
-ports),
-then point this at them (add ``--api-key`` or ``VOICED_API_KEY`` when the
-servers set ``server.api_key``)::
+tts``, plus optionally more TTS servers running other engines on other
+ports, each named with ``--extra-tts NAME=URL[,VOICE]``, voice ``default``
+unless given), then point this at them (add ``--api-key`` or
+``VOICED_API_KEY`` when the servers set ``server.api_key``)::
 
     uv run python scripts/bench.py \\
         --stt-url http://127.0.0.1:8881 --tts-url http://127.0.0.1:8880 \\
-        --soprano-url http://127.0.0.1:8870 --phonon-url http://127.0.0.1:8860
+        --extra-tts Phonon=http://127.0.0.1:8860 \\
+        --extra-tts OmniVoice=http://127.0.0.1:8850,en-US-female
 
 It prints a Markdown table. What each row measures:
 
@@ -26,7 +27,7 @@ It prints a Markdown table. What each row measures:
   trailing digital silence before ``end`` (the endpointer's window, ADR 0008)
   and with 0 ms (a push-to-talk client that stops at the last word), each at
   ``--alignments`` lead offsets of 20 ms, for 64 ms and 100 ms chunks; then
-  once more with the TTS server synthesizing continuously, so both models
+  once more with each TTS server synthesizing continuously, so both models
   contend for the one GPU;
 * streaming finalize with ``--streams`` clients at once: each streams the clip
   again and again (64 ms chunks, real time, a lead offset that steps 20 ms
@@ -450,6 +451,33 @@ class Row:
     target: str = ""
 
 
+@dataclass(frozen=True)
+class ExtraTTS:
+    """A TTS server beside Kokoro's, from ``--extra-tts NAME=URL[,VOICE]``."""
+
+    name: str
+    url: str
+    voice: str
+
+
+def extra_tts(value: str) -> ExtraTTS:
+    name, sep, rest = value.partition("=")
+    url, _, voice = rest.partition(",")
+    if not (name and sep and url):
+        raise argparse.ArgumentTypeError(f"expected NAME=URL[,VOICE], got {value!r}")
+    return ExtraTTS(name, url, voice or "default")
+
+
+def combined_row(name: str, stt_mem: dict[str, Any], tts_mem: dict[str, Any]) -> Row:
+    """The STT and TTS services' memory together, against the 3 GB budget."""
+    field = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"
+    return Row(
+        f"STT + TTS ({name}) {field.removesuffix('_bytes')}, idle after use",
+        f"{(stt_mem[field] + tts_mem[field]) / 1e9:.2f} GB",
+        f"<= {MEMORY_TARGET_BYTES / 1e9:.0f} GB",
+    )
+
+
 def print_table(rows: list[Row], authenticated: bool) -> None:
     """A Markdown table the README and ADR can paste. Says whether requests
     carried an API key, never the key."""
@@ -490,10 +518,13 @@ def main(argv: list[str] | None = None) -> int:
         "--tts-url", required=True, help="Kokoro TTS server, e.g. http://127.0.0.1:8880"
     )
     parser.add_argument(
-        "--soprano-url", default=None, help="optional second TTS server running Soprano"
-    )
-    parser.add_argument(
-        "--phonon-url", default=None, help="optional TTS server running Phonon (ADR 0021)"
+        "--extra-tts",
+        type=extra_tts,
+        action="append",
+        default=[],
+        metavar="NAME=URL[,VOICE]",
+        help="another TTS server, measured like Kokoro's; repeatable "
+        "(e.g. OmniVoice=http://127.0.0.1:8850,en-US-female; voice default: 'default')",
     )
     parser.add_argument(
         "--wav",
@@ -548,16 +579,10 @@ def main(argv: list[str] | None = None) -> int:
 
     first = tts_first_audio_ms(args.tts_url, key, kokoro_voice, args.trials)
     rows.append(Row("Kokoro first audio", fmt_ms(first), "<= 200 ms"))
-    if args.soprano_url:
-        sop = tts_first_audio_ms(args.soprano_url, key, "default", args.trials)
-        rows.append(Row("Soprano first audio", fmt_ms(sop), ""))
-    else:
-        rows.append(Row("Soprano first audio", "skipped (no --soprano-url)", ""))
-    if args.phonon_url:
-        pho = tts_first_audio_ms(args.phonon_url, key, "default", args.trials)
-        rows.append(Row("Phonon first audio", fmt_ms(pho), "<= 200 ms"))
-    else:
-        rows.append(Row("Phonon first audio", "skipped (no --phonon-url)", ""))
+    extras: list[ExtraTTS] = args.extra_tts
+    for x in extras:
+        ms = tts_first_audio_ms(x.url, key, x.voice, args.trials)
+        rows.append(Row(f"{x.name} first audio", fmt_ms(ms), "<= 200 ms"))
 
     ws_url = stream_url(args.stt_url)
     tails = ((SILENCE_WINDOW_S, "200 ms trailing silence"), (0.0, "0 ms trailing silence"))
@@ -577,16 +602,15 @@ def main(argv: list[str] | None = None) -> int:
                     "<= 150 ms worst",
                 )
             )
-    if args.phonon_url:
-        # Phonon runs on the CPU, beside the STT's own CPU work.
-        with tts_busy(args.phonon_url, key, "default"):
+    for x in extras:
+        with tts_busy(x.url, key, x.voice):
             for trailing, tail in tails:
                 fin = ws_finalize_ms(
                     ws_url, key, samples, rate, 1024, args.alignments // 2, trailing
                 )
                 rows.append(
                     Row(
-                        f"Streaming finalize, 64 ms chunks, {tail}, Phonon synthesizing",
+                        f"Streaming finalize, 64 ms chunks, {tail}, {x.name} synthesizing",
                         fmt_ms(fin),
                         "<= 150 ms worst",
                     )
@@ -609,13 +633,13 @@ def main(argv: list[str] | None = None) -> int:
     rows.append(
         Row("Kokoro first audio while another client streams to STT", fmt_ms(speaking), "<= 200 ms")
     )
-    if args.phonon_url:
+    for x in extras:
         speaking = first_audio_while_streaming_ms(
-            args.phonon_url, ws_url, key, "default", samples, rate, 3 * args.trials
+            x.url, ws_url, key, x.voice, samples, rate, 3 * args.trials
         )
         rows.append(
             Row(
-                "Phonon first audio while another client streams to STT",
+                f"{x.name} first audio while another client streams to STT",
                 fmt_ms(speaking),
                 "<= 200 ms",
             )
@@ -633,23 +657,14 @@ def main(argv: list[str] | None = None) -> int:
     stt_mem, tts_mem = memory(args.stt_url), memory(args.tts_url)
     rows.append(Row("STT memory", fmt_mem(stt_mem)))
     rows.append(Row("TTS (Kokoro) memory", fmt_mem(tts_mem)))
-    if args.soprano_url:
-        synthesize(args.soprano_url, key, "default", LONG_REPLY)
+    combined = [combined_row("Kokoro", stt_mem, tts_mem)]
+    for x in extras:
+        synthesize(x.url, key, x.voice, LONG_REPLY)
         time.sleep(SETTLE_S)
-        rows.append(Row("TTS (Soprano) memory", fmt_mem(memory(args.soprano_url))))
-    if args.phonon_url:
-        synthesize(args.phonon_url, key, "default", LONG_REPLY)
-        time.sleep(SETTLE_S)
-        rows.append(Row("TTS (Phonon) memory", fmt_mem(memory(args.phonon_url))))
-    field = "footprint_bytes" if stt_mem.get("footprint_bytes") is not None else "rss_bytes"
-    combined = stt_mem[field] + tts_mem[field]
-    rows.append(
-        Row(
-            f"STT + TTS (Kokoro) {field.removesuffix('_bytes')}, idle after use",
-            f"{combined / 1e9:.2f} GB",
-            f"<= {MEMORY_TARGET_BYTES / 1e9:.0f} GB",
-        )
-    )
+        extra_mem = memory(x.url)
+        rows.append(Row(f"TTS ({x.name}) memory", fmt_mem(extra_mem)))
+        combined.append(combined_row(x.name, stt_mem, extra_mem))
+    rows.extend(combined)
 
     loop = roundtrip(
         args.stt_url,

@@ -256,7 +256,10 @@ failure). Each `next()` of `_synth_chunks` is one such call, so an engine
 that yields between generation steps (empty pieces included) stops at the
 next step; one that renders a sentence in one call (`_synth_sentence`:
 Kokoro, Soprano) stops when that sentence is done. No engine or
-`TTSEngine.synthesize` contract changed. A stop flag passed to the sentence
+`TTSEngine.synthesize` contract changed. Since ADR 0030, an engine whose one
+step is a whole sentence can stop sooner: `SentenceTTSEngine` calls its
+`_interrupt()` hook when the request is cancelled during a step
+(`ModelThread.run_stoppable`), and OmniVoice stops at its next forward pass. A stop flag passed to the sentence
 loop was the alternative; it would have meant a new `synthesize()` parameter
 for every engine, for the same granularity.
 

@@ -57,6 +57,9 @@ stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.8,<0.5.10"]
 # Chatterbox Turbo (ADR 0029) reads the model's _conds, drives t3.inference_turbo_stream
 # and s3gen.inference_stream, imports punc_norm and S3GEN_SIL, and replaces
 # huggingface_hub.hf_hub_download while post_load_hook runs.
+# OmniVoice (ADR 0030) calls the model's private _tokenize_style_and_text and
+# _prepare_inference_inputs, generation.iterative_unmask by its keywords
+# (cond_input_ids, cond_audio_mask, T, num_steps) and duration.RuleDurationEstimator.
 # scipy (also an mlx-audio dependency) is declared because voiced.audio.resample uses
 # it to take Soprano's 32 kHz output to 24 kHz; sentencepiece is Pocket TTS's
 # tokenizer, which mlx-audio does not declare.
@@ -123,6 +126,7 @@ soprano = "voiced.engines.soprano:SopranoEngine"
 phonon = "voiced.engines.phonon:PhononEngine"
 pocket = "voiced.engines.pocket:PocketEngine"
 chatterbox = "voiced.engines.chatterbox:ChatterboxEngine"
+omnivoice = "voiced.engines.omnivoice:OmniVoiceEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]

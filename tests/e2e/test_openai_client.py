@@ -1,7 +1,8 @@
 """The unmodified ``openai`` Python client against a live voiced server.
 
 Covers both endpoints and every response format each advertises, synthesis
-streamed and non-streamed, and the Kokoro, Soprano, Phonon and Pocket TTS engines.
+streamed and non-streamed, and the Kokoro, Soprano, Phonon, Pocket TTS and
+OmniVoice engines.
 """
 
 from __future__ import annotations
@@ -273,6 +274,19 @@ def test_moonshine_hears_kokoro(
     assert EXPECTED_WORDS <= set(words(heard)), heard
     models = stt_moonshine_service.get("/v1/models").json()["data"]
     assert (models[0]["engine"], models[0]["license"]) == ("moonshine", "MIT")
+
+
+def test_omnivoice_audio_says_the_words(
+    tts_omnivoice_service: LiveService, stt_service: LiveService
+) -> None:
+    """The English designed voice, one piece per sentence."""
+    client = tts_omnivoice_service.openai_client()
+    audio = client.audio.speech.create(
+        model="voiced", voice="en-US-female", input=SENTENCE, response_format="wav"
+    ).content
+    assert _audio_signature_ok("wav", audio)
+    heard = _transcribe(stt_service, audio, "wav")
+    assert word_accuracy(heard, SENTENCE) >= 0.8, heard
 
 
 # --- discovery --------------------------------------------------------------

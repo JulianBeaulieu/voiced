@@ -320,6 +320,29 @@ CATALOGUE: tuple[Engine, ...] = (
             ),
         ),
     ),
+    Engine(
+        "omnivoice",
+        "tts",
+        # The model, its text tokenizer and the audio codec with its licence;
+        # not the README. Non-commercial weights (ADR 0030).
+        models=(
+            Model(
+                "k2-fsa/OmniVoice",
+                "CC-BY-NC; codec: Boson Higgs Audio 2 Community License",
+                (
+                    "config.json",
+                    "model.safetensors",
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "chat_template.jinja",
+                    "audio_tokenizer/*",
+                ),
+                quality=5,
+                speed=2,
+                note="646 languages, Levantine Arabic among them; slow, for non-commercial use",
+            ),
+        ),
+    ),
 )
 
 DEFAULT_ENGINES: dict[str, str] = {"stt": "parakeet", "tts": "kokoro"}

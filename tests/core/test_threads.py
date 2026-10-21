@@ -217,3 +217,35 @@ async def test_a_call_after_shutdown_is_refused() -> None:
     with pytest.raises(RuntimeError):
         await thread.run(lambda: 1)
     assert thread._waiting == []
+
+
+async def test_a_stoppable_call_is_asked_to_stop_once_and_still_waited_for() -> None:
+    thread = ModelThread("test-model")
+    started = threading.Event()
+    stop = threading.Event()
+    release = threading.Event()
+    asked: list[int] = []
+
+    def call() -> str:
+        started.set()
+        stop.wait(5)
+        release.wait(5)
+        return "stopped early"
+
+    def ask() -> None:
+        asked.append(1)
+        stop.set()
+
+    task = asyncio.create_task(thread.run_stoppable(ask, call))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0.02)
+    task.cancel()  # a second cancel while it still waits
+    await asyncio.sleep(0.02)
+    assert not task.done(), "the cancel waits for the call"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert asked == [1]
+    assert await thread.run_stoppable(ask, lambda: 42) == 42
+    assert asked == [1], "a call that is not cancelled is never asked to stop"

@@ -365,6 +365,28 @@ curl -s http://127.0.0.1:8880/v1/audio/speech \
   -o out.wav
 ```
 
+OmniVoice, when selected, has six voices designed from attributes, one per
+language; each is served when its language is in `tts.languages`. With
+`languages = ["en", "de", "apc", "es", "fr", "zh"]`:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "voice", "id": "en-US-female", "name": "Young adult", "language": "en-US", "gender": "female"},
+    {"object": "voice", "id": "de-DE-male", "name": "Middle-aged", "language": "de-DE", "gender": "male"},
+    {"object": "voice", "id": "apc-female", "name": "Young adult", "language": "apc", "gender": "female"},
+    {"object": "voice", "id": "es-ES-male", "name": "Young adult", "language": "es-ES", "gender": "male"},
+    {"object": "voice", "id": "fr-FR-female", "name": "Middle-aged", "language": "fr-FR", "gender": "female"},
+    {"object": "voice", "id": "zh-CN-male", "name": "Young adult", "language": "zh-CN", "gender": "male"}
+  ]
+}
+```
+
+Its `/v1/models` entry lists the configured languages the model speaks
+(646 tags on its model card, `apc` for Levantine Arabic) and the licence
+`CC-BY-NC; codec: Boson Higgs Audio 2 Community License`.
+
 ## GET /v1/models
 
 Available on both services. Lists the one model the service runs, with the

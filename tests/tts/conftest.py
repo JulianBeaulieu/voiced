@@ -63,3 +63,14 @@ def chatterbox_engine() -> Iterator[object]:
     engine = ChatterboxEngine()
     asyncio.run(engine.load())
     yield engine
+
+
+@pytest.fixture(scope="session")
+def omnivoice_engine() -> Iterator[object]:
+    """A loaded OmniVoice engine shared by the model tests. Loaded synchronously
+    so it can be session scoped regardless of the per-test event loop."""
+    from voiced.engines.omnivoice import OmniVoiceEngine
+
+    engine = OmniVoiceEngine()
+    asyncio.run(engine.load())
+    yield engine
