@@ -31,7 +31,17 @@ struct Shot {
     /// What a launch can find: a translocated app, services off in Login Items, and services
     /// on another voiced than the app carries.
     var launchCards = false
+    /// What the model rows do before the picture.
+    var modelSteps: [ModelStep] = []
 }
+
+enum ModelStep {
+    /// A download left halfway, so its progress shows.
+    case downloading(String)
+    case use(ServiceKind, String)
+}
+
+let phonon31 = "gradium/phonon-31m-en"
 
 var olderInstall = FakeControlServer.Options()
 olderInstall.install = .object([
@@ -66,7 +76,47 @@ let shots = [
     Shot(name: "key-1-not-set", scenario: .lanWithoutKey, window: .settings, pane: .network),
     Shot(name: "key-2-set", scenario: .lanWithoutKey, window: .settings, edits: [.apiKey("example-key")], pane: .network),
     Shot(name: "env-override-settings", scenario: .running, window: .settings, edits: [.ttsVoice("bf_emma")], options: overriding, pane: .textToSpeech),
+    // ADR 0022's model rows: every state is in the sample; then a download and Use.
+    Shot(name: "missing-model", scenario: .missingModel),
+    Shot(name: "missing-model-settings", scenario: .missingModel, window: .settings, pane: .textToSpeech),
+    Shot(name: "model-downloading", scenario: .running, modelSteps: [.downloading(phonon31)]),
+    // The watchdog gone mid-download: the progress row and Cancel stay.
+    Shot(name: "model-downloading-disconnected", scenario: nil, installed: true, modelSteps: [.downloading(phonon31)]),
+    Shot(name: "settings-tts-downloading", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.downloading(phonon31)]),
+    Shot(name: "settings-tts-after-use", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.use(.tts, phonon31)]),
 ]
+
+/// The model rows against the fake cache next to `socket`, which the fake server reads, with
+/// `voiced models` answered by the fake command.
+@MainActor
+func modelManager(_ model: AppModel, socket: String, steps: [ModelStep]) async -> ModelManager {
+    let cache = FakeModels(socketPath: socket)
+    let runner = FakeInstallRunner()
+    runner.respond = { command in
+        guard case .downloading(let id)? = steps.first, command.arguments.contains(id), command.arguments.contains("download")
+        else { return .models(command.arguments, in: cache) }
+        let total: Int64 = 65_049_306
+        return .init(
+            [RecordedProgress.hello, RecordedProgress.download(id, 0, total), RecordedProgress.download(id, total / 2, total)]
+                .map(ProcessOutput.stdout), delay: .milliseconds(400), hangs: true)
+    }
+    let manager = ModelManager(app: model, runner: runner, executable: "/usr/bin/true")
+    await manager.refresh()
+    for step in steps {
+        switch step {
+        case .downloading(let id):
+            Task { await manager.download(id) }
+            for _ in 0..<50 where (manager.download?.progress?.bytes ?? 0) == 0 {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        case .use(let kind, let id):
+            guard let list = manager.list, let settings = model.settings else { continue }
+            let rows = ModelRow.rows(list, kind: kind, settings: settings, downloading: nil, ready: true)
+            if let row = rows.first(where: { $0.model?.id == id }) { await manager.use(row, for: kind) }
+        }
+    }
+    return manager
+}
 
 /// Waits for the model to settle; the fake server answers in milliseconds.
 @MainActor
@@ -130,7 +180,9 @@ func run() async {
         let socket = scratch.appendingPathComponent("\(shot.name.prefix(8)).sock").path
         var server: FakeControlServer?
         if let scenario = shot.scenario {
-            server = FakeControlServer(socketPath: socket, scenario: scenario, options: shot.options)
+            var options = shot.options
+            options.modelsFile = FakeModels(socketPath: socket).file
+            server = FakeControlServer(socketPath: socket, scenario: scenario, options: options)
             try? server?.start()
         }
         let model = AppModel(
@@ -141,19 +193,23 @@ func run() async {
         await settle(model)
         for edit in shot.edits { await model.apply(edit) }
         let launch = shot.launchCards ? await launchChecks(model: model, in: scratch.appendingPathComponent(shot.name)) : nil
+        let models = await modelManager(model, socket: socket, steps: shot.modelSteps)
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
             case .status:
                 // With launch cards, Update is offered as it will be once Update exists.
-                let view = PopoverView(model: model, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
+                let view = PopoverView(
+                    model: model, models: models, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
                 await render(view, dark: dark, to: file)
             case .settings:
                 await render(
-                    SettingsView(model: model, loginItem: LoginItem(), launch: launch, pane: shot.pane), dark: dark, to: file)
+                    SettingsView(model: model, models: models, loginItem: LoginItem(), launch: launch, pane: shot.pane),
+                    dark: dark, to: file)
             }
             print(file.path)
         }
+        models.cancelDownload()
         model.stop()
         server?.stop()
     }

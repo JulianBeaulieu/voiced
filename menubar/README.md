@@ -7,10 +7,11 @@ degraded), restarts either service in one click, and opens the status page,
 the logs folder and the config file. "Settings…" (⌘,) opens a standard
 Settings window with a sidebar of panes: General (open at login, settings
 from the status page), Network (listen on this Mac or the local network,
-Home Assistant discovery, the API key), Speech to Text (engine), Text to
-Speech (engine and voice), About (versions, the control socket, the
-config file and logs, the third-party notices) and, once "Show Debug pane"
-in General turns it on, Debug (the app, its pins, the installed environment,
+Home Assistant discovery, the API key), Speech to Text and Text to Speech
+(a row per model, grouped by engine, to download, delete or use it, and the
+voice of the engine in use; see [Models](#models)), About (versions, the
+control socket, the config file and logs, the third-party notices) and, once
+"Show Debug pane" in General turns it on, Debug (the app, its pins, the installed environment,
 the installer's state, each service's Login Items status and every path,
 with "Copy Diagnostics"). The window ends with the app's
 version. When voiced is not installed the window offers the
@@ -93,6 +94,38 @@ open menubar/build/voiced.app
 Launch at login (`SMAppService`) is offered only when the app runs from a
 bundle; `swift run` starts a bare executable that has nothing to register.
 
+## Models
+
+The Speech to Text and Text to Speech panes show every model voiced can run
+(ADR 0022): its licence, linked to the model card, its size on disk or to
+download, and its state, with the actions that state allows.
+
+| State | Actions |
+|---|---|
+| Not downloaded | Download, Use |
+| Downloading | a byte bar with speed and time left, Cancel |
+| Downloaded | Use, Delete |
+| In use | Delete disabled: choose another model first |
+| Update available (an older pinned version cached) | Update, Use |
+| Needs a Hugging Face token (gated) | Download, after `hf auth login` in Terminal |
+
+A row with an older pinned version cached also offers "Delete Old Version".
+Use downloads the model first if needed, sends engine and model together
+through `settings.set` and restarts the service; after a text to speech
+switch it says where to pick the new voice in Home Assistant. The footer
+gives what voiced's models take, the cache folder with Show in Finder, and
+that the folder is shared with other apps.
+
+The app runs `~/.voiced/bin/voiced models list --json`, `download <model>
+--json-progress` and `delete <model> --yes --json` as its own children
+(docs/operations.md has their shapes), so the rows work while the services
+are down, and a download goes on with the Settings window closed: the icon
+shows busy, the menu window has a progress row with Cancel, quitting asks
+first, and Update and Repair wait for it. A failed download's error code
+becomes what to do on its row. A service whose model is missing
+(`missing_model`) says so in the menu window, with Download, which fetches
+the model and restarts the service.
+
 ## Run it against the fake server
 
 `voiced-fake-control` serves the control protocol with scripted state, so the
@@ -102,8 +135,25 @@ app can be run and looked at without voiced:
 cd menubar
 swift run voiced-fake-control --scenario degraded --socket /tmp/voiced-fake.sock
 # in a second terminal
-VOICED_CONTROL_SOCKET=/tmp/voiced-fake.sock swift run voiced-menubar
+VOICED_CONTROL_SOCKET=/tmp/voiced-fake.sock \
+  VOICED_EXECUTABLE=$PWD/.build/debug/voiced-fake-control swift run voiced-menubar
 ```
+
+`VOICED_EXECUTABLE` (debug builds only) makes the model rows run the fake's
+`voiced-fake-control models ...` in place of `~/.voiced/bin/voiced`. The
+fake's cache is a file next to the socket (`<socket>.models.json`), written
+with the scenario's models at start: one model in each state, Phonon's gated
+40m failing with `token_missing`. The fake command changes it (a download
+takes five seconds; SIGTERM ends it with exit 143), the fake server reads it:
+`settings.set` refuses a model that is not downloaded with
+`model_not_downloaded`, and a restarted service without its model reports
+`missing_model`; the fake `delete` refuses the configured models with
+`in_use`. To try other failures, edit the file's `failures` (model id to an
+error code such as `network` or `disk`); while `<socket>.models.json.busy`
+exists, download and delete fail with `busy`. Pointed at a development
+checkout's `voiced`, the rows run the real command; `VOICED_REAL_CLI=<voiced>
+swift test --filter RealCLITests` runs a list, a cancelled download and a
+download through the app's code.
 
 | Scenario | State |
 |---|---|
@@ -115,6 +165,7 @@ VOICED_CONTROL_SOCKET=/tmp/voiced-fake.sock swift run voiced-menubar
 | `lan-without-key` | Bound to the LAN with no API key |
 | `newer-protocol` | Says hello with protocol 2, which the app refuses |
 | `cycle` | Moves through running, starting, degraded and stopped every few seconds |
+| `missing-model` | Text to speech up, its model (Kokoro) not downloaded |
 
 The fake server answers every operation of the contract: settings changes
 are validated (an engine with another engine's model or voice is refused with

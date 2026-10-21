@@ -21,6 +21,8 @@ public enum ServiceKind: String, Codable, Sendable, CaseIterable, Identifiable {
 
 public enum ServiceState: String, Codable, Sendable, Equatable {
     case running, starting, stopped, degraded, unknown
+    /// The service is up but its model is not downloaded; `model` names it (ADR 0022).
+    case missingModel = "missing_model"
 
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)

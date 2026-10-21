@@ -8,14 +8,16 @@ import VoicedControl
 public struct MenuBarIcon: View {
     let dashboard: Dashboard
     let installing: Bool
+    let downloading: Bool
 
-    public init(dashboard: Dashboard, installing: Bool = false) {
+    public init(dashboard: Dashboard, installing: Bool = false, downloading: Bool = false) {
         self.dashboard = dashboard
         self.installing = installing
+        self.downloading = downloading
     }
 
     public var body: some View {
-        let status = MenuBarIconStatus(dashboard: dashboard, installing: installing)
+        let status = MenuBarIconStatus(dashboard: dashboard, installing: installing, downloading: downloading)
         Image(nsImage: MenuBarIconImage.image(for: status.state))
             .accessibilityLabel(status.accessibilityLabel)
     }
@@ -87,19 +89,25 @@ public struct PopoverView: View {
     let update: (() -> Void)?
     /// "Repair voiced…" while an install the app manages does not answer; nil hides it.
     let repair: (() -> Void)?
+    /// The model download's progress row and the Download of a missing model.
+    let models: ModelManager
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
     public init(
-        model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil, update: (() -> Void)? = nil,
-        repair: (() -> Void)? = nil
+        model: AppModel, models: ModelManager, canInstall: Bool = false, launch: LaunchChecks? = nil,
+        update: (() -> Void)? = nil, repair: (() -> Void)? = nil
     ) {
         self.model = model
         self.canInstall = canInstall
         self.launch = launch
         self.update = update
         self.repair = repair
+        self.models = models
     }
+
+    /// Update and Repair wait for a model download or delete (ADR 0022).
+    private var downloading: Bool { models.isBusy }
 
     public var body: some View {
         let dashboard = model.dashboard
@@ -109,13 +117,13 @@ public struct PopoverView: View {
                 .padding(.vertical, 12)
             Divider()
             if let launch {
-                LaunchCards(launch: launch, update: update.map(inInstaller))
+                LaunchCards(launch: launch, update: downloading ? nil : update.map(inInstaller))
             }
             if dashboard.showsInstallHelp {
                 InstallHelpView(openInstaller: installAction)
                     .padding(14)
             } else if dashboard.isControllable {
-                ServiceList(model: model, dashboard: dashboard)
+                ServiceList(model: model, dashboard: dashboard, models: models)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     MessageView(dashboard: dashboard, isConnecting: model.connection == .connecting)
@@ -124,6 +132,13 @@ public struct PopoverView: View {
                     }
                 }
                 .padding(14)
+            }
+            // Outside the service rows: a download goes on while the services or the
+            // watchdog are down, and Cancel must stay in reach.
+            if models.isDownloading {
+                DownloadProgressRow(models: models)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
             }
             NoticeStrip(model: model) {
                 // The LAN warning's action: the key is set on the Network pane.
@@ -176,7 +191,7 @@ public struct PopoverView: View {
     /// Repair, offered while an install the app made is in place but does not answer
     /// (ADR 0018, Repair).
     var repairAction: (() -> Void)? {
-        guard let repair, case .unreachable(installed: true, _) = model.connection,
+        guard let repair, !downloading, case .unreachable(installed: true, _) = model.connection,
             launch?.installRecord?.source == .app
         else { return nil }
         return inInstaller(repair)
@@ -266,6 +281,7 @@ extension ServiceTone {
 struct ServiceList: View {
     let model: AppModel
     let dashboard: Dashboard
+    let models: ModelManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -281,10 +297,18 @@ struct ServiceList: View {
                 ServiceRowView(
                     row: row, isRestarting: model.restarting.contains(row.kind),
                     restart: { Task { await model.restart(.service(row.kind)) } },
-                    openLogs: { Task { await model.open(.logsDirectory) } })
+                    openLogs: { Task { await model.open(.logsDirectory) } },
+                    download: download(row),
+                    message: row.missingModel.flatMap { models.messages[$0] })
             }
         }
         .padding(14)
+    }
+
+    /// Download for a service whose model is missing, then the restart that loads it.
+    private func download(_ row: ServiceRowState) -> (() -> Void)? {
+        guard let id = row.missingModel, !models.isDownloading, models.deleting == nil else { return nil }
+        return { Task { await models.download(id) } }
     }
 }
 
@@ -293,6 +317,10 @@ struct ServiceRowView: View {
     let isRestarting: Bool
     let restart: () -> Void
     let openLogs: () -> Void
+    /// Offered while the service's model is not downloaded.
+    var download: (() -> Void)?
+    /// Why the last download of that model failed.
+    var message: ModelMessage?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -331,7 +359,14 @@ struct ServiceRowView: View {
                     }
                 }
                 .accessibilityElement(children: .combine)
-                if row.problem != nil {
+                if let message {
+                    ModelMessageView(message: message)
+                }
+                if let download {
+                    Button("Download", action: download)
+                        .buttonStyle(.link)
+                        .font(.caption)
+                } else if row.problem != nil, row.missingModel == nil {
                     Button("Open Logs", action: openLogs)
                         .buttonStyle(.link)
                         .font(.caption)

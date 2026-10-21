@@ -31,8 +31,16 @@ uses [Semantic Versioning](https://semver.org/).
   delete <model>`: see every model voiced can run with its licence, size and
   state, download one at its pinned revision with byte progress, and delete
   one to free its disk space, never touching what other tools keep in the
-  shared Hugging Face cache. `--json` and `--json-progress` are for the menu
-  bar app, whose model rows follow.
+  shared Hugging Face cache. `--json` and `--json-progress` are what the menu
+  bar app's model rows run.
+- The menu bar app downloads, deletes and switches models from the Speech
+  to Text and Text to Speech panes: a row per model with its licence, size
+  and state (in use, downloaded, not downloaded, update available, needs a
+  Hugging Face token), Download with a progress row and Cancel in the menu
+  window, Delete and Delete Old Version, and Use, which downloads if needed,
+  switches engine and model together and restarts the service. The footer
+  shows what voiced's models take in the shared cache, with Show in Finder.
+  A service whose model is missing says so in the menu window, with Download.
 - `voiced doctor` says whether each service's model is downloaded, and how
   to fetch it if not.
 - A `missing_model` health status: a service whose model is not in the cache

@@ -481,7 +481,7 @@ struct InstallStages {
         switch session.finish(status: state.status ?? -1) {
         case .done:
             return .success(())
-        case .failed(let step, let cause):
+        case .failed(let step, let cause, _):
             let title = session.progress.steps.first { $0.id == step }?.title ?? step ?? "Installing voiced"
             return .failure(InstallFailure(
                 stage: .install, step: title, cause: cause, output: session.tail,

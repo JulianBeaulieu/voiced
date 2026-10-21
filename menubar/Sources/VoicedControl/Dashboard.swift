@@ -38,8 +38,9 @@ public enum OverallHealth: Sendable, Equatable {
 }
 
 /// The menu bar icon (ADR 0018, "In the menu bar"): idle while voiced runs, busy while it
-/// starts, loads a model, connects or installs, and an error badge for everything else that
-/// needs a look (degraded, stopped, not running, not installed, an incompatible version).
+/// starts, loads a model, connects, installs or downloads a model (ADR 0022), and an error
+/// badge for everything else that needs a look (degraded, stopped, a missing model, not
+/// running, not installed, an incompatible version).
 public enum MenuBarIconState: Sendable, Hashable {
     case idle, busy, error
 }
@@ -49,13 +50,14 @@ public struct MenuBarIconStatus: Sendable, Equatable {
     public var state: MenuBarIconState
     public var accessibilityLabel: String
 
-    public init(dashboard: Dashboard, installing: Bool) {
-        if installing || dashboard.isBusy {
+    public init(dashboard: Dashboard, installing: Bool, downloading: Bool = false) {
+        if installing || downloading || dashboard.isBusy {
             state = .busy
         } else {
             state = dashboard.health == .running ? .idle : .error
         }
-        accessibilityLabel = "voiced: \(installing ? "Installing" : dashboard.headline)"
+        let activity = installing ? "Installing" : downloading ? "Downloading a model" : dashboard.headline
+        accessibilityLabel = "voiced: \(activity)"
     }
 }
 
@@ -74,6 +76,8 @@ public struct ServiceRowState: Sendable, Equatable, Identifiable {
     public var detailLine: String
     /// Why the service is degraded, when it is.
     public var problem: String?
+    /// The model to download, while the service reports `missing_model`.
+    public var missingModel: String?
 
     public var id: ServiceKind { kind }
 }
@@ -213,6 +217,8 @@ public enum DashboardReducer {
         var isBusy = false
         if services.contains(where: { $0.1.state == .degraded }) {
             headline = "Degraded"
+        } else if services.contains(where: { $0.1.state == .missingModel }) {
+            headline = "Model not downloaded"
         } else if services.contains(where: { $0.1.state == .starting || ($0.1.state == .running && !$0.1.warm) }) {
             headline = "Starting"
             isBusy = true
@@ -234,6 +240,7 @@ public enum DashboardReducer {
         case .degraded: (label, tone) = ("Degraded", .bad)
         case .stopped: (label, tone) = ("Stopped", .inactive)
         case .unknown: (label, tone) = ("Unknown", .inactive)
+        case .missingModel: (label, tone) = ("Model not downloaded", .bad)
         }
 
         var details: [String] = []
@@ -251,11 +258,16 @@ public enum DashboardReducer {
             let lastError = status.health?["last_error"]?.stringValue
             problem = lastError.map { "Last error: \($0)" } ?? "Not passing health checks."
         }
+        // The status's `model` names it: `public_health` hides `last_error` behind an API key.
+        let missingModel = status.state == .missingModel ? status.model : nil
+        if status.state == .missingModel {
+            problem = "The service is up, but its model is not downloaded."
+        }
 
         return ServiceRowState(
             kind: kind, stateLabel: label, tone: tone,
             engineLine: Formatting.engineLine(engine: status.engine, model: status.model),
-            detailLine: details.joined(separator: " · "), problem: problem)
+            detailLine: details.joined(separator: " · "), problem: problem, missingModel: missingModel)
     }
 }
 

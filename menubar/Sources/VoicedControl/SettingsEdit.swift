@@ -2,15 +2,17 @@ import Foundation
 
 /// One change the user makes in the settings window, and the `settings.set` arguments it
 /// becomes. Engine switches carry a matching model and voice, because the server validates
-/// the whole section and an engine with another engine's model is not a valid setting.
+/// the whole section and an engine with another engine's model is not a valid setting. A
+/// model row's Use names its model, sent with the engine so the server does not pick the
+/// engine's default (ADR 0022).
 public enum SettingsEdit: Sendable, Equatable {
     case bind(BindMode)
     case apiKey(String)
     case clearAPIKey
     case zeroconf(Bool)
     case browserSettings(Bool)
-    case sttEngine(String)
-    case ttsEngine(String)
+    case sttEngine(String, model: String? = nil)
+    case ttsEngine(String, model: String? = nil)
     case ttsVoice(String)
 
     /// The arguments for `settings.set`, or an empty dictionary when the edit changes nothing.
@@ -31,19 +33,24 @@ public enum SettingsEdit: Sendable, Equatable {
             if on != current.browserSettings { args[.browserSettings] = .bool(on) }
         case .ttsVoice(let voice):
             if voice != current.tts.voice { args[.ttsVoice] = .string(voice) }
-        case .sttEngine(let name):
-            guard name != current.stt.engine else { break }
+        case .sttEngine(let name, let chosen):
+            guard name != current.stt.engine || (chosen != nil && chosen != current.stt.model) else { break }
             args[.sttEngine] = .string(name)
-            if let info = engines?.sttEngine(named: name),
+            if let chosen {
+                args[.sttModel] = .string(chosen)
+            } else if let info = engines?.sttEngine(named: name),
                 let model = pick(current.stt.model, from: info.models), model != current.stt.model
             {
                 args[.sttModel] = .string(model)
             }
-        case .ttsEngine(let name):
-            guard name != current.tts.engine else { break }
+        case .ttsEngine(let name, let chosen):
+            guard name != current.tts.engine || (chosen != nil && chosen != current.tts.model) else { break }
             args[.ttsEngine] = .string(name)
+            if let chosen {
+                args[.ttsModel] = .string(chosen)
+            }
             if let info = engines?.ttsEngine(named: name) {
-                if let model = pick(current.tts.model, from: info.models), model != current.tts.model {
+                if chosen == nil, let model = pick(current.tts.model, from: info.models), model != current.tts.model {
                     args[.ttsModel] = .string(model)
                 }
                 if let voice = pick(current.tts.voice, from: info.voices), voice != current.tts.voice {

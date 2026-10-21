@@ -1,4 +1,7 @@
+import FakeControlServerKit
+import Foundation
 import TestSupport
+import VoicedControl
 import XCTest
 
 @testable import VoicedMenuBarUI
@@ -46,7 +49,7 @@ final class ProgressProtocolTests: XCTestCase {
         XCTAssertNil(InstallEvent(line: #"{"event": "step", "step": "x", "state": "halfway"}"#))
         XCTAssertNil(InstallEvent(line: #"{"event": "download", "model": "m", "bytes": "1", "total": 2}"#))
         XCTAssertNil(InstallEvent(line: #"{"event": "hello"}"#))
-        XCTAssertEqual(InstallEvent(line: #"{"event": "error"}"#), .error(step: nil, message: "voiced install failed."))
+        XCTAssertEqual(InstallEvent(line: #"{"event": "error"}"#), .error(step: nil, message: ""))
     }
 
     func testDryRunPlannedStepsAreIgnored() {
@@ -115,7 +118,7 @@ final class ProgressProtocolTests: XCTestCase {
     func testAnythingBeforeHelloIsRefused() {
         var run = InstallSession()
         XCTAssertFalse(run.receive(line: RecordedProgress.step("config", "start", "x"), at: start))
-        guard case .failed(nil, let cause) = run.finish(status: 0) else { return XCTFail() }
+        guard case .failed(nil, let cause, nil) = run.finish(status: 0) else { return XCTFail() }
         XCTAssertTrue(cause.contains("did not start with a progress hello"))
     }
 
@@ -198,5 +201,63 @@ final class ProgressProtocolTests: XCTestCase {
         // A new download starts its own clock, however long the last one is past.
         _ = run.receive(line: RecordedProgress.download("n", 0, 10), at: start + .seconds(500))
         XCTAssertFalse(run.isStalled(at: start + .seconds(501), after: .seconds(60)))
+    }
+
+    // MARK: - voiced models download (ADR 0022)
+
+    func testAModelDownloadErrorCarriesItsCode() {
+        let line = #"{"event": "error", "code": "gated_terms", "message": "Accept the terms.", "repo": "m", "revision": "r", "path": "p"}"#
+        XCTAssertEqual(InstallEvent(line: line), .error(step: nil, message: "Accept the terms.", code: "gated_terms"))
+        var run = InstallSession(command: "voiced models download", reports: "download progress")
+        _ = run.receive(line: RecordedProgress.hello, at: start)
+        _ = run.receive(line: line, at: start)
+        XCTAssertEqual(run.finish(status: 1), .failed(step: nil, cause: "Accept the terms.", code: "gated_terms"))
+    }
+
+    func testAModelDownloadIsWordedAsItsCommand() {
+        var silent = InstallSession(command: "voiced models download", reports: "download progress")
+        XCTAssertEqual(
+            silent.finish(status: 2),
+            .failed(step: nil, cause: "This voiced does not report download progress. Update voiced."))
+        _ = silent.receive(line: RecordedProgress.hello, at: start)
+        XCTAssertEqual(silent.finish(status: 143), .failed(step: nil, cause: "voiced models download exited with status 143."))
+        _ = silent.receive(line: #"{"event": "error", "code": "failed"}"#, at: start)
+        XCTAssertEqual(
+            silent.finish(status: 1), .failed(step: nil, cause: "voiced models download failed.", code: "failed"),
+            "an empty message is worded as the command")
+        var install = InstallSession()
+        _ = install.receive(line: RecordedProgress.hello, at: start)
+        _ = install.receive(line: #"{"event": "error"}"#, at: start)
+        XCTAssertEqual(install.finish(status: 1), .failed(step: nil, cause: "voiced install failed."))
+    }
+
+    /// The fake command speaks the protocol as the real one does: the model, then its
+    /// engine's shared files, then done; a failure is one error with its code.
+    func testTheFakeCommandSpeaksTheProtocol() throws {
+        let models = FakeModels(file: FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json"))
+        defer { try? FileManager.default.removeItem(at: models.file) }
+        models.write(.sample)
+        var lines: [String] = []
+        XCTAssertEqual(models.run(["download", "gradium/phonon-31m-en", "--json-progress"], output: { lines.append($0) }, pause: {}), 0)
+        var run = InstallSession(command: "voiced models download", reports: "download progress")
+        for line in lines { XCTAssertTrue(run.receive(line: line, at: start)) }
+        XCTAssertEqual(run.finish(status: 0), .done)
+        XCTAssertEqual(run.progress.downloads.map(\.model), ["gradium/phonon-31m-en", "gradium/phonon-voices"])
+        XCTAssertTrue(run.progress.downloads.allSatisfy(\.isFinished))
+        XCTAssertEqual(models.read()?.isMissing("gradium/phonon-31m-en"), false)
+        XCTAssertNil(models.read()?.isMissing("someone/elses-model"), "a model outside the catalogue is not checked")
+
+        lines = []
+        XCTAssertEqual(models.run(["download", "gradium/phonon-40m-en", "--json-progress"], output: { lines.append($0) }, pause: {}), 1)
+        var failed = InstallSession(command: "voiced models download", reports: "download progress")
+        for line in lines { _ = failed.receive(line: line, at: start) }
+        guard case .failed(_, _, "token_missing") = failed.finish(status: 1) else { return XCTFail("\(lines)") }
+
+        lines = []
+        XCTAssertEqual(models.run(["delete", "gradium/phonon-31m-en", "--yes", "--json"], output: { lines.append($0) }, pause: {}), 0)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ModelDeleteResult.self, from: Data(lines.joined().utf8)),
+            .deleted(freed: 65_049_306 + 9_510_439, notes: ["Phonon's shared files (gradium/phonon-voices) are deleted with it."]))
+        XCTAssertEqual(models.read()?.isMissing("gradium/phonon-31m-en"), true)
     }
 }
