@@ -64,6 +64,10 @@ wyoming_port = 10300
 # (OpenMDW-1.1, 28 languages) or "nvidia/nemotron-speech-streaming-en-0.6b"
 # (English; NVIDIA Open Model License); its uploads are slower than
 # Parakeet's (ADR 0025).
+# whisper is for its 100 languages: model
+# "mlx-community/whisper-large-v3-turbo-asr-8bit" (MIT), or -asr-fp16; it
+# does not stream, so a live stream is transcribed about half a second after
+# it ends (ADR 0032).
 engine = "parakeet"
 model = "mlx-community/parakeet-tdt-0.6b-v3"
 # Languages advertised to clients. Must be a subset of what the engine supports.

@@ -16,6 +16,17 @@ uses [Semantic Versioning](https://semver.org/).
   `tts.languages` for the other two. Opt-in: a download of about 850 MB
   (the 250M, 1.06 GB); first audio about 90 ms; 1.2 GB, 3.04 GB beside
   Parakeet, just over the 3 GB budget for both services. See ADR 0031.
+- Whisper large-v3-turbo speech-to-text engine (MIT), for languages:
+  `engine = "whisper"`, `model = "mlx-community/whisper-large-v3-turbo-asr-8bit"`
+  or `-asr-fp16`. 100 languages, detected when the request names none and
+  reported as BCP-47 tags, with segments timed by word timestamps. It does
+  not stream: a live stream is transcribed after the speaker stops, 524 ms
+  median and 542 ms worst later against 50 and 150 ms (about 0.9 s without
+  a language hint), without partials, one stream at a time. While it
+  finalizes, Kokoro's first audio can wait up to 542 ms, against 200 ms.
+  Batch takes about 1 s for 10 s of audio, against 300 ms. Only speech
+  reaches the model: silence and noise are an empty transcript rather than
+  Whisper's "Thank you.", also between sentences in a long recording.
 
 ## [0.2.0] - 2026-10-21
 

@@ -20,11 +20,12 @@ The recording's timings are curl fetching a WAV, slower than the streamed benchm
 voiced 0.2.0 is the current release. It transcribes with Parakeet TDT 0.6B
 v3 and speaks with Kokoro-82M. Other models are a download away, from the
 menu bar app or `voiced models download`: Qwen3-ASR for files and languages
-beyond Parakeet's, the streaming Nemotron ASR, and Moonshine on the CPU for
-speech to text; Phonon on the CPU, Pocket TTS, Chatterbox Turbo, Soprano-80M,
-Marvis in English, French and German and, in 646 languages but slowly,
-OmniVoice for text to speech. The numbers below come from two machines,
-both named under [Benchmarks](#benchmarks).
+beyond Parakeet's, the streaming Nemotron ASR, Moonshine on the CPU, and
+Whisper large-v3-turbo in 100 languages for speech to text; Phonon on the
+CPU, Pocket TTS, Chatterbox Turbo, Soprano-80M, Marvis in English, French
+and German and, in 646 languages but slowly, OmniVoice for text to speech.
+The numbers below come from two machines, both named under
+[Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -246,6 +247,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Nemotron 3.5 ASR streaming](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) | STT | no, opt-in | OpenMDW-1.1 |
 | [Nemotron ASR streaming, English](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | STT | no, opt-in | NVIDIA Open Model License |
 | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming-small) Small, [Tiny](https://huggingface.co/moonshine-ai/moonshine-streaming-tiny) and [Medium](https://huggingface.co/moonshine-ai/moonshine-streaming-medium), English | STT | no, opt-in, macOS 15 and later | MIT |
+| [Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo), as the MLX [8-bit](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-8bit) and [fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) conversions | STT | no, opt-in | MIT |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
@@ -524,6 +526,39 @@ push-to-talk. Tiny meets both after 200 ms of trailing silence (see
 times; word timestamps are not used. The details are in
 [ADR 0026](docs/decisions/0026-stt-moonshine.md).
 
+### Using Whisper
+
+Whisper large-v3-turbo is the engine for languages: 100 of them, detected
+when the request names none. It transcribes after you stop speaking, about
+half a second later; no live partial text. That is 524 ms median and 542 ms
+worst against voiced's 50 and 150 ms finalize targets (about 0.9 s without a
+language hint), so Parakeet stays the engine for Home Assistant and
+push-to-talk. While it finalizes, Kokoro's first audio can wait up to 542 ms
+(target 200 ms), and longer after a long stretch of continuous speech: the
+GPU stays with Whisper for about 0.1 s per second of it. Uploads get
+segments timed by Whisper's word timestamps and take about 1 s for 10 s of
+audio (target 300 ms). It is installed with voiced but is opt-in. Download
+it (0.87 GB) and set, under `[stt]`:
+
+```sh
+~/.voiced/bin/voiced models download mlx-community/whisper-large-v3-turbo-asr-8bit
+```
+
+```toml
+[stt]
+engine = "whisper"
+model = "mlx-community/whisper-large-v3-turbo-asr-8bit"
+languages = ["en", "de", "uk", "vi"]
+```
+
+Then run `~/.voiced/bin/voiced restart stt`. `languages` lists what the
+service advertises and accepts as a hint; the engine's 100 are in
+`voiced.engines.whisper.LANGUAGES`. `mlx-community/whisper-large-v3-turbo-asr-fp16`
+works as `model` too: a little faster, 0.75 GB more memory. Input in which
+the speech detector hears no speech is an empty transcript, since Whisper
+writes "Thank you." for silence and room noise. The details are in
+[ADR 0032](docs/decisions/0032-stt-whisper-turbo.md).
+
 ### Using OmniVoice
 
 OmniVoice speaks 646 languages and dialects, Levantine Arabic (`apc`) among
@@ -639,6 +674,16 @@ with 64 GB, each service alone, 2026-10-21:
   the project's 3 GB for the two services
   ([ADR 0027](docs/decisions/0027-stt-qwen3-asr.md)). The 1.7B: 1.6%,
   3.95 GB alone.
+- **Whisper large-v3-turbo 8-bit** (speech to text, opt-in, 100
+  languages): 1.4% word error rate on these clips (higher than Parakeet on
+  the Open ASR Leaderboard's English sets), batch at 0.14 of real time,
+  about 1 s for 10 s of audio against the 300 ms target. It does not
+  stream: finalize is about half a second whatever the turn's length
+  (529 ms median, 557 ms worst after 200 ms of silence, against 50 and
+  150 ms), and about 0.9 s without a language hint. While it finalizes,
+  Kokoro's first audio can wait up to 542 ms, against 200 ms. 1.01 GB
+  footprint, 1.75 GB with Kokoro
+  ([ADR 0032](docs/decisions/0032-stt-whisper-turbo.md)).
 
 Known limits of streaming transcription: partial transcripts trail the
 speaker by about 0.7 s, and a pause of about one second inside an utterance

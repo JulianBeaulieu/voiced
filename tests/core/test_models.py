@@ -27,6 +27,7 @@ from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.qwen3_asr import Qwen3ASREngine
 from voiced.engines.soprano import SopranoEngine
+from voiced.engines.whisper import WhisperEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.models import cache, commands, lockfile, pinning
 from voiced.models.catalogue import Engine, Model
@@ -101,6 +102,7 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         Qwen3ASREngine,
         MoonshineEngine,
         NemotronEngine,
+        WhisperEngine,
     ],
     ids=lambda c: c.name,
 )

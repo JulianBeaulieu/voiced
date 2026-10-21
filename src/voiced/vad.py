@@ -60,6 +60,7 @@ __all__ = [
     "SileroDetector",
     "SpeechDetector",
     "create_endpointer",
+    "speech_spans",
 ]
 
 FRAME_SAMPLES = VAD_FRAME_SAMPLES
@@ -241,3 +242,30 @@ def create_endpointer(
     """
     config = stt if stt is not None else load_settings().stt
     return Endpointer(detector, silence_ms=config.vad_silence_ms)
+
+
+SPANS_BLOCK_SAMPLES = 30 * STT_SAMPLE_RATE
+""":func:`speech_spans` feeds the detector 30 s at a time."""
+
+
+def speech_spans(
+    samples: NDArray[np.float32], *, silence_ms: int, detector: SpeechDetector | None = None
+) -> list[tuple[float, float]]:
+    """Where the detector hears speech in a recording: ``(start, end)`` in
+    seconds, in order. A pause shorter than ``silence_ms`` stays inside a
+    span; speech still going at the end of ``samples`` ends at the last
+    speech frame. Silero by default, with the endpointer's threshold and
+    minimum speech length; ``detector`` is for tests. Batch-only engines use
+    it to keep silence away from a model that writes words for it."""
+    endpointer = Endpointer(detector, silence_ms=silence_ms)
+    spans: list[tuple[float, float]] = []
+    start = 0.0
+    for i in range(0, len(samples), SPANS_BLOCK_SAMPLES):
+        for event in endpointer.feed(samples[i : i + SPANS_BLOCK_SAMPLES]):
+            if event.speech_end_s is None:
+                start = event.speech_start_s
+            else:
+                spans.append((event.speech_start_s, event.speech_end_s))
+    if endpointer.in_speech:
+        spans.append((start, endpointer.last_speech_s))
+    return spans

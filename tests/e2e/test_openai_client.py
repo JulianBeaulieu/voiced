@@ -276,6 +276,25 @@ def test_qwen3_asr_subtitles_kokoro_audio(
     assert all(re.fullmatch(r"\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}", c[1]) for c in cues)
 
 
+def test_whisper_subtitles_kokoro_audio(
+    tts_kokoro_service: LiveService, stt_whisper_service: LiveService
+) -> None:
+    """Cues timed by Whisper's word timestamps, inside the audio."""
+    text = f"{SENTENCE} What is the weather like tomorrow?"
+    audio = (
+        tts_kokoro_service.openai_client()
+        .audio.speech.create(model="voiced", voice="af_heart", input=text, response_format="wav")
+        .read()
+    )
+    srt = stt_whisper_service.openai_client().audio.transcriptions.create(
+        model="voiced", file=("speech.wav", audio, "audio/wav"), response_format="srt"
+    )
+    cues = [block.splitlines() for block in str(srt).strip().split("\n\n")]
+    assert cues, srt
+    assert word_accuracy(" ".join(cue[2] for cue in cues), text) >= 0.9, srt
+    assert all(re.fullmatch(r"\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}", c[1]) for c in cues)
+
+
 def test_moonshine_hears_kokoro(
     tts_kokoro_service: LiveService, stt_moonshine_service: LiveService
 ) -> None:

@@ -442,6 +442,31 @@ CATALOGUE: tuple[Engine, ...] = (
             Model("kyutai/moshiko-pytorch-bf16", "CC-BY-4.0", (MIMI,)),
         ),
     ),
+    Engine(
+        "whisper",
+        "stt",
+        # mlx-audio's conversions: configs, weights, the tokenizer and the
+        # feature extractor; not the README. Their cards state no licence and
+        # derive from openai/whisper-large-v3-turbo, MIT (ADR 0032).
+        models=(
+            Model(
+                "mlx-community/whisper-large-v3-turbo-asr-8bit",
+                "MIT",
+                ("*.json", "*.safetensors", "merges.txt"),
+                quality=5,
+                speed=2,
+                note="100 languages; transcribes ~0.5 s after you stop, no live partials",
+            ),
+            Model(
+                "mlx-community/whisper-large-v3-turbo-asr-fp16",
+                "MIT",
+                ("*.json", "*.safetensors", "merges.txt"),
+                quality=5,
+                speed=2,
+                note="Whisper turbo unquantized: a little faster, 0.75 GB more memory",
+            ),
+        ),
+    ),
 )
 
 DEFAULT_ENGINES: dict[str, str] = {"stt": "parakeet", "tts": "kokoro"}
