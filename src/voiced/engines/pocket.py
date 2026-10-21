@@ -29,8 +29,8 @@ CC-BY-NC and are not offered. Pocket TTS has no rate control: ``speed`` is
 checked against the shared bounds and otherwise ignored.
 
 Everything that imports MLX or mlx-audio runs inside ``load()``, so this
-module imports (the entry-point registry does so) without the ``pocket``
-extra.
+module imports (the entry-point registry does so) without MLX or mlx-audio
+installed.
 """
 
 from __future__ import annotations

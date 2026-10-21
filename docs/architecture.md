@@ -97,8 +97,9 @@ rather than waiting for a load thread that cannot be interrupted.
    the event loop free and, unlike `asyncio.to_thread`, holds the slot until
    the thread finishes even when the caller is cancelled. A cancelled client
    therefore cannot start a second MLX call next to a running one. Parakeet
-   uses `voiced.threads.ModelThread`, the same rule on one dedicated thread,
-   because an MLX stream belongs to the thread that created it.
+   and every `SentenceTTSEngine` use `voiced.threads.ModelThread`, the same
+   rule on one dedicated thread, because an MLX stream belongs to the thread
+   that created it.
 5. The transport maps the outcome to its wire format with one table: the
    HTTP status and error type, the WebSocket close code, or the Wyoming
    `Error` code.
@@ -284,6 +285,11 @@ An engine is a separate package. It implements one of the two classes,
 declares an entry point, and the user installs it into the same environment
 as voiced: the one `~/.voiced/bin/voiced` links to. An update of voiced
 builds a new environment, so install the engine again after one.
+
+A sentence-at-a-time engine can subclass `SentenceTTSEngine` and supply
+`_load_sync`, `_has_voice` and `_synth_sentence`; the base class runs them on
+the engine's model thread. The example below implements `TTSEngine`
+directly, so it runs its own blocking calls through `run_blocking`.
 
 `my_package/piper.py`:
 

@@ -31,7 +31,9 @@ cache on first run, as with Kokoro.
 ## Decision
 
 `SopranoEngine` (entry point `soprano`) is a `SentenceTTSEngine`
-(`voiced.engines.sentence`), so loading through `run_blocking`, the loaded,
+(`voiced.engines.sentence`), so loading through `run_blocking` (amended by
+ADR 0028: every `SentenceTTSEngine` step now runs on the engine's
+`ModelThread`), the loaded,
 voice and speed checks before the first yield, and one `PCMChunk` per sentence
 are the same code as Kokoro's. It has one voice, `default`.
 

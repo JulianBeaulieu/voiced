@@ -90,8 +90,8 @@ and the README carries the CC-BY-4.0 attribution.
   the pinned snapshot's `config.json`, with the tokenizer path pointed at
   the pinned `tokenizer.model`, and loads each voice's `audio_prompt` from
   the pinned embeddings, evaluated at load so a missing or unreadable
-  voice fails the load, not a request. A voice's model state is built for every sentence
-  from that embedding, through two of mlx-audio's private methods
+  voice fails the load, not a request. A voice's model state is built for
+  every sentence from that embedding, through two of mlx-audio's private methods
   (`_run_flow_lm_and_increment_step`, `_slice_flow_cache`), the steps of
   its own `get_state_for_audio_prompt` without its download. A state is
   used up by one sentence. The pin on mlx-audio covers them.

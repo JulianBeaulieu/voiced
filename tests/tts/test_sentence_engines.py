@@ -114,18 +114,23 @@ async def test_the_load_and_every_step_run_on_one_model_thread(
     on the engine's one thread, never the event loop's."""
     engine, voice = engine_and_voice
     threads: list[tuple[str, int]] = []
+    names: set[str] = set()
+
+    def record(kind: str) -> None:
+        threads.append((kind, threading.get_ident()))
+        names.add(threading.current_thread().name)
 
     def fake_load() -> None:
-        threads.append(("load", threading.get_ident()))
+        record("load")
         engine._model = object()
 
     def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
         try:
             for _ in range(2):
-                threads.append(("piece", threading.get_ident()))
+                record("piece")
                 yield bytes(480)
         finally:
-            threads.append(("close", threading.get_ident()))
+            record("close")
 
     monkeypatch.setattr(engine, "_load_sync", fake_load)
     monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
@@ -141,6 +146,8 @@ async def test_the_load_and_every_step_run_on_one_model_thread(
     assert {kind for kind, _ in threads} == {"load", "piece", "close"}
     assert len({ident for _, ident in threads}) == 1
     assert threads[0][1] != threading.get_ident()
+    # The engine's own thread, by name, not one the shared pool handed out.
+    assert len(names) == 1 and names.pop().startswith(f"{engine.name}_")
 
 
 async def test_unknown_voice_raises_before_yielding(

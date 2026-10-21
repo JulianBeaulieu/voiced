@@ -15,8 +15,9 @@ stream per thread, and arrays created on one thread (entering a streaming
 context, for one) cannot be evaluated on another: "There is no Stream(gpu,
 N) in current thread". The default executor is a pool shared by the whole
 process, so once anything else grows it, consecutive calls for one model land
-on different threads. Parakeet streaming needs this; Kokoro forces evaluation
-in every call and was probed safe across threads (ADR 0008).
+on different threads. Parakeet and every sentence TTS engine
+(``voiced.engines.sentence``, ADR 0028) use one; Pocket TTS keeps a
+sentence's decoder state between steps and needs it.
 
 Several callers can share one :class:`ModelThread` (Parakeet's concurrent
 stream sessions do): :meth:`ModelThread.run_ranked` lets each call say how
