@@ -365,10 +365,10 @@ def test_byte_reports_are_throttled_to_four_a_second() -> None:
     written: list[str] = []
     clock = Clock()
     report = cache.ByteReport("org/m", 100, 1000, written.append, clock)
-    report.add(0)  # the start, at what was cached
+    report.add(cache.BYTES_BAR, 0)  # the start, at what was cached
     for _ in range(10):
         clock.now += 0.0625
-        report.add(10)
+        report.add(cache.BYTES_BAR, 10)
     report.finish()
     assert _lines(written) == [
         {"kind": "bytes", "repo": "org/m", "bytes": 100, "total": 1000},
@@ -378,17 +378,85 @@ def test_byte_reports_are_throttled_to_four_a_second() -> None:
     ]
 
 
-def test_only_the_bar_of_bytes_written_counts() -> None:
+def test_the_two_byte_bars_count_and_the_further_one_wins() -> None:
     pytest.importorskip("huggingface_hub")
     report = cache.ByteReport("org/m", 0, 10, lambda line: None)
     counting = cache._counting_tqdm(report)
     written = counting(name=cache.BYTES_BAR, total=0, disable=True)
-    transfer = counting(name="huggingface_hub.snapshot_download.transfer", disable=True)
+    transfer = counting(name=cache.TRANSFER_BAR, total=0, disable=True)
     files = counting(total=3, disable=True)  # the file count
-    written.update(7)
     transfer.update(5)
     files.update(1)
+    assert report.bytes == 5
+    written.update(7)
     assert report.bytes == 7
+
+
+def test_a_resumed_http_download_counts_its_cached_part_on_the_written_bar() -> None:
+    """Plain HTTP: the resumed part arrives as the written bar's ``initial``
+    (``_AggregatedTqdm`` updates only that bar with it), then each chunk
+    feeds both bars."""
+    pytest.importorskip("huggingface_hub")
+    report = cache.ByteReport("org/m", 0, 100, lambda line: None)
+    counting = cache._counting_tqdm(report)
+    written = counting(name=cache.BYTES_BAR, total=0, disable=True)
+    transfer = counting(name=cache.TRANSFER_BAR, total=0, disable=True)
+    written.update(30)  # the initial
+    written.update(10)
+    transfer.update(10)
+    assert report.bytes == 40
+
+
+def test_a_repair_counts_on_from_the_snapshot() -> None:
+    """``hf_hub_download``'s own bars count too, from where the snapshot
+    ended: its network count alone moves the report, though the snapshot's
+    written bar was ahead."""
+    pytest.importorskip("huggingface_hub")
+    report = cache.ByteReport("org/m", 0, 100, lambda line: None)
+    counting = cache._counting_tqdm(report)
+    counting(name=cache.BYTES_BAR, total=0, disable=True).update(60)
+    counting(name=cache.TRANSFER_BAR, total=0, disable=True).update(40)
+    report.rebase()
+    counting(name="huggingface_hub.xet_get.transfer", total=40, disable=True).update(10)
+    assert report.bytes == 70
+    counting(name="huggingface_hub.xet_get", total=40, disable=True).update(40)
+    assert report.bytes == 100
+
+
+def test_bytes_arriving_under_hf_xet_are_reported_before_any_are_written() -> None:
+    """As measured under hf_xet: the transfer bar moves for the whole
+    download, the written bar only at its end, in large jumps; with
+    deduplication the transfer ends below the file's size."""
+    pytest.importorskip("huggingface_hub")
+    written_lines: list[str] = []
+    clock = Clock()
+    report = cache.ByteReport("org/m", 100, 1100, written_lines.append, clock)
+    counting = cache._counting_tqdm(report)
+    written = counting(name=cache.BYTES_BAR, total=0, disable=True)
+    transfer = counting(name=cache.TRANSFER_BAR, total=0, disable=True)
+    report.add(cache.BYTES_BAR, 0)
+    for _ in range(36):  # 9 s of network bytes, nothing written
+        clock.now += 0.25
+        transfer.update(25)
+    reported = [line["bytes"] for line in _lines(written_lines)]
+    assert reported == list(range(100, 1001, 25))
+    for _ in range(4):  # then the file is written in jumps
+        clock.now += 0.25
+        written.update(250)
+    report.finish()
+    reported = [line["bytes"] for line in _lines(written_lines)]
+    assert reported[-5:] == [1000, 1000, 1000, 1100, 1100]  # written passes 900 at last
+    assert max(reported) == report.total == 1100
+
+
+def test_bytes_never_run_past_the_total() -> None:
+    written: list[str] = []
+    clock = Clock()
+    report = cache.ByteReport("org/m", 0, 100, written.append, clock)
+    report.add(cache.TRANSFER_BAR, 150)  # network bytes beyond the files' size
+    clock.now += 1
+    report.add(cache.BYTES_BAR, 80)
+    assert [line["bytes"] for line in _lines(written)] == [100, 100]
 
 
 class FakeHub:
