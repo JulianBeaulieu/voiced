@@ -23,6 +23,7 @@ from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
+from voiced.engines.qwen3_asr import Qwen3ASREngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.models import cache, commands, lockfile, pinning
@@ -89,7 +90,9 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
 
 
 @pytest.mark.parametrize(
-    "cls", [ParakeetEngine, KokoroEngine, SopranoEngine, PhononEngine], ids=lambda c: c.name
+    "cls",
+    [ParakeetEngine, KokoroEngine, SopranoEngine, PhononEngine, Qwen3ASREngine],
+    ids=lambda c: c.name,
 )
 def test_each_catalogued_engine_takes_its_defaults_from_the_catalogue(cls: Any) -> None:
     default = models.default_model(cls.name)

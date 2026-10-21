@@ -25,6 +25,7 @@ __all__ = [
     "DEFAULT_MAX_LEN",
     "SPACED_TERMINATORS",
     "UNSPACED_TERMINATORS",
+    "collapse_whitespace",
     "cut_to_length",
     "split_sentences",
 ]
@@ -249,3 +250,9 @@ def _best_cut(text: str, max_len: int) -> int:
         if best is not None:
             return best
     return max_len
+
+
+def collapse_whitespace(text: str) -> str:
+    """Runs of whitespace as one space, none at the ends: a model's raw text
+    as a transcript."""
+    return " ".join(text.split())

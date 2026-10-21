@@ -2069,6 +2069,7 @@ phonon = [
     { name = "ptts" },
 ]
 stt = [
+    { name = "mlx-audio" },
     { name = "parakeet-mlx" },
 ]
 tts = [
@@ -2102,6 +2103,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=1.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6,<0.7" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
+    { name = "mlx-audio", marker = "extra == 'stt'", specifier = ">=0.5.8,<0.5.10" },
     { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5.8,<0.5.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "parakeet-mlx", marker = "extra == 'stt'", specifier = ">=0.5,<0.6" },

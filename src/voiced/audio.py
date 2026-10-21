@@ -92,6 +92,31 @@ def frame_rms(samples: NDArray[np.float32], frame: int = VAD_FRAME_SAMPLES) -> N
     return np.sqrt(np.mean(np.square(frames), axis=1)).astype(np.float32)
 
 
+SILENCE_FLOOR_DBFS = -60.0
+"""STT batch input with no 32 ms frame above this RMS is silence, nothing to
+transcribe: the models write words for near-silent noise (Parakeet says
+"Yeah.")."""
+SILENCE_FLOOR = dbfs_to_amplitude(SILENCE_FLOOR_DBFS)
+
+
+def is_silent(samples: NDArray[np.float32]) -> bool:
+    """True when no 32 ms frame reaches :data:`SILENCE_FLOOR`."""
+    return float(np.max(frame_rms(samples), initial=0.0)) < SILENCE_FLOOR
+
+
+def check_samples(samples: object) -> NDArray[np.float32]:
+    """STT input as contiguous float32, or :class:`EngineError` for anything
+    but finite mono floats."""
+    arr = np.asarray(samples)
+    if arr.ndim != 1:
+        raise EngineError(f"expected mono 1-D samples, got shape {arr.shape}")
+    if not np.issubdtype(arr.dtype, np.floating):
+        raise EngineError(f"expected float32 samples, got {arr.dtype}")
+    if not np.all(np.isfinite(arr)):
+        raise EngineError("samples must be finite")
+    return np.ascontiguousarray(arr, dtype=np.float32)
+
+
 def resample(samples: NDArray[np.floating], src_rate: int, dst_rate: int) -> NDArray[np.float32]:
     """Polyphase resampling (``scipy.signal.resample_poly``, imported lazily; ``tts`` extra).
 

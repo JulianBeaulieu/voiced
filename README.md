@@ -18,9 +18,10 @@ for local speech services.
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
-with Parakeet TDT 0.6B v3 and speaks with Kokoro-82M, or with the optional
-Soprano-80M, Phonon 31M or Pocket TTS. The numbers below come from two
-machines, both named under [Benchmarks](#benchmarks).
+with Parakeet TDT 0.6B v3, or with the optional Qwen3-ASR for files and
+languages beyond Parakeet's, and speaks with Kokoro-82M, or with the
+optional Soprano-80M, Phonon 31M or Pocket TTS. The numbers below come from
+two machines, both named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -243,6 +244,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 | [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
+| [Qwen3-ASR 0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) and [1.7B](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit), with [Qwen3-ForcedAligner 0.6B](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) | STT | no, opt-in | Apache-2.0 |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
@@ -411,6 +413,38 @@ is accepted and ignored. It performs tags such as `[laugh]`, `[chuckle]`,
 about 3 GB. The details are in
 [ADR 0029](docs/decisions/0029-tts-chatterbox-turbo.md).
 
+### Using Qwen3-ASR
+
+Qwen3-ASR is the engine for transcribing files and for languages Parakeet
+does not cover: 30 of them, Chinese, Cantonese, Japanese, Korean, Arabic and
+Hindi among them, detected when the request names none. It writes sentence
+timestamps for `verbose_json`, `srt` and `vtt` with a second model, the
+forced aligner, in 11 of those languages. It cannot stream: a live stream is
+buffered and transcribed when it ends, with no partial transcripts, so
+Parakeet stays the engine for Home Assistant and push-to-talk. It is
+installed with voiced but is opt-in. Download it (the aligner comes
+with it: 2.3 GB for the 0.6B, 3.7 GB for the 1.7B):
+
+```sh
+~/.voiced/bin/voiced models download mlx-community/Qwen3-ASR-0.6B-8bit
+```
+
+Then set, under `[stt]`:
+
+```toml
+[stt]
+engine = "qwen3-asr"
+model = "mlx-community/Qwen3-ASR-0.6B-8bit"
+languages = ["en", "de", "zh", "ja"]
+```
+
+`languages` lists what the service advertises and accepts as a hint; the
+engine's 30 are in `voiced.engines.qwen3_asr.LANGUAGES`. The detected
+language comes back as a BCP-47 code. `mlx-community/Qwen3-ASR-1.7B-8bit` is
+the more accurate model at about twice the memory. Then run
+`~/.voiced/bin/voiced restart stt`. The details and measurements are in
+[ADR 0027](docs/decisions/0027-stt-qwen3-asr.md).
+
 ## Benchmarks
 
 Every engine and model is measured the same way, one command each, and
@@ -430,6 +464,14 @@ with 64 GB, each service alone, 2026-10-21:
 - **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
   worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
   0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.
+- **Qwen3-ASR 0.6B** (speech to text, opt-in, for files and languages):
+  1.8% word error rate, batch at 0.056 of real time. It does not stream:
+  finalize is a decode of the whole turn, 184 ms median for a 3.4 s turn
+  and longer for longer turns, which misses ADR 0008's 50 ms target. With
+  the forced aligner loaded for subtitles, it and Kokoro take 3.21 GB, past
+  the project's 3 GB for the two services
+  ([ADR 0027](docs/decisions/0027-stt-qwen3-asr.md)). The 1.7B: 1.6%,
+  3.95 GB alone.
 
 Known limits of streaming transcription: partial transcripts trail the
 speaker by about 0.7 s, and a pause of about one second inside an utterance
