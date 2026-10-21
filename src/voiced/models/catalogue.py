@@ -184,7 +184,14 @@ CATALOGUE: tuple[Engine, ...] = (
         "tts",
         # The config and the weights mlx-audio's Pocket TTS model reads.
         models=(
-            Model("mlx-community/pocket-tts", "CC-BY-4.0", ("config.json", "model.safetensors")),
+            Model(
+                "mlx-community/pocket-tts",
+                "CC-BY-4.0",
+                ("config.json", "model.safetensors"),
+                quality=5,
+                speed=4,
+                note="Kyutai's model Phonon builds on, on the GPU; six CC0 and CC-BY voices",
+            ),
         ),
         # The tokenizer the config names and the voice embeddings (ADR 0028).
         shared=(
