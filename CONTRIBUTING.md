@@ -183,15 +183,22 @@ uv run python scripts/refresh_locks.py
 ```
 
 Dependabot's pull requests for the `uv` ecosystem change only
-`pyproject.toml` and `uv.lock`, so their CI fails until someone runs it.
-To land one, check out its branch, run the command, commit and push:
+`pyproject.toml` and `uv.lock`. The `dependency-locks` workflow
+(`.github/workflows/dependency-locks.yml`) runs the command on their branch
+and pushes what it changed as one commit. That push starts the pull
+request's CI only once someone with write access selects "Approve workflows
+to run" in its merge box; then it lands like any other. If the workflow
+failed, for instance because `scripts/notice.py` stopped on a new licence,
+fix the cause and run the command by hand:
 
 ```sh
 gh pr checkout <number>
 uv run python scripts/refresh_locks.py
-git commit -am "chore(deps): regenerate the shipped locks and NOTICE"
+git commit -am "chore(deps): regenerate the shipped locks and NOTICE [dependabot skip]"
 git push
 ```
+
+`[dependabot skip]` keeps Dependabot rebasing the branch over the commit.
 
 To update a package by hand instead, `uv lock --upgrade-package <name>`
 (or edit its pin in `pyproject.toml`), then the same command. A new

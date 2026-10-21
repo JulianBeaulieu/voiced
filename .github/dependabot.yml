@@ -14,10 +14,9 @@ updates:
       actions:
         patterns: ["*"]
 
-  # These pull requests change only pyproject.toml and uv.lock, and CI fails
-  # until the files generated from uv.lock are rewritten on the branch:
-  # `uv run python scripts/refresh_locks.py` (CONTRIBUTING.md, "Updating a
-  # dependency").
+  # These pull requests change only pyproject.toml and uv.lock; the
+  # dependency-locks workflow rewrites the files generated from uv.lock on
+  # the branch (CONTRIBUTING.md, "Updating a dependency").
   - package-ecosystem: uv
     directory: /
     schedule:
