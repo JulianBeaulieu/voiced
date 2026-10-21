@@ -462,6 +462,7 @@ reboots need a person. voiced does not change this setting.
 | stt | Moonshine Small (opt-in, on the CPU) | 330 MB footprint (1.32 GB resident, mostly the memory-mapped model) after use; Tiny 177 MB and Medium 789 MB resident after load |
 | stt | Nemotron 3.5 (opt-in) | 1.32 GB after load, 2.18 GB serving peak (MLX); 1.44 GB footprint after use |
 | stt | Nemotron English (opt-in) | 1.28 GB after load in bf16, 2.16 GB serving peak (MLX); 1.39 GB footprint after use |
+| stt | Whisper large-v3-turbo 8-bit (opt-in) | 0.87 GB after load, 1.72 GB serving peak (MLX); 1.01 GB footprint after use (fp16: 1.76 GB) |
 
 All figures were measured on an M1 Max, each engine in its own process,
 when the engine was added: resident set size, or MLX allocations where

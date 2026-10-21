@@ -209,6 +209,7 @@ Registered engines:
 | `omnivoice` | `voiced.tts_engines` | OmniVoice via mlx-audio, opt-in, 646 languages and designed voices, about 0.8 s to first audio, four times the 200 ms target ([ADR 0030](decisions/0030-tts-omnivoice.md)) |
 | `nemotron` | `voiced.stt_engines` | Nemotron ASR streaming (3.5 multilingual, or English) via mlx-audio, opt-in, cache-aware: each chunk is encoded once ([ADR 0025](decisions/0025-stt-nemotron.md)) |
 | `marvis` | `voiced.tts_engines` | Marvis via mlx-audio's `sesame` model on the GPU, opt-in, English, French and German reference-clip voices, each 80 ms frame streamed as it is decoded ([ADR 0031](decisions/0031-tts-marvis.md)) |
+| `whisper` | `voiced.stt_engines` | Whisper large-v3-turbo via mlx-audio, opt-in, 100 languages, batch with word-timed segments; a stream is transcribed at finalize, about half a second after the turn ([ADR 0032](decisions/0032-stt-whisper-turbo.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
