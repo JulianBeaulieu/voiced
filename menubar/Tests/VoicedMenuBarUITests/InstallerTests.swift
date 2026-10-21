@@ -522,7 +522,10 @@ final class InstallerTests: XCTestCase {
         installer.install()
         let failure = await failure(installer)
         XCTAssertEqual(failure?.step, "Downloading the models")
-        XCTAssertTrue(failure?.cause.hasPrefix("The download stalled") == true)
+        XCTAssertEqual(
+            failure?.cause,
+            "The download of \(RecordedProgress.kokoro) stalled at \(ByteText.size(177_650_000)) of "
+                + "\(ByteText.size(355_300_000)): no data for 0 seconds. Try again to resume it.")
         XCTAssertEqual(failure?.fallback, resources.manifest.manualDownload)
         XCTAssertTrue(failure?.fallback?.contains("\(RecordedProgress.parakeet) at revision 0a1b2c3") == true)
         let terminated = await eventually { self.runner.terminated.count == 1 }

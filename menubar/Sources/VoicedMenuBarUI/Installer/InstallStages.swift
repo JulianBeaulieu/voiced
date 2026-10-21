@@ -470,9 +470,13 @@ struct InstallStages {
         let fallback = configuration.resources.manifest.manualDownload
         if state.stalled {
             let waited = stallTimeout.formatted(.units(allowed: [.seconds], width: .wide))
+            let stuck = session.progress.downloads.last { !$0.isFinished }
+            let what = stuck.map {
+                "The download of \($0.model) stalled at \(ByteText.size($0.bytes)) of \(ByteText.size($0.total))"
+            } ?? "The download stalled"
             return .failure(InstallFailure(
                 stage: .install, step: models,
-                cause: "The download stalled: no data for \(waited). Try again to resume it.",
+                cause: "\(what): no data for \(waited). Try again to resume it.",
                 output: session.tail, fallback: fallback))
         }
         if let cannotStart = state.cannotStart {
