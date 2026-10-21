@@ -449,6 +449,16 @@ def test_size_is_the_models_own_files_also_in_a_shared_repository(
     assert be.size_on_disk(tiny) is None  # not the rest of the repository
 
 
+def test_a_models_own_languages_and_licence_reach_its_row(be: ModuleType) -> None:
+    english = "nvidia/nemotron-speech-streaming-en-0.6b"
+    assert be.model_metadata("stt", "nemotron", english) == (
+        ["en-US"],
+        "NVIDIA Open Model License",
+    )
+    languages, licence = be.model_metadata("tts", "phonon", "gradium/phonon-40m-en")
+    assert licence == "CC-BY-NC-4.0" and languages
+
+
 def test_free_ports_are_distinct(be: ModuleType) -> None:
     ports = be._free_ports(4)
     assert len(set(ports)) == 4

@@ -374,7 +374,7 @@ every 10 s, and a `settings` event follows any change to the config file.
 | `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
-| `engines.list` | | installed engines with their `label`, models, languages, voices, `voice_labels` and `voice_languages`, without loading any |
+| `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's; the app reads it in a follow-up), voices, `voice_labels` and `voice_languages`, without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
 | `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
 | `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
@@ -452,6 +452,8 @@ reboots need a person. voiced does not change this setting.
 | stt | Parakeet TDT 0.6B v3 | 1.28 GB after load, 2.46 GB serving peak, 3.6 to 4.1 GB once while loading |
 | stt | Qwen3-ASR 0.6B with the aligner (opt-in) | 2.29 GB after load, 3.75 GB serving peak on a 30 s turn |
 | stt | Moonshine Small (opt-in, on the CPU) | 330 MB footprint (1.32 GB resident, mostly the memory-mapped model) after use; Tiny 177 MB and Medium 789 MB resident after load |
+| stt | Nemotron 3.5 (opt-in) | 1.32 GB after load, 2.18 GB serving peak (MLX); 1.44 GB footprint after use |
+| stt | Nemotron English (opt-in) | 1.28 GB after load in bf16, 2.16 GB serving peak (MLX); 1.39 GB footprint after use |
 
 All figures were measured on an M1 Max, each engine in its own process,
 when the engine was added: resident set size, or MLX allocations where

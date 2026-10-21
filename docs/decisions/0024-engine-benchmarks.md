@@ -86,7 +86,9 @@ Common to both kinds:
 - **Size**: the bytes of the model's revision in the Hugging Face cache (the
   pinned one, else `main`'s), without repositories shared between models
   (Phonon's voices, about 9.5 MB).
-- **Languages and licence** from the engine class (`languages`, `license`).
+- **Languages and licence** from the engine built, unloaded, for the model
+  (`languages`, `license`): a model's own when it differs from the engine's
+  default (amended by ADR 0025).
 
 Speech to text:
 
@@ -221,8 +223,8 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   command that measures the model. A shared repository (`Engine.shared`) has
   no ratings. The note says what the model is for ("The default: accurate
   and fast, English and 24 European languages"). Size, languages and licence
-  are already ADR 0022's (the lock's bytes, the engine class, the
-  catalogue's licence). The recommended badge is the install default of each
+  are already ADR 0022's (the lock's bytes, the engine built for the model,
+  the catalogue's licence). The recommended badge is the install default of each
   kind (`voiced.models.default_models()`: each default engine's first
   model), not a new field.
 - **`voiced models list --json`** adds `"quality"`, `"speed"` (integers or

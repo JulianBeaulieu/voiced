@@ -47,7 +47,15 @@ dependencies = [
 # its internals: split_audio_into_chunks from mlx_audio.stt.models.qwen3_asr.qwen3_asr,
 # generate(chunk_duration=inf, max_tokens=) and result.segments[0]["language"], and
 # the aligner's get_supported_languages, items and aligner_processor.encode_timestamp.
-stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.8,<0.5.10"]
+# Nemotron (ADR 0025) relies on mlx-audio's nemotron_asr: load_model(lazy=True)
+# returning a nemotron_asr.Model, set_dtype, the writable default_att_context_size,
+# preprocessor_config.hop_length, prompt_kernel and prompt_dictionary,
+# generate(language=, att_context_size=) and its result.sentences[].tokens[].start/end,
+# create_streaming_session(language=) with feed, step(max_decode_tokens=), close and
+# done, and the session's private _encoder.chunk_mel, _encoder.first_chunk_mel and
+# _frontend.lookahead_samples. 0.5.9 is the first release with the English model's
+# nemotron_asr_streaming loader and the first_chunk_mel its first piece is sized by.
+stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.5.10"]
 # mlx-audio is pinned to the releases the engines were checked against: Kokoro
 # relies on its internals (load_voice_tensor, model(..., return_output=True),
 # the residual blocks istftnet.AdainResBlk1d and AdaINResBlock1 it wraps for
@@ -64,7 +72,7 @@ stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.8,<0.5.10"]
 # it to take Soprano's 32 kHz output to 24 kHz; sentencepiece is Pocket TTS's
 # tokenizer, which mlx-audio does not declare.
 tts = [
-    "mlx-audio>=0.5.8,<0.5.10",
+    "mlx-audio>=0.5.9,<0.5.10",
     "kokoro-onnx>=0.4",
     "huggingface-hub>=1.1",
     "scipy>=1.11",
@@ -118,6 +126,7 @@ fake = "voiced.testing.fakes:FakeSTTEngine"
 parakeet = "voiced.engines.parakeet:ParakeetEngine"
 qwen3-asr = "voiced.engines.qwen3_asr:Qwen3ASREngine"
 moonshine = "voiced.engines.moonshine:MoonshineEngine"
+nemotron = "voiced.engines.nemotron:NemotronEngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"

@@ -82,6 +82,16 @@ uses [Semantic Versioning](https://semver.org/).
   (MIT), or `-tiny` or `-medium`. It runs on the CPU, leaving the GPU to
   text-to-speech; partials arrive every half second and the transcript on the
   client's end signal. `voiced models download` fetches each model.
+- Nemotron speech-to-text engine, opt-in: `engine = "nemotron"`. It streams
+  through mlx-audio in 160 ms chunks, each encoded once, so a long utterance
+  costs no more per chunk than a short one. The default model,
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b` (OpenMDW-1.1), transcribes
+  28 languages in 32 locales, takes a region hint such as `pt-PT`, and
+  detects the language when the client gives none;
+  `nvidia/nemotron-speech-streaming-en-0.6b` (NVIDIA Open Model License) is
+  English only, with a slightly lower error rate. Finalize takes about 55 ms;
+  uploads are slower than Parakeet's, which stays the default (ADR 0025).
+  `engines.list` gives each model's languages in `model_languages`.
 
 - OmniVoice text-to-speech engine, opt-in: `engine = "omnivoice"`,
   `model = "k2-fsa/OmniVoice"`, for languages Kokoro does not speak: 646 language

@@ -504,3 +504,7 @@ text above:
 - Download restarts a service that reports `missing_model` for that model,
   from the pane's row in use as from the menu window: the watchdog leaves
   the state alone, since a restart cannot download.
+- `engines.list` also gives each model's languages in `model_languages`
+  (ADR 0025: Nemotron's English model serves only `en-US`). It is additive,
+  so older apps ignore it; the app reads it in a follow-up and until then
+  offers the engine's `languages` for every model.

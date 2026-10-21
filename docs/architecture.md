@@ -207,6 +207,7 @@ Registered engines:
 | `qwen3-asr` | `voiced.stt_engines` | Qwen3-ASR 0.6B or 1.7B via mlx-audio, opt-in, batch with the forced aligner's sentence times; a stream is transcribed at finalize ([ADR 0027](decisions/0027-stt-qwen3-asr.md)) |
 | `moonshine` | `voiced.stt_engines` | Moonshine Streaming via `moonshine-voice` (ONNX Runtime) on the CPU, opt-in, macOS 15 and later, finalized on the client's `end` ([ADR 0026](decisions/0026-stt-moonshine.md)) |
 | `omnivoice` | `voiced.tts_engines` | OmniVoice via mlx-audio, opt-in, 646 languages and designed voices, about 0.8 s to first audio, four times the 200 ms target ([ADR 0030](decisions/0030-tts-omnivoice.md)) |
+| `nemotron` | `voiced.stt_engines` | Nemotron ASR streaming (3.5 multilingual, or English) via mlx-audio, opt-in, cache-aware: each chunk is encoded once ([ADR 0025](decisions/0025-stt-nemotron.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,

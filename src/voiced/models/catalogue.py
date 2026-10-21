@@ -30,6 +30,9 @@ class Model:
     quality: int | None = None  # 1 to 5, from the reference row; None: not measured
     speed: int | None = None  # 1 to 5, likewise
     note: str = ""  # one line by hand, at most 80 characters
+    # BCP-47 tags it serves; empty: its engine's. Unlike the licence, which the
+    # registry sets, an engine that serves per-model languages applies them itself.
+    languages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -146,6 +149,17 @@ def _moonshine(size: str, quality: int, speed: int, note: str) -> Model:
         note=note,
     )
 
+
+NEMOTRON_LOCALES = (
+    "en-US", "en-GB", "es-US", "es-ES", "fr-FR", "fr-CA", "it-IT", "pt-BR", "pt-PT",
+    "nl-NL", "de-DE", "tr-TR", "ru-RU", "ar-AR", "hi-IN", "ja-JP", "ko-KR", "vi-VN",
+    "uk-UA", "pl-PL", "sv-SE", "cs-CZ", "nb-NO", "da-DK", "bg-BG", "fi-FI", "hr-HR",
+    "sk-SK", "zh-CN", "hu-HU", "ro-RO", "et-EE",
+)  # fmt: skip
+"""The 32 locales, in 28 languages, Nemotron 3.5 transcribes out of the box
+(NVIDIA's card: "transcription-ready" and "broad-coverage"; the 8
+"adaptation-ready" ones need fine-tuning first), English first. Each is a
+key of the model's language prompts."""
 
 CATALOGUE: tuple[Engine, ...] = (
     Engine(
@@ -340,6 +354,33 @@ CATALOGUE: tuple[Engine, ...] = (
                 quality=5,
                 speed=2,
                 note="646 languages, Levantine Arabic among them; slow, for non-commercial use",
+            ),
+        ),
+    ),
+    Engine(
+        "nemotron",
+        "stt",
+        # What mlx-audio reads: the MLX conversion keeps its vocabulary in
+        # config.json; NVIDIA's English repository is in the Transformers
+        # layout, beside a .nemo copy. The licences are in ADR 0025.
+        models=(
+            Model(
+                "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+                "OpenMDW-1.1",
+                ("config.json", "model.safetensors"),
+                quality=5,
+                speed=4,
+                note="Streaming in 28 languages, detected when not given; slow uploads",
+                languages=NEMOTRON_LOCALES,
+            ),
+            Model(
+                "nvidia/nemotron-speech-streaming-en-0.6b",
+                "NVIDIA Open Model License",
+                ("config.json", "model.safetensors", "processor_config.json", "tokenizer.json"),
+                quality=5,
+                speed=4,
+                note="Streaming, English only; a lower error rate in English than Nemotron 3.5",
+                languages=("en-US",),
             ),
         ),
     ),

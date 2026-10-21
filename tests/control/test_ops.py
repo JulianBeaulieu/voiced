@@ -244,6 +244,9 @@ async def test_engines_list(ops: Operations) -> None:
     assert stt["parakeet"]["label"] == "Parakeet"
     assert "en" in stt["parakeet"]["languages"]
     assert stt["parakeet"]["models"] == ["mlx-community/parakeet-tdt-0.6b-v3"]
+    assert stt["nemotron"]["model_languages"]["nvidia/nemotron-speech-streaming-en-0.6b"] == [
+        "en-US"
+    ]
 
 
 async def test_engines_list_is_cached(supervisor: FakeSupervisor, config_file: Path) -> None:

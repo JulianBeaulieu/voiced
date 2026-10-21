@@ -8,7 +8,9 @@ weights or import MLX. It is not part of the frozen interface in
 running service's ``voices()`` stays the authority on what can be
 synthesized. Models come from ``voiced.models.CATALOGUE`` (the default
 first), or ``model_id`` for an engine it does not know; languages from
-``languages``.
+``languages``, and ``model_languages`` gives each model's own (the
+catalogue's, else the engine's), so a settings UI offers the languages of
+the model selected.
 
 Display labels are built here, in one place: an engine's label is its
 registry name capitalised, and a voice with a gender is labelled
@@ -79,11 +81,15 @@ def engine_models(name: str, cls: type[STTEngine] | type[TTSEngine]) -> list[str
 
 
 def _common(name: str, cls: type[STTEngine] | type[TTSEngine]) -> dict[str, Any]:
+    languages = list(getattr(cls, "languages", []))
+    catalogued = models.engine(name)
+    own = {m.id: list(m.languages) for m in catalogued.models} if catalogued else {}
     return {
         "name": name,
         "label": engine_label(name),
         "models": engine_models(name, cls),
-        "languages": list(getattr(cls, "languages", [])),
+        "languages": languages,
+        "model_languages": {m: own.get(m) or languages for m in engine_models(name, cls)},
     }
 
 

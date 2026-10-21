@@ -37,7 +37,7 @@ What a run measures (the protocol is ADR 0024's):
   service has stopped;
 * memory from the service's ``/metrics.json`` 1 s after use: the physical
   footprint and MLX's peak; the model's size in the Hugging Face cache;
-  languages and licence from the engine class.
+  languages and licence from the engine, built unloaded for the model.
 
 Result files are read back field by field: a field added later gets a
 default, so files written before it stay valid.
@@ -993,6 +993,15 @@ def engine_class(kind: Kind, name: str) -> Any:
     return get_stt_engine(name) if kind == "stt" else get_tts_engine(name)
 
 
+def model_metadata(kind: Kind, name: str, model: str) -> tuple[list[str], str]:
+    """The languages and licence of ``model``, from the engine built, unloaded,
+    for it: a model's own, not the engine's default model's."""
+    from voiced.engines.registry import create_engine
+
+    engine = create_engine(kind, name, model)
+    return list(engine.languages), str(engine.license)
+
+
 def mlx_peak(url: str) -> int | None:
     """MLX's peak allocation since the service started; None when the
     process never allocated through MLX (Phonon, on the CPU, reports 0)."""
@@ -1043,6 +1052,7 @@ def run(args: argparse.Namespace) -> Result:
             metrics = dataclasses.replace(tts_metrics, utmos=score)
     from voiced import __version__
 
+    languages, licence = model_metadata(kind, args.engine, model)
     return Result(
         kind=kind,
         engine=args.engine,
@@ -1052,8 +1062,8 @@ def run(args: argparse.Namespace) -> Result:
         commit=measured_commit,
         version=__version__,
         date=date.today().isoformat(),
-        languages=list(cls.languages),
-        licence=str(cls.license),
+        languages=languages,
+        licence=licence,
         size_bytes=size_on_disk(model),
         load_s=server.load_s,
         footprint_bytes=footprint,
