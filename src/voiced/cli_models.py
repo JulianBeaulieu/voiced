@@ -123,6 +123,10 @@ def _model_view(
         ],
         "refs": list(pinned.refs) if pinned is not None else [],
         "in_use": model.id in used,
+        "quality": model.quality,
+        "speed": model.speed,
+        "note": model.note,
+        "recommended": model in models.defaults(),
     }
 
 
@@ -184,6 +188,10 @@ def _state(model: dict[str, Any]) -> str:
     return state + ("; gated" if model["gated"] and not model["downloaded"] else "")
 
 
+def _rating(n: int | None) -> str:
+    return "-" if n is None else f"{n}/5"
+
+
 def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
     from voiced.table import render_table
 
@@ -202,11 +210,13 @@ def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
                     engine["name"],
                     name,
                     model["license"],
+                    _rating(model["quality"]),
+                    _rating(model["speed"]),
                     f"{size_text(size)} {where}",
                     _state(model),
                 )
             )
-    echo(render_table(("ENGINE", "MODEL", "LICENSE", "SIZE", "STATE"), rows))
+    echo(render_table(("ENGINE", "MODEL", "LICENSE", "QUALITY", "SPEED", "SIZE", "STATE"), rows))
     echo("")
     echo(f"voiced uses {size_text(view['total_bytes'])} in {view['cache']}.")
     echo("This folder is shared with other apps; voiced deletes only its own models.")

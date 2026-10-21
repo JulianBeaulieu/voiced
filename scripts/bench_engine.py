@@ -76,18 +76,8 @@ import httpx
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.ratings import (
-    SCALES,
-    STT_FINALIZE,
-    STT_RTF,
-    STT_WER,
-    TTS_FIRST_AUDIO,
-    TTS_RTF,
-    TTS_UTMOS,
-    Rating,
-    Scale,
-)
-from voiced.ratings import rate as rate_measured
+from voiced import ratings
+from voiced.ratings import SCALES, Rating, Scale
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_DIR = REPO_ROOT / "docs" / "benchmarks"
@@ -502,18 +492,11 @@ def save(result: Result) -> Path:
 
 def rated(metrics: STTMetrics | TTSMetrics) -> list[tuple[Scale, float]]:
     """Each scale a result is rated on, with the number it rates."""
-    if isinstance(metrics, STTMetrics):
-        return [
-            (STT_WER, metrics.wer_percent),
-            (STT_FINALIZE, metrics.finalize_after_silence.worst_ms),
-            (STT_RTF, metrics.batch_rtf),
-        ]
-    quality = [] if metrics.utmos is None else [(TTS_UTMOS, metrics.utmos)]
-    return [*quality, (TTS_FIRST_AUDIO, metrics.first_audio.median_ms), (TTS_RTF, metrics.rtf)]
+    return ratings.rated("stt" if isinstance(metrics, STTMetrics) else "tts", asdict(metrics))
 
 
 def rate(metrics: STTMetrics | TTSMetrics) -> Rating:
-    return rate_measured(rated(metrics))
+    return ratings.rate(rated(metrics))
 
 
 # -- the document ------------------------------------------------------------

@@ -15,13 +15,21 @@ from typing import Literal
 class Model:
     """A model: the files voiced loads from a Hugging Face repository.
     ``id`` defaults to the repository; models that share one repository
-    (a folder each) need ids of their own."""
+    (a folder each) need ids of their own.
+
+    ``quality`` and ``speed`` are copied by hand from the model's reference
+    row in docs/benchmarks/ (ADR 0024: its MacBook Pro, Apple M1 Max, 64 GB
+    result), and a test checks them against that row; ``note`` says what
+    the model is for."""
 
     repo: str
     license: str
     patterns: tuple[str, ...]
     gated: bool = False  # needs a token and acceptance of its terms
     id: str = ""
+    quality: int | None = None  # 1 to 5, from the reference row; None: not measured
+    speed: int | None = None  # 1 to 5, likewise
+    note: str = ""  # one line by hand, at most 80 characters
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -99,6 +107,9 @@ CATALOGUE: tuple[Engine, ...] = (
                 "mlx-community/parakeet-tdt-0.6b-v3",
                 "CC-BY-4.0",
                 ("config.json", "model.safetensors"),
+                quality=5,
+                speed=5,
+                note="The default: accurate and fast, English and 24 European languages",
             ),
         ),
     ),
@@ -108,7 +119,14 @@ CATALOGUE: tuple[Engine, ...] = (
         # The config and the weights, with the voice packs in voices/; not
         # the sample WAVs or the .pt copies.
         models=(
-            Model("mlx-community/Kokoro-82M-bf16", "Apache-2.0", ("config.json", "*.safetensors")),
+            Model(
+                "mlx-community/Kokoro-82M-bf16",
+                "Apache-2.0",
+                ("config.json", "*.safetensors"),
+                quality=5,
+                speed=5,
+                note="The default: natural and fast, 28 American and British English voices",
+            ),
         ),
     ),
     Engine(
@@ -116,16 +134,36 @@ CATALOGUE: tuple[Engine, ...] = (
         "tts",
         # The configs, the tokenizer and the weights; not the README.
         models=(
-            Model("mlx-community/Soprano-80M-bf16", "Apache-2.0", ("*.json", "*.safetensors")),
+            Model(
+                "mlx-community/Soprano-80M-bf16",
+                "Apache-2.0",
+                ("*.json", "*.safetensors"),
+                quality=4,
+                speed=5,
+                note="One expressive English voice; each reading of a text differs a little",
+            ),
         ),
     ),
     Engine(
         "phonon",
         "tts",
         models=(
-            Model("gradium/phonon-31m-en", "Apache-2.0", PHONON),
+            Model(
+                "gradium/phonon-31m-en",
+                "Apache-2.0",
+                PHONON,
+                quality=5,
+                speed=5,
+                note="Runs on the CPU, leaving the GPU to speech to text; 38 English voices",
+            ),
             # Non-commercial, gated. Of the 40M checkpoints, the English one.
-            Model("gradium/phonon-40m-en", "CC-BY-NC-4.0", PHONON, gated=True),
+            Model(
+                "gradium/phonon-40m-en",
+                "CC-BY-NC-4.0",
+                PHONON,
+                gated=True,
+                note="The larger English model, for non-commercial use; not benchmarked yet",
+            ),
         ),
         # The voice catalogue and its presets (ADR 0021).
         shared=(

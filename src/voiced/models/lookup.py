@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from voiced.models.catalogue import CATALOGUE, Engine, Model
+from voiced.models.catalogue import CATALOGUE, DEFAULT_ENGINES, Engine, Model
 
 
 def engine(name: str) -> Engine | None:
@@ -15,6 +15,12 @@ def default_model(engine_name: str) -> Model:
     if found is None:
         raise KeyError(engine_name)
     return found.models[0]
+
+
+def defaults() -> list[Model]:
+    """What a new install runs and the model lists recommend: each kind's
+    default engine's first model."""
+    return [default_model(name) for name in DEFAULT_ENGINES.values()]
 
 
 def find(model_id: str) -> tuple[Engine, Model] | None:

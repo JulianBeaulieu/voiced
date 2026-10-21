@@ -27,6 +27,12 @@ uses [Semantic Versioning](https://semver.org/).
   each row with its machine, commit and date, and a quality and a speed
   rating from 1 to 5 by fixed limits. `scripts/bench_engine.py` measures one
   engine with one command and regenerates the document (ADR 0024).
+- Each model's quality and speed rating and a one-line note in the
+  catalogue, from its benchmark on the reference Mac, with a test that holds
+  them to the result files. `voiced models list` shows Quality and Speed
+  columns; `--json` adds `quality`, `speed`, `note` and `recommended` (the
+  default models). The menu bar app's model rows show a Quality and a Speed
+  bar, the note and a Recommended badge.
 - `voiced models list`, `voiced models download <model>` and `voiced models
   delete <model>`: see every model voiced can run with its licence, size and
   state, download one at its pinned revision with byte progress, and delete

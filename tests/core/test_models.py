@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from tests import hf_cache_support as hf
-from voiced import models
+from voiced import models, ratings
 from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
@@ -25,6 +25,7 @@ from voiced.engines.phonon import PhononEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.models import cache, commands, lockfile, pinning
+from voiced.models.catalogue import Engine, Model
 
 # The catalogue and the lock ---------------------------------------------------
 
@@ -120,6 +121,57 @@ def test_a_shared_repository_comes_with_every_model_of_its_engine() -> None:
     assert models.required("someone/else") == ["someone/else"]
     assert models.find("gradium/phonon-voices") is None  # shared, not a model
     assert lockfile.pinned_revision("someone/else") is None
+
+
+# Ratings (ADR 0024) -------------------------------------------------------------
+
+BENCHMARKS = Path(__file__).parents[2] / "docs" / "benchmarks"
+REFERENCE_HARDWARE = "MacBook Pro, Apple M1 Max, 64 GB"
+
+
+def reference_rows() -> dict[tuple[str, str, str], dict[str, Any]]:
+    """The benchmark results of the Mac the ratings come from, by kind,
+    engine and model, read as JSON (the harness is a script, not a module)."""
+    rows = {}
+    for path in sorted(BENCHMARKS.glob("*.json")):
+        result = json.loads(path.read_text())
+        if result["hardware"] == REFERENCE_HARDWARE:
+            rows[(result["kind"], result["engine"], result["model"])] = result
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("engine", "model"),
+    [(e, m) for e in models.CATALOGUE for m in e.models],
+    ids=lambda v: v.id if isinstance(v, Model) else v.name,
+)
+def test_each_models_ratings_are_its_reference_rows(engine: Engine, model: Model) -> None:
+    """``quality`` and ``speed`` are copied by hand from the model's result on
+    the reference Mac; a model without one has neither."""
+    measure = (
+        f"uv run python scripts/bench_engine.py {engine.kind} "
+        f"--engine {engine.name} --model {model.id}"
+    )
+    row = reference_rows().get((engine.kind, engine.name, model.id))
+    if row is None:
+        assert (model.quality, model.speed) == (None, None), (
+            f"{model.id} has no result on the {REFERENCE_HARDWARE}: measure it with "
+            f"`{measure}`, or set quality and speed to None"
+        )
+        return
+    rating = ratings.rate(ratings.rated(engine.kind, row["metrics"]))
+    assert (model.quality, model.speed) == (rating.quality, rating.speed), (
+        f"{model.id}: its result says quality={rating.quality}, speed={rating.speed}; "
+        f"set those in the catalogue (measured by `{measure}`)"
+    )
+
+
+def test_notes_fit_one_line_and_shared_repositories_are_not_rated() -> None:
+    for engine in models.CATALOGUE:
+        for model in engine.models:
+            assert len(model.note) <= 80 and "\n" not in model.note, model.id
+        for shared in engine.shared:
+            assert (shared.quality, shared.speed, shared.note) == (None, None, ""), shared.id
 
 
 # The cache on disk -------------------------------------------------------------

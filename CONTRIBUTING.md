@@ -240,6 +240,15 @@ changed the document, take either side and run
 `uv run python scripts/bench_engine.py render`; a test fails while the
 document and the result files differ.
 
+Then rate each model in the catalogue (`src/voiced/models/catalogue.py`, next
+section): `quality` and `speed` as its row on the reference Mac (MacBook Pro,
+Apple M1 Max, 64 GB, the one every engine is measured on) rates them, and a
+`note` of at most 80 characters on what the model is for. A model without a
+row on that Mac keeps `quality` and `speed` at None until it is measured
+there. `tests/core/test_models.py` reads the result files and fails, with the
+ratings to set and the command that measures the model, while the catalogue
+and the rows disagree.
+
 ## Adding or moving a model
 
 The models voiced runs are listed by hand in `CATALOGUE` in

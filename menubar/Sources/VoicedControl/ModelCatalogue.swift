@@ -113,11 +113,20 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var previous: [Revision]
     /// Branches pointing at the pin: another tool fetched it by name too.
     public var refs: [String]
+    /// 1 to 5 from the model's benchmark on the reference Mac (ADR 0024); nil when not
+    /// measured, or from a voiced that does not rate its models.
+    public var quality: Int?
+    public var speed: Int?
+    /// One line on what the model is for; may be empty.
+    public var note: String
+    /// One of the models a new install runs.
+    public var recommended: Bool
 
     public init(
         id: String, repo: String? = nil, license: String, url: String? = nil, gated: Bool = false,
         downloadBytes: Int64, onDiskBytes: Int64 = 0, downloaded: Bool, previous: [Revision] = [],
-        refs: [String] = []
+        refs: [String] = [], quality: Int? = nil, speed: Int? = nil, note: String = "",
+        recommended: Bool = false
     ) {
         self.id = id
         self.repo = repo ?? id
@@ -129,10 +138,14 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
         self.downloaded = downloaded
         self.previous = previous
         self.refs = refs
+        self.quality = quality
+        self.speed = speed
+        self.note = note
+        self.recommended = recommended
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, repo, license, url, gated, downloaded, previous, refs
+        case id, repo, license, url, gated, downloaded, previous, refs, quality, speed, note, recommended
         case downloadBytes = "download_bytes"
         case onDiskBytes = "on_disk_bytes"
     }
@@ -149,6 +162,10 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
         downloaded = try c.decodeIfPresent(Bool.self, forKey: .downloaded) ?? false
         previous = (try? c.decodeIfPresent([Revision].self, forKey: .previous)) ?? []
         refs = (try? c.decodeIfPresent([String].self, forKey: .refs)) ?? []
+        quality = try? c.decodeIfPresent(Int.self, forKey: .quality)
+        speed = try? c.decodeIfPresent(Int.self, forKey: .speed)
+        note = (try? c.decodeIfPresent(String.self, forKey: .note)) ?? ""
+        recommended = (try? c.decodeIfPresent(Bool.self, forKey: .recommended)) ?? false
     }
 
     /// "parakeet-tdt-0.6b-v3": the last part of the id.
@@ -284,6 +301,29 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
 
     public var id: String { model.map { "\(engine.id)/\($0.id)" } ?? engine.id }
     public var title: String { model?.name ?? engine.label }
+
+    /// A five-step bar under the name: a rating of 1 to 5.
+    public struct Rating: Sendable, Equatable {
+        public var label: String
+        public var value: Int
+    }
+
+    /// Quality and Speed, each only when measured (ADR 0024).
+    public var ratings: [Rating] {
+        guard let model else { return [] }
+        return [("Quality", model.quality), ("Speed", model.speed)].compactMap { label, value in
+            value.flatMap { (1...5).contains($0) ? Rating(label: label, value: $0) : nil }
+        }
+    }
+
+    /// The bars' help; they link to `benchmarks`.
+    public static let ratingsHelp = "Measured on an Apple M1 Max; see docs/benchmarks.md"
+    public static let benchmarks = URL(string: "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")
+
+    /// What the model is for, under the bars.
+    public var summary: String? { model.flatMap { $0.note.isEmpty ? nil : $0.note } }
+
+    public var isRecommended: Bool { model?.recommended == true }
 
     /// "2.5 GB on disk" or "65 MB download".
     public var sizeLine: String? {

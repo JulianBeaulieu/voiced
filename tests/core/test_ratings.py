@@ -75,3 +75,19 @@ def test_tts_ratings() -> None:
 def test_a_rating_needs_a_speed_measurement() -> None:
     with pytest.raises(ValueError, match="no speed"):
         rate([(STT_WER, 2.0)])
+
+
+def test_rated_reads_each_scales_number_from_a_results_metrics() -> None:
+    stt_metrics = {
+        "wer_percent": 2.03,
+        "batch_rtf": 0.0229,
+        "finalize_after_silence": {"median_ms": 1.1, "worst_ms": 6.0},
+        "finalize_at_last_word": {"median_ms": 114.8, "worst_ms": 128.7},
+    }
+    assert ratings.rated("stt", stt_metrics) == [
+        (STT_WER, 2.03),
+        (STT_FINALIZE, 6.0),
+        (STT_RTF, 0.0229),
+    ]
+    tts_metrics = {"utmos": None, "first_audio": {"median_ms": 94.0}, "rtf": 0.042}
+    assert ratings.rated("tts", tts_metrics) == [(TTS_FIRST_AUDIO, 94.0), (TTS_RTF, 0.042)]

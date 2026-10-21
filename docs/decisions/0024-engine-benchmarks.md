@@ -193,7 +193,7 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   number, the ratings per row, the limits and how to regenerate. The README's
   "Benchmarks" keeps a short summary of the defaults and links to it; no
   table is kept twice.
-- **The catalogue** (ADR 0022's `CATALOGUE` in `voiced/models.py`): each
+- **The catalogue** (ADR 0022's `CATALOGUE` in `voiced/models/catalogue.py`): each
   `Model` gains three fields, all with defaults so a model without
   benchmarks stays valid:
 
@@ -233,9 +233,14 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   and a Recommended badge; the bars' help text is "Measured on an Apple M1
   Max; see docs/benchmarks.md", linking to the document on GitHub.
 
-`CATALOGUE` and the model rows do not exist yet: ADR 0022's implementation is
-in progress. The catalogue fields and their test, the `models list` fields
-and the app's bars are follow-up changes after it lands, in that order.
+The follow-ups landed on 2026-10-21, after ADR 0022's implementation: the
+catalogue fields and their test (`src/voiced/models/catalogue.py`,
+`tests/core/test_models.py`), the `models list` fields and the app's bars.
+Each `Scale` names the field of a result's `metrics` it rates (`metric`,
+dotted into nested objects), and `voiced.ratings.rated()` builds the pairs
+from a result's JSON for both the harness and the test, so the mapping is
+written once. The recommended models are `voiced.models.defaults()`, the
+same list the install manifest downloads.
 
 ## Alternatives considered
 
