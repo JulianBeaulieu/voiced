@@ -226,7 +226,7 @@ CATALOGUE: tuple[Engine, ...] = (
                 "MIT",
                 CHATTERBOX,
                 quality=4,
-                speed=2,
+                speed=3,
                 note="One expressive English voice that performs tags like [laugh]",
             ),
             Model(
@@ -234,7 +234,7 @@ CATALOGUE: tuple[Engine, ...] = (
                 "MIT",
                 CHATTERBOX,
                 quality=4,
-                speed=2,
+                speed=3,
                 note="Chatterbox Turbo at full precision: three times the memory of 4-bit",
             ),
         ),

@@ -200,12 +200,6 @@ def test_nothing_to_say_renders_nothing() -> None:
     assert run.renders == []
 
 
-def test_empty_renders_are_not_yielded() -> None:
-    run = _Run(FIRST_TOKENS + 1)
-    run.render = lambda t, start, final: (np.zeros(0, np.float32), start)  # type: ignore[method-assign]
-    assert run.pieces() == []
-
-
 # -- _stream, against stand-ins for MLX and mlx-audio --------------------------
 
 

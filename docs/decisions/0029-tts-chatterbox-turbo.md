@@ -76,13 +76,14 @@ inside `load()`.
   `check_only`, so the service never downloads. **The 4-bit default was
   chosen without a listening test and is provisional until one is done.**
   Two measurements stand in for it: UTMOS, the benchmark's predicted
-  naturalness, gives 4-bit 4.14 and fp16 4.01 (docs/benchmarks.md; one
-  run each over three sentences, which ranged from 3.80 to 4.40, so the
-  two are level), and in a round trip of twelve household sentences
-  through Parakeet, 4-bit had no word errors in 82 and fp16 one ("three
-  fifteen" heard as "thirty fifteen"); both read a 70-word reply word for
-  word. On those, 4-bit loses nothing measurable and holds a third of
-  fp16's memory, which keeps it beside Parakeet under the 3 GB budget.
+  naturalness, gave 4-bit 4.03 and fp16 4.17 in the last run and 4.14 and
+  4.01 in the one before (docs/benchmarks.md; each over three sentences,
+  which ranged from 3.80 to 4.40, so the two are level), and in a round
+  trip of twelve household sentences through Parakeet, 4-bit had no word
+  errors in 82 and fp16 one ("three fifteen" heard as "thirty fifteen");
+  both read a 70-word reply word for word. On those, 4-bit loses nothing
+  measurable and holds a third of fp16's memory, which keeps it beside
+  Parakeet under the 3 GB budget.
 - **Streaming, voiced's own loop.** The engine does not call
   `stream_generate`. It drives mlx-audio's T3 token stream
   (`t3.inference_turbo_stream`, one token at a time) and S3Gen's
@@ -100,7 +101,7 @@ inside `load()`.
   clip's largest sample-to-sample steps. So the last 20 ms of every render
   but the final one are held back and crossfaded into the next render's
   version of them; that join measurement is the evidence for it. (UTMOS
-  rose from 3.70 and 3.82 to 4.14 and 4.01, but the earlier figures are
+  rose from 3.70 and 3.82 to between 4.01 and 4.17, but the earlier ones are
   single runs on a different build, before the rebase onto ADR 0028's
   engine thread, and the 3.80 to 4.40 spread between sentences covers
   both differences.) Owning the loop also gives the GPU yield points below
@@ -203,7 +204,7 @@ bench.py labels Phonon:
 
 | Metric | Measured |
 |---|---|
-| Chatterbox first audio, requests back to back | median 638 / p95 665 / worst 668 ms (n=10) |
+| Chatterbox first audio, requests back to back, before the route fix (see below) | median 638 / p95 665 / worst 668 ms (n=10) |
 | Chatterbox first audio while another client streams to STT, requests 0.2 to 0.6 s apart | median 339 / p95 414 / worst 435 ms (n=30) |
 | Kokoro first audio, same run | median 96 / p95 98 / worst 98 ms (n=10) |
 | STT streaming finalize, 64 ms chunks, 0 ms trailing silence, alone | median 114 / p95 126 / worst 126 ms (n=32) |
@@ -217,17 +218,18 @@ An earlier run the same way measured the 0 ms finalize at median 102 /
 worst 124 ms alone and 129 / 143 ms while Chatterbox synthesized; the
 difference between the two runs is as large as Chatterbox's effect.
 `scripts/bench_engine.py` (ADR 0024) on the shipped code gave first audio
-638 / 665 ms back to back and 357 / 460 ms while STT streams for 4-bit,
-691 / 732 and 389 / 517 ms for fp16, real-time factors 0.43 and 0.47,
-UTMOS 4.14 and 4.01, and footprints 0.90 and 2.99 GB (docs/benchmarks.md).
+317 / 320 ms back to back and 339 / 447 ms while STT streams for 4-bit,
+339 / 343 and 386 / 475 ms for fp16, real-time factors 0.43 and 0.47,
+UTMOS 4.03 and 4.17, and footprints 0.90 and 2.99 GB (docs/benchmarks.md).
 
-The back-to-back first audio is not the engine's: both benchmarks read the
-first piece of each request and close it, and the HTTP route notices a
-client that left only when the engine hands it its next piece, so each
-request waited for the previous, abandoned one to reach its next render
-(about 0.3 s more). In process, a request after an abandoned one took 306
-to 312 ms. A fix in the route, for every engine, is its own change; the
-row will be measured again after it.
+Both benchmarks read the first piece of each request and close it. Before
+ADR 0005's 2026-10-21 amendment the service noticed only at the engine's
+next piece, so each request waited for the previous, abandoned one to
+reach its next render: 638 ms back to back in the bench.py row above, and
+the same in the harness. Now a hang-up frees the slot after the step in
+flight, and `speak()` yields after every token (an empty piece, which the
+sentence loop skips) so that step is one 8 ms token, not a render; back
+to back, first audio is the same as in process.
 
 ## Known misses
 

@@ -406,8 +406,9 @@ from your own clip is not supported yet. It has no rate control, so `speed`
 is accepted and ignored. It performs tags such as `[laugh]`, `[chuckle]`,
 `[sigh]` or `[whispering]` in the text instead of reading them.
 `mlx-community/chatterbox-turbo-fp16` works too (`tts.model=` in the
-`settings set`): it scored no better for naturalness here (UTMOS 4.01
-against 4-bit's 4.14), is no faster and holds about 3 GB. The details are in
+`settings set`): it scored level for naturalness here (UTMOS 4.17 and
+4.01 in two runs, against 4-bit's 4.03 and 4.14), is no faster and holds
+about 3 GB. The details are in
 [ADR 0029](docs/decisions/0029-tts-chatterbox-turbo.md).
 
 ## Benchmarks

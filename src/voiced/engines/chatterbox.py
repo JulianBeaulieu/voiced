@@ -127,9 +127,7 @@ def speak(
     if tokens:
         wait()
         final_tokens = [*tokens, *[silence] * SILENCE_TOKENS]
-        piece = joins.emit(*render(final_tokens, joins.sent, True), final=True)
-        if piece.size:
-            yield piece
+        yield joins.emit(*render(final_tokens, joins.sent, True), final=True)
 
 
 class _Joins:
