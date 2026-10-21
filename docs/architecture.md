@@ -357,11 +357,11 @@ read (ADR 0023).
 A speech-to-text engine starts `transcribe` with
 `voiced.audio.stt_input(audio)`. It raises `EngineError` for input that is
 not finite mono float32 at 16 kHz, and returns `None` when the input is
-silent; the engine then answers an empty `Transcript` with
-`duration_s=audio.duration_s`. Pass `min_samples` when the model cannot take
-shorter input. A streaming session checks each chunk in `add_audio` with
-`voiced.audio.check_samples`. `voiced.engines.moonshine` is a short example
-of both.
+silent or shorter than `min_samples`; the engine then answers an empty
+`Transcript` with `duration_s=audio.duration_s`. Pass `min_samples` when the
+model cannot take shorter input. A streaming session checks each chunk in
+`add_audio` with `voiced.audio.check_samples`. `voiced.engines.moonshine` is
+a short example of both.
 
 `voiced.testing.fakes` is the smallest complete implementation of both
 interfaces and a good template; `voiced.engines.kokoro` is a real one built

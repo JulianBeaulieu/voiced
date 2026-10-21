@@ -405,11 +405,17 @@ async def test_aligned_words_that_do_not_match_the_text_give_one_segment(
     [np.zeros(3 * SR, dtype=np.float32), np.full(800, 0.1, dtype=np.float32)],
     ids=["silence", "too-short"],
 )
+@pytest.mark.parametrize("streamed", [False, True], ids=["batch", "stream"])
 async def test_silence_and_slivers_never_reach_the_model(
-    fakes: tuple[_Model, _Aligner, list[str]], samples: NDArray[np.float32]
+    fakes: tuple[_Model, _Aligner, list[str]], samples: NDArray[np.float32], streamed: bool
 ) -> None:
     engine = await _loaded(fakes)
-    transcript = await engine.transcribe(AudioInput(samples), "en")
+    if streamed:
+        async with await engine.stream("en") as session:
+            await session.add_audio(samples)
+            transcript = await session.finalize()
+    else:
+        transcript = await engine.transcribe(AudioInput(samples), "en")
     assert (transcript.text, transcript.language, transcript.segments) == ("", "en", ())
     assert transcript.duration_s == len(samples) / SR
     assert fakes[0].calls == []

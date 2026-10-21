@@ -1,8 +1,9 @@
 """PCM toolbox shared by the HTTP and Wyoming layers.
 
 Raw integer PCM in, mono float32 at :data:`STT_SAMPLE_RATE` out (for STT),
-and int16 bytes plus WAV headers out (for TTS). No transport imports here:
-callers pass plain ``bytes`` and format parameters.
+and int16 bytes plus WAV headers out (for TTS). It also holds the input
+checks STT engines share (:func:`stt_input`, :func:`check_samples`). No
+transport imports here: callers pass plain ``bytes`` and format parameters.
 """
 
 from __future__ import annotations
@@ -125,7 +126,7 @@ def check_samples(samples: object) -> NDArray[np.float32]:
 
 
 def stt_input(audio: AudioInput, *, min_samples: int = 0) -> NDArray[np.float32] | None:
-    """The checks every :meth:`STTEngine.transcribe` starts with.
+    """The checks an STT engine runs on input before transcribing it.
 
     Raises :class:`EngineError` unless ``audio`` is at :data:`STT_SAMPLE_RATE`
     and passes :func:`check_samples`. Returns the samples to transcribe, or
