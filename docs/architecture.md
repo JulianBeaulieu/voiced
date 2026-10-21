@@ -354,6 +354,15 @@ English voices get numbers, units and acronyms as words, any other language
 gets its digits and symbols as written, for the engine's own front end to
 read (ADR 0023).
 
+A speech-to-text engine starts `transcribe` with
+`voiced.audio.stt_input(audio)`. It raises `EngineError` for input that is
+not finite mono float32 at 16 kHz, and returns `None` when the input is
+silent or shorter than `min_samples`; the engine then answers an empty
+`Transcript` with `duration_s=audio.duration_s`. Pass `min_samples` when the
+model cannot take shorter input. A streaming session checks each chunk in
+`add_audio` with `voiced.audio.check_samples`. `voiced.engines.moonshine` is
+a short example of both.
+
 `voiced.testing.fakes` is the smallest complete implementation of both
 interfaces and a good template; `voiced.engines.kokoro` is a real one built
 on `SentenceTTSEngine`. The docstrings in `voiced/engines/base.py` are the

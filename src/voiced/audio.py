@@ -1,8 +1,9 @@
 """PCM toolbox shared by the HTTP and Wyoming layers.
 
 Raw integer PCM in, mono float32 at :data:`STT_SAMPLE_RATE` out (for STT),
-and int16 bytes plus WAV headers out (for TTS). No transport imports here:
-callers pass plain ``bytes`` and format parameters.
+and int16 bytes plus WAV headers out (for TTS). It also holds the input
+checks STT engines share (:func:`stt_input`, :func:`check_samples`). No
+transport imports here: callers pass plain ``bytes`` and format parameters.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from voiced.engines.base import (
     STT_SAMPLE_RATE,
     TTS_SAMPLE_RATE,
     TTS_SAMPLE_WIDTH,
+    AudioInput,
     EngineError,
     Segment,
 )
@@ -121,6 +123,23 @@ def check_samples(samples: object) -> NDArray[np.float32]:
     if not np.all(np.isfinite(arr)):
         raise EngineError("samples must be finite")
     return np.ascontiguousarray(arr, dtype=np.float32)
+
+
+def stt_input(audio: AudioInput, *, min_samples: int = 0) -> NDArray[np.float32] | None:
+    """The checks an STT engine runs on input before transcribing it.
+
+    Raises :class:`EngineError` unless ``audio`` is at :data:`STT_SAMPLE_RATE`
+    and passes :func:`check_samples`. Returns the samples to transcribe, or
+    ``None`` when there is nothing to transcribe (silent, or shorter than
+    ``min_samples``): the engine then answers an empty transcript of
+    ``audio.duration_s``.
+    """
+    if audio.sample_rate != STT_SAMPLE_RATE:
+        raise EngineError(f"expected {STT_SAMPLE_RATE} Hz audio, got {audio.sample_rate} Hz")
+    samples = check_samples(audio.samples)
+    if len(samples) < min_samples or is_silent(samples):
+        return None
+    return samples
 
 
 def clip_segment(start: float, end: float, text: str, duration_s: float) -> Segment:

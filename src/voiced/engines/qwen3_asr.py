@@ -39,7 +39,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.audio import check_samples, is_silent
+from voiced.audio import check_samples, is_silent, stt_input
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -200,10 +200,7 @@ class Qwen3ASREngine(STTEngine):
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
         self._require_idle()
         code = self.normalize_language(language)
-        if audio.sample_rate != _SR:
-            raise EngineError(f"expected {_SR} Hz audio, got {audio.sample_rate} Hz")
-        samples = check_samples(audio.samples)
-        return await self._thread.run(self._transcribe_blocking, samples, code)
+        return await self._thread.run(self._transcribe_blocking, audio, code)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
         """A buffering session; one at a time (:attr:`max_streams` is 1)."""
@@ -222,12 +219,12 @@ class Qwen3ASREngine(STTEngine):
         """A stream's turn: no aligner, and each piece under the GPU lock,
         since a client is waiting for it (ADR 0019); ``stop`` ends it between
         pieces once the session is closed (a cancelled finalize)."""
-        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        audio = AudioInput(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
         return self._transcribe_blocking(audio, code, align=False, turn=stt_turn, stop=stop)
 
     def _transcribe_blocking(
         self,
-        samples: NDArray[np.float32],
+        audio: AudioInput,
         code: str | None,
         *,
         align: bool = True,
@@ -237,11 +234,13 @@ class Qwen3ASREngine(STTEngine):
         """On the model thread: each piece of about :data:`CHUNK_S` decoded
         on its own, with its own token bound and, without a hint, its own
         detected language; ``turn`` is held around each decode, and a silent
-        piece is skipped."""
+        piece is skipped. Batch and stream input both enter here, so both pass
+        the same :func:`stt_input` gate."""
         import mlx.core as mx
 
-        duration = len(samples) / _SR
-        if len(samples) < MIN_SAMPLES or is_silent(samples):
+        samples = stt_input(audio, min_samples=MIN_SAMPLES)
+        duration = audio.duration_s
+        if samples is None:
             return Transcript(text="", language=code, duration_s=duration)
         name = LANGUAGES[code] if code else None
         texts: list[str] = []

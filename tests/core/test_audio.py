@@ -13,9 +13,10 @@ from voiced.audio import (
     float32_to_pcm16,
     pcm16_to_float32,
     resample,
+    stt_input,
     wav_header,
 )
-from voiced.engines.base import EngineError, Segment
+from voiced.engines.base import AudioInput, EngineError, Segment
 
 RNG = np.random.default_rng(0)
 
@@ -159,3 +160,24 @@ def test_clip_segment_keeps_times_inside_the_input() -> None:
     assert clip_segment(0.8, 1.4, "a", 1.0) == Segment(0.8, 1.0, "a")
     assert clip_segment(1.2, 1.4, "a", 1.0) == Segment(1.0, 1.0, "a")
     assert clip_segment(1.2, 1.4, "a", 0.0) == Segment(1.2, 1.4, "a")  # no known length
+
+
+def test_stt_input_checks_rate_and_samples() -> None:
+    tone = _tone(16_000, 16_000)
+    with pytest.raises(EngineError, match="expected 16000 Hz audio, got 8000 Hz"):
+        stt_input(AudioInput(tone, sample_rate=8000))
+    with pytest.raises(EngineError, match="float32"):
+        stt_input(AudioInput(np.zeros(10, dtype=np.int16)))
+    out = stt_input(AudioInput(tone.astype(np.float64)))
+    assert out is not None
+    assert out.dtype == np.float32
+    np.testing.assert_array_equal(out, tone)
+
+
+def test_stt_input_is_none_when_there_is_nothing_to_transcribe() -> None:
+    assert stt_input(AudioInput(np.zeros(16_000, dtype=np.float32))) is None
+    assert stt_input(AudioInput(np.zeros(0, dtype=np.float32))) is None
+    short = _tone(256, 16_000)
+    assert stt_input(AudioInput(short)) is not None
+    assert stt_input(AudioInput(short), min_samples=257) is None
+    assert stt_input(AudioInput(short), min_samples=256) is not None
