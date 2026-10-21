@@ -32,7 +32,7 @@ from voiced.engines.pocket import (
     VOICES_REPO,
     PocketEngine,
 )
-from voiced.engines.registry import get_tts_engine
+from voiced.engines.registry import ModelRefused, get_tts_engine
 
 FRAMES = [np.full(1920, 0.5, dtype=np.float32), np.full(1920, -0.25, dtype=np.float32)]
 """What the stand-in decodes for every sentence: two 80 ms frames."""
@@ -43,6 +43,20 @@ def test_registered_with_its_model_and_licence() -> None:
     engine = PocketEngine()
     assert (engine.model_id, engine.license) == ("mlx-community/pocket-tts", "CC-BY-4.0")
     assert PocketEngine("local/path").model_id == "local/path"
+
+
+@pytest.mark.parametrize(
+    "model", ["kyutai/pocket-tts", "kyutai/pocket-tts-fr", "mlx-community/pocket-tts-8bit"]
+)
+def test_an_uncatalogued_pocket_model_is_refused(model: str) -> None:
+    """Kyutai's PyTorch checkpoint or another conversion would fail inside
+    load(); the message names the catalogued model."""
+    with pytest.raises(ModelRefused) as exc:
+        PocketEngine(model)
+    assert str(exc.value) == (
+        f"{model} is not in voiced's model catalogue; its Pocket TTS models are "
+        "mlx-community/pocket-tts"
+    )
 
 
 def test_the_module_imports_without_mlx() -> None:
@@ -71,44 +85,61 @@ def test_the_catalogue_downloads_the_tokenizer_and_the_voices_the_engine_loads()
 
 
 class _FakeModel:
-    """Stands in for mlx-audio's Pocket TTS ``Model``."""
+    """Stands in for mlx-audio's Pocket TTS ``Model``, recording the thread of
+    every call. It copies the private names the engine calls
+    (``_run_flow_lm_and_increment_step``, ``_slice_flow_cache``), so a test
+    here cannot catch an upstream rename; the model tier does."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
         self.sample_rate = TTS_SAMPLE_RATE
         self.weights: list[tuple[str, Any]] = []
         self.log: list[str] = []
+        self.evaluated: list[str] = []
+        self.fail_at: int | None = None
+        """Raise on this frame of every sentence."""
         self.threads: set[int] = {threading.get_ident()}
 
+    def _here(self) -> None:
+        self.threads.add(threading.get_ident())
+
     def load_weights(self, weights: list[tuple[str, Any]]) -> None:
+        self._here()
         self.weights = weights
 
     def parameters(self) -> dict[str, Any]:
+        self._here()
         return {}
 
     def eval(self) -> None:
-        pass
+        self._here()
 
     def init_state(self) -> dict[str, Any]:
+        self._here()
         return {}
 
     def _run_flow_lm_and_increment_step(
         self, model_state: dict[str, Any], audio_conditioning: Any
     ) -> None:
+        self._here()
         model_state["voice"] = audio_conditioning.name
 
     def _slice_flow_cache(self, model_state: dict[str, Any], num_frames: int) -> None:
+        self._here()
         model_state["frames"] = num_frames
 
     def generate_audio_stream(self, model_state: dict[str, Any], text: str) -> Iterator[Any]:
+        self._here()
         self.log.append(f"stream {text} {model_state['voice']} {model_state['frames']}")
         try:
-            for frame in FRAMES:
-                self.threads.add(threading.get_ident())
+            for i, frame in enumerate(FRAMES):
+                self._here()
+                if i == self.fail_at:
+                    raise RuntimeError("decoder failed")
                 self.log.append("frame")
                 yield frame
         finally:
-            self.threads.add(threading.get_ident())
+            self._here()
             self.log.append("closed")
 
 
@@ -122,8 +153,13 @@ def fake_mlx(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[_FakeModel
         name = Path(path).stem
         return {"audio_prompt": SimpleNamespace(name=name, shape=(1, 125, 1024)), "file": name}
 
+    def evaluate(*arrays: Any) -> None:
+        if built:  # a stand-in a test builds itself is not recorded
+            built[-1]._here()
+            built[-1].evaluated += [a.name for a in arrays if hasattr(a, "name")]
+
     core = SimpleNamespace(
-        load=load, eval=lambda *a: None, set_cache_limit=lambda n: None, clear_cache=lambda: None
+        load=load, eval=evaluate, set_cache_limit=lambda n: None, clear_cache=lambda: None
     )
     mlx = ModuleType("mlx")
     mlx.core = core  # type: ignore[attr-defined]
@@ -170,6 +206,7 @@ async def test_load_reads_the_pinned_snapshots(fake_mlx: list[_FakeModel], tmp_p
     assert model.config["flow_lm"]["lookup_table"]["tokenizer_path"] == str(voices / TOKENIZER)
     assert dict(model.weights)["file"] == "model"
     assert {name: p.name for name, p in engine._prompts.items()} == {n: n for n in VOICE_FILES}
+    assert model.evaluated == list(VOICE_FILES)  # every voice read at load
     frames = ["gpu", "stream Warming up. alba 125", "frame", "gpu", "frame", "gpu", "closed"]
     assert model.log == frames
     assert await engine.voices() == POCKET_VOICES
@@ -207,11 +244,13 @@ async def test_each_frame_goes_out_as_16_bit_pcm_after_the_gpu_gate(
     assert model.log == sentence("One.") + sentence("Two.")
 
 
-async def test_every_step_runs_on_one_model_thread(fake_mlx: list[_FakeModel]) -> None:
+async def test_the_load_and_every_step_run_on_one_thread(fake_mlx: list[_FakeModel]) -> None:
     """MLX arrays a sentence keeps between frames cannot be evaluated on
-    another thread."""
-    engine, model = await _loaded(fake_mlx)
-    model.threads.clear()
+    another thread. The model is built on the thread too, so a load that ran
+    elsewhere fails this."""
+    engine = PocketEngine()
+    await engine.load()
+    (model,) = fake_mlx
     for _ in range(3):
         [c async for c in engine.synthesize("One. Two.", "alba")]
     gen = engine.synthesize("One. Two.", "alba")
@@ -229,6 +268,33 @@ async def test_a_client_leaving_mid_sentence_stops_the_sentence(
     await gen.__anext__()
     await gen.aclose()
     assert model.log == ["gpu", "stream One. alba 125", "frame", "closed"]
+
+
+async def test_a_failing_frame_raises_and_still_closes_the_sentence(
+    fake_mlx: list[_FakeModel],
+) -> None:
+    engine, model = await _loaded(fake_mlx)
+    model.fail_at = 1
+    with pytest.raises(RuntimeError, match="decoder failed"):
+        [c async for c in engine.synthesize("One. Two.", "alba")]
+    assert model.log == ["gpu", "stream One. alba 125", "frame", "gpu", "closed"]
+    model.fail_at = None
+    model.log.clear()
+    assert len([c async for c in engine.synthesize("One.", "alba")]) == len(FRAMES)
+
+
+async def test_a_second_sentence_at_once_is_refused_not_garbled(
+    fake_mlx: list[_FakeModel],
+) -> None:
+    """Mimi's decoder state is the model's; the exclusive slot keeps
+    sentences apart, and the engine refuses an overlap if it ever happens."""
+    engine, _ = await _loaded(fake_mlx)
+    first = engine._synth_chunks("One.", "alba", 1.0)
+    next(first)
+    with pytest.raises(RuntimeError, match="one sentence at a time"):
+        next(engine._synth_chunks("Two.", "alba", 1.0))
+    first.close()
+    assert len(list(engine._synth_chunks("Three.", "alba", 1.0))) == len(FRAMES)
 
 
 async def test_a_sentence_without_letters_or_digits_is_not_spoken(
@@ -292,6 +358,21 @@ def test_streams_frames_in_order_before_the_sentence_is_done(pocket_engine: Any)
     assert times == sorted(times)
     assert times[0] < 0.15, f"first audio after {times[0] * 1000:.0f} ms"
     assert times[0] < times[-1] / 4
+
+
+@pytest.mark.model
+def test_a_long_unpunctuated_sentence_is_spoken_in_full(pocket_engine: Any) -> None:
+    """One 300-character sentence, no punctuation for the splitter: about
+    50 words, so 12 to 30 s of speech, not cut short."""
+    words = "the quick brown fox jumps over the lazy dog and runs into the forest".split()
+    text = " ".join(words[i % len(words)] for i in range(60))[:300].rsplit(" ", 1)[0]
+    assert len(text) > 290 and not any(c in text for c in ".,;!?")
+
+    async def collect() -> bytes:
+        return b"".join([c.data async for c in pocket_engine.synthesize(text, "alba")])
+
+    seconds = len(asyncio.run(collect())) / 2 / TTS_SAMPLE_RATE
+    assert 12.0 < seconds < 30.0, seconds
 
 
 @pytest.mark.model

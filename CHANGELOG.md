@@ -62,7 +62,7 @@ uses [Semantic Versioning](https://semver.org/).
   are the six whose recordings allow commercial use (`alba`, `marius`,
   `javert`, `fantine`, `eponine`, `azelma`). The model, its tokenizer and
   the voices are pinned (`voiced models download mlx-community/pocket-tts`);
-  the new `pocket` extra adds `sentencepiece`.
+  the `tts` extra adds `sentencepiece`, its tokenizer.
 
 ### Changed
 

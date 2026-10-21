@@ -2068,11 +2068,6 @@ phonon = [
     { name = "huggingface-hub" },
     { name = "ptts" },
 ]
-pocket = [
-    { name = "huggingface-hub" },
-    { name = "mlx-audio" },
-    { name = "sentencepiece" },
-]
 stt = [
     { name = "parakeet-mlx" },
 ]
@@ -2082,6 +2077,7 @@ tts = [
     { name = "mlx-audio" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "sentencepiece" },
 ]
 
 [package.dev-dependencies]
@@ -2103,11 +2099,9 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "huggingface-hub", marker = "extra == 'phonon'", specifier = ">=1.1" },
-    { name = "huggingface-hub", marker = "extra == 'pocket'", specifier = ">=1.1" },
     { name = "huggingface-hub", marker = "extra == 'tts'", specifier = ">=1.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6,<0.7" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
-    { name = "mlx-audio", marker = "extra == 'pocket'", specifier = ">=0.5.8,<0.5.10" },
     { name = "mlx-audio", marker = "extra == 'tts'", specifier = ">=0.5.8,<0.5.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "parakeet-mlx", marker = "extra == 'stt'", specifier = ">=0.5,<0.6" },
@@ -2118,14 +2112,14 @@ requires-dist = [
     { name = "pysilero-vad", specifier = ">=3.4,<4" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "scipy", marker = "extra == 'tts'", specifier = ">=1.11" },
-    { name = "sentencepiece", marker = "extra == 'pocket'", specifier = ">=0.2,<0.3" },
+    { name = "sentencepiece", marker = "extra == 'tts'", specifier = ">=0.2,<0.3" },
     { name = "tomlkit", specifier = ">=0.12" },
     { name = "uvicorn", specifier = ">=0.30" },
     { name = "websockets", specifier = ">=13" },
     { name = "wyoming", specifier = ">=1.6" },
     { name = "zeroconf", specifier = ">=0.132" },
 ]
-provides-extras = ["stt", "tts", "phonon", "pocket"]
+provides-extras = ["stt", "tts", "phonon"]
 
 [package.metadata.requires-dev]
 build = [{ name = "hatchling", specifier = "==1.32.4" }]

@@ -10,10 +10,12 @@ which turns them into 24 kHz audio. No phonemizer, no espeak-ng. This engine
 * runs on the GPU through MLX, so before each frame it waits for any
   speech-to-text encoder call that holds the GPU (``voiced.gpu``, ADR 0019),
   within the per-sentence budget;
-* runs the load and every step on its own :class:`~voiced.threads.ModelThread`:
-  a sentence's generator keeps MLX arrays (the attention cache, Mimi's decoder
-  state) from one frame to the next, and MLX cannot evaluate them on another
-  thread;
+* relies on the sentence loop running the load and every step on the
+  engine's one model thread (``voiced.engines.sentence``): a sentence's
+  generator keeps MLX arrays (the attention cache, Mimi's decoder state) from
+  one frame to the next, and MLX cannot evaluate them on another thread;
+* generates one sentence at a time: Mimi's streaming state lives on the
+  model, so an overlapping second sentence is refused, not garbled;
 * loads the model, the tokenizer and the voices from voiced's pinned
   snapshots (``voiced.models``, the catalogue), as local files, so mlx-audio
   never reaches the Hub itself.
@@ -35,30 +37,31 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
-from collections.abc import Callable, Generator
-from typing import Any, Literal, ParamSpec, TypeVar, cast
+from collections.abc import Generator
+from typing import Any, Literal, cast
 
 import numpy as np
 
 from voiced import gpu
 from voiced.audio import float32_to_pcm16
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
+from voiced.engines.registry import ModelRefused
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
 from voiced.models import default_model, engine
-from voiced.threads import ModelThread
 
 log = logging.getLogger(__name__)
 
 __all__ = ["DEFAULT_VOICE", "POCKET_VOICES", "VOICES_REPO", "PocketEngine"]
 
-P = ParamSpec("P")
-T = TypeVar("T")
-
 _POCKET = engine("pocket")
 if _POCKET is None:  # pragma: no cover - the catalogue ships with the engine
     raise ImportError("voiced.models.CATALOGUE has no pocket engine")
 VOICES_REPO = _POCKET.shared[0].id
+MODELS = tuple(m.id for m in _POCKET.models)
+"""The Pocket TTS models in the catalogue; the engine refuses any other
+``kyutai/pocket-tts*`` or ``mlx-community/pocket-tts*`` id."""
 TOKENIZER = "tokenizer.model"
 """The sentencepiece tokenizer in :data:`VOICES_REPO`, the file the model's
 ``config.json`` names on the Hub."""
@@ -99,11 +102,15 @@ class PocketEngine(SentenceTTSEngine):
 
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
-        self._thread = ModelThread("pocket")
+        if self.model_id.startswith(("kyutai/pocket-tts", "mlx-community/pocket-tts")) and (
+            self.model_id not in MODELS
+        ):
+            raise ModelRefused(
+                f"{self.model_id} is not in voiced's model catalogue; its Pocket TTS models "
+                f"are {', '.join(MODELS)}"
+            )
         self._prompts: dict[str, Any] = {}
-
-    async def _run(self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-        return await self._thread.run(fn, *args, **kwargs)
+        self._busy = threading.Lock()
 
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way
@@ -131,7 +138,9 @@ class PocketEngine(SentenceTTSEngine):
             name: cast("dict[str, Any]", mx.load(str(voices / path)))["audio_prompt"]
             for name, path in VOICE_FILES.items()
         }
-        b"".join(_stream(model, prompts[DEFAULT_VOICE.id], WARMUP_TEXT))
+        # mx.load is lazy: read every voice now, so a bad file fails the load.
+        mx.eval(*prompts.values())
+        b"".join(_stream(model, prompts[DEFAULT_VOICE.id], WARMUP_TEXT, self._busy))
         self._prompts = prompts
         self._model = model
         log.info(
@@ -158,16 +167,27 @@ class PocketEngine(SentenceTTSEngine):
         the model has no rate control. A sentence without a letter or a digit
         is skipped: the model reads "...", "!!!" or "?" as 0.4 to 0.8 s of sound."""
         if any(c.isalnum() for c in sentence):
-            yield from _stream(self._model, self._prompts[voice], sentence)
+            yield from _stream(self._model, self._prompts[voice], sentence, self._busy)
 
 
-def _stream(model: Any, prompt: Any, sentence: str) -> Generator[bytes, None, None]:
+def _stream(
+    model: Any, prompt: Any, sentence: str, busy: threading.Lock
+) -> Generator[bytes, None, None]:
     """One sentence as 24 kHz int16 PCM, one 80 ms frame at a time. Before
     each frame it waits for STT encoder calls (ADR 0019). Closing the
-    generator stops the sentence at the next frame."""
-    yielder = gpu.Yielder()
-    frames = model.generate_audio_stream(_voice_state(model, prompt), sentence)
+    generator stops the sentence at the next frame.
+
+    Mimi's streaming decoder state lives on ``model`` and is reset when a
+    sentence starts, so two sentences at once would garble each other. The
+    exclusive TTS slot rules that out; ``busy`` is held from the first frame
+    to the close, and a second sentence started meanwhile raises instead.
+    It cannot wait: every step runs on the one model thread."""
+    if not busy.acquire(blocking=False):
+        raise RuntimeError("Pocket TTS generates one sentence at a time")
+    frames: Any = None
     try:
+        yielder = gpu.Yielder()
+        frames = model.generate_audio_stream(_voice_state(model, prompt), sentence)
         while True:
             yielder()
             frame = next(frames, None)
@@ -175,7 +195,9 @@ def _stream(model: Any, prompt: Any, sentence: str) -> Generator[bytes, None, No
                 return
             yield float32_to_pcm16(np.asarray(frame, dtype=np.float32))
     finally:
-        frames.close()
+        if frames is not None:
+            frames.close()
+        busy.release()
 
 
 def _voice_state(model: Any, prompt: Any) -> dict[str, Any]:

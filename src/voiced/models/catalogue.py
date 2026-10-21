@@ -97,7 +97,7 @@ PHONON_VOICES = (
 """The English presets of ``gradium/phonon-voices`` that Phonon loads, by file
 id (``voiced.engines.phonon`` names them; a test keeps the two in step)."""
 
-POCKET_VOICES = ("alba", "marius", "javert", "fantine", "eponine", "azelma")
+POCKET_VOICE_FILES = ("alba", "marius", "javert", "fantine", "eponine", "azelma")
 """The voices of ``kyutai/pocket-tts-without-voice-cloning`` that Pocket TTS
 loads, the six whose recordings allow commercial use (``voiced.engines.pocket``
 names them; a test keeps the two in step)."""
@@ -191,7 +191,7 @@ CATALOGUE: tuple[Engine, ...] = (
             Model(
                 "kyutai/pocket-tts-without-voice-cloning",
                 "CC-BY-4.0",
-                ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICES)),
+                ("tokenizer.model", *(f"embeddings/{v}.safetensors" for v in POCKET_VOICE_FILES)),
             ),
         ),
     ),

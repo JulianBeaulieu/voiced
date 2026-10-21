@@ -30,8 +30,6 @@ EXPORTS = {
         "tts",
         "--extra",
         "phonon",
-        "--extra",
-        "pocket",
     ],
     "src/voiced/build-requirements.lock": ["--only-group", "build"],
 }

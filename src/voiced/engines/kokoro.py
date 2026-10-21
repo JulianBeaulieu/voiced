@@ -364,13 +364,13 @@ class KokoroEngine(SentenceTTSEngine):
         For tests and diagnostics only: it runs the phonemizer on the calling
         thread, and espeak-ng holds process-global state that is not safe to
         call concurrently with a synthesis in flight. Synthesis itself
-        phonemizes inside the worker thread the slot already serializes.
+        phonemizes on the model thread the slot already serializes.
         """
         self._check_loaded()
         return _phonemize(self._tokenizer, text, voice)
 
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a worker thread."""
+        """Blocking; runs on the model thread."""
         return _synth(self._model, self._tokenizer, self._packs[voice], sentence, voice, speed)
 
 

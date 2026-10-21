@@ -106,6 +106,43 @@ async def test_load_runs_off_the_event_loop(
     assert threads and threads[0] != threading.get_ident()
 
 
+async def test_the_load_and_every_step_run_on_one_model_thread(
+    engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MLX arrays an engine keeps between pieces of a sentence cannot be
+    evaluated on another thread, so the load, each piece and each close run
+    on the engine's one thread, never the event loop's."""
+    engine, voice = engine_and_voice
+    threads: list[tuple[str, int]] = []
+
+    def fake_load() -> None:
+        threads.append(("load", threading.get_ident()))
+        engine._model = object()
+
+    def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
+        try:
+            for _ in range(2):
+                threads.append(("piece", threading.get_ident()))
+                yield bytes(480)
+        finally:
+            threads.append(("close", threading.get_ident()))
+
+    monkeypatch.setattr(engine, "_load_sync", fake_load)
+    monkeypatch.setattr(engine, "_has_voice", lambda v: v == voice)
+    monkeypatch.setattr(engine, "_synth_chunks", pieces)
+    await engine.load()
+    # A busy default pool: the shared executor would hand out other threads.
+    await asyncio.gather(*(asyncio.to_thread(time.sleep, 0.01) for _ in range(8)))
+    for _ in range(3):
+        [c async for c in engine.synthesize("One. Two.", voice)]
+    gen = engine.synthesize("One. Two.", voice)
+    await gen.__anext__()
+    await gen.aclose()
+    assert {kind for kind, _ in threads} == {"load", "piece", "close"}
+    assert len({ident for _, ident in threads}) == 1
+    assert threads[0][1] != threading.get_ident()
+
+
 async def test_unknown_voice_raises_before_yielding(
     engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

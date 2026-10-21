@@ -32,19 +32,6 @@ building anything:
   (`hf://kyutai/pocket-tts-without-voice-cloning/tokenizer.model@d4fdd22`),
   and mlx-audio fetches its voices from the same repository by name.
 
-### Can Phonon's runtime run it?
-
-No, not without voiced carrying a port. The `ptts` 0.4.0 wheel voiced uses
-for Phonon reads Phonon's `config.json` schema. Kyutai's v4.0.0 release
-(2026-10-20) ships Rust binaries built on xn-ptts, but they translate
-Kyutai's YAML configs to that schema in their own code and build on a fork
-of xn-ptts (a branch adding what Pocket checkpoints need: `inner_dim`,
-`z_dim`, low-rank text tables, and more), pinned to a commit. Running Pocket
-TTS on stock `ptts` would mean voiced writing configs for each checkpoint
-and depending on that fork. Those binaries also run on the CPU only. mlx-audio
-already runs the model, with less code on voiced's side and faster, so that
-is the path taken.
-
 ## Licences
 
 | What | Licence | Source |
@@ -71,21 +58,30 @@ and the README carries the CC-BY-4.0 attribution.
 `pocket` is a fifth TTS engine, `voiced.engines.pocket.PocketEngine`, a
 `SentenceTTSEngine`, selectable and never the default.
 
-- **Dependency.** A `pocket` extra with mlx-audio at the `tts` extra's pin,
-  `sentencepiece>=0.2,<0.3` and `huggingface-hub`, so `pip install
-  voiced[pocket]` works alone; the shipped lock carries it with `stt`,
-  `tts` and `phonon`, so the app and every install path can switch to it.
+- **Dependency.** `sentencepiece>=0.2,<0.3` joins the `tts` extra: Pocket
+  TTS runs on the same mlx-audio as Kokoro and Soprano, and mlx-audio does
+  not declare the tokenizer's package. The shipped lock already carries
+  `tts`, so the app and every install path can switch to it. The comment on
+  the mlx-audio pin in `pyproject.toml` names what Pocket relies on.
   Everything that imports MLX or mlx-audio runs inside `load()`.
 - **GPU, behind the STT.** The model runs on the GPU, so it follows
   ADR 0019: before each frame it waits while an STT encoder call holds the
   lock (`voiced.gpu.Yielder`, the 300 ms per-sentence budget). A frame is
   about 10 ms of GPU work with a sync of its own (the end-of-speech check),
   so there are no large buffers to split, as Kokoro had to.
-- **One model thread.** `SentenceTTSEngine` gains `_run`, through which the
-  load and every step of a sentence (each `next()`, the `close()`) go; it is
-  `run_blocking` by default, so the other engines are unchanged. Pocket
-  overrides it to run them all on its own `ModelThread`, as Parakeet does,
-  since its sentence state cannot move between threads.
+- **One model thread per sentence engine.** `SentenceTTSEngine` now runs
+  the load and every step of a sentence (each `next()`, the `close()`) on
+  the engine's own `ModelThread`, as Parakeet does, instead of the shared
+  pool behind `run_blocking`: Pocket's sentence state cannot move between
+  threads, and the next MLX engines that stream within a sentence keep
+  state the same way. A TTS process serves one request at a time (the
+  exclusive slot), so one thread costs Kokoro, Soprano and Phonon nothing,
+  and cancellation still waits for the step in flight.
+- **One sentence at a time.** Mimi's streaming decoder state lives on the
+  model and is reset at the start of each sentence, so two sentences
+  generated at once would garble each other. The exclusive slot already
+  rules that out; `_stream` holds a lock from its first frame to its close,
+  so a second overlapping sentence fails loudly instead.
 - **Streaming within a sentence.** `_synth_chunks` yields every 80 ms frame
   as int16; first audio is the first frame. Closing the generator stops
   the sentence at the next frame. A sentence without a letter or a digit is
@@ -93,7 +89,8 @@ and the README carries the CC-BY-4.0 attribution.
 - **No Hub at run time.** The engine builds mlx-audio's `Model` itself from
   the pinned snapshot's `config.json`, with the tokenizer path pointed at
   the pinned `tokenizer.model`, and loads each voice's `audio_prompt` from
-  the pinned embeddings. A voice's model state is built for every sentence
+  the pinned embeddings, evaluated at load so a missing or unreadable
+  voice fails the load, not a request. A voice's model state is built for every sentence
   from that embedding, through two of mlx-audio's private methods
   (`_run_flow_lm_and_increment_step`, `_slice_flow_cache`), the steps of
   its own `get_state_for_audio_prompt` without its download. A state is
@@ -107,6 +104,10 @@ and the README carries the CC-BY-4.0 attribution.
   repository's current head. The engine loads them with
   `snapshot(..., check_only=True)`, so the service never downloads:
   `voiced models download mlx-community/pocket-tts` fetches both.
+- **Only catalogued models.** Another `kyutai/pocket-tts*` or
+  `mlx-community/pocket-tts*` id (Kyutai's PyTorch checkpoint, another
+  conversion) is refused when the engine is made (`ModelRefused`), not
+  failed inside `load()`.
 - **Voices.** The six whose recordings allow commercial use, by Kyutai's
   lowercase names, in a static table so the catalogue lists them without
   loading anything; `alba`, Kyutai's default, first. Language `en` for all:
@@ -130,6 +131,24 @@ Pick Phonon 31M (Apache-2.0, no attribution, 37 English presets) for the
 smallest model on the CPU, leaving the GPU to speech-to-text, or Phonon 40M
 (CC-BY-NC-4.0) for non-commercial use.
 
+## Alternatives considered
+
+- **Phonon's runtime, `ptts`.** Not without voiced carrying a port. Checked
+  by reading the sources, not by a load attempt: the `ptts` 0.4.0 wheel
+  voiced uses for Phonon reads Phonon's `config.json` schema only. Kyutai's
+  v4.0.0 release (2026-10-20) ships Rust binaries built on xn-ptts, but
+  they translate Kyutai's YAML configs to that schema in their own code and
+  build on a fork of xn-ptts (a branch adding what Pocket checkpoints need:
+  `inner_dim`, `z_dim`, low-rank text tables, and more), pinned to a
+  commit. Running Pocket TTS on stock `ptts` would mean voiced writing
+  configs for each checkpoint and depending on that fork, and those
+  binaries run on the CPU only.
+- **MLX on the CPU.** 225 ms to the first frame and 0.5 times real time
+  (Context): too slow to stream.
+
+mlx-audio on the GPU already runs the model with the least code on voiced's
+side, so that is the path taken.
+
 ## Measurements
 
 Apple M1 Max, 64 GB, macOS 15.7.4, a quiet machine. `voiced serve stt`
@@ -137,7 +156,9 @@ Apple M1 Max, 64 GB, macOS 15.7.4, a quiet machine. `voiced serve stt`
 running Pocket TTS, each in its own process from a terminal, over real
 sockets, measured with `scripts/bench.py`'s own functions (`tts_first_audio_ms`,
 `ws_finalize_ms`, `tts_busy`, `first_audio_while_streaming_ms`,
-`batch_transcription_ms`, `memory`) with voice `alba`. First audio is the
+`batch_transcription_ms`, `memory`) with voice `alba`. These are the
+contention numbers; the row in `docs/benchmarks.md` (`scripts/bench_engine.py`,
+a separate run) has 45 / 47 ms first audio and a 0.67 GB footprint. First audio is the
 `openai` client's streamed `pcm` request for "Turn on the kitchen lights."
 to the first byte, after one warm-up.
 
@@ -170,4 +191,17 @@ reported; this one held the machine to itself. The model loads in about
 - The engine relies on two private mlx-audio methods and on the converted
   config's layout (`flow_lm.lookup_table.tokenizer_path`); a bump of
   mlx-audio has to re-run the model tier.
+- Speed 4 of 5 in `docs/benchmarks.md`: a real-time factor of 0.167, about
+  four times Kokoro's and Phonon's, so a long reply takes longer to finish,
+  though its first audio (45 ms median) is second only to Phonon's.
 - Not measured on the Mac Studio.
+
+## Consequences
+
+- Every `SentenceTTSEngine` runs on its own model thread; an engine added
+  later gets that without asking.
+- `sentencepiece` is installed with the `tts` extra for everyone.
+- An mlx-audio bump has to re-run Pocket's model tier (the private methods
+  and the config layout above).
+- The README carries Kyutai's CC-BY-4.0 attribution for the model, the
+  tokenizer and the voices.
