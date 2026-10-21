@@ -9,14 +9,15 @@ running service's ``voices()`` stays the authority on what can be
 synthesized. Any engine may declare an ``unavailable_reason()`` classmethod
 the same way, returning why it cannot run on this Mac, as a phrase that
 follows the engine's name ("needs macOS 15 or later" for Moonshine below
-macOS 15), or None; without it an engine is available. The listing marks such
-an engine ``available: false`` with the reason, so the app offers neither
-Download nor Use, and ``voiced models download`` refuses its models. Models
-come from ``voiced.models.CATALOGUE`` (the default
-first), or ``model_id`` for an engine it does not know; languages from
-``languages``, and ``model_languages`` gives each model's own (the
-catalogue's, else the engine's), so a settings UI offers the languages of
-the model selected.
+macOS 15), or None; without it an engine can run. The listing carries it as
+``unavailable_reason`` (null: can run), so the app offers neither Download
+nor Use, and ``voiced models download`` refuses the engine's models. A hook
+that raises fails the whole listing, as ``catalogue_voices`` does.
+
+Models come from ``voiced.models.CATALOGUE`` (the default first), or
+``model_id`` for an engine it does not know; languages from ``languages``,
+and ``model_languages`` gives each model's own (the catalogue's, else the
+engine's), so a settings UI shows the languages of the model in use.
 
 Display labels are built here, in one place: an engine's label is its
 registry name capitalised, and a voice with a gender is labelled
@@ -98,15 +99,13 @@ def _common(name: str, cls: type[STTEngine] | type[TTSEngine]) -> dict[str, Any]
     languages = list(getattr(cls, "languages", []))
     catalogued = models.engine(name)
     own = {m.id: list(m.languages) for m in catalogued.models} if catalogued else {}
-    reason = unavailable_reason(cls)
     return {
         "name": name,
         "label": engine_label(name),
         "models": engine_models(name, cls),
         "languages": languages,
         "model_languages": {m: own.get(m) or languages for m in engine_models(name, cls)},
-        "available": reason is None,
-        "unavailable_reason": reason or "",
+        "unavailable_reason": unavailable_reason(cls),
     }
 
 

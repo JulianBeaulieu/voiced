@@ -140,15 +140,30 @@ def test_list_marks_an_engine_that_cannot_run_here(settings: Settings, model_cac
     out: list[str] = []
     cli_models.cmd_list(settings, out.append, as_json=True)
     engines = {e["name"]: e for e in json.loads(out[0])["engines"]}
-    assert not engines["moonshine"]["available"]
     assert engines["moonshine"]["unavailable_reason"] == "needs macOS 15 or later"
-    assert engines["phonon"]["available"] and engines["phonon"]["unavailable_reason"] == ""
-    assert engines["fake"]["available"]
+    assert engines["phonon"]["unavailable_reason"] is None
+    assert engines["fake"]["unavailable_reason"] is None
     out.clear()
     cli_models.cmd_list(settings, out.append, as_json=False)
     lines = out[0].splitlines()
     assert any(MOONSHINE in line and "cannot run here: needs macOS 15" in line for line in lines)
     assert not any(P31 in line and "cannot run here" in line for line in lines)
+
+
+def test_an_engine_that_is_not_installed_is_not_marked(
+    settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catalogued, not installed: nothing says it cannot run here."""
+    from voiced.engines import catalogue
+
+    listed = catalogue.engines_list()
+    listed["stt"] = [e for e in listed["stt"] if e["name"] != "moonshine"]
+    monkeypatch.setattr(catalogue, "engines_list", lambda: listed)
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    moonshine = next(e for e in json.loads(out[0])["engines"] if e["name"] == "moonshine")
+    assert not moonshine["installed"]
+    assert moonshine["unavailable_reason"] is None
 
 
 # download --------------------------------------------------------------------

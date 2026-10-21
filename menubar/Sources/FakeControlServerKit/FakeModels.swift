@@ -131,8 +131,8 @@ public struct FakeModels: Sendable {
         guard let (engine, model) = state.list.model(id) else {
             return fail("failed", "\(id) is not in the catalogue.")
         }
-        if !engine.available {
-            return fail("failed", "the \(engine.name) engine \(engine.unavailableReason), so \(id) cannot run here")
+        if let reason = engine.unavailableReason {
+            return fail("failed", "the \(engine.name) engine \(reason), so \(id) cannot run here")
         }
         if let code = state.failures[id] {
             return fail(code, "The fake download of \(id) fails with \(code).")
@@ -193,8 +193,8 @@ extension FakeModelState {
     /// One model in each state the rows show, matching `FakeState.sample`'s engines and
     /// settings: Parakeet and Kokoro downloaded and in use (Kokoro with an old version
     /// cached), Soprano with only an old version, Phonon's 31m not downloaded and its gated
-    /// 40m failing without a token, Nemotron not downloaded, Moonshine unable to run here, and
-    /// two plugin engines with nothing to manage. Ratings,
+    /// 40m failing without a token, Nemotron not downloaded, Moonshine unable to run here,
+    /// and two plugin engines with nothing to manage. Ratings,
     /// notes and the Recommended badge as the catalogue has them; the 40m is not rated.
     public static var sample: FakeModelState {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -226,7 +226,7 @@ extension FakeModelState {
                         ]),
                     // An engine this Mac cannot run, as Moonshine on macOS 14.
                     ModelEngine(
-                        name: "moonshine", label: "Moonshine", kind: "stt", available: false,
+                        name: "moonshine", label: "Moonshine", kind: "stt",
                         unavailableReason: "needs macOS 15 or later",
                         models: [
                             CatalogueModel(

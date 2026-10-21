@@ -469,6 +469,18 @@ above:
   it." rather than section 5's "Phonon's voices are deleted with it.": the
   catalogue names shared models, not what they hold.
 
+### Engines that cannot run here (2026-10-21)
+
+An engine that cannot run on this Mac is listed, not hidden. An optional
+`unavailable_reason()` classmethod, read by the engine catalogue the way it
+reads `catalogue_voices` (outside the frozen interface), returns why, as a
+phrase that follows the engine's name ("needs macOS 15 or later"), or None.
+`engines.list` and `voiced models list --json` carry it per engine as
+`unavailable_reason`, null when the engine can run (additive; one field, so
+a flag and a reason cannot disagree). The CLI table marks the rows "cannot
+run here", and `voiced models download` refuses the engine's models with
+that reason. Moonshine is the first (ADR 0026).
+
 ### The app side (2026-10-21)
 
 The model rows landed in the menu bar app as section 5 describes, with the
@@ -512,14 +524,6 @@ text above:
   served by this model" when no served tag shares its primary subtag, the
   match the engines make. Use changes the model, and the pushed settings
   change the list. The language itself is not edited in the app.
-- An engine that cannot run on this Mac is listed, not hidden: an optional
-  `unavailable_reason()` classmethod, read by the engine catalogue the way
-  it reads `catalogue_voices` (outside the frozen interface), returns why,
-  as a phrase that follows the engine's name ("needs macOS 15 or later"),
-  or None. `engines.list` and `voiced models list --json` carry it per
-  engine as `available` and `unavailable_reason` (additive), the CLI table
-  marks the rows "cannot run here", and `voiced models download` refuses
-  the engine's models with that reason. The app shows the reason under the
-  engine and offers neither Download nor Use on its rows; Delete stays, so
-  a model downloaded before is still removable. Moonshine is the first
-  (ADR 0026).
+- An engine that cannot run on this Mac (above) shows the reason under its
+  name, and its rows offer neither Download nor Use; Delete stays, so a
+  model downloaded before is still removable.

@@ -237,8 +237,8 @@ public struct STTEngineInfo: Codable, Sendable, Equatable {
     public var label: String?
     public var models: [String]
     public var languages: [String]
-    /// Each model's own languages, where they differ from the engine's (Nemotron's English
-    /// model serves only `en-US`); may be missing or partial.
+    /// Each model's languages (the catalogue's, else the engine's: Nemotron's English model
+    /// serves only `en-US`); absent from an older voiced.
     public var modelLanguages: [String: [String]]
 
     public init(
@@ -275,7 +275,9 @@ public struct STTEngineInfo: Codable, Sendable, Equatable {
     }
 
     /// Whether `model` serves `language`, matched on the primary subtag as the engines match
-    /// (`en` is served by a model of `en-US`). A model with no languages listed serves any.
+    /// (`en` is served by a model of `en-US`; the rule is `primary_subtag` in
+    /// src/voiced/text/language.py). A model with no languages listed serves any: the
+    /// catalogue lists some for every STT model, so this only keeps an odd plugin unmarked.
     public func serves(_ language: String, model: String) -> Bool {
         let served = languages(of: model)
         return served.isEmpty || served.contains { Self.primarySubtag($0) == Self.primarySubtag(language) }
@@ -300,7 +302,8 @@ public struct SpeechLanguages: Sendable, Equatable {
         served = (engine?.languages(of: settings.model) ?? []).map(name)
     }
 
-    /// One line, the mark in words: "English: not served by this model".
+    /// What the Language row shows, the mark in words: "English: not served by this model".
+    /// The wording lives here alone; the view adds a symbol when `isServed` is false.
     public var line: String { isServed ? language : "\(language): not served by this model" }
 }
 

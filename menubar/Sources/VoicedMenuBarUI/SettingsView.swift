@@ -288,6 +288,7 @@ public struct SettingsView: View {
         let languages = SpeechLanguages(
             settings.stt, engine: model.engines?.sttEngine(named: settings.stt.engine), name: Self.languageName)
         Section {
+            // `line` carries the wording; a language the model does not serve also gets the symbol.
             LabeledContent("Language") {
                 if languages.isServed {
                     Text(languages.line)

@@ -155,8 +155,7 @@ def listing(settings: Settings) -> dict[str, Any]:
                 "label": engine_label(engine.name),
                 "kind": engine.kind,
                 "installed": found is not None,
-                "available": found["available"] if found else True,
-                "unavailable_reason": found["unavailable_reason"] if found else "",
+                "unavailable_reason": found["unavailable_reason"] if found else None,
                 "languages": found["languages"] if found else [],
                 "voices": found.get("voices", []) if found else [],
                 "models": [view(m, lock[m.id], shared=False) for m in engine.models],
@@ -170,7 +169,6 @@ def listing(settings: Settings) -> dict[str, Any]:
                 "label": found["label"],
                 "kind": kind,
                 "installed": True,
-                "available": found["available"],
                 "unavailable_reason": found["unavailable_reason"],
                 "languages": found["languages"],
                 "voices": found.get("voices", []),
@@ -183,7 +181,7 @@ def listing(settings: Settings) -> dict[str, Any]:
     return {"cache": str(hub_path), "total_bytes": total, "engines": engines}
 
 
-def _state(model: dict[str, Any]) -> str:
+def _state(model: dict[str, Any], engine: dict[str, Any]) -> str:
     if model["in_use"]:
         state = "in use" if model["downloaded"] else "in use, not downloaded"
     elif model["downloaded"]:
@@ -195,7 +193,11 @@ def _state(model: dict[str, Any]) -> str:
     old = sum(p["bytes"] for p in model["previous"])
     if old:
         state += f"; old version {size_text(old)}"
-    return state + ("; gated" if model["gated"] and not model["downloaded"] else "")
+    if model["gated"] and not model["downloaded"]:
+        state += "; gated"
+    if engine["unavailable_reason"] is not None:
+        state += f"; cannot run here: {engine['unavailable_reason']}"
+    return state
 
 
 def _rating(n: int | None) -> str:
@@ -223,12 +225,7 @@ def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
                     _rating(model["quality"]),
                     _rating(model["speed"]),
                     f"{size_text(size)} {where}",
-                    _state(model)
-                    + (
-                        ""
-                        if engine["available"]
-                        else f"; cannot run here: {engine['unavailable_reason']}"
-                    ),
+                    _state(model, engine),
                 )
             )
     echo(render_table(("ENGINE", "MODEL", "LICENSE", "QUALITY", "SPEED", "SIZE", "STATE"), rows))
@@ -266,7 +263,9 @@ def cancel_on_sigterm(progress: Progress, echo: Echo) -> Iterator[None]:
 
 def refuse_unavailable(model_id: str) -> None:
     """A catalogued model whose engine cannot run on this Mac is not
-    downloaded: it could never be used here."""
+    downloaded: it could never be used here. This reads the engine
+    registry, so a broken plugin entry point fails every download, as it
+    fails ``list``."""
     from voiced.engines import registry
     from voiced.engines.catalogue import unavailable_reason
 
@@ -275,11 +274,7 @@ def refuse_unavailable(model_id: str) -> None:
         return
     engine = found[0]
     try:
-        cls = (
-            registry.get_stt_engine(engine.name)
-            if engine.kind == "stt"
-            else registry.get_tts_engine(engine.name)
-        )
+        cls = registry.get_engine(engine.kind, engine.name)
     except registry.UnknownEngine:
         return
     reason = unavailable_reason(cls)

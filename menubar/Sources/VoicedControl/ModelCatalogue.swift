@@ -50,11 +50,10 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
     public var kind: String
     /// Whether the engine's entry point is in the environment; Use needs it.
     public var installed: Bool
-    /// False for an engine that cannot run on this Mac (Moonshine below macOS 15): its rows
-    /// offer neither Download nor Use. `unavailableReason` says why, as a phrase that follows
-    /// the engine's name ("needs macOS 15 or later").
-    public var available: Bool
-    public var unavailableReason: String
+    /// Why the engine cannot run on this Mac, as a phrase that follows its name ("needs macOS
+    /// 15 or later" for Moonshine below macOS 15); nil when it can. Its rows then offer neither
+    /// Download nor Use.
+    public var unavailableReason: String?
     public var voices: [String]
     /// Empty for a plugin engine the catalogue does not know: it has nothing to manage.
     public var models: [CatalogueModel]
@@ -64,15 +63,14 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
     public var id: String { "\(kind).\(name)" }
 
     public init(
-        name: String, label: String, kind: String, installed: Bool = true, available: Bool = true,
-        unavailableReason: String = "", voices: [String] = [], models: [CatalogueModel],
+        name: String, label: String, kind: String, installed: Bool = true,
+        unavailableReason: String? = nil, voices: [String] = [], models: [CatalogueModel],
         shared: [CatalogueModel] = []
     ) {
         self.name = name
         self.label = label
         self.kind = kind
         self.installed = installed
-        self.available = available
         self.unavailableReason = unavailableReason
         self.voices = voices
         self.models = models
@@ -80,7 +78,7 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, label, kind, installed, available, voices, models, shared
+        case name, label, kind, installed, voices, models, shared
         case unavailableReason = "unavailable_reason"
     }
 
@@ -90,19 +88,18 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
         label = try c.decodeIfPresent(String.self, forKey: .label) ?? name
         kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
         installed = try c.decodeIfPresent(Bool.self, forKey: .installed) ?? true
-        available = (try? c.decodeIfPresent(Bool.self, forKey: .available)) ?? true
-        unavailableReason = (try? c.decodeIfPresent(String.self, forKey: .unavailableReason)) ?? ""
+        unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
         voices = (try? c.decodeIfPresent([String].self, forKey: .voices)) ?? []
         models = try c.decodeIfPresent([CatalogueModel].self, forKey: .models) ?? []
         shared = try c.decodeIfPresent([CatalogueModel].self, forKey: .shared) ?? []
     }
 
+    public var available: Bool { unavailableReason == nil }
+
     /// Under the engine's rows when it cannot run here: "Moonshine needs macOS 15 or later,
     /// so it cannot run on this Mac."
     public var unavailableNote: String? {
-        guard !available else { return nil }
-        let reason = unavailableReason.trimmingCharacters(in: .whitespacesAndNewlines)
-        return reason.isEmpty ? "\(label) cannot run on this Mac." : "\(label) \(reason), so it cannot run on this Mac."
+        unavailableReason.map { "\(label) \($0), so it cannot run on this Mac." }
     }
 }
 

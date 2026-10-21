@@ -65,8 +65,7 @@ def test_labels(monkeypatch: pytest.MonkeyPatch) -> None:
         "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
         "languages": stt["parakeet"]["languages"],
         "model_languages": {"mlx-community/parakeet-tdt-0.6b-v3": stt["parakeet"]["languages"]},
-        "available": True,
-        "unavailable_reason": "",
+        "unavailable_reason": None,
     }
     assert stt["moonshine"] == {
         "name": "moonshine",
@@ -85,8 +84,7 @@ def test_labels(monkeypatch: pytest.MonkeyPatch) -> None:
                 "moonshine-ai/moonshine-streaming-medium",
             ]
         },
-        "available": True,
-        "unavailable_reason": "",
+        "unavailable_reason": None,
     }
     nemotron = stt["nemotron"]
     assert nemotron["models"] == [
@@ -108,10 +106,9 @@ def test_an_engine_that_cannot_run_here_is_listed_with_the_reason(
     monkeypatch.setattr(moonshine.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(moonshine.platform, "release", lambda: "23.6.0")
     stt = {e["name"]: e for e in engines_list()["stt"]}
-    assert stt["moonshine"]["available"] is False
     assert stt["moonshine"]["unavailable_reason"] == "needs macOS 15 or later"
     assert stt["moonshine"]["models"]  # still listed: its downloads can be deleted
-    assert stt["parakeet"]["available"] is True
+    assert stt["parakeet"]["unavailable_reason"] is None
 
 
 def test_the_hook_is_optional_and_only_a_reason_counts() -> None:

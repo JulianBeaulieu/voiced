@@ -89,6 +89,10 @@ def get_tts_engine(name: str) -> type[TTSEngine]:
         raise UnknownEngine("tts", name, list(engines)) from None
 
 
+def get_engine(kind: Literal["stt", "tts"], name: str) -> type[STTEngine] | type[TTSEngine]:
+    return get_stt_engine(name) if kind == "stt" else get_tts_engine(name)
+
+
 def register_stt_engine(name: str, cls: type[STTEngine]) -> None:
     """Register an engine class in this process, shadowing any entry point."""
     _local_stt[name] = cls

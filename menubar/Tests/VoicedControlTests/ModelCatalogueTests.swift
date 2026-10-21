@@ -15,7 +15,7 @@ final class ModelCatalogueTests: XCTestCase {
           "engines": [
             {
               "name": "phonon", "label": "Phonon", "kind": "tts", "installed": true,
-              "available": true, "unavailable_reason": "",
+              "unavailable_reason": null,
               "languages": ["en-US", "en-GB"], "voices": ["default", "Zoey"],
               "models": [
                 {
@@ -254,16 +254,17 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(nemotronRow?.canUse, true)
     }
 
-    /// A voiced from before `available` lists every engine as available; a reason of another
-    /// type does not lose the engine, and an empty one still says it cannot run.
-    func testAvailabilityIsOptional() throws {
+    /// A voiced from before `unavailable_reason` lists every engine as one that can run.
+    func testAnEngineCanRunUnlessItSaysWhyNot() throws {
         let older = try decodeJSON(ModelEngine.self, #"{"name": "e", "kind": "stt", "models": []}"#)
         XCTAssertTrue(older.available)
-        XCTAssertEqual(older.unavailableReason, "")
-        let odd = try decodeJSON(
-            ModelEngine.self, #"{"name": "e", "label": "E", "kind": "stt", "available": false, "unavailable_reason": 3}"#)
-        XCTAssertFalse(odd.available)
-        XCTAssertEqual(odd.unavailableNote, "E cannot run on this Mac.")
+        XCTAssertNil(older.unavailableNote)
+        let null = try decodeJSON(ModelEngine.self, #"{"name": "e", "kind": "stt", "unavailable_reason": null}"#)
+        XCTAssertTrue(null.available)
+        let cannot = try decodeJSON(
+            ModelEngine.self, #"{"name": "e", "label": "E", "kind": "stt", "unavailable_reason": "needs a GPU"}"#)
+        XCTAssertFalse(cannot.available)
+        XCTAssertEqual(cannot.unavailableNote, "E needs a GPU, so it cannot run on this Mac.")
     }
 
     func testTheDeleteConfirmationNamesWhatGoes() throws {
