@@ -6,152 +6,142 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.2.0] - 2026-10-21
+
+Choose your models: seven new engines, each an opt-in download from the menu
+bar app or the terminal. The defaults stay Parakeet and Kokoro.
+
 ### Added
 
-- Phonon text-to-speech engine, opt-in: `engine = "phonon"`,
-  `model = "gradium/phonon-31m-en"` (Apache-2.0). It runs on the CPU,
-  leaving the GPU to speech-to-text, and streams each sentence as it is
-  decoded, so first audio arrives after the first 80 ms of speech is ready.
-  Voices are the model's `default` and Gradium's 37 English presets by name
-  (`Easton`, `Maeve`, ...); the menu bar app lists them. The model and the
-  voices are pinned and downloaded by `voiced install` like the default
-  models. The gated `gradium/phonon-40m-en` works as `model` too, under its
-  non-commercial CC-BY-NC-4.0 licence, with a Hugging Face token; without
-  one, the download says how to add it.
-- `engines.list` gives each voice's language in `voice_languages`, so
-  settings UIs can group voices.
-- Benchmarks for every engine and model in
-  [docs/benchmarks.md](docs/benchmarks.md): word error rate, streaming
-  finalize and throughput for speech to text; first audio, throughput and
-  UTMOS naturalness for text to speech; load time, memory and size for both,
-  each row with its machine, commit and date, and a quality and a speed
-  rating from 1 to 5 by fixed limits. `scripts/bench_engine.py` measures one
-  engine with one command and regenerates the document (ADR 0024).
-- Each model's quality and speed rating and a one-line note in the
-  catalogue, from its benchmark on the reference Mac, with a test that holds
-  them to the result files. `voiced models list` shows Quality and Speed
-  columns; `--json` adds `quality`, `speed`, `note` and `recommended` (the
-  default models). The menu bar app's model rows show a Quality and a Speed
-  bar, the note and a Recommended badge.
+- The menu bar app's Speech to Text and Text to Speech panes list every
+  model voiced can run, with its licence, size, state (in use, downloaded,
+  not downloaded, update available, needs a Hugging Face token), a quality
+  and a speed rating from 1 to 5, a one-line note and a Recommended badge
+  on the defaults. Download one with progress and Cancel, delete it or its
+  old version, or Use it: Use downloads it if needed, switches engine and
+  model together and restarts the service. The footer shows how much disk
+  voiced's models take, with Show in Finder.
 - `voiced models list`, `voiced models download <model>` and `voiced models
-  delete <model>`: see every model voiced can run with its licence, size and
-  state, download one at its pinned revision with byte progress, and delete
-  one to free its disk space, never touching what other tools keep in the
-  shared Hugging Face cache. `--json` and `--json-progress` are what the menu
-  bar app's model rows run.
-- The menu bar app downloads, deletes and switches models from the Speech
-  to Text and Text to Speech panes: a row per model with its licence, size
-  and state (in use, downloaded, not downloaded, update available, needs a
-  Hugging Face token), Download with a progress row and Cancel in the menu
-  window, Delete and Delete Old Version, and Use, which downloads if needed,
-  switches engine and model together and restarts the service. The footer
-  shows what voiced's models take in the shared cache, with Show in Finder.
-  A service whose model is missing says so in the menu window, with Download.
-- `voiced doctor` says whether each service's model is downloaded, and how
-  to fetch it if not.
-- A `missing_model` health status: a service whose model is not in the cache
-  stays up, answers 503 `model_not_downloaded` and names the command that
-  downloads it, instead of exiting and being restarted every 10 s.
-- A `dependency-locks` workflow regenerates the shipped locks and NOTICE on
-  Dependabot's `uv` pull requests and pushes them, so those pull requests
-  pass CI once their runs are approved, with no repository secret.
-- Pocket TTS text-to-speech engine, opt-in: `engine = "pocket"`,
-  `model = "mlx-community/pocket-tts"`, Kyutai's English model (CC-BY-4.0)
-  on the GPU through mlx-audio. It streams every 80 ms frame as it is
-  decoded and waits for speech-to-text encoder calls between frames. Voices
-  are the six whose recordings allow commercial use (`alba`, `marius`,
-  `javert`, `fantine`, `eponine`, `azelma`). The model, its tokenizer and
-  the voices are pinned (`voiced models download mlx-community/pocket-tts`);
-  the `tts` extra adds `sentencepiece`, its tokenizer.
-- Chatterbox Turbo text-to-speech engine, opt-in: `engine = "chatterbox"`,
-  `model = "mlx-community/chatterbox-turbo-4bit"` (MIT), with its one
-  bundled voice, `default`. It runs on the GPU, waits for speech-to-text
-  like Kokoro, and streams each sentence in pieces as its speech tokens are
-  rendered. Tags such as `[laugh]` or `[sigh]` in the text are performed,
-  not read. `mlx-community/chatterbox-turbo-fp16` works as `model` too.
-  Both are in the model catalogue (`voiced models download <model>`).
-- Qwen3-ASR speech-to-text engine, opt-in: `engine = "qwen3-asr"`,
-  `model = "mlx-community/Qwen3-ASR-0.6B-8bit"` or the 1.7B (Apache-2.0).
-  It is the engine for files and languages: 30 of them, detected when the
-  request names none and reported as BCP-47, with sentence timestamps from
-  Qwen3-ForcedAligner in 11. It does not stream: a live stream is
-  transcribed when it ends, without partials. `voiced models download`
-  fetches a model with the aligner.
-- Moonshine speech-to-text engine, opt-in, English, macOS 15 and later:
-  `engine = "moonshine"`, `model = "moonshine-ai/moonshine-streaming-small"`
-  (MIT), or `-tiny` or `-medium`. It runs on the CPU, leaving the GPU to
-  text-to-speech; partials arrive every half second and the transcript on the
-  client's end signal. `voiced models download` fetches each model.
-- Nemotron speech-to-text engine, opt-in: `engine = "nemotron"`. It streams
-  through mlx-audio in 160 ms chunks, each encoded once, so a long utterance
-  costs no more per chunk than a short one. The default model,
-  `mlx-community/nemotron-3.5-asr-streaming-0.6b` (OpenMDW-1.1), transcribes
-  28 languages in 32 locales, takes a region hint such as `pt-PT`, and
-  detects the language when the client gives none;
-  `nvidia/nemotron-speech-streaming-en-0.6b` (NVIDIA Open Model License) is
-  English only, with a slightly lower error rate. Finalize takes about 55 ms;
-  uploads are slower than Parakeet's, which stays the default (ADR 0025).
-  `engines.list` gives each model's languages in `model_languages`.
-
-- OmniVoice text-to-speech engine, opt-in: `engine = "omnivoice"`,
-  `model = "k2-fsa/OmniVoice"`, for languages Kokoro does not speak: 646 language
-  tags, Levantine Arabic (`apc`) among them. Six voices designed from
-  attributes, one each in English, German, Levantine Arabic, Spanish, French
-  and Mandarin, served when their language is in `tts.languages`. It runs on
-  the GPU through mlx-audio and cannot start speaking before a whole
-  sentence is synthesized, so first audio takes about 0.8 s on an M1 Max: it
-  is not a real-time engine. With the STT service it takes about 3.9 GB,
-  over voiced's 3 GB budget for both. Its weights are CC-BY-NC
-  (non-commercial) and its audio codec is under the Boson Higgs Audio 2
-  Community License. `voiced models download k2-fsa/OmniVoice` fetches the
-  pinned model (3.3 GB).
-- The menu bar app's Speech to Text pane lists the languages of the model in
-  use and marks a configured language that model does not serve.
+  delete <model>` do the same from the terminal: list every model with its
+  licence, size, state and ratings, download one at its pinned revision
+  with byte progress, and delete one to free its disk space without
+  touching what other tools keep in the shared Hugging Face cache. For
+  scripts, `list --json` gives `quality`, `speed`, `note` and `recommended`
+  (the default models), and `download --json-progress` one JSON event per
+  line.
+- A service whose model is not downloaded stays up in a new `missing_model`
+  health status and answers 503 `model_not_downloaded` with the command
+  that downloads it, where it used to exit and restart every 10 s. The menu
+  window offers Download, and `voiced doctor` says whether each service's
+  model is downloaded.
+- The menu bar app's Speech to Text pane lists the languages of the model
+  in use and marks a configured language that model does not serve.
 - Engines that cannot run on this Mac (Moonshine below macOS 15) are listed
   with the reason in `engines.list` and `voiced models list`; `voiced models
-  download` refuses their models and the app offers neither Download nor Use.
+  download` refuses their models, and the app shows the reason and offers
+  neither Download nor Use.
+- Qwen3-ASR speech-to-text engine (Apache-2.0), for files and languages:
+  `engine = "qwen3-asr"`, `model = "mlx-community/Qwen3-ASR-0.6B-8bit"` or
+  the 1.7B. 30 languages, detected when the request names none and
+  reported as BCP-47 tags, and sentence timestamps for subtitles in 11 from
+  Qwen3-ForcedAligner, which `voiced models download` fetches with the
+  model. It does not stream: a live stream is transcribed when it ends,
+  without partials, so its finalize grows with the turn (about 190 ms for a
+  3.4 s turn, against a 50 ms target) and it serves one stream at a time.
+  Batch takes about 480 ms for 10 s of audio, against a 300 ms target.
+  With Kokoro, the engine takes 3.2 GB, over voiced's 3 GB budget for both
+  services.
+- Nemotron speech-to-text engine, streaming: `engine = "nemotron"`. Its
+  default model, Nemotron 3.5
+  (`mlx-community/nemotron-3.5-asr-streaming-0.6b`, OpenMDW-1.1),
+  transcribes 28 languages, takes a region hint such as `pt-PT` and detects
+  the language when the client gives none; the English model
+  (`nvidia/nemotron-speech-streaming-en-0.6b`, NVIDIA Open Model License)
+  has a slightly lower error rate. Each 160 ms chunk costs the same however
+  long the utterance. Finalize takes about 55 ms, just over the 50 ms
+  target; it serves one stream at a time, so a second client waits, up to
+  about 0.8 s; and uploads are slow (about 800 ms for 10 s, against
+  300 ms), so Parakeet stays the default.
+- Moonshine speech-to-text engine (MIT), English, macOS 15 and later:
+  `engine = "moonshine"`, `model = "moonshine-ai/moonshine-streaming-small"`,
+  or `-tiny` or `-medium`. It runs on the CPU, leaving the GPU to
+  text-to-speech, with partials every half second and the transcript on the
+  client's end signal. Small finalizes in 74 ms median and 170 ms worst
+  after 200 ms of silence, over the 50 and 150 ms targets (Tiny meets the
+  median and is the least accurate); batch takes about 1.1 s for 10 s of
+  audio, against 300 ms; and it serves one stream at a time, so a second
+  client waits.
+- Phonon text-to-speech engine (Apache-2.0): `engine = "phonon"`,
+  `model = "gradium/phonon-31m-en"`. It runs on the CPU, leaving the GPU to
+  speech-to-text, starts speaking in about 30 ms and has 38 English voices
+  (`default` and Gradium's presets by name, such as `Easton` and `Maeve`).
+  The gated `gradium/phonon-40m-en` works too, for non-commercial use only
+  (CC-BY-NC-4.0), with a Hugging Face token; without one, the download says
+  how to add it.
+- Pocket TTS text-to-speech engine (CC-BY-4.0), a fast English voice on
+  the GPU: `engine = "pocket"`, `model = "mlx-community/pocket-tts"`,
+  Kyutai's model. It streams every 80 ms frame as it is decoded, so first
+  audio takes about 45 ms. Its voices are the six whose recordings allow
+  commercial use (`alba`, `marius`, `javert`, `fantine`, `eponine`,
+  `azelma`). The `tts` extra adds `sentencepiece`, its tokenizer.
+- Chatterbox Turbo text-to-speech engine (MIT): `engine = "chatterbox"`,
+  `model = "mlx-community/chatterbox-turbo-4bit"` (its default) or `-fp16`.
+  One expressive English voice, `default`, that performs tags such as
+  `[laugh]` or `[sigh]` instead of reading them. First audio takes about
+  320 ms, over the 200 ms target Kokoro meets.
+- OmniVoice text-to-speech engine, for languages Kokoro does not speak:
+  `engine = "omnivoice"`, `model = "k2-fsa/OmniVoice"`. 646 languages,
+  Levantine Arabic (`apc`) among them, with six designed voices (English,
+  German, Levantine Arabic, Spanish, French, Mandarin) served when their
+  language is in `tts.languages`. It is not a real-time engine: first audio
+  takes about 0.8 s, four times the 200 ms target, and with the STT service
+  it takes about 3.9 GB, over voiced's 3 GB budget for both. Its weights are
+  non-commercial (CC-BY-NC) and its audio codec is under the Boson Higgs
+  Audio 2 Community License. It is a 3.3 GB download.
+- [docs/benchmarks.md](docs/benchmarks.md) measures every engine and model
+  the same way: word error rate, finalize and throughput for speech to
+  text; first audio, throughput and naturalness for text to speech; load
+  time, memory and size for both, each row with its machine, version and
+  date. The ratings in the app and in `voiced models list` come from it.
+  `scripts/bench_engine.py` measures one engine with one command.
+- `engines.list` gives each voice's language in `voice_languages`, and each
+  model's languages in `model_languages` (the engine's own where a model
+  sets none), so settings UIs can group them.
 
 ### Changed
 
 - The services never download a model: they load it from the cache, at the
-  revision voiced pins (Soprano now has a pin too). `voiced install`, `voiced
-  models download` or you put it there.
-- `voiced settings set`, the menu bar app and the status page form refuse to
-  switch to a model that is not downloaded, with the command that fetches
-  it (error code `model_not_downloaded`).
+  revision voiced pins (Soprano now has a pin too); `voiced install`,
+  `voiced models download` or the app put it there. For engine plugins,
+  `load()` runs with `HF_HUB_OFFLINE=1`; `voiced install` still runs each
+  engine's `load()` once with the network, which fetches a plugin's
+  weights, and a later load that fails because the files are not in the
+  cache reports `missing_model` instead of exiting.
+- `voiced settings set`, the menu bar app and the status page form refuse
+  to switch to a model that is not downloaded, with the command that
+  fetches it (error code `model_not_downloaded`).
 - A TTS request for a voice the engine does not serve is spoken in
-  `tts.default_voice` with a warning in the log, over HTTP and Wyoming, no
-  longer refused: Home Assistant keeps asking for its pipeline's voice after
-  the engine changes, and the assistant went silent.
+  `tts.default_voice` with a warning in the log, over HTTP and Wyoming,
+  instead of being refused: Home Assistant keeps asking for its pipeline's
+  voice after the engine changes, and the assistant went silent.
 - A configured engine that is not installed, or a model it refuses, ends
   `voiced serve` with one line saying so, not a traceback.
-- The `error` event of `--json-progress` carries a `code`.
-- For engine plugins: the services run `load()` with `HF_HUB_OFFLINE=1`, so
-  it cannot download. `voiced install` still runs each engine's `load()`
-  once with the network, which fetches a plugin's weights; a load that later
-  fails with the hub's offline or not-found errors reports `missing_model`
-  instead of exiting.
-
-### Changed
-
 - `voiced.text.normalize` requires the language of the voice that will
   speak the text: `normalize(text, language=voice.language)`. A third-party
   engine or tool that called `normalize(text)` must pass it; English rules
   apply only to `en` and `en-*` tags.
+- The `error` event of `--json-progress` carries a `code`.
 
 ### Fixed
 
-- A speech client that hangs up mid-synthesis frees the inference slot at
-  the engine's next generation step instead of its next audio chunk, over
-  HTTP and Wyoming, so the request it sends next (after a barge-in, say) no
-  longer waits behind the synthesis it abandoned. For an engine that renders
-  half a second of audio at a time this was up to that half second of extra
-  first audio. The hang-up is still counted as a `disconnect`.
-- An HTTP speech client that hangs up before the first audio arrives, or
-  while its request waits in the queue, is now noticed at once. The first
-  sentence used to be synthesized for nobody (about 0.1 s with Kokoro, a
-  second or more with OmniVoice), after waiting out the whole queue, and
-  the next request waited behind it. It is counted as a `disconnect`.
+- A speech client that hangs up is noticed at once, over HTTP and Wyoming,
+  and frees the service for the next request (after a barge-in, say).
+  Synthesis stops at the engine's next generation step instead of its next
+  audio chunk, up to half a second sooner; an HTTP client that hangs up
+  before the first audio, or while its request waits in the queue, no
+  longer has its first sentence synthesized for nobody (about 0.1 s with
+  Kokoro, a second or more with OmniVoice). Hang-ups are counted as
+  `disconnect`.
 - Text for a voice in a language other than English is no longer spelled
   as English: digits stay digits ("Ich habe 20 Euro", not "twenty Euro";
   "3,5", not "three,five"), and English abbreviations and symbols are left
@@ -162,15 +152,13 @@ uses [Semantic Versioning](https://semver.org/).
   by sentence, and no `.` is added after them or after a trailing CJK or
   Arabic comma.
 - `voiced uninstall --remove-models` (and the app's Uninstall with Models
-  ticked) now frees the models' disk space. It removed each model's folder
-  in the Hugging Face cache, but with `huggingface_hub` 2.x that folder
-  holds only links into a store shared by the whole cache, so about 2.9 GB
-  stayed on disk. It now deletes the revisions voiced pinned through
-  `huggingface_hub`, which removes the bytes no other revision uses, and
-  prints how much it freed. Other revisions and repositories in the cache,
-  which other tools may use, stay, and so does a model the config names
-  that voiced does not pin: uninstall prints the `hf cache rm` command that
-  removes it.
+  ticked) frees the models' disk space. With `huggingface_hub` 2.x it left
+  about 2.9 GB behind, because a model's folder in the cache holds only
+  links into a store the whole cache shares. It now deletes the revisions
+  voiced pinned, which removes the bytes no other revision uses, and prints
+  how much it freed. Other revisions and repositories, which other tools
+  may use, stay, and so does a model the config names that voiced does not
+  pin: uninstall prints the `hf cache rm` command that removes it.
 
 ## [0.1.1] - 2026-10-20
 
@@ -576,4 +564,6 @@ uses [Semantic Versioning](https://semver.org/).
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.2.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.2.0
+[0.1.1]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.1
 [0.1.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.0
