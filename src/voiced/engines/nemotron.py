@@ -35,7 +35,7 @@ from typing import Any, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.audio import check_samples, clip_segment, is_silent
+from voiced.audio import check_samples, clip_segment, stt_input
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -178,14 +178,11 @@ class NemotronEngine(STTEngine):
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
         model = self._require_idle()
         prompt = self.prompt(language)
-        if audio.sample_rate != _SR:
-            raise EngineError(f"expected {_SR} Hz audio, got {audio.sample_rate} Hz")
-        samples = check_samples(audio.samples)
-        duration = len(samples) / _SR
-        if is_silent(samples):
-            return Transcript(text="", language=_code(language), duration_s=duration)
+        samples = stt_input(audio)
+        if samples is None:
+            return Transcript(text="", language=_code(language), duration_s=audio.duration_s)
         result = await self._thread.run(_generate, model, samples, prompt)
-        return _to_transcript(result, _code(language), duration)
+        return _to_transcript(result, _code(language), audio.duration_s)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
         self._require_idle()

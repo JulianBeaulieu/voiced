@@ -39,7 +39,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.audio import check_samples, is_silent
+from voiced.audio import check_samples, is_silent, stt_input
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -200,9 +200,9 @@ class Qwen3ASREngine(STTEngine):
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
         self._require_idle()
         code = self.normalize_language(language)
-        if audio.sample_rate != _SR:
-            raise EngineError(f"expected {_SR} Hz audio, got {audio.sample_rate} Hz")
-        samples = check_samples(audio.samples)
+        samples = stt_input(audio, min_samples=MIN_SAMPLES)
+        if samples is None:
+            return Transcript(text="", language=code, duration_s=audio.duration_s)
         return await self._thread.run(self._transcribe_blocking, samples, code)
 
     async def stream(self, language: str | None = None) -> STTStreamSession:
@@ -222,8 +222,11 @@ class Qwen3ASREngine(STTEngine):
         """A stream's turn: no aligner, and each piece under the GPU lock,
         since a client is waiting for it (ADR 0019); ``stop`` ends it between
         pieces once the session is closed (a cancelled finalize)."""
-        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
-        return self._transcribe_blocking(audio, code, align=False, turn=stt_turn, stop=stop)
+        audio = AudioInput(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
+        samples = stt_input(audio, min_samples=MIN_SAMPLES)
+        if samples is None:
+            return Transcript(text="", language=code, duration_s=audio.duration_s)
+        return self._transcribe_blocking(samples, code, align=False, turn=stt_turn, stop=stop)
 
     def _transcribe_blocking(
         self,
@@ -241,8 +244,6 @@ class Qwen3ASREngine(STTEngine):
         import mlx.core as mx
 
         duration = len(samples) / _SR
-        if len(samples) < MIN_SAMPLES or is_silent(samples):
-            return Transcript(text="", language=code, duration_s=duration)
         name = LANGUAGES[code] if code else None
         texts: list[str] = []
         segments: list[Segment] = []
