@@ -105,6 +105,11 @@ uses [Semantic Versioning](https://semver.org/).
   (non-commercial) and its audio codec is under the Boson Higgs Audio 2
   Community License. `voiced models download k2-fsa/OmniVoice` fetches the
   pinned model (3.3 GB).
+- The menu bar app's Speech to Text pane lists the languages of the model in
+  use and marks a configured language that model does not serve.
+- Engines that cannot run on this Mac (Moonshine below macOS 15) are listed
+  with the reason in `engines.list` and `voiced models list`; `voiced models
+  download` refuses their models and the app offers neither Download nor Use.
 
 ### Changed
 

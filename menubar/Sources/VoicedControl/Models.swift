@@ -237,12 +237,24 @@ public struct STTEngineInfo: Codable, Sendable, Equatable {
     public var label: String?
     public var models: [String]
     public var languages: [String]
+    /// Each model's own languages, where they differ from the engine's (Nemotron's English
+    /// model serves only `en-US`); may be missing or partial.
+    public var modelLanguages: [String: [String]]
 
-    public init(name: String, label: String? = nil, models: [String], languages: [String]) {
+    public init(
+        name: String, label: String? = nil, models: [String], languages: [String],
+        modelLanguages: [String: [String]] = [:]
+    ) {
         self.name = name
         self.label = label
         self.models = models
         self.languages = languages
+        self.modelLanguages = modelLanguages
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, models, languages
+        case modelLanguages = "model_languages"
     }
 
     public init(from decoder: Decoder) throws {
@@ -251,9 +263,45 @@ public struct STTEngineInfo: Codable, Sendable, Equatable {
         label = try? c.decodeIfPresent(String.self, forKey: .label)
         models = try c.decodeIfPresent([String].self, forKey: .models) ?? []
         languages = try c.decodeIfPresent([String].self, forKey: .languages) ?? []
+        modelLanguages = (try? c.decodeIfPresent([String: [String]].self, forKey: .modelLanguages)) ?? [:]
     }
 
     public var displayName: String { label.flatMap { $0.isEmpty ? nil : $0 } ?? name }
+
+    /// The languages `model` serves: its own, else the engine's.
+    public func languages(of model: String) -> [String] {
+        if let own = modelLanguages[model], !own.isEmpty { return own }
+        return languages
+    }
+
+    /// Whether `model` serves `language`, matched on the primary subtag as the engines match
+    /// (`en` is served by a model of `en-US`). A model with no languages listed serves any.
+    public func serves(_ language: String, model: String) -> Bool {
+        let served = languages(of: model)
+        return served.isEmpty || served.contains { Self.primarySubtag($0) == Self.primarySubtag(language) }
+    }
+
+    static func primarySubtag(_ tag: String) -> String {
+        tag.replacingOccurrences(of: "_", with: "-").split(separator: "-").first.map { $0.lowercased() } ?? ""
+    }
+}
+
+/// The Speech to text pane's language rows: the configured language, marked when the model
+/// in use does not serve it, and the languages that model serves. `name` turns a BCP-47 tag
+/// into a display name.
+public struct SpeechLanguages: Sendable, Equatable {
+    public var language: String
+    public var isServed: Bool
+    public var served: [String]
+
+    public init(_ settings: STTSettings, engine: STTEngineInfo?, name: (String) -> String) {
+        language = name(settings.language)
+        isServed = engine?.serves(settings.language, model: settings.model) ?? true
+        served = (engine?.languages(of: settings.model) ?? []).map(name)
+    }
+
+    /// One line, the mark in words: "English: not served by this model".
+    public var line: String { isServed ? language : "\(language): not served by this model" }
 }
 
 public struct TTSEngineInfo: Codable, Sendable, Equatable {

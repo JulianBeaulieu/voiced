@@ -50,6 +50,11 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
     public var kind: String
     /// Whether the engine's entry point is in the environment; Use needs it.
     public var installed: Bool
+    /// False for an engine that cannot run on this Mac (Moonshine below macOS 15): its rows
+    /// offer neither Download nor Use. `unavailableReason` says why, as a phrase that follows
+    /// the engine's name ("needs macOS 15 or later").
+    public var available: Bool
+    public var unavailableReason: String
     public var voices: [String]
     /// Empty for a plugin engine the catalogue does not know: it has nothing to manage.
     public var models: [CatalogueModel]
@@ -59,20 +64,24 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
     public var id: String { "\(kind).\(name)" }
 
     public init(
-        name: String, label: String, kind: String, installed: Bool = true, voices: [String] = [],
-        models: [CatalogueModel], shared: [CatalogueModel] = []
+        name: String, label: String, kind: String, installed: Bool = true, available: Bool = true,
+        unavailableReason: String = "", voices: [String] = [], models: [CatalogueModel],
+        shared: [CatalogueModel] = []
     ) {
         self.name = name
         self.label = label
         self.kind = kind
         self.installed = installed
+        self.available = available
+        self.unavailableReason = unavailableReason
         self.voices = voices
         self.models = models
         self.shared = shared
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, label, kind, installed, voices, models, shared
+        case name, label, kind, installed, available, voices, models, shared
+        case unavailableReason = "unavailable_reason"
     }
 
     public init(from decoder: Decoder) throws {
@@ -81,9 +90,19 @@ public struct ModelEngine: Codable, Sendable, Equatable, Identifiable {
         label = try c.decodeIfPresent(String.self, forKey: .label) ?? name
         kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
         installed = try c.decodeIfPresent(Bool.self, forKey: .installed) ?? true
+        available = (try? c.decodeIfPresent(Bool.self, forKey: .available)) ?? true
+        unavailableReason = (try? c.decodeIfPresent(String.self, forKey: .unavailableReason)) ?? ""
         voices = (try? c.decodeIfPresent([String].self, forKey: .voices)) ?? []
         models = try c.decodeIfPresent([CatalogueModel].self, forKey: .models) ?? []
         shared = try c.decodeIfPresent([CatalogueModel].self, forKey: .shared) ?? []
+    }
+
+    /// Under the engine's rows when it cannot run here: "Moonshine needs macOS 15 or later,
+    /// so it cannot run on this Mac."
+    public var unavailableNote: String? {
+        guard !available else { return nil }
+        let reason = unavailableReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? "\(label) cannot run on this Mac." : "\(label) \(reason), so it cannot run on this Mac."
     }
 }
 
@@ -346,9 +365,11 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
         }
     }
 
-    /// Download, or Update for an old version, while the pin is not on disk.
+    /// Download, or Update for an old version, while the pin is not on disk; none for an
+    /// engine that cannot run here.
     public var downloadTitle: String? {
-        switch state {
+        guard engine.available else { return nil }
+        return switch state {
         case .notDownloaded, .gated, .inUseMissing: "Download"
         case .oldVersion: "Update (\(Formatting.bytes(model?.downloadBytes ?? 0)))"
         case .inUse, .inUseLoading, .downloaded, .downloading, .selfManaged: nil
@@ -356,7 +377,7 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     }
 
     public var canUse: Bool {
-        guard engine.installed else { return false }
+        guard engine.installed, engine.available else { return false }
         return switch state {
         case .downloaded, .notDownloaded, .oldVersion, .gated, .selfManaged: true
         case .inUse, .inUseLoading, .inUseMissing, .downloading: false

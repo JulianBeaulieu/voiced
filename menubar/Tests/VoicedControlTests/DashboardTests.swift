@@ -243,7 +243,15 @@ final class EngineLabelTests: XCTestCase {
             """
             {"stt": [{"name": "fake", "label": "Fake", "models": ["fake/stt"], "languages": ["en"]},
                      {"name": "parakeet", "label": "Parakeet", "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
-                      "languages": ["en", "de"]}],
+                      "languages": ["en", "de"],
+                      "model_languages": {"mlx-community/parakeet-tdt-0.6b-v3": ["en", "de"]},
+                      "available": true, "unavailable_reason": ""},
+                     {"name": "nemotron", "label": "Nemotron",
+                      "models": ["mlx-community/nemotron-3.5-asr-streaming-0.6b", "nvidia/nemotron-speech-streaming-en-0.6b"],
+                      "languages": ["en-US", "en-GB", "de-DE"],
+                      "model_languages": {"mlx-community/nemotron-3.5-asr-streaming-0.6b": ["en-US", "en-GB", "de-DE"],
+                                          "nvidia/nemotron-speech-streaming-en-0.6b": ["en-US"]},
+                      "available": true, "unavailable_reason": ""}],
              "tts": [{"name": "kokoro", "label": "Kokoro", "models": ["mlx-community/Kokoro-82M-bf16"],
                       "languages": ["en-US", "en-GB"], "voices": ["af_heart", "bm_fable"],
                       "voice_labels": {"af_heart": "Heart (American English, female)",
@@ -251,11 +259,40 @@ final class EngineLabelTests: XCTestCase {
                      {"name": "soprano", "label": "Soprano", "models": ["mlx-community/Soprano-80M-bf16"],
                       "languages": ["en"], "voices": ["default"], "voice_labels": {"default": "Default"}}]}
             """)
-        XCTAssertEqual(engines.stt.map(\.displayName), ["Fake", "Parakeet"])
+        XCTAssertEqual(engines.stt.map(\.displayName), ["Fake", "Parakeet", "Nemotron"])
+        let nemotron = try XCTUnwrap(engines.sttEngine(named: "nemotron"))
+        XCTAssertEqual(nemotron.languages(of: "nvidia/nemotron-speech-streaming-en-0.6b"), ["en-US"])
+        XCTAssertEqual(nemotron.languages(of: "mlx-community/nemotron-3.5-asr-streaming-0.6b"), ["en-US", "en-GB", "de-DE"])
+        XCTAssertEqual(engines.sttEngine(named: "fake")?.languages(of: "fake/stt"), ["en"], "the engine's, without its own")
         let kokoro = try XCTUnwrap(engines.ttsEngine(named: "kokoro"))
         XCTAssertEqual(kokoro.displayName, "Kokoro")
         XCTAssertEqual(kokoro.voiceName("bm_fable"), "Fable (British English, male)")
         XCTAssertEqual(engines.ttsEngine(named: "soprano")?.voiceName("default"), "Default")
+    }
+
+    /// The Speech to text pane's language: matched on the primary subtag as the engines
+    /// match, from the model in use, so switching the model changes it.
+    func testTheConfiguredLanguageIsMarkedWhenTheModelInUseDoesNotServeIt() throws {
+        let nemotron = STTEngineInfo(
+            name: "nemotron", models: ["multi", "english"], languages: ["en-US", "de-DE"],
+            modelLanguages: ["english": ["en-US"]])
+        let german = STTSettings(engine: "nemotron", model: "multi", language: "de")
+        let served = SpeechLanguages(german, engine: nemotron, name: { $0 })
+        XCTAssertTrue(served.isServed)
+        XCTAssertEqual(served.line, "de")
+        XCTAssertEqual(served.served, ["en-US", "de-DE"])
+
+        var switched = german
+        switched.model = "english"
+        let notServed = SpeechLanguages(switched, engine: nemotron, name: { $0 })
+        XCTAssertFalse(notServed.isServed)
+        XCTAssertEqual(notServed.line, "de: not served by this model")
+        XCTAssertEqual(notServed.served, ["en-US"])
+
+        XCTAssertTrue(nemotron.serves("en", model: "english"), "en is served by a model of en-US")
+        XCTAssertTrue(nemotron.serves("EN_gb", model: "english"))
+        XCTAssertTrue(STTEngineInfo(name: "x", models: ["m"], languages: []).serves("fr", model: "m"))
+        XCTAssertTrue(SpeechLanguages(german, engine: nil, name: { $0 }).isServed, "an engine not listed: no mark")
     }
 
     func testMalformedLabelsAreIgnoredNotFatal() throws {
