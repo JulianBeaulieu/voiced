@@ -16,7 +16,7 @@ from tests import hf_cache_support as hf
 from voiced import cli_lifecycle as lc
 from voiced.config import Settings
 from voiced.launchd.control import CommandResult
-from voiced.models import pin
+from voiced.models import locked
 from voiced.watchdog import Observation
 
 RUNNING = "system/x = {\n\tstate = running\n\tpid = 42\n\tlast exit code = 0\n}"
@@ -259,7 +259,7 @@ def test_uninstall_dry_then_real(
     )
     settings.server.log_dir.mkdir()
     settings.install.hf_home = tmp_path / "hf"
-    kokoro = pin("mlx-community/Kokoro-82M-bf16")
+    kokoro = locked("mlx-community/Kokoro-82M-bf16")
     assert kokoro is not None
     weights = b"w" * 2000
     hub = tmp_path / "hf" / "hub"

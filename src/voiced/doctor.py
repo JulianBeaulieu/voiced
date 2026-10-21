@@ -616,6 +616,29 @@ def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
     return items
 
 
+def check_models(settings: Settings) -> list[Check]:
+    """Each service's configured model: downloaded at its pin, or what fetches
+    it (the services never download, ADR 0022). A model outside the
+    catalogue is not checked."""
+    from voiced import models
+
+    hub = models.hub_dir(settings.install.hf_home)
+    checks = []
+    for service, model in (("stt", settings.stt.model), ("tts", settings.tts.model)):
+        name = f"{service.upper()} model"
+        if models.find(model) is None:
+            checks.append(Check(name, "pass", f"{model} (not in voiced's catalogue; not checked)"))
+            continue
+        missing = models.not_downloaded(hub, model)
+        if missing:
+            detail = f"{', '.join(missing)} not downloaded; run voiced models download {model}"
+            checks.append(Check(name, "fail", detail))
+        else:
+            revision = models.lock()[model].revision
+            checks.append(Check(name, "pass", f"{model} downloaded at {revision[:12]}"))
+    return checks
+
+
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
     entry = entry_point(state_dir(settings))
     venv_python = environment_python(entry) if entry.exists() else None
@@ -628,6 +651,7 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         check_config_file(config_path()),
         check_espeak(required=settings.tts.engine == KokoroEngine.name),
         check_ffmpeg(runner=runner),
+        *check_models(settings),
         check_memory(runner),
         *check_ports(settings, runner),
         check_filevault(runner),

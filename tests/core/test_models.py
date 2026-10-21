@@ -1,46 +1,70 @@
-"""The pinned default models, their byte progress and the models step (ADR 0018)."""
+"""The model catalogue and its lock, the cache checks, byte progress, pinning
+and the models step (ADR 0018, ADR 0022)."""
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from tests import hf_cache_support as hf
 from voiced import models
 from voiced.config import Settings
+from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
+from voiced.engines.soprano import SopranoEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
+from voiced.models import cache, commands, lockfile, pinning
+
+# The catalogue and the lock ---------------------------------------------------
 
 
-def test_the_default_models_are_pinned_to_commits() -> None:
+def test_the_catalogue_and_the_lock_agree() -> None:
+    """The one check that the hand-written catalogue and the generated lock
+    name the same models, from the same repositories with the same patterns."""
+    lock = lockfile.read_lock()
+    catalogued = {m.id: (m.repo, m.patterns) for m in models.catalogued()}
+    stale = pinning.stale(lock)
+    dropped = sorted(set(lock) - set(catalogued))
+    fix = f"run {lockfile.PIN_COMMAND} {' '.join(stale)}".rstrip()
+    assert not stale, f"the lock lacks or has other patterns for {stale}: {fix}"
+    assert not dropped, f"the lock has {dropped}, which the catalogue dropped: {fix}"
+    assert {i: (e.repo, e.patterns) for i, e in lock.items()} == catalogued
+
+
+def test_every_locked_file_has_a_size_and_a_sha256() -> None:
+    for entry in models.lock().values():
+        assert re.fullmatch(r"[0-9a-f]{40}", entry.revision), entry.repo
+        assert entry.files and entry.bytes > 0, entry.repo
+        for name, f in entry.files.items():
+            assert f.bytes > 0 and re.fullmatch(r"[0-9a-f]{64}", f.sha256), (entry.repo, name)
+        assert entry.revision not in entry.previous
+
+
+def test_the_config_defaults_are_the_default_engines_first_models() -> None:
     defaults = Settings()
-    assert [p.repo for p in models.PINS] == [defaults.stt.model, defaults.tts.model]
-    for pin in models.PINS:
-        assert len(pin.revision) == 40 and int(pin.revision, 16) >= 0
-        assert pin.bytes > 0
-    assert models.pinned_revision(defaults.stt.model) == models.PINS[0].revision
-    assert models.pinned_revision("someone/else") is None
-
-
-def test_optional_pins_are_loaded_at_their_revision_but_not_installed_by_default() -> None:
-    """Phonon's: pinned, and uninstall knows them, but not in the manifest."""
-    assert not {p.repo for p in models.PINS} & {p.repo for p in models.OPTIONAL_PINS}
-    for pin in models.OPTIONAL_PINS:
-        assert models.pin(pin.repo) == pin and len(pin.revision) == 40 and pin.bytes > 0
-        assert (pin.repo, pin.revision) in models.pinned_revisions()
+    assert (defaults.stt.engine, defaults.tts.engine) == ("parakeet", "kokoro")
+    assert defaults.stt.model == models.default_model("parakeet").repo
+    assert defaults.tts.model == models.default_model("kokoro").repo
+    assert lockfile.manifest()["models"] == [
+        {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
+        for e in (models.lock()[defaults.stt.model], models.lock()[defaults.tts.model])
+    ]
 
 
 def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
     """The app's bundle script runs it from the unpacked wheel, without the
-    dependencies installed."""
+    dependencies installed; the lock is package data beside the module."""
     blocker = (
         "import sys\n"
         "class Block:\n"
@@ -49,7 +73,7 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         "        if top not in sys.stdlib_module_names and top != 'voiced':\n"
         "            raise ImportError(f'not stdlib: {name}')\n"
         "sys.meta_path.insert(0, Block())\n"
-        "from voiced.models import main\n"
+        "from voiced.models.commands import main\n"
         "raise SystemExit(main([]))\n"
     )
     src = str(Path(models.__file__).parents[1])
@@ -59,17 +83,151 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         text=True,
         check=True,
     )
-    assert json.loads(out.stdout) == {
-        "models": [{"repo": p.repo, "revision": p.revision, "bytes": p.bytes} for p in models.PINS]
-    }
+    assert json.loads(out.stdout) == lockfile.manifest()
 
 
-def test_the_engines_name_what_they_load() -> None:
-    assert models.download_patterns(ParakeetEngine) == ["config.json", "model.safetensors"]
-    # The config, the weights and voices/*.safetensors; not the sample WAVs or the .pt copies.
-    assert models.download_patterns(KokoroEngine) == ["config.json", "*.safetensors"]
-    assert models.download_patterns(object) is None
-    assert models.extra_downloads(object) == {}
+@pytest.mark.parametrize(
+    "cls", [ParakeetEngine, KokoroEngine, SopranoEngine, PhononEngine], ids=lambda c: c.name
+)
+def test_each_catalogued_engine_takes_its_defaults_from_the_catalogue(cls: Any) -> None:
+    default = models.default_model(cls.name)
+    assert (cls.model_id, cls.license) == (default.repo, default.license)
+    assert models.engine(cls.name) is not None
+    kind = models.engine(cls.name).kind  # type: ignore[union-attr]
+    found = registry.list_stt_engines() if kind == "stt" else registry.list_tts_engines()
+    assert found[cls.name] is cls  # the catalogue's kind is the registry group
+
+
+def test_the_registry_sets_the_configured_models_licence() -> None:
+    engine = registry.create_tts_engine("phonon", "gradium/phonon-40m-en")
+    assert engine.license == "CC-BY-NC-4.0"
+    # Outside the catalogue the engine's own licence stays.
+    assert registry.create_tts_engine("kokoro", "someone/kokoro-fork").license == "Apache-2.0"
+
+
+def test_models_that_share_a_repository_are_known_by_their_ids() -> None:
+    """Several models may be folders of one repository: each has an id."""
+    small = models.Model("org/assets", "MIT", ("small/*",), id="org/assets-small")
+    assert (small.id, small.repo) == ("org/assets-small", "org/assets")
+    assert models.Model("org/m", "MIT", ("*",)).id == "org/m"
+
+
+def test_a_shared_repository_comes_with_every_model_of_its_engine() -> None:
+    assert models.required("gradium/phonon-40m-en") == [
+        "gradium/phonon-40m-en",
+        "gradium/phonon-voices",
+    ]
+    assert models.required("someone/else") == ["someone/else"]
+    assert models.find("gradium/phonon-voices") is None  # shared, not a model
+    assert lockfile.pinned_revision("someone/else") is None
+
+
+# The cache on disk -------------------------------------------------------------
+
+KOKORO = "mlx-community/Kokoro-82M-bf16"
+
+
+def _cache(hub: Path, repo: str, skip: Sequence[str] = ()) -> Path:
+    snapshot = hf.add_locked(hub, models.lock()[repo])
+    for name in skip:
+        (snapshot / name).unlink()
+    return snapshot
+
+
+@pytest.fixture
+def hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "hub"
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(path))
+    return path
+
+
+def test_check_only_returns_a_complete_pinned_snapshot(hub: Path) -> None:
+    snapshot = _cache(hub, KOKORO)
+    assert models.snapshot(KOKORO, check_only=True) == snapshot
+    assert models.not_downloaded(hub, KOKORO) == []
+
+
+def test_check_only_finds_a_missing_file_without_the_hub(hub: Path) -> None:
+    entry = models.lock()[KOKORO]
+    _cache(hub, KOKORO, skip=["voices/af_heart.safetensors"])
+    with pytest.raises(models.ModelNotDownloaded) as exc:
+        models.snapshot(KOKORO, check_only=True)
+    assert (exc.value.model_id, exc.value.revision) == (KOKORO, entry.revision)
+    assert str(exc.value) == (
+        f"{KOKORO} is not downloaded at revision {entry.revision}; "
+        f"run voiced models download {KOKORO}"
+    )
+    assert models.missing_files(hub, entry) == ["voices/af_heart.safetensors"]
+
+
+def test_a_file_of_another_size_is_missing(hub: Path) -> None:
+    """A truncated download (huggingface_hub checks sizes, not hashes)."""
+    snapshot = _cache(hub, KOKORO)
+    os.truncate(snapshot / "config.json", 1)
+    assert models.missing_files(hub, models.lock()[KOKORO]) == ["config.json"]
+
+
+def test_a_missing_lock_is_an_error_not_an_empty_lock(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        lockfile.read_lock(tmp_path / "models.lock.json")
+
+
+def test_a_link_whose_blob_is_gone_is_missing(hub: Path) -> None:
+    snapshot = _cache(hub, KOKORO)
+    (snapshot / "config.json").resolve().unlink()
+    assert models.missing_files(hub, models.lock()[KOKORO]) == ["config.json"]
+
+
+def test_a_model_needs_its_engines_shared_repository(hub: Path) -> None:
+    _cache(hub, "gradium/phonon-31m-en")
+    assert models.not_downloaded(hub, "gradium/phonon-31m-en") == ["gradium/phonon-voices"]
+    _cache(hub, "gradium/phonon-voices")
+    assert models.not_downloaded(hub, "gradium/phonon-31m-en") == []
+    assert models.not_downloaded(hub, "someone/else") == []  # not checked
+
+
+def test_check_only_of_an_unpinned_model_asks_the_cache_only(
+    hub: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    calls: list[dict[str, Any]] = []
+
+    def offline(repo: str, **kwargs: Any) -> str:
+        calls.append(kwargs)
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline)
+    with pytest.raises(models.ModelNotDownloaded) as exc:
+        models.snapshot("someone/else", check_only=True)
+    assert calls == [{"local_files_only": True}]
+    assert exc.value.revision is None
+
+
+def test_a_local_model_directory_is_used_as_it_is(tmp_path: Path) -> None:
+    assert models.snapshot(str(tmp_path), check_only=True) == tmp_path
+
+
+def test_the_hubs_offline_and_not_found_errors_are_a_missing_model() -> None:
+    pytest.importorskip("huggingface_hub")
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    try:
+        try:
+            raise LocalEntryNotFoundError("offline")
+        except LocalEntryNotFoundError as inner:
+            raise RuntimeError("the engine's own wrapper") from inner
+    except RuntimeError as exc:
+        found = models.hub_missing_model(exc, KOKORO)
+    assert found is not None and found.model_id == KOKORO
+    assert found.revision == lockfile.pinned_revision(KOKORO)
+    own = models.ModelNotDownloaded("gradium/phonon-voices", "abc")
+    assert models.hub_missing_model(own, KOKORO) is own
+    assert models.hub_missing_model(RuntimeError("Metal"), KOKORO) is None
+
+
+# Byte progress -----------------------------------------------------------------
 
 
 class Clock:
@@ -88,7 +246,7 @@ def _lines(written: list[str]) -> list[dict[str, Any]]:
 def test_byte_reports_are_throttled_to_four_a_second() -> None:
     written: list[str] = []
     clock = Clock()
-    report = models.ByteReport("org/m", 100, 1000, 1000, written.append, clock)
+    report = cache.ByteReport("org/m", 100, 1000, written.append, clock)
     report.add(0)  # the start, at what was cached
     for _ in range(10):
         clock.now += 0.0625
@@ -104,19 +262,15 @@ def test_byte_reports_are_throttled_to_four_a_second() -> None:
 
 def test_only_the_bar_of_bytes_written_counts() -> None:
     pytest.importorskip("huggingface_hub")
-    report = models.ByteReport("org/m", 0, 10, 10, lambda line: None)
-    counting = models._counting_tqdm(report)
-    written = counting(name=models.BYTES_BAR, total=0, disable=True)
+    report = cache.ByteReport("org/m", 0, 10, lambda line: None)
+    counting = cache._counting_tqdm(report)
+    written = counting(name=cache.BYTES_BAR, total=0, disable=True)
     transfer = counting(name="huggingface_hub.snapshot_download.transfer", disable=True)
     files = counting(total=3, disable=True)  # the file count
     written.update(7)
     transfer.update(5)
     files.update(1)
     assert report.bytes == 7
-
-
-def test_a_local_model_directory_is_used_as_it_is(tmp_path: Path) -> None:
-    assert models.snapshot(str(tmp_path), ["*.json"]) == tmp_path
 
 
 class FakeHub:
@@ -140,65 +294,132 @@ class FakeHub:
             ]
         tqdm_class = kwargs.get("tqdm_class")
         if tqdm_class is not None:
-            bar = tqdm_class(name=models.BYTES_BAR, total=70, disable=True)
+            bar = tqdm_class(name=cache.BYTES_BAR, total=70, disable=True)
             bar.update(70)
         return "/hf/hub/models--org--m/snapshots/abc"
 
 
 @pytest.fixture
-def hub(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeHub]:
+def fake_hub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., FakeHub]:
+    """Also ``hf_hub_download``, which writes the file at its locked size
+    (the repair after a snapshot), recording what it was asked for."""
     huggingface_hub = pytest.importorskip("huggingface_hub")
 
-    def make(offline: bool = False) -> FakeHub:
+    def make(offline: bool = False, repairs: bool = True) -> FakeHub:
         fake = FakeHub(offline)
+        fake.repaired = []  # type: ignore[attr-defined]
+        fake.repair_bars = []  # type: ignore[attr-defined]
+
+        def hf_hub_download(
+            repo: str, name: str, *, revision: str, force_download: bool, tqdm_class: Any
+        ) -> str:
+            fake.repaired.append((repo, name, force_download))  # type: ignore[attr-defined]
+            fake.repair_bars.append(tqdm_class)  # type: ignore[attr-defined]
+            path = cache.snapshot_dir(Path(cache.cache_dir()), repo, revision) / name
+            if repairs:
+                entry = next(e for e in models.lock().values() if e.repo == repo)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"")
+                os.truncate(path, entry.files[name].bytes)
+            return str(path)
+
         monkeypatch.setattr(huggingface_hub, "snapshot_download", fake)
-        monkeypatch.setattr(models, "cache_dir", lambda: "/hf/hub")
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_hub_download)
+        monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(tmp_path / "hf" / "hub"))
         return fake
 
     return make
 
 
-def test_a_pinned_model_downloads_its_revision_with_byte_progress(
-    hub: Callable[..., FakeHub],
+def test_a_pinned_model_downloads_its_locked_files_with_byte_progress(
+    fake_hub: Callable[..., FakeHub],
 ) -> None:
-    fake = hub()
-    pin = models.PINS[1]
+    fake = fake_hub()
+    entry = models.lock()[KOKORO]
     written: list[str] = []
-    path = models.snapshot(pin.repo, ["config.json"], write=written.append)
+    path = models.snapshot(KOKORO, write=written.append)
     assert path == Path("/hf/hub/models--org--m/snapshots/abc")
-    assert {c["revision"] for c in fake.calls} == {pin.revision}
-    assert {tuple(c["allow_patterns"]) for c in fake.calls} == {("config.json",)}
+    # The lock says what is cached: no dry run.
+    assert [(c["revision"], tuple(c["allow_patterns"])) for c in fake.calls] == [
+        (entry.revision, entry.patterns)
+    ]
     lines = _lines(written)
     assert lines[0] == {
         "kind": "model",
-        "repo": pin.repo,
-        "revision": pin.revision,
-        "path": "/hf/hub",
+        "repo": KOKORO,
+        "revision": entry.revision,
+        "path": cache.cache_dir(),
     }
-    # Starts at what was cached; the total is the pin's; ends at what is there.
-    assert lines[1] == {"kind": "bytes", "repo": pin.repo, "bytes": 30, "total": pin.bytes}
-    assert lines[-1] == {"kind": "bytes", "repo": pin.repo, "bytes": 100, "total": pin.bytes}
+    # The snapshot left every file missing, so each is fetched again whole.
+    assert sorted(n for _, n, _ in fake.repaired) == sorted(entry.files)  # type: ignore[attr-defined]
+    assert all(force for _, _, force in fake.repaired)  # type: ignore[attr-defined]
+    # With progress, the repair counts its bytes too.
+    assert all(bar is not None for bar in fake.repair_bars)  # type: ignore[attr-defined]
+    # Starts at what is cached (nothing here); the total is the lock's.
+    assert lines[1] == {"kind": "bytes", "repo": KOKORO, "bytes": 0, "total": entry.bytes}
+    assert lines[-1] == {
+        "kind": "bytes",
+        "repo": KOKORO,
+        "bytes": entry.bytes,
+        "total": entry.bytes,
+    }
 
 
-def test_an_unpinned_model_loads_main_and_its_size_is_the_total(
-    hub: Callable[..., FakeHub],
+def test_a_resumed_download_starts_at_what_the_lock_says_is_cached(
+    fake_hub: Callable[..., FakeHub], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = hub()
+    fake_hub()
+    hub = tmp_path / "hub"
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: str(hub))
+    snapshot = hf.add_locked(hub, models.lock()[KOKORO])
+    (snapshot / "config.json").unlink()
     written: list[str] = []
-    models.snapshot("org/m", None, write=written.append)
-    assert {c["revision"] for c in fake.calls} == {None}
+    models.snapshot(KOKORO, write=written.append)
+    entry = models.lock()[KOKORO]
+    done = entry.bytes - entry.files["config.json"].bytes
+    assert _lines(written)[1] == {
+        "kind": "bytes",
+        "repo": KOKORO,
+        "bytes": done,
+        "total": entry.bytes,
+    }
+
+
+def test_a_file_that_stays_truncated_fails_the_download(
+    fake_hub: Callable[..., FakeHub],
+) -> None:
+    """huggingface_hub keeps a file that is there whatever its size: a file
+    still short after the fetch again is an error, never done."""
+    fake_hub(repairs=False)
+    with pytest.raises(models.ModelsError) as exc:
+        models.snapshot(KOKORO)
+    assert exc.value.code == "failed"
+    assert exc.value.message.endswith(
+        f"of {KOKORO} did not download whole; delete the model "
+        f"(voiced models delete {KOKORO}) and download it again"
+    )
+
+
+def test_an_unpinned_model_downloads_main_whole(fake_hub: Callable[..., FakeHub]) -> None:
+    fake = fake_hub()
+    written: list[str] = []
+    models.snapshot("org/m", write=written.append)
+    assert {c.get("revision") for c in fake.calls} == {None}
+    assert {c.get("allow_patterns") for c in fake.calls} == {None}
     assert _lines(written)[1:] == [
         {"kind": "bytes", "repo": "org/m", "bytes": 30, "total": 100},
         {"kind": "bytes", "repo": "org/m", "bytes": 100, "total": 100},
     ]
 
 
-def test_without_write_there_is_no_dry_run_and_no_report(hub: Callable[..., FakeHub]) -> None:
-    """How the engines load: from the cache, at the pinned revision."""
-    fake = hub()
-    models.snapshot(models.PINS[0].repo, ["config.json"])
-    assert len(fake.calls) == 1 and "dry_run" not in fake.calls[0]
-    assert fake.calls[0]["revision"] == models.PINS[0].revision
+def test_offline_the_download_goes_to_the_cache_without_bytes(
+    fake_hub: Callable[..., FakeHub],
+) -> None:
+    fake = fake_hub(offline=True)
+    written: list[str] = []
+    models.snapshot("org/m", write=written.append)
+    assert [c.get("dry_run", False) for c in fake.calls] == [True, False]
+    assert [list(line) for line in _lines(written)] == [["kind", "repo", "revision", "path"]]
 
 
 def test_a_gated_model_says_how_to_get_access(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,89 +432,154 @@ def test_a_gated_model_says_how_to_get_access(monkeypatch: pytest.MonkeyPatch) -
         raise GatedRepoError("401", response=httpx.Response(401, request=request))
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", gated)
-    with pytest.raises(RuntimeError) as exc:
-        models.snapshot("gradium/phonon-40m-en", ["config.json"])
-    message = str(exc.value)
-    assert "https://huggingface.co/gradium/phonon-40m-en" in message
-    assert "`hf auth login` with HF_HOME set" in message
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    with pytest.raises(models.ModelsError) as exc:
+        models.snapshot("gradium/phonon-40m-en")
+    assert exc.value.code == "token_missing"
+    assert "https://huggingface.co/gradium/phonon-40m-en" in exc.value.message
+    assert "`hf auth login` with HF_HOME set" in exc.value.message
+    assert isinstance(exc.value.__cause__, GatedRepoError)
 
 
-def test_offline_the_download_goes_to_the_cache_without_bytes(
-    hub: Callable[..., FakeHub],
+# Pinning ---------------------------------------------------------------------
+
+SHA = "a" * 40
+NEWER = "b" * 40
+
+
+def _files(commit: str) -> Callable[[str, str, Sequence[str]], pinning.HubFiles]:
+    def files(repo: str, revision: str, patterns: Sequence[str]) -> pinning.HubFiles:
+        files.asked.append(revision)  # type: ignore[attr-defined]
+        return pinning.HubFiles(
+            commit, {"config.json": (10, None), "w.safetensors": (90, "c" * 64)}
+        )
+
+    files.asked = []  # type: ignore[attr-defined]
+    return files
+
+
+def test_pin_resolves_a_revision_and_hashes_the_small_files() -> None:
+    model = models.Model("org/m", "MIT", ("*.json", "*.safetensors"))
+    hashed: list[str] = []
+    files = _files(SHA)
+    entry = pinning.pin_repo(
+        model, None, None, files=files, sha256=lambda r, c, n: hashed.append(n) or "d" * 64
+    )
+    assert files.asked == ["main"]  # type: ignore[attr-defined]
+    assert hashed == ["config.json"]  # the hub has the sha256 of the LFS file
+    assert entry == models.Locked(
+        "org/m",
+        "org/m",
+        SHA,
+        model.patterns,
+        {
+            "config.json": lockfile.LockedFile(10, "d" * 64),
+            "w.safetensors": lockfile.LockedFile(90, "c" * 64),
+        },
+    )
+    assert entry.bytes == 100
+
+
+def test_re_pinning_keeps_the_revision_unless_asked_and_accumulates_previous() -> None:
+    model = models.Model("org/m", "MIT", ("*",))
+    current = models.Locked("org/m", "org/m", SHA, ("*",), {}, ("0" * 40,))
+    files = _files(SHA)
+    same = pinning.pin_repo(model, current, None, files=files, sha256=lambda *a: "d" * 64)
+    assert files.asked == [SHA] and same.previous == ("0" * 40,)  # type: ignore[attr-defined]
+    moved = pinning.pin_repo(
+        model, current, "main", files=_files(NEWER), sha256=lambda *a: "d" * 64
+    )
+    assert moved.revision == NEWER and moved.previous == ("0" * 40, SHA)
+
+
+def test_pin_without_repositories_fixes_what_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = hub(offline=True)
-    written: list[str] = []
-    models.snapshot("org/m", None, write=written.append)
-    assert [c.get("dry_run", False) for c in fake.calls] == [True, False]
-    assert [list(line) for line in _lines(written)] == [["kind", "repo", "revision", "path"]]
+    lock = tmp_path / "models.lock.json"
+    shipped = lockfile.read_lock()
+    gone = models.Locked(
+        "org/dropped", "org/dropped", SHA, ("*",), {"f": lockfile.LockedFile(1, "e" * 64)}
+    )
+    stale = models.Locked(KOKORO, KOKORO, SHA, ("other",), {"f": lockfile.LockedFile(1, "e" * 64)})
+    lockfile.write_lock({**shipped, KOKORO: stale, "org/dropped": gone}, lock)
+    asked: list[tuple[str, str | None]] = []
+
+    def fake_pin(model: models.Model, current: models.Locked | None, revision: str | None) -> Any:
+        asked.append((model.id, revision))
+        return models.Locked(
+            model.id, model.repo, NEWER, model.patterns, {"f": lockfile.LockedFile(1, "e" * 64)}
+        )
+
+    monkeypatch.setattr("voiced.models.pinning.pin_repo", fake_pin)
+    assert pinning.pin([], path=lock) == [KOKORO, "org/dropped"]
+    assert asked == [(KOKORO, None)]
+    written = lockfile.read_lock(lock)
+    assert set(written) == set(shipped) and written[KOKORO].revision == NEWER
+    # The dropped model's revision stays known, so uninstall still deletes it.
+    assert lockfile.read_retired(lock) == {("org/dropped", SHA)}
+    with pytest.raises(SystemExit, match="not in the catalogue: org/new"):
+        pinning.pin(["org/new"], path=lock)
 
 
-def test_the_models_step_fetches_what_each_engine_names_then_loads_it(
+# The models step -------------------------------------------------------------
+
+
+def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An engine with download_patterns() is fetched first; one without
-    (the fakes, a plugin) downloads in its load(); one that is not
-    installed is fetched whole."""
-    fetched: list[tuple[str, list[str] | None]] = []
-    monkeypatch.setattr(models, "cache_dir", lambda: "/hf/hub")
-    monkeypatch.setattr(
-        models, "snapshot", lambda repo, patterns, write: fetched.append((repo, patterns))
-    )
+    """A catalogued engine's model comes with its shared repositories; a
+    plugin engine (the fakes) downloads in its own load(); a model whose
+    engine is not installed is fetched whole; a model the engine refuses
+    fails before anything is fetched."""
+    fetched: list[str] = []
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.cache.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.cache.check_disk", lambda hub, needed: None)
+    monkeypatch.setattr("voiced.models.cache.snapshot", lambda repo, write: fetched.append(repo))
     config = tmp_path / "config.toml"
     config.write_text(
         '[stt]\nengine = "fake"\nmodel = "org/stt"\n[tts]\nengine = "nope"\nmodel = "org/tts"\n'
     )
-    models.download(config, None)
-    assert fetched == [("org/tts", None)]
+    commands.download(config, None)
+    assert fetched == ["org/tts"]
 
     loaded: list[str] = []
 
-    class Patterned:
-        name = "patterned"
+    async def load(self: PhononEngine) -> None:
+        loaded.append(self.model_id)
 
-        def __init__(self, model: str) -> None:
-            self.model_id = model
-
-        @classmethod
-        def download_patterns(cls) -> list[str]:
-            return ["*.json"]
-
-        @classmethod
-        def extra_downloads(cls) -> dict[str, list[str]]:
-            return {"org/voices": ["voices/*"]}
-
-        async def load(self) -> None:
-            loaded.append(self.model_id)
-
-    from voiced.engines import registry
-
-    monkeypatch.setattr(registry, "get_stt_engine", lambda name: Patterned)
-    config.write_text('[stt]\nmodel = "org/stt"\n[tts]\nengine = "fake"\n')
+    monkeypatch.setattr(PhononEngine, "load", load)
+    config.write_text(
+        '[stt]\nengine = "fake"\n[tts]\nengine = "phonon"\nmodel = "gradium/phonon-40m-en"\n'
+    )
     fetched.clear()
-    models.download(config, None)
-    assert fetched == [("org/stt", ["*.json"]), ("org/voices", ["voices/*"])]
-    assert loaded == ["org/stt"]
+    commands.download(config, None)
+    assert fetched == ["gradium/phonon-40m-en", "gradium/phonon-voices"]
+    assert loaded == ["gradium/phonon-40m-en"]
+
+    config.write_text(
+        '[stt]\nengine = "fake"\n[tts]\nengine = "phonon"\nmodel = "gradium/phonon-40m-fr"\n'
+    )
+    fetched.clear()
+    with pytest.raises(ValueError, match="not in voiced's model catalogue"):
+        commands.download(config, None)
+    assert fetched == []
+
+
+# Against the hub (model tier) ----------------------------------------------------
 
 
 @pytest.mark.model
-def test_the_pins_are_the_sizes_of_what_the_engines_load() -> None:
-    """Network only: the hub's file sizes at each pinned revision."""
-    from huggingface_hub import HfApi
-    from huggingface_hub.utils import filter_repo_objects
-
-    phonon = models.download_patterns(PhononEngine)
-    patterns = {
-        models.PINS[0].repo: models.download_patterns(ParakeetEngine),
-        models.PINS[1].repo: models.download_patterns(KokoroEngine),
-        **{p.repo: phonon for p in models.OPTIONAL_PINS if p.repo.startswith("gradium/phonon-")},
-        **models.extra_downloads(PhononEngine),
-    }
-    for pin in (*models.PINS, *models.OPTIONAL_PINS):
-        # Gated repositories list their files to anyone signed in or not.
-        info = HfApi().model_info(pin.repo, revision=pin.revision, files_metadata=True)
-        sizes = {f.rfilename: f.size or 0 for f in info.siblings or []}
-        wanted = filter_repo_objects(list(sizes), allow_patterns=patterns[pin.repo])
-        assert sum(sizes[name] for name in wanted) == pin.bytes, pin.repo
+def test_the_lock_is_what_the_hub_has_at_each_pin() -> None:
+    """Network only: each locked file's size and, for LFS files, sha256."""
+    for entry in models.lock().values():
+        hub = pinning.hub_files(entry.repo, entry.revision, entry.patterns)
+        assert hub.commit == entry.revision
+        assert {n: s for n, (s, _) in hub.files.items()} == {
+            n: f.bytes for n, f in entry.files.items()
+        }, entry.repo
+        for name, (_, digest) in hub.files.items():
+            assert digest is None or digest == entry.files[name].sha256, (entry.repo, name)
 
 
 @pytest.mark.model
@@ -302,13 +588,13 @@ def test_a_real_download_reports_its_bytes(tmp_path: Path) -> None:
     counted through huggingface_hub's own bars."""
     from huggingface_hub import snapshot_download
 
-    pin = models.PINS[1]
-    report = models.ByteReport(pin.repo, 0, pin.bytes, pin.bytes, lambda line: None)
+    entry = models.lock()[KOKORO]
+    report = cache.ByteReport(KOKORO, 0, entry.bytes, lambda line: None)
     path = snapshot_download(
-        pin.repo,
-        revision=pin.revision,
+        KOKORO,
+        revision=entry.revision,
         allow_patterns=["config.json"],
         cache_dir=tmp_path / "hub",
-        tqdm_class=models._counting_tqdm(report),
+        tqdm_class=cache._counting_tqdm(report),
     )
     assert report.bytes == (Path(path) / "config.json").stat().st_size > 0

@@ -208,3 +208,12 @@ the page call the `/v1` routes and send the API key the operator types in.
 - Metrics live in process memory and reset on restart; the watchdog's
   restarts therefore also clear the error log. Persisting them is out of
   scope for v1.
+
+## Amendment (ADR 0022)
+
+A voice that is not served is no longer a 400: the request is spoken in
+`tts.default_voice` (or the first served voice) with a warning in the log,
+so an OpenAI client's `alloy`, or Home Assistant's voice of the engine
+before a switch, still gets audio. Only a service that serves no voice at
+all answers `UnknownVoice`. A service whose model is not downloaded answers
+503 `model_not_downloaded` without `Retry-After`.

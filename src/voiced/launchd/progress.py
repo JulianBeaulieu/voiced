@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import signal
+import threading
 from collections.abc import Iterator
 from types import FrameType
 from typing import Literal, TextIO
@@ -29,6 +30,16 @@ from voiced import __version__
 
 PROTOCOL = 1
 DOWNLOAD_PREFIX = "@@voiced-download "
+
+ErrorCode = Literal[
+    "token_missing", "token_invalid", "gated_terms", "network", "disk", "busy", "in_use", "failed"
+]
+"""What an ``error`` event's ``code`` says went wrong (ADR 0022 section 4):
+a 401 without a token, a token Hugging Face rejected, a gated model's
+terms not accepted, no network, not enough disk, an install holding the
+state directory, the model the config uses (``delete``), anything else.
+The installer's own errors are ``failed``. Readers show an unknown code as
+text."""
 
 StepState = Literal["planned", "start", "done"]
 
@@ -58,10 +69,14 @@ def exit_on_sigterm() -> Iterator[None]:
 
 class Progress:
     """Writes the protocol's events to ``out``. With ``out`` None (a plain
-    ``voiced install``) every method does nothing."""
+    ``voiced install``) every method does nothing. Events from several
+    threads (a download's byte reports) are written whole, one at a time."""
 
     def __init__(self, out: TextIO | None = None) -> None:
         self.out = out
+        # Reentrant: a signal handler that ends the stream runs in the main
+        # thread, which may be inside emit() already.
+        self._lock = threading.RLock()
         self.step_id: str | None = None
         """The step running now, named by an ``error``."""
         self.fetching: dict[str, object] = {}
@@ -72,10 +87,18 @@ class Progress:
         return self.out is not None
 
     def emit(self, event: str, **fields: object) -> None:
-        if self.out is None:
-            return
-        self.out.write(json.dumps({"event": event, **fields}) + "\n")
-        self.out.flush()
+        with self._lock:
+            if self.out is None:
+                return
+            self.out.write(json.dumps({"event": event, **fields}) + "\n")
+            self.out.flush()
+
+    def close_with_error(self, message: str, code: ErrorCode = "failed") -> None:
+        """The last event: ``error``, after which nothing more is written, so
+        a byte report from another thread cannot follow it."""
+        with self._lock:
+            self.error(message, code)
+            self.out = None
 
     def hello(self) -> None:
         self.emit("hello", protocol=PROTOCOL, version=__version__)
@@ -113,14 +136,20 @@ class Progress:
         return True
 
     def done(self) -> None:
-        self.emit("done")
+        """The last event on success; like :meth:`close_with_error`, nothing
+        is written after it, so a SIGTERM now cannot add an ``error``."""
+        with self._lock:
+            self.emit("done")
+            self.out = None
 
-    def error(self, message: str) -> None:
+    def error(self, message: str, code: ErrorCode = "failed") -> None:
         """``step`` is None when no step was running. A models-step error
         names the model it was on, for the app's manual fallback and its
-        Show in Finder."""
-        extra = self.fetching if self.step_id == "models" else {}
-        self.emit("error", step=self.step_id, message=message, **extra)
+        Show in Finder. ``code`` says what went wrong for the app to act on
+        (``voiced models download``'s, ADR 0022); the installer's is
+        ``failed``. A model download's error names its model too."""
+        extra = self.fetching if self.step_id in ("models", None) else {}
+        self.emit("error", step=self.step_id, code=code, message=message, **extra)
 
     def fail_before_start(self, message: str) -> None:
         """For a failure before the install could start (a config file that

@@ -12,7 +12,8 @@ runtime in the ``ptts`` wheel (no PyTorch, no espeak-ng). This engine (see
   (ADR 0019); each blocking step runs in a worker thread through
   ``run_blocking``, and ``ptts`` releases the GIL while it works;
 * loads the model and the voices from voiced's pinned snapshots
-  (``voiced.models``), as local folders, so ``ptts`` never reaches the Hub
+  (``voiced.models``; the voices are the engine's ``shared`` repository in
+  the catalogue), as local folders, so ``ptts`` never reaches the Hub
   itself and every voice is on disk before the first request.
 
 Voices are Gradium's English presets from ``gradium/phonon-voices``, named
@@ -35,11 +36,13 @@ from typing import Any, Literal
 
 from voiced.audio import float32_to_pcm16
 from voiced.engines.base import TTS_SAMPLE_RATE, Voice
+from voiced.engines.registry import ModelRefused
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
+from voiced.models import default_model, engine
 
 log = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_VOICE", "PHONON_VOICES", "PhononEngine", "weights_license"]
+__all__ = ["DEFAULT_VOICE", "PHONON_VOICES", "PhononEngine"]
 
 LANG = "en"
 """``ptts``'s text normalization; voiced is English-only (DECISIONS)."""
@@ -48,9 +51,12 @@ QUANT = "q8"
 THREADS = 4
 """``ptts``'s CPU thread pool. Its default is every core, efficiency cores
 included, beside the STT's own CPU work; ADR 0021 has the measurement."""
-VOICES_REPO = "gradium/phonon-voices"
-MODELS_40M = ("gradium/phonon-40m-en", "gradium/phonon-40m-multilingual")
-"""The 40M checkpoints voiced supports: the English-speaking ones, pinned."""
+_PHONON = engine("phonon")
+if _PHONON is None:  # pragma: no cover - the catalogue ships with the engine
+    raise ImportError("voiced.models.CATALOGUE has no phonon engine")
+VOICES_REPO = _PHONON.shared[0].id
+MODELS = tuple(m.id for m in _PHONON.models)
+"""The Phonon models in the catalogue; the engine refuses any other of Gradium's."""
 
 DEFAULT_VOICE = Voice(id="default", name="Default", language="en", gender=None)
 
@@ -107,41 +113,23 @@ PHONON_VOICES: list[Voice] = [
 ]
 
 
-def weights_license(model_id: str) -> str:
-    """Phonon 31M is Apache-2.0; the 40M checkpoints are CC-BY-NC-4.0
-    (non-commercial) and gated on the Hub."""
-    return "CC-BY-NC-4.0" if model_id in MODELS_40M else "Apache-2.0"
-
-
 class PhononEngine(SentenceTTSEngine):
     name = "phonon"
-    model_id = "gradium/phonon-31m-en"
+    model_id = default_model("phonon").id
     languages = ["en-US", "en-GB"]
-    license = "Apache-2.0"
+    license = default_model("phonon").license
 
     @classmethod
     def catalogue_voices(cls) -> list[Voice]:
         return list(PHONON_VOICES)
 
-    @classmethod
-    def download_patterns(cls) -> list[str]:
-        """The config, the tokenizer, the q8 weights and the default voice;
-        not the other weight formats (``voiced.models``)."""
-        return ["config.json", "tokenizer.json", f"model.{QUANT}.gguf", "default-voice.safetensors"]
-
-    @classmethod
-    def extra_downloads(cls) -> dict[str, list[str]]:
-        """The catalogue and the English presets (``voiced.models``)."""
-        return {VOICES_REPO: ["voices.jsonl", *VOICE_FILES.values()]}
-
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
-        if "phonon-40m" in self.model_id and self.model_id not in MODELS_40M:
-            raise ValueError(
-                f"{self.model_id} is not supported: voiced speaks English, so of the "
-                f"Phonon 40M models only {' and '.join(MODELS_40M)} are"
+        if self.model_id.startswith("gradium/phonon-") and self.model_id not in MODELS:
+            raise ModelRefused(
+                f"{self.model_id} is not in voiced's model catalogue; its Phonon models "
+                f"are {', '.join(MODELS)}"
             )
-        self.license = weights_license(self.model_id)
 
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way
@@ -151,8 +139,8 @@ class PhononEngine(SentenceTTSEngine):
         from voiced.models import snapshot
 
         started = time.perf_counter()
-        root = snapshot(self.model_id, self.download_patterns())
-        voices = snapshot(VOICES_REPO, self.extra_downloads()[VOICES_REPO])
+        root = snapshot(self.model_id, check_only=True)
+        voices = snapshot(VOICES_REPO, check_only=True)
         ptts.set_num_threads(THREADS)  # process-wide, so before the model
         model = ptts.TTS(str(root), device="cpu", quant=QUANT, lang=LANG, voice_catalog=str(voices))
         rate = int(model.sample_rate)

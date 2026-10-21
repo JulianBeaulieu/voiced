@@ -6,7 +6,9 @@ returning its :class:`~voiced.engines.base.Voice` list; it must not load
 weights or import MLX. It is not part of the frozen interface in
 ``voiced.engines.base``: an engine without it lists no voices, and the
 running service's ``voices()`` stays the authority on what can be
-synthesized. Models and languages come from ``model_id`` and ``languages``.
+synthesized. Models come from ``voiced.models.CATALOGUE`` (the default
+first), or ``model_id`` for an engine it does not know; languages from
+``languages``.
 
 Display labels are built here, in one place: an engine's label is its
 registry name capitalised, and a voice with a gender is labelled
@@ -28,6 +30,7 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from voiced import models
 from voiced.engines import registry
 from voiced.engines.base import STTEngine, TTSEngine, Voice
 
@@ -65,12 +68,19 @@ def catalogue_voices(cls: type[TTSEngine]) -> list[Voice]:
     return [v for v in voices if isinstance(v, Voice)]
 
 
-def _common(name: str, cls: type[STTEngine] | type[TTSEngine]) -> dict[str, Any]:
+def engine_models(name: str, cls: type[STTEngine] | type[TTSEngine]) -> list[str]:
+    catalogued = models.engine(name)
+    if catalogued is not None:
+        return [m.id for m in catalogued.models]
     model = getattr(cls, "model_id", None)
+    return [model] if isinstance(model, str) and model else []
+
+
+def _common(name: str, cls: type[STTEngine] | type[TTSEngine]) -> dict[str, Any]:
     return {
         "name": name,
         "label": engine_label(name),
-        "models": [model] if isinstance(model, str) and model else [],
+        "models": engine_models(name, cls),
         "languages": list(getattr(cls, "languages", [])),
     }
 

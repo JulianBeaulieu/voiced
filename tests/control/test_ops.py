@@ -153,6 +153,7 @@ async def test_settings_set_result(ops: Operations) -> None:
     assert again["restart_required"] == []
 
 
+@pytest.mark.usefixtures("models_downloaded")
 async def test_engine_switch_takes_the_engine_model(ops: Operations, config_file: Path) -> None:
     result = await ops.dispatch("settings.set", {"tts.engine": "soprano"})
     assert result["changed"] == ["tts.engine", "tts.model", "tts.voice"]
@@ -162,6 +163,7 @@ async def test_engine_switch_takes_the_engine_model(ops: Operations, config_file
     assert tomllib.loads(read(config_file))["tts"]["model"] == SopranoEngine.model_id
 
 
+@pytest.mark.usefixtures("models_downloaded")
 async def test_engine_switch_on_a_minimal_config(ops: Operations, config_file: Path) -> None:
     """Kokoro's model is the config default; it is written all the same."""
     from voiced.engines.kokoro import KokoroEngine
@@ -172,6 +174,17 @@ async def test_engine_switch_on_a_minimal_config(ops: Operations, config_file: P
     assert result["tts"]["model"] == KokoroEngine.model_id
     tts = tomllib.loads(read(config_file))["tts"]
     assert (tts["engine"], tts["model"]) == ("kokoro", KokoroEngine.model_id)
+
+
+async def test_a_model_that_is_not_downloaded_has_its_own_code(
+    ops: Operations, config_file: Path
+) -> None:
+    model = "gradium/phonon-40m-en"
+    with pytest.raises(OpError) as info:
+        await ops.dispatch("settings.set", {"tts.engine": "phonon", "tts.model": model})
+    assert info.value.code == protocol.MODEL_NOT_DOWNLOADED == "model_not_downloaded"
+    assert info.value.extra == {"field": "tts.model", "model": model}
+    assert info.value.message.startswith(f"{model} is not downloaded; run voiced models download")
 
 
 async def test_config_error_names_the_file(ops: Operations, config_file: Path) -> None:

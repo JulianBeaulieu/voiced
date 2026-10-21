@@ -165,3 +165,17 @@ def test_open_streams_is_bounded_by_the_engine() -> None:
     stt = Settings().stt
     assert stt.open_streams(engine_max=1) == 1  # an engine that cannot interleave
     assert stt.open_streams(engine_max=8) == STT_STREAMS
+
+
+def test_without_hf_home_downloads_go_where_voiced_looks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """huggingface_hub would follow XDG_CACHE_HOME; voiced.models.hub_dir does
+    not, so HF_HOME is set to the default home."""
+    from voiced.models import DEFAULT_HF_HOME
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    apply_engine_environment(load_settings(cfg))
+    assert os.environ["HF_HOME"] == str(DEFAULT_HF_HOME)  # what hub_dir(None) is under

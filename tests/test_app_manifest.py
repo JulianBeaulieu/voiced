@@ -174,6 +174,7 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
     """bundle.sh writes the pins with ``python -I -m voiced.models`` from the
     installed wheel; the manifest takes exactly what it prints."""
     from voiced import models
+    from voiced.models import lockfile
 
     out = subprocess.run(
         [sys.executable, "-I", "-m", "voiced.models"],
@@ -184,7 +185,8 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
     )
     pins = tmp_path / "model-pins.json"
     pins.write_text(out.stdout)
-    assert app_manifest.models(pins) == models.manifest()["models"]
+    assert app_manifest.models(pins) == lockfile.manifest()["models"]
     assert [(m["repo"], m["revision"], m["bytes"]) for m in app_manifest.models(pins)] == [
-        (p.repo, p.revision, p.bytes) for p in models.PINS
+        (p.repo, p.revision, p.bytes)
+        for p in (models.lock()[models.default_model(e).repo] for e in ("parakeet", "kokoro"))
     ]

@@ -50,7 +50,8 @@ def test_load_asks_mlx_audio_for_the_pinned_revision(
 
     from voiced import models
 
-    pin = models.PINS[1]
+    pin = models.locked("mlx-community/Kokoro-82M-bf16")
+    assert pin is not None
     asked: dict[str, Any] = {}
 
     class Loaded(Exception):
@@ -66,14 +67,18 @@ def test_load_asks_mlx_audio_for_the_pinned_revision(
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
     monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", utils)
     monkeypatch.setattr("voiced.engines.kokoro._load_espeak", lambda: None)
-    snapshots: list[tuple[str, list[str] | None]] = []
-    monkeypatch.setattr(
-        models, "snapshot", lambda repo, patterns: snapshots.append((repo, patterns)) or tmp_path
-    )
+    snapshots: list[tuple[str, bool]] = []
+
+    def snapshot(repo: str, check_only: bool = False) -> Path:
+        snapshots.append((repo, check_only))
+        return tmp_path
+
+    monkeypatch.setattr(models, "snapshot", snapshot)
+    monkeypatch.setattr("voiced.models.cache.snapshot", snapshot)  # load_pinned's
     with pytest.raises(Loaded):
         KokoroEngine(pin.repo)._load_sync()
-    patterns = KokoroEngine.download_patterns()
-    assert snapshots == [(pin.repo, patterns)]
+    assert snapshots == [(pin.repo, True), (pin.repo, True)]  # checked, never downloaded
+    patterns = list(pin.patterns)
     assert asked == {"repo": pin.repo, "revision": pin.revision, "allow_patterns": patterns}
 
 

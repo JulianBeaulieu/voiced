@@ -80,6 +80,16 @@ async def test_change_with_the_key(tts_client: AsyncClient) -> None:
     assert tomllib.loads(path.read_text())["tts"]["default_voice"] == "bf_emma"
 
 
+async def test_a_model_that_is_not_downloaded_is_409(tts_client: AsyncClient) -> None:
+    path = write_config(browser_settings=True, api_key="k1")
+    before = path.read_text()
+    change = {"tts.engine": "phonon", "tts.model": "gradium/phonon-40m-en"}
+    r = await tts_client.post("/settings", json=change, headers=bearer("k1"))
+    assert r.status_code == 409
+    assert r.json()["error"]["type"] == "model_not_downloaded"
+    assert path.read_text() == before
+
+
 async def test_invalid_value_is_400_and_not_written(tts_client: AsyncClient) -> None:
     path = write_config(browser_settings=True, api_key="k1")
     before = path.read_text()
@@ -92,6 +102,7 @@ async def test_invalid_value_is_400_and_not_written(tts_client: AsyncClient) -> 
     assert path.read_text() == before
 
 
+@pytest.mark.usefixtures("models_downloaded")
 async def test_engine_change_resets_the_model(tts_client: AsyncClient) -> None:
     path = write_config(browser_settings=True, api_key="k1")
     r = await tts_client.post("/settings", json={"tts.engine": "soprano"}, headers=bearer("k1"))

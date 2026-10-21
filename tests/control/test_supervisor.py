@@ -48,6 +48,7 @@ HEALTH = {
         (Observation("degraded"), False, "degraded"),
         (Observation("stalled"), False, "degraded"),
         (Observation("error"), False, "degraded"),
+        (Observation("missing_model"), True, "missing_model"),
         (Observation("unreachable", loaded=False), True, "stopped"),
         (Observation("unreachable", loaded=None), False, "unknown"),
         (Observation("unreachable", loaded=True), True, "starting"),

@@ -15,10 +15,9 @@ uses [Semantic Versioning](https://semver.org/).
   Voices are the model's `default` and Gradium's 37 English presets by name
   (`Easton`, `Maeve`, ...); the menu bar app lists them. The model and the
   voices are pinned and downloaded by `voiced install` like the default
-  models. The gated `gradium/phonon-40m-en` and
-  `gradium/phonon-40m-multilingual` work as `model` too, under their
+  models. The gated `gradium/phonon-40m-en` works as `model` too, under its
   non-commercial CC-BY-NC-4.0 licence, with a Hugging Face token; without
-  one, the service says how to add it.
+  one, the download says how to add it.
 - `engines.list` gives each voice's language in `voice_languages`, so
   settings UIs can group voices.
 - Benchmarks for every engine and model in
@@ -28,6 +27,38 @@ uses [Semantic Versioning](https://semver.org/).
   each row with its machine, commit and date, and a quality and a speed
   rating from 1 to 5 by fixed limits. `scripts/bench_engine.py` measures one
   engine with one command and regenerates the document (ADR 0024).
+- `voiced models list`, `voiced models download <model>` and `voiced models
+  delete <model>`: see every model voiced can run with its licence, size and
+  state, download one at its pinned revision with byte progress, and delete
+  one to free its disk space, never touching what other tools keep in the
+  shared Hugging Face cache. `--json` and `--json-progress` are for the menu
+  bar app, whose model rows follow.
+- `voiced doctor` says whether each service's model is downloaded, and how
+  to fetch it if not.
+- A `missing_model` health status: a service whose model is not in the cache
+  stays up, answers 503 `model_not_downloaded` and names the command that
+  downloads it, instead of exiting and being restarted every 10 s.
+
+### Changed
+
+- The services never download a model: they load it from the cache, at the
+  revision voiced pins (Soprano now has a pin too). `voiced install`, `voiced
+  models download` or you put it there.
+- `voiced settings set`, the menu bar app and the status page form refuse to
+  switch to a model that is not downloaded, with the command that fetches
+  it (error code `model_not_downloaded`).
+- A TTS request for a voice the engine does not serve is spoken in
+  `tts.default_voice` with a warning in the log, over HTTP and Wyoming, no
+  longer refused: Home Assistant keeps asking for its pipeline's voice after
+  the engine changes, and the assistant went silent.
+- A configured engine that is not installed, or a model it refuses, ends
+  `voiced serve` with one line saying so, not a traceback.
+- The `error` event of `--json-progress` carries a `code`.
+- For engine plugins: the services run `load()` with `HF_HUB_OFFLINE=1`, so
+  it cannot download. `voiced install` still runs each engine's `load()`
+  once with the network, which fetches a plugin's weights; a load that later
+  fails with the hub's offline or not-found errors reports `missing_model`
+  instead of exiting.
 
 ### Changed
 

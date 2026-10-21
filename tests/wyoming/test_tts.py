@@ -197,18 +197,15 @@ async def test_streaming_text_over_max_input_chars_errors_once_and_closes_at_sto
     assert ctx.health.status == "ok"
 
 
-async def test_unknown_voice_is_an_error(tts_listener: WyomingListener) -> None:
+async def test_an_unknown_voice_is_spoken_in_the_configured_one(
+    tts_listener: WyomingListener,
+) -> None:
+    """Home Assistant keeps sending its pipeline's voice after the engine
+    changes; refusing it would leave the assistant silent (ADR 0022)."""
     async with client(tts_listener) as c:
         await c.write_event(Synthesize(text="Hi.", voice=SynthesizeVoice(name="nope")).event())
         event = await c.read_event()
-        assert event is not None
-        error = Error.from_event(event)
-        assert error.code == "invalid_request_error"
-        assert error.text.startswith("UnknownVoice")
-        # Connection stays usable.
-        await c.write_event(Describe().event())
-        event = await c.read_event()
-        assert event is not None and Info.is_type(event.type)
+        assert event is not None and AudioStart.is_type(event.type)
     assert tts_listener.ctx.health.status == "ok"
 
 

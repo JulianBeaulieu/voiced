@@ -20,6 +20,7 @@ MAX_LINE_BYTES: Final = 64 * 1024
 # Error codes.
 NOT_INSTALLED: Final = "not_installed"
 INVALID_SETTING: Final = "invalid_setting"
+MODEL_NOT_DOWNLOADED: Final = "model_not_downloaded"
 UNKNOWN_OP: Final = "unknown_op"
 BAD_REQUEST: Final = "bad_request"
 SERVICE_UNAVAILABLE: Final = "service_unavailable"

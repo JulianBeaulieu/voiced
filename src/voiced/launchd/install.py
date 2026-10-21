@@ -75,7 +75,9 @@ from voiced.models import (
     CachedRevision,
     cached_revisions,
     delete_revisions,
+    hub_dir,
     pinned_revisions,
+    repo_folder,
     size_text,
 )
 
@@ -1021,16 +1023,6 @@ def removal_refusal(path: Path, home: Path) -> str | None:
     return None
 
 
-def repo_folder(repo: str) -> str:
-    """A model repository's folder in the Hugging Face cache."""
-    return f"models--{repo.replace('/', '--')}"
-
-
-def hf_hub(hf_home: Path | None) -> Path:
-    """The Hugging Face cache the services use (``[install] hf_home``)."""
-    return (hf_home or Path.home() / ".cache" / "huggingface") / "hub"
-
-
 @dataclass(frozen=True)
 class ModelTargets:
     """What ``--remove-models`` deletes from the cache at ``hub``: the
@@ -1068,7 +1060,7 @@ class ModelTargets:
 def model_targets(plan: InstallPlan, settings: Settings) -> ModelTargets:
     """The revisions voiced pinned, this release's and earlier ones, that
     the cache holds."""
-    hub = hf_hub(plan.hf_home)
+    hub = hub_dir(plan.hf_home)
     pins = pinned_revisions()
     pinned_repos = {repo for repo, _ in pins}
     try:

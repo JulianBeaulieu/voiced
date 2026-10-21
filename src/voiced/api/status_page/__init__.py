@@ -34,12 +34,14 @@ from fastapi.responses import HTMLResponse
 from voiced.api.context import APIError, Ctx
 from voiced.config import Settings, config_path, load_settings
 from voiced.context import ServiceContext
+from voiced.control.protocol import MODEL_NOT_DOWNLOADED
 from voiced.engines.catalogue import engines_list
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
     FileStamp,
     InvalidSetting,
+    ModelMissing,
     apply_settings,
     change_view,
     file_stamp,
@@ -201,6 +203,10 @@ async def settings_json(request: Request, ctx: Ctx) -> dict[str, Any]:
 def _apply(changes: dict[str, object], path: Path) -> dict[str, Any]:
     try:
         change = apply_settings(changes, path, engines=engines_list)
+    except ModelMissing as exc:
+        raise APIError(
+            status.HTTP_409_CONFLICT, f"{exc.field}: {exc.message}", MODEL_NOT_DOWNLOADED
+        ) from None
     except InvalidSetting as exc:
         raise APIError(
             status.HTTP_400_BAD_REQUEST, f"{exc.field}: {exc.message}", "invalid_setting"

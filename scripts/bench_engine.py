@@ -697,7 +697,7 @@ def write_doc() -> None:
 
 # -- the service -------------------------------------------------------------
 
-READY_TIMEOUT_S = 900.0  # a first start may download gigabytes
+READY_TIMEOUT_S = 900.0  # a first start loads the model from a cold disk
 ALIGNMENTS = 32
 CHUNKS = (1024, 1600)  # 64 and 100 ms at 16 kHz, as ADR 0008 measures
 TRIALS = 10
@@ -735,6 +735,16 @@ def started(kind: Kind, engine: str, model: str, workdir: Path) -> Iterator[Serv
     """``voiced serve <kind>`` on free ports with :func:`bench_config` (no
     ``VOICED_`` variable of the caller's shell applies), once it is ready.
     :func:`run` checks that it serves the engine and model named."""
+    from huggingface_hub import constants
+
+    from voiced.models import ModelNotDownloaded, not_downloaded
+
+    # The services never download (ADR 0022): refuse now rather than wait
+    # out READY_TIMEOUT_S on a service reporting missing_model.
+    missing = not_downloaded(Path(constants.HF_HOME) / "hub", model)
+    if missing:
+        shared = () if model in missing else tuple(missing)
+        raise SystemExit(str(ModelNotDownloaded(model, missing=shared)))
     workdir.mkdir(parents=True, exist_ok=True)
     http, wyoming = _free_ports(2)
     section = f"VOICED_{kind.upper()}__"

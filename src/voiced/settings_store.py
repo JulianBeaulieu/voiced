@@ -7,8 +7,10 @@ the requested values that differ from the file are rewritten; comments, key
 order and every other key stay as they were) and replaces it atomically. ``voiced.config`` stays the
 schema and the loader. See ADR 0013.
 
-Errors are :class:`InvalidSetting` (with the field at fault) and
-:class:`ConfigFileError`; each transport maps them to its own error shape.
+Errors are :class:`InvalidSetting` (with the field at fault), its
+:class:`ModelMissing` (a catalogued model that is not downloaded, ADR 0022)
+and :class:`ConfigFileError`; each transport maps them to its own error
+shape.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Any, Literal, TypeAlias
 import tomlkit
 from pydantic import BaseModel, ValidationError
 
+from voiced import models
 from voiced.config import (
     ENV_PREFIX,
     HTTP_SERVICES,
@@ -78,6 +81,20 @@ class InvalidSetting(ValueError):
         super().__init__(f"{field}: {message}")
         self.field = field
         self.message = message
+
+
+class ModelMissing(InvalidSetting):
+    """The change would run a catalogued model whose files are not in the
+    cache: the service would come up with ``missing_model``. The message says
+    how to download it and then make the same change."""
+
+    def __init__(self, kind: str, engine: str, model: str) -> None:
+        super().__init__(
+            f"{kind}.model",
+            f"{model} is not downloaded; run voiced models download {model}, then "
+            f"voiced settings set {kind}.engine={engine} {kind}.model={model}",
+        )
+        self.model = model
 
 
 class ConfigFileError(RuntimeError):
@@ -287,6 +304,24 @@ def _env_overrides(section: str, key: str) -> bool:
 
 
 _ENGINE_KEYS = {"stt.engine", "tts.engine", "tts.voice"}
+_MODEL_KEYS = {"stt.engine", "stt.model", "tts.engine", "tts.model"}
+
+
+def check_downloaded(
+    changes: Mapping[str, object], old: Mapping[str, BaseModel], hf_home: Path | None
+) -> None:
+    """Raise :class:`ModelMissing` if a change of engine or model leaves a
+    service on a catalogued model that is not complete in the cache. Reads
+    the disk every time; a model outside the catalogue is not checked."""
+    hub = models.hub_dir(hf_home)
+    for kind in HTTP_SERVICES:
+        if not {f"{kind}.engine", f"{kind}.model"} & set(changes):
+            continue
+        section = old[kind]
+        assert isinstance(section, STTConfig | TTSConfig)
+        model = str(changes.get(f"{kind}.model", section.model))
+        if models.not_downloaded(hub, model):
+            raise ModelMissing(kind, str(changes.get(f"{kind}.engine", section.engine)), model)
 
 
 def apply_settings(
@@ -301,9 +336,11 @@ def apply_settings(
     unknown sections and comments are left alone. ``engines`` supplies the
     ``engines.list`` catalogue for engine and voice changes; it is only
     called when one of those is being changed, and without it they are not
-    checked. Returns the effective settings afterwards (environment overrides
-    included), the services that must restart for the change to apply, and
-    warnings for the operator.
+    checked. A change of engine or model is always checked against the
+    model lock and the cache (:func:`check_downloaded`). Returns the
+    effective settings afterwards (environment overrides included), the
+    services that must restart for the change to apply, and warnings for the
+    operator.
     """
     path = path if path is not None else config_path()
     unknown = sorted(set(changes) - set(SETTABLE))
@@ -323,6 +360,8 @@ def apply_settings(
         wanted[name] = _coerce(name, value, table if isinstance(table, Mapping) else {})
     if engines is not None and _ENGINE_KEYS & set(wanted):
         complete_engine_change(wanted, old_sections, engines())
+    if _MODEL_KEYS & set(wanted):
+        check_downloaded(wanted, old_sections, load_settings(path).install.hf_home)
 
     new_data: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}
     for name, value in wanted.items():
