@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -14,10 +15,19 @@ from voiced.config import Settings
 from voiced.context import ServiceContext
 from voiced.engines.base import EngineError, EngineNotLoaded, UnknownVoice, UnsupportedLanguage
 from voiced.health import HealthState
-from voiced.inference import ClientTimeout, UtteranceBudget, bounded, classify, inference
+from voiced.inference import (
+    ClientHungUp,
+    ClientTimeout,
+    HangUp,
+    UtteranceBudget,
+    bounded,
+    classify,
+    inference,
+)
 from voiced.metrics import Operation, Outcome
 from voiced.queue import InferenceQueue, QueueFull
 from voiced.testing import FakeSTTEngine, FakeTTSEngine
+from voiced.threads import ModelThread, run_blocking
 
 OP = Operation.TRANSCRIBE
 
@@ -55,6 +65,7 @@ def counts(ctx: ServiceContext) -> dict[str, int]:
         (ClientDisconnect(), Outcome.DISCONNECT),
         (ClientDisconnected(), Outcome.DISCONNECT),
         (ClientTimeout("idle"), Outcome.DISCONNECT),
+        (ClientHungUp(), Outcome.DISCONNECT),
         (TimeoutError(), Outcome.FAILURE),
         (FileNotFoundError("model.bin"), Outcome.FAILURE),
         (RuntimeError(), Outcome.FAILURE),
@@ -158,6 +169,111 @@ async def test_cancellation_passes_through_and_releases_slot(ctx: ServiceContext
     assert ctx.queue.depth == 0
     assert ctx.health.status == "ok"
     assert counts(ctx) == {}
+
+
+async def test_a_hang_up_ends_the_block_at_its_next_await_as_a_disconnect(
+    ctx: ServiceContext,
+) -> None:
+    started = asyncio.Event()
+    hang_up = HangUp()
+    finished_step = False
+
+    def step() -> None:
+        nonlocal finished_step
+        time.sleep(0.05)
+        finished_step = True
+
+    async def job() -> None:
+        async with inference(ctx, OP, hang_up):
+            started.set()
+            await run_blocking(step)
+            await asyncio.sleep(10)
+
+    task = asyncio.create_task(job())
+    await started.wait()
+    hang_up.set()
+    with pytest.raises(ClientHungUp):
+        await task
+    assert finished_step, "the engine's step finished before the slot was freed"
+    assert ctx.queue.depth == 0
+    assert counts(ctx) == {"disconnect": 1}
+    assert ctx.health.status == "ok"
+
+
+async def test_a_hang_up_before_the_block_starts_no_engine_call(ctx: ServiceContext) -> None:
+    thread = ModelThread("test")
+    ran: list[str] = []
+    hang_up = HangUp()
+    hang_up.set()
+    try:
+        with pytest.raises(ClientHungUp):
+            async with inference(ctx, OP, hang_up):
+                await thread.run(ran.append, "step")
+    finally:
+        thread.shutdown()
+    assert ran == []
+    assert ctx.queue.depth == 0
+    assert counts(ctx) == {"disconnect": 1}
+
+
+async def test_a_hang_up_ends_the_wait_for_the_slot(ctx: ServiceContext) -> None:
+    ctx.queue = InferenceQueue(2)  # one running, one waiting
+    holding = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder() -> None:
+        async with inference(ctx, OP):
+            holding.set()
+            await release.wait()
+
+    first = asyncio.create_task(holder())
+    await holding.wait()
+    hang_up = HangUp()
+    entered = False
+
+    async def waiter() -> None:
+        nonlocal entered
+        async with inference(ctx, OP, hang_up):
+            entered = True
+
+    second = asyncio.create_task(waiter())
+    await asyncio.sleep(0.01)
+    assert ctx.queue.depth == 2
+    hang_up.set()
+    with pytest.raises(ClientHungUp):
+        await asyncio.wait_for(second, 1.0)
+    assert not entered and ctx.queue.depth == 1
+    release.set()
+    await first
+    assert counts(ctx) == {"disconnect": 1, "ok": 1}
+
+
+async def test_a_hang_up_after_the_block_changes_nothing(ctx: ServiceContext) -> None:
+    hang_up = HangUp()
+    async with inference(ctx, OP, hang_up):
+        await asyncio.sleep(0)
+    hang_up.set()
+    await asyncio.sleep(0.01)  # nothing is cancelled later
+    assert counts(ctx) == {"ok": 1}
+
+
+async def test_a_hang_up_leaves_other_cancels_and_timeouts_alone(ctx: ServiceContext) -> None:
+    started = asyncio.Event()
+
+    async def job() -> None:
+        async with inference(ctx, OP, HangUp()):
+            started.set()
+            await asyncio.sleep(10)
+
+    task = asyncio.create_task(job())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(TimeoutError):
+        async with inference(ctx, OP, HangUp()):
+            raise TimeoutError
+    assert counts(ctx) == {"failure": 1}
 
 
 async def test_generator_closed_early_records_nothing(ctx: ServiceContext) -> None:

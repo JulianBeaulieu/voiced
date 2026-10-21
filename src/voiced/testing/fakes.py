@@ -2,13 +2,17 @@
 
 They honour the contracts in ``voiced.engines.base`` without any model so the
 API, Wyoming and CLI layers can be tested on any machine (including CI on a
-GitHub runner). Both are registered under the engine name ``fake``.
+GitHub runner). ``FakeSTTEngine`` and ``FakeTTSEngine`` are registered under
+the engine name ``fake``; :class:`SteppedTTSEngine`, a real
+``SentenceTTSEngine`` whose audio pieces are far apart, is not registered.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import threading
+import time
+from collections.abc import AsyncIterator, Generator
 
 import numpy as np
 from numpy.typing import NDArray
@@ -29,6 +33,7 @@ from voiced.engines.base import (
     UnsupportedLanguage,
     Voice,
 )
+from voiced.engines.sentence import SentenceTTSEngine
 
 FAKE_VOICES = [
     Voice(id="af_heart", name="Heart", language="en-US", gender="female"),
@@ -186,3 +191,61 @@ def _sentences(text: str) -> list[str]:
     if buf.strip():
         out.append(buf.strip())
     return out
+
+
+STEP_S = 0.02
+"""One generation step, run in the engine's worker thread."""
+STEPS_PER_PIECE = 100
+"""Silent steps between two audio pieces: a gap of 2 s, like an engine that
+renders its audio every few hundred generation steps. Long next to one step
+even on a CI runner, where a 20 ms step has been measured at up to 170 ms."""
+PIECE_GAP_S = STEP_S * STEPS_PER_PIECE
+
+
+class SteppedTTSEngine(SentenceTTSEngine):
+    """``SentenceTTSEngine`` whose sentences are an audio piece, then
+    ``steps_per_piece`` empty steps (:data:`STEPS_PER_PIECE` by default),
+    then another piece. It counts the steps run, so a test can tell how soon
+    a synthesis stopped. A test that synthesizes to the end sets fewer steps:
+    on a CI runner a step has taken up to eight times :data:`STEP_S`."""
+
+    name = "stepped"
+    model_id = "fake/stepped"
+    languages = ["en"]
+    license = "MIT"
+
+    def __init__(
+        self, model_id: str | None = None, *, steps_per_piece: int = STEPS_PER_PIECE
+    ) -> None:
+        super().__init__(model_id)
+        self.steps_per_piece = steps_per_piece
+        self.steps = 0
+        self._lock = threading.Lock()
+
+    @classmethod
+    def catalogue_voices(cls) -> list[Voice]:
+        return list(FAKE_VOICES)
+
+    def _load_sync(self) -> None:
+        self._model = object()
+
+    async def voices(self) -> list[Voice]:
+        self._check_loaded()
+        return list(FAKE_VOICES)
+
+    def _has_voice(self, voice: str) -> bool:
+        return voice in {v.id for v in FAKE_VOICES}
+
+    def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
+        return b"".join(self._synth_chunks(sentence, voice, speed))
+
+    def _synth_chunks(
+        self, sentence: str, voice: str, speed: float
+    ) -> Generator[bytes, None, None]:
+        yield bytes(4800)
+        for _ in range(self.steps_per_piece):
+            time.sleep(STEP_S)
+            with self._lock:
+                self.steps += 1
+            yield b""
+        yield bytes(4800)

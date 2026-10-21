@@ -524,7 +524,11 @@ Each service runs one inference at a time and queues the rest, up to
 once with `503`. The exception is STT streaming: up to `stt.streams` sessions
 (default 2) run at once and share the engine (ADR 0020). A WebSocket stream holds its place for the whole session.
 HTTP speech holds it only while synthesizing, not while the client
-downloads. Wyoming requests share the same queue. How the queue works is
+downloads. A speech client that hangs up mid-synthesis, over HTTP or
+Wyoming, frees its place at the engine's next generation step, so its next
+request does not wait for the audio it abandoned; an engine that renders a
+sentence in one call (Kokoro, Soprano) finishes that sentence first. Wyoming
+requests share the same queue. How the queue works is
 described in [architecture.md](architecture.md#inference-queue).
 
 ## Wyoming protocol
@@ -604,6 +608,10 @@ needs the loaded engine.
   and the connection closes at `SynthesizeStop` (or `server.session_idle_s`
   after the failure, if no `SynthesizeStop` comes), so a client that writes
   the whole stream before reading still reads the `Error`.
+- Closing the connection stops the synthesis at the engine's next step and
+  frees the GPU for the next request. A client keeps its side of the
+  connection open until `AudioStop` (and `SynthesizeStopped` for a stream):
+  shutting down its write side early is read as hanging up.
 
 **Errors.** An `Error` event whose `text` starts with the exception name and
 whose `code` is one of:

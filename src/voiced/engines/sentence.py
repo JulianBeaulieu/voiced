@@ -33,6 +33,7 @@ allows.
 
 from __future__ import annotations
 
+import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Generator
 from typing import Any, ClassVar
@@ -47,6 +48,8 @@ from voiced.engines.base import (
 )
 from voiced.text.sentences import split_sentences
 from voiced.threads import ModelThread
+
+log = logging.getLogger(__name__)
 
 __all__ = ["SentenceTTSEngine"]
 
@@ -143,8 +146,13 @@ class SentenceTTSEngine(TTSEngine):
                     if pcm:
                         yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
             finally:
-                # Stops the engine's work for the sentence when the client goes away.
-                await self._thread.run(pieces.close)
+                # Stops the engine's work for the sentence when the client goes
+                # away. A failure here must not replace the exception that
+                # ended the sentence (a hang-up would count as a failure).
+                try:
+                    await self._thread.run(pieces.close)
+                except Exception:
+                    log.exception("%s: closing the sentence's synthesis failed", self.name)
 
     def _check_loaded(self) -> None:
         if self._model is None:

@@ -15,6 +15,15 @@ most ``server.session_idle_s`` after the failure (:meth:`fail_and_drop`,
 :meth:`drop`). Home Assistant writes the whole stream before it reads, and
 closing at once would answer its next write with a reset, which can discard
 the ``Error`` before it is read. A disconnect still closes at once.
+
+The loop reads no event while ``handle`` runs, so a request answered inside
+``handle`` (a plain TTS ``Synthesize``) would learn that its client closed the
+connection only from a failed write. Such a wait runs under
+:meth:`VoicedEventHandler.on_close`, which reads the next event ahead: when
+that read finds the connection closed (end of file or a reset) it ends the
+request, through a :class:`voiced.inference.HangUp`, and an event it reads is
+the next one handled. The idle bound on that event still runs from the end of
+the request.
 """
 
 from __future__ import annotations
@@ -23,6 +32,8 @@ import asyncio
 import json
 import logging
 from abc import abstractmethod
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, TypeVar
 
 from wyoming.error import Error
@@ -31,7 +42,7 @@ from wyoming.server import AsyncEventHandler
 
 from voiced.context import ServiceContext
 from voiced.engines.base import EngineError
-from voiced.inference import DISCONNECT_ERRORS, bounded, classify
+from voiced.inference import DISCONNECT_ERRORS, ClientTimeout, bounded, classify
 from voiced.metrics import Outcome
 from voiced.validate import is_int
 
@@ -119,6 +130,8 @@ class VoicedEventHandler(AsyncEventHandler):
     _dropping_until: float | None = None
     """Set when a streamed request failed and reported: the loop time until
     which the rest of it is read and dropped (see the module docstring)."""
+    _ahead: asyncio.Task[Event | None] | None = None
+    """The next event, read while ``handle`` runs (:meth:`on_close`)."""
 
     def __init__(
         self, ctx: ServiceContext, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -145,7 +158,7 @@ class VoicedEventHandler(AsyncEventHandler):
         try:
             while self._is_running:
                 try:
-                    event = await self.read_event()
+                    event = await self._next_event()
                 except BadEvent as exc:
                     log.debug("%s %s: refused event: %s", self.ctx.service, self.peer, exc)
                     await self.send_error(f"BadEvent: {exc}", ERROR_INVALID_REQUEST)
@@ -153,13 +166,65 @@ class VoicedEventHandler(AsyncEventHandler):
                 if event is None or not await self.handle_event(event):
                     break
         finally:
+            if self._ahead is not None:
+                if not self._ahead.done():
+                    self._ahead.cancel()
+                elif not self._ahead.cancelled():
+                    self._ahead.exception()  # a BadEvent nobody will handle now
             await self.disconnect()
             self.writer.close()
 
-    async def read_event(self) -> Event | None:
-        """The next event, or ``None`` when the client closed or went quiet."""
+    async def _next_event(self) -> Event | None:
+        ahead, self._ahead = self._ahead, None
+        if ahead is None:
+            return await self.read_event()
+        # The idle bound runs from here, the end of the request, as for a read
+        # made now; a read cut off while idle closes the connection anyway.
         try:
-            line = await bounded(self.reader.readline(), CONNECTION_IDLE_S)
+            return await bounded(asyncio.shield(ahead), CONNECTION_IDLE_S)
+        except ClientTimeout:
+            ahead.cancel()
+            return None
+        except asyncio.CancelledError:
+            ahead.cancel()
+            raise
+
+    @contextmanager
+    def on_close(self, closed: Callable[[], None]) -> Iterator[None]:
+        """Call ``closed`` if the client closes the connection while the block
+        runs: the next event is read meanwhile, and handled after the block.
+
+        For a wait inside ``handle`` only; while ``handle`` is not running the
+        loop is reading, and sees the close itself. A client must therefore
+        keep its side of the connection open until the request is answered.
+        """
+        if self._ahead is None:
+            self._ahead = asyncio.create_task(
+                self.read_event(idle_bound=False), name="wyoming read ahead"
+            )
+        ahead = self._ahead
+
+        def on_read(task: asyncio.Task[Event | None]) -> None:
+            if task.cancelled() or task.exception() is not None:
+                return
+            # Unbounded while idle, the read returns None only for a close (or
+            # an event left half sent for session_idle_s, a client as good as gone).
+            if task.result() is None:
+                closed()
+
+        ahead.add_done_callback(on_read)
+        try:
+            yield
+        finally:
+            ahead.remove_done_callback(on_read)
+
+    async def read_event(self, *, idle_bound: bool = True) -> Event | None:
+        """The next event, or ``None`` when the client closed or went quiet.
+        The header must start within :data:`CONNECTION_IDLE_S`, or, without
+        ``idle_bound``, whenever."""
+        readline = self.reader.readline()
+        try:
+            line = await (bounded(readline, CONNECTION_IDLE_S) if idle_bound else readline)
         except ValueError:  # longer than the reader's line limit (64 KiB)
             raise BadEvent("header line too long") from None
         except DISCONNECT_ERRORS:

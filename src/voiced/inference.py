@@ -18,7 +18,8 @@ own request errors, is classified as a server ``failure``.
 
 Cancellation: ``CancelledError`` (and ``GeneratorExit`` when a streaming
 generator is closed early) passes through untouched, records nothing, and
-still releases the slot.
+still releases the slot. A block that a client's hang-up should end at its
+next await, and count as a disconnect, is given a :class:`HangUp`.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from types import TracebackType
 from typing import TypeVar
 
@@ -49,6 +50,13 @@ log = logging.getLogger(__name__)
 
 class ClientTimeout(ConnectionError):
     """The peer did not send or accept data within the bound (see :func:`bounded`)."""
+
+
+class ClientHungUp(ConnectionError):
+    """The client went away while a :class:`HangUp` block was running.
+
+    voiced's own, transport-neutral disconnect (Wyoming must not depend on
+    Starlette's ``ClientDisconnect``), raised only by :class:`HangUp`."""
 
 
 DISCONNECT_ERRORS: tuple[type[Exception], ...] = (
@@ -92,17 +100,82 @@ async def bounded(aw: Awaitable[T], timeout_s: float) -> T:
         raise ClientTimeout(f"no progress from the client in {timeout_s:g} s") from None
 
 
+class HangUp:
+    """Ends the ``inference()`` block it is given to, the wait for the slot
+    included, at the block's next await once the client is gone::
+
+        hang_up = HangUp()
+        async with inference(ctx, Operation.SPEECH, hang_up):
+            ...
+
+    Whoever notices that the client went away, usually another task, calls
+    :meth:`set`. The block's current await is cancelled and
+    :class:`ClientHungUp` raised in its place, which ``inference()`` counts as
+    a disconnect, where cancelling the task would record nothing. An engine's
+    ``run_blocking`` or ``ModelThread`` call still finishes first, so the slot
+    is free after the engine's current step. :meth:`set` before the block
+    raises :class:`ClientHungUp` on entry, so no engine call starts; after
+    the block it does nothing. One block per instance.
+
+    ``asyncio.timeout`` does the cancelling: it already turns its own cancel
+    into an exception and tells it apart from any other cancel of the task.
+    """
+
+    def __init__(self) -> None:
+        self._over = False
+        """Set, or its block has ended: nothing left for :meth:`set` to do."""
+        self._timeout: asyncio.Timeout | None = None
+
+    def set(self) -> None:
+        """The client is gone."""
+        if self._over:
+            return
+        self._over = True
+        if self._timeout is not None:
+            self._timeout.reschedule(asyncio.get_running_loop().time())
+
+    async def __aenter__(self) -> HangUp:
+        assert self._timeout is None, "a HangUp guards one block"
+        if self._over:
+            raise ClientHungUp("client went away")
+        self._timeout = asyncio.timeout(None)
+        await self._timeout.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        assert self._timeout is not None
+        self._over = True
+        try:
+            await self._timeout.__aexit__(exc_type, exc, tb)
+        except TimeoutError:
+            if not self._timeout.expired():
+                raise  # raised by the block itself
+            raise ClientHungUp("client went away") from None
+
+
 @asynccontextmanager
-async def inference(ctx: ServiceContext, operation: Operation) -> AsyncIterator[None]:
+async def inference(
+    ctx: ServiceContext, operation: Operation, hang_up: HangUp | None = None
+) -> AsyncIterator[None]:
     """Hold ``ctx.queue``'s slot for the block and record how it ended.
 
     A stream session shares the slot with the queue's other stream sessions
     (``stt.streams``, ADR 0020); anything else holds it alone. Raises
-    :class:`QueueFull` immediately if the queue is at capacity.
+    :class:`QueueFull` immediately if the queue is at capacity. With
+    ``hang_up``, the block, or the wait for the slot, ends as a disconnect
+    once ``hang_up`` is set (:class:`HangUp`).
     """
     started = time.perf_counter()
     try:
-        async with ctx.queue.slot(shared=operation is Operation.STREAM):
+        async with (
+            hang_up if hang_up is not None else nullcontext(),
+            ctx.queue.slot(shared=operation is Operation.STREAM),
+        ):
             started = time.perf_counter()
             yield
     except Exception as exc:

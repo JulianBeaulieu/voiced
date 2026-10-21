@@ -94,6 +94,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A speech client that hangs up mid-synthesis frees the inference slot at
+  the engine's next generation step instead of its next audio chunk, over
+  HTTP and Wyoming, so the request it sends next (after a barge-in, say) no
+  longer waits behind the synthesis it abandoned. For an engine that renders
+  half a second of audio at a time this was up to that half second of extra
+  first audio. The hang-up is still counted as a `disconnect`.
 - Text for a voice in a language other than English is no longer spelled
   as English: digits stay digits ("Ich habe 20 Euro", not "twenty Euro";
   "3,5", not "three,five"), and English abbreviations and symbols are left
