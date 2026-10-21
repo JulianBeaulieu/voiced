@@ -45,6 +45,8 @@ LANGUAGE_NAMES: dict[str, str] = {
     "pt-BR": "Brazilian Portuguese",
     "ja-JP": "Japanese",
     "zh-CN": "Mandarin Chinese",
+    "de-DE": "German",
+    "apc": "Levantine Arabic",
 }
 """Display names for BCP-47 tags; an unknown tag is shown as is."""
 

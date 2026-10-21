@@ -98,6 +98,10 @@ wyoming_port = 10200
 # Chatterbox Turbo: engine "chatterbox", model
 # "mlx-community/chatterbox-turbo-4bit" (or -fp16), default_voice "default"
 # (ADR 0029).
+# omnivoice speaks 646 languages but takes most of a second per sentence:
+# model "k2-fsa/OmniVoice" (CC-BY-NC, non-commercial) with default_voice
+# "en-US-female"; add a voice's language to languages to serve it, e.g.
+# ["en", "de", "apc", "es", "fr", "zh"] (ADR 0030).
 engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"

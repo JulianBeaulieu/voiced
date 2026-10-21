@@ -21,6 +21,7 @@ from voiced.engines.base import (
 )
 from voiced.engines.chatterbox import ChatterboxEngine
 from voiced.engines.kokoro import KokoroEngine
+from voiced.engines.omnivoice import OmniVoiceEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.pocket import PocketEngine
 from voiced.engines.sentence import SentenceTTSEngine
@@ -33,6 +34,7 @@ ENGINES: list[type[SentenceTTSEngine]] = [
     PhononEngine,
     PocketEngine,
     ChatterboxEngine,
+    OmniVoiceEngine,
 ]
 VOICE = "test_voice"
 """The one voice the stubbed engines accept."""
@@ -401,7 +403,12 @@ async def test_aclose_mid_sentence_closes_the_engine_stream_off_the_loop() -> No
 
 @pytest.mark.model
 @pytest.mark.parametrize(
-    "fixture, voice", [("kokoro_engine", "af_heart"), ("soprano_engine", "default")]
+    "fixture, voice",
+    [
+        ("kokoro_engine", "af_heart"),
+        ("soprano_engine", "default"),
+        ("omnivoice_engine", "en-US-female"),
+    ],
 )
 def test_synthesis_keeps_the_mlx_cache_bounded(
     fixture: str, voice: str, request: pytest.FixtureRequest

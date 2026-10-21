@@ -18,9 +18,10 @@ for, is tested through the real ``voiced serve`` in a subprocess
 Everything here is used only by ``@pytest.mark.model`` tests, which
 ``tests/conftest.py`` skips unless ``VOICED_MODEL_TESTS=1``; the service
 fixtures therefore never load MLX on CI. The engines (Parakeet, Kokoro,
-Soprano, Phonon, Pocket TTS) load once for this package and are shared, then are torn down
-when the e2e tests finish, so a full ``pytest -m model`` run does not keep the
-extra models resident through the engine suites that follow.
+Soprano, Phonon, Pocket TTS, OmniVoice) load once for this package and are
+shared, then are torn down when the e2e tests finish, so a full ``pytest -m
+model`` run does not keep the extra models resident through the engine suites
+that follow.
 """
 
 from __future__ import annotations
@@ -349,6 +350,22 @@ def tts_soprano_service(e2e_tmp: Path) -> Iterator[LiveService]:
             "engine": '"soprano"',
             "model": '"mlx-community/Soprano-80M-bf16"',
             "default_voice": '"default"',
+        },
+    )
+    service = start_service("tts", settings)
+    yield service
+    service.stop()
+
+
+@pytest.fixture(scope="package")
+def tts_omnivoice_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "tts",
+        e2e_tmp / "omnivoice",
+        **{
+            "engine": '"omnivoice"',
+            "model": '"k2-fsa/OmniVoice"',
+            "default_voice": '"en-US-female"',
         },
     )
     service = start_service("tts", settings)

@@ -51,6 +51,9 @@ def test_labels() -> None:
     assert tts["phonon"]["voice_labels"]["The Snow Queen"] == "The Snow Queen"
     assert tts["phonon"]["voice_languages"]["Maeve"] == "en-GB"
     assert tts["pocket"]["voice_labels"]["javert"] == "Javert (English, male)"
+    assert tts["omnivoice"]["voice_languages"]["apc-female"] == "apc"
+    assert tts["omnivoice"]["voice_labels"]["zh-CN-male"] == "Young adult (Mandarin Chinese, male)"
+    assert len(tts["omnivoice"]["languages"]) == 646
     assert tts["kokoro"]["voice_languages"]["bm_george"] == "en-GB"
     assert set(tts["kokoro"]["voice_languages"]) == set(tts["kokoro"]["voices"])
     assert stt["parakeet"] == {

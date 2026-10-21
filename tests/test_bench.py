@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import sys
@@ -172,3 +173,19 @@ def test_concurrent_finalize_runs_the_clients_at_once(
     assert out == [7.0] * 12
     assert most == 3
     assert len(set(leads)) == 12, "every utterance ends at another phase"
+
+
+def test_each_extra_tts_server_is_named_with_its_url_and_voice(bench: ModuleType) -> None:
+    assert bench.extra_tts("OmniVoice=http://h:8850,en-US-female") == bench.ExtraTTS(
+        "OmniVoice", "http://h:8850", "en-US-female"
+    )
+    assert bench.extra_tts("Phonon=http://h:8860").voice == "default"
+    for bad in ("http://h:8860", "Phonon=", "=http://h"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            bench.extra_tts(bad)
+
+
+def test_the_combined_memory_row_is_against_the_budget(bench: ModuleType) -> None:
+    stt = {"footprint_bytes": 1_700_000_000, "rss_bytes": 1}
+    row = bench.combined_row("OmniVoice", stt, {"footprint_bytes": 2_100_000_000, "rss_bytes": 1})
+    assert row == bench.Row("STT + TTS (OmniVoice) footprint, idle after use", "3.80 GB", "<= 3 GB")

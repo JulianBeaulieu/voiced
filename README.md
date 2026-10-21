@@ -20,8 +20,9 @@ The recording's timings are curl fetching a WAV, slower than the streamed benchm
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3, or with the optional Qwen3-ASR for files and
 languages beyond Parakeet's, and speaks with Kokoro-82M, or with the
-optional Soprano-80M, Phonon 31M or Pocket TTS. The numbers below come from
-two machines, both named under [Benchmarks](#benchmarks).
+optional Soprano-80M, Phonon 31M, Pocket TTS or, in 646 languages but
+slowly, OmniVoice. The numbers below come from two machines, both named
+under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -242,6 +243,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
+| [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) and its HiggsAudio v2 codec | TTS | no, opt-in | CC-BY-NC; codec: Boson Higgs Audio 2 Community License |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 | [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
@@ -284,6 +286,21 @@ the code. The cards of the mlx-community conversions voiced loads say
 Apache-2.0, but Resemble AI released the weights under MIT, which is the
 licence voiced reports. Resemble's own package watermarks its output
 (PerTh); the MLX port voiced runs does not.
+
+OmniVoice is k2-fsa's; its code is Apache-2.0 and its weights are CC-BY-NC
+"due to constraints from its training data": non-commercial use only. The
+audio codec it decodes with, in the same repository, is under the Boson
+Higgs Audio 2 Community License, which is based on the Meta Llama 3
+Community License: products with over 100,000 annual active users need an
+expanded licence from Boson AI, the codec's output may not be used to
+improve another large language model, and Llama 3's acceptable use policy
+applies. Built with Higgs Materials licensed from Boson AI USA, Inc.,
+Copyright Boson AI USA, Inc., All Rights Reserved, and Meta Llama 3
+licensed under the Meta Llama 3 Community License, Copyright Meta
+Platforms, Inc., All Rights Reserved. voiced never uses OmniVoice unless
+the config names it, and redistributes none of it: each Mac downloads it
+from Hugging Face. (The `mlx-community` conversions are tagged Apache-2.0
+on the Hub; the original model card's licence is the one that applies.)
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -483,6 +500,39 @@ push-to-talk. Tiny meets both after 200 ms of trailing silence (see
 times; word timestamps are not used. The details are in
 [ADR 0026](docs/decisions/0026-stt-moonshine.md).
 
+### Using OmniVoice
+
+OmniVoice speaks 646 languages and dialects, Levantine Arabic (`apc`) among
+them. It is the engine for languages Kokoro does not speak, not a real-time
+one: it cannot start speaking until a whole sentence is done, which takes
+about 0.8 s on an M1 Max, four times voiced's 200 ms first-audio target
+(Kokoro takes a tenth of a second), and it needs more memory than
+voiced's 3 GB budget for both services. Its weights are for non-commercial
+use only (see [Models and licenses](#models-and-licenses)). It is installed
+with voiced but is opt-in. To use it, download the model (3.3 GB) and
+switch to it:
+
+```sh
+~/.voiced/bin/voiced models download k2-fsa/OmniVoice
+```
+
+```toml
+[tts]
+engine = "omnivoice"
+model = "k2-fsa/OmniVoice"
+default_voice = "en-US-female"
+languages = ["en", "de", "apc", "es", "fr", "zh"]
+```
+
+Its six voices are designed from attributes, one per language:
+`en-US-female`, `de-DE-male`, `apc-female`, `es-ES-male`, `fr-FR-female` and
+`zh-CN-male`. A voice is served when its language is in `languages`; the
+text should be in the voice's language, whose digits and symbols voiced
+leaves for the model to read
+([ADR 0023](docs/decisions/0023-text-pipeline-languages.md)). Then run
+`~/.voiced/bin/voiced restart tts`. `speed` works. The details are in
+[ADR 0030](docs/decisions/0030-tts-omnivoice.md).
+
 ## Benchmarks
 
 Every engine and model is measured the same way, one command each, and
@@ -502,6 +552,9 @@ with 64 GB, each service alone, 2026-10-21:
 - **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
   worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
   0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.
+  **OmniVoice** (opt-in, 646 languages): 797 ms median, 806 ms worst, four
+  times the 200 ms target; 2.13 GB footprint, 3.87 GB beside Parakeet, over
+  the 3 GB budget.
 - **Qwen3-ASR 0.6B** (speech to text, opt-in, for files and languages):
   1.8% word error rate, batch at 0.056 of real time. It does not stream:
   finalize is a decode of the whole turn, 184 ms median for a 3.4 s turn

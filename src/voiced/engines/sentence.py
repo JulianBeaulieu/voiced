@@ -23,8 +23,10 @@ made them, and a streaming engine keeps them from one piece of a sentence to
 the next (Pocket TTS's attention cache and decoder state); one thread makes
 that safe for every engine. Like :func:`~voiced.threads.run_blocking`, a
 cancelled request waits for the step in flight, so it cannot release the
-inference slot while the model is still busy. A TTS process runs one
-request at a time (the exclusive slot), so the one thread costs nothing.
+inference slot while the model is still busy; it calls ``_interrupt()``
+first, so an engine whose one step is a whole sentence can cut it short. A
+TTS process runs one request at a time (the exclusive slot), so the one
+thread costs nothing.
 
 ``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``. An engine without rate
 control may ignore ``speed`` within the bounds, as ``TTSEngine.synthesize``
@@ -174,7 +176,9 @@ class SentenceTTSEngine(TTSEngine):
         for sentence in split_sentences(text):
             pieces = self._synth_chunks(sentence, voice, speed)
             try:
-                while (pcm := await self._thread.run(next, pieces, None)) is not None:
+                while (
+                    pcm := await self._thread.run_stoppable(self._interrupt, next, pieces, None)
+                ) is not None:
                     if pcm:
                         yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
             finally:
@@ -185,6 +189,14 @@ class SentenceTTSEngine(TTSEngine):
                     await self._thread.run(pieces.close)
                 except Exception:
                     log.exception("%s: closing the sentence's synthesis failed", self.name)
+
+    def _interrupt(self) -> None:
+        """Called on the event loop when the request is cancelled while a
+        step of its sentence runs or is still queued; the cancel still waits
+        for the step. An engine whose one step is a long model call (a whole
+        sentence) asks it to return early here. State it reads should be
+        made in ``_synth_chunks``, which runs on the loop before the step is
+        submitted, so the queued case is covered. Nothing by default."""
 
     def _check_loaded(self) -> None:
         if self._model is None:

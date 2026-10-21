@@ -62,6 +62,8 @@ class ModelThread:
     thread is free it takes the waiting call of lowest rank, the earliest of
     equal rank. :meth:`run` calls have rank 0; :meth:`run_ranked` calls rank
     themselves, and a ranked call cancelled before it starts never runs.
+    :meth:`run_stoppable` calls ``stop`` when the caller is cancelled, so a
+    long call can return early; the cancel still waits for it.
     """
 
     def __init__(self, name: str) -> None:
@@ -81,6 +83,12 @@ class ModelThread:
         return await _uninterruptible(
             asyncio.wrap_future(call.future), withdraw=lambda: self._withdraw(call)
         )
+
+    async def run_stoppable(
+        self, stop: Callable[[], None], fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        call = self._submit(_first, functools.partial(fn, *args, **kwargs))
+        return await _uninterruptible(asyncio.wrap_future(call.future), stop=stop)
 
     def shutdown(self) -> None:
         """Wait for queued calls, then end the thread (and its MLX stream)."""
@@ -146,11 +154,15 @@ async def _run(executor: Executor | None, call: Callable[[], T]) -> T:
 
 
 async def _uninterruptible(
-    future: asyncio.Future[T], withdraw: Callable[[], bool] | None = None
+    future: asyncio.Future[T],
+    withdraw: Callable[[], bool] | None = None,
+    stop: Callable[[], None] | None = None,
 ) -> T:
     """Await a thread's ``future``; a cancel waits for it to finish, then raises
     ``CancelledError``. ``withdraw``, if given, is tried first: when it takes a
-    call that has not started out of line, the cancel is raised at once."""
+    call that has not started out of line, the cancel is raised at once.
+    ``stop``, if given, is called at the first cancel, to ask the call to
+    return early."""
     cancelled = False
     while not future.done():
         try:
@@ -158,6 +170,8 @@ async def _uninterruptible(
         except asyncio.CancelledError:
             if withdraw is not None and withdraw():
                 raise
+            if stop is not None and not cancelled:
+                stop()
             cancelled = True  # keep waiting: the thread cannot be stopped
     if cancelled:
         if not future.cancelled():

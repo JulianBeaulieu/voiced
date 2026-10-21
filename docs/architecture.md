@@ -206,15 +206,19 @@ Registered engines:
 | `chatterbox` | `voiced.tts_engines` | Chatterbox Turbo via mlx-audio, opt-in, each sentence rendered in pieces as its speech tokens arrive ([ADR 0029](decisions/0029-tts-chatterbox-turbo.md)) |
 | `qwen3-asr` | `voiced.stt_engines` | Qwen3-ASR 0.6B or 1.7B via mlx-audio, opt-in, batch with the forced aligner's sentence times; a stream is transcribed at finalize ([ADR 0027](decisions/0027-stt-qwen3-asr.md)) |
 | `moonshine` | `voiced.stt_engines` | Moonshine Streaming via `moonshine-voice` (ONNX Runtime) on the CPU, opt-in, macOS 15 and later, finalized on the client's `end` ([ADR 0026](decisions/0026-stt-moonshine.md)) |
+| `omnivoice` | `voiced.tts_engines` | OmniVoice via mlx-audio, opt-in, 646 languages and designed voices, about 0.8 s to first audio, four times the 200 ms target ([ADR 0030](decisions/0030-tts-omnivoice.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
 which provides `load()`, the loaded, voice and speed checks and the
-split-synthesize-yield loop; Kokoro, Soprano, Phonon and Pocket TTS do. An
+split-synthesize-yield loop; Kokoro, Soprano, Phonon, Pocket TTS and OmniVoice do. An
 engine that decodes a sentence in pieces also overrides `_synth_chunks`, and
 the loop yields each piece as it comes (Phonon, Pocket TTS). The load and
 every step of a sentence run on the engine's one `ModelThread`, since a
-streaming engine keeps MLX arrays from one piece to the next.
+streaming engine keeps MLX arrays from one piece to the next. When a request
+is cancelled during a step, the loop calls the engine's `_interrupt()`, so an
+engine whose step is a whole sentence can stop it early (OmniVoice, ADR
+0030).
 
 The MLX engines live in the optional extras `stt` and `tts`, Phonon in
 `phonon` and Moonshine in `moonshine`, so the core package installs on any

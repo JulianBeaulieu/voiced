@@ -83,6 +83,19 @@ uses [Semantic Versioning](https://semver.org/).
   text-to-speech; partials arrive every half second and the transcript on the
   client's end signal. `voiced models download` fetches each model.
 
+- OmniVoice text-to-speech engine, opt-in: `engine = "omnivoice"`,
+  `model = "k2-fsa/OmniVoice"`, for languages Kokoro does not speak: 646 language
+  tags, Levantine Arabic (`apc`) among them. Six voices designed from
+  attributes, one each in English, German, Levantine Arabic, Spanish, French
+  and Mandarin, served when their language is in `tts.languages`. It runs on
+  the GPU through mlx-audio and cannot start speaking before a whole
+  sentence is synthesized, so first audio takes about 0.8 s on an M1 Max: it
+  is not a real-time engine. With the STT service it takes about 3.9 GB,
+  over voiced's 3 GB budget for both. Its weights are CC-BY-NC
+  (non-commercial) and its audio codec is under the Boson Higgs Audio 2
+  Community License. `voiced models download k2-fsa/OmniVoice` fetches the
+  pinned model (3.3 GB).
+
 ### Changed
 
 - The services never download a model: they load it from the cache, at the
