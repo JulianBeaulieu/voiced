@@ -98,8 +98,26 @@ REPORT_INTERVAL_S = 0.25
 """At most four byte reports a second."""
 
 BYTES_BAR = "huggingface_hub.snapshot_download"
-"""The name ``snapshot_download`` gives its bar of bytes written to disk
-(its other byte bar counts network bytes, which deduplication makes fewer)."""
+"""The name ``snapshot_download`` gives its bar of bytes written to disk.
+Under hf_xet it moves only as a file is reassembled: fetching a 327 MB
+file (huggingface_hub 2.2.0, hf_xet 1.7.0), its first update came after
+32 s of 35, in jumps of 50 to 145 MB."""
+
+TRANSFER_BAR = BYTES_BAR + ".transfer"
+"""Its bar of bytes received from the network, which moves while they
+arrive (320 updates from 1.5 s on, for the same file). Deduplication can
+leave it below the files' size; a resumed HTTP download's cached part
+counts only on :data:`BYTES_BAR`."""
+
+COUNTED_BARS = {
+    BYTES_BAR: BYTES_BAR,
+    TRANSFER_BAR: TRANSFER_BAR,
+    # hf_hub_download's own bars, for a file fetched alone (:func:`_repair`).
+    "huggingface_hub.http_get": BYTES_BAR,
+    "huggingface_hub.xet_get": BYTES_BAR,
+    "huggingface_hub.xet_get.transfer": TRANSFER_BAR,
+}
+"""Each byte bar's name, to the one of the two it counts as."""
 
 Write = Callable[[str], None]
 
@@ -108,7 +126,9 @@ class ByteReport:
     """Writes ``{"kind": "bytes", "repo", "bytes", "total"}`` lines after
     :data:`DOWNLOAD_PREFIX`, at most every :data:`REPORT_INTERVAL_S`.
     ``done`` is what was cached before the download (``repo`` names the
-    model by its id); the bar's updates come from several download threads."""
+    model by its id); ``bytes`` adds the further of the two bars, so it
+    grows while bytes arrive, and stops at ``total``. The bars' updates come
+    from several download threads."""
 
     def __init__(
         self,
@@ -119,17 +139,32 @@ class ByteReport:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.repo, self.bytes, self.total = repo, done, total
+        self._done = done
+        self._bars = {BYTES_BAR: 0, TRANSFER_BAR: 0}
         self._write, self._clock = write, clock
         self._lock = threading.Lock()
         self._last: float | None = None
 
-    def add(self, n: int) -> None:
+    def add(self, bar: str, n: int) -> None:
         with self._lock:
-            self.bytes += n
+            self._bars[bar] += n
+            # It can briefly go down, when a server ignores a resume (both bars
+            # lose the resumed part), and reach the total early, when the
+            # network count runs past what is left (hf_xet's retries); then the
+            # app's stall check rests until the end. Both are harmless.
+            self.bytes = min(self._done + max(self._bars.values()), self.total)
             now = self._clock()
             if self._last is None or now - self._last >= REPORT_INTERVAL_S:
                 self._last = now
                 self._emit()
+
+    def rebase(self) -> None:
+        """Count on from ``bytes`` with both bars at zero, before another
+        download's bars start (the larger bar would otherwise hide the new
+        download's progress until it caught up)."""
+        with self._lock:
+            self._done = self.bytes
+            self._bars = dict.fromkeys(self._bars, 0)
 
     def finish(self) -> None:
         with self._lock:
@@ -143,19 +178,19 @@ class ByteReport:
 
 
 def _counting_tqdm(report: ByteReport) -> type:
-    """``snapshot_download``'s ``tqdm_class``: its bars as usual, and the
-    bytes written to disk to ``report``."""
+    """``snapshot_download``'s ``tqdm_class``: its bars as usual, and its
+    byte bars to ``report`` (:data:`COUNTED_BARS`)."""
     # huggingface_hub's own tqdm, so its bars behave as without a tqdm_class.
     base: Any = importlib.import_module("huggingface_hub.utils.tqdm").tqdm
 
     class Counting(base):  # type: ignore[misc]
         def __init__(self, *args: Any, name: str | None = None, **kwargs: Any) -> None:
             super().__init__(*args, name=name, **kwargs)
-            self._counts = name == BYTES_BAR
+            self._bar = COUNTED_BARS.get(name) if name is not None else None
 
         def update(self, n: float | None = 1) -> bool | None:
-            if self._counts and n:
-                report.add(int(n))
+            if self._bar is not None and n:
+                report.add(self._bar, int(n))
             result: bool | None = super().update(n)
             return result
 
@@ -257,6 +292,8 @@ def _repair(model_id: str, entry: Locked, report: ByteReport | None) -> None:
 
     hub = Path(cache_dir())
     for name in missing_files(hub, entry):
+        if report is not None:
+            report.rebase()
         hf_hub_download(
             entry.repo,
             name,
@@ -288,7 +325,7 @@ def _report(model_id: str, source: Source, write: Write) -> ByteReport | None:
         total = sum(f.file_size or 0 for f in files)
         done = sum(f.file_size or 0 for f in files if not f.will_download)
     report = ByteReport(model_id, done, total, write)
-    report.add(0)
+    report.add(BYTES_BAR, 0)
     return report
 
 

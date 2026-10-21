@@ -28,6 +28,18 @@ uses [Semantic Versioning](https://semver.org/).
   reaches the model: silence and noise are an empty transcript rather than
   Whisper's "Thank you.", also between sentences in a long recording.
 
+### Fixed
+
+- The app's install no longer mistakes a running model download for a
+  stalled one. Under hf_xet, Hugging Face's download backend, the bytes
+  written to disk do not grow until a file is nearly fetched, and progress
+  counted only those, so a large file such as Parakeet's 2.5 GB was stopped
+  after 60 seconds with "The download stalled" on an ordinary connection,
+  attempt after attempt. Progress now follows the bytes as they arrive,
+  updated four times a second, also while a truncated file is fetched
+  again. A download that does stall names its model and how far it got
+  ("stalled at 1.25 GB of 2.51 GB").
+
 ## [0.2.0] - 2026-10-21
 
 Choose your models: seven new engines, each an opt-in download from the menu
