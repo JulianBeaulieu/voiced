@@ -11,10 +11,11 @@ WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "d
 
 
 def test_the_workflow_carries_every_generated_file() -> None:
+    """``GENERATED_FILES`` is the one list both jobs use."""
     expected = {"uv.lock", "NOTICE", *load("refresh_locks").EXPORTS}
     text = WORKFLOW.read_text()
-    uploaded = re.search(r"\n {10}path: \|\n((?: {12}\S+\n)+)", text)
-    committed = re.search(r'\n\s+files="([^"]+)"\n', text)
-    assert uploaded is not None and committed is not None
-    assert set(uploaded.group(1).split()) == expected, "the upload-artifact path list"
-    assert set(committed.group(1).split()) == expected, "the files the commit job copies"
+    listed = re.search(r"\n  GENERATED_FILES: \|-\n((?: {4}\S+\n)+)", text)
+    assert listed is not None, "GENERATED_FILES is not a block of paths"
+    assert set(listed.group(1).split()) == expected
+    assert "path: ${{ env.GENERATED_FILES }}" in text, "regenerate uploads another list"
+    assert "set -- $GENERATED_FILES" in text, "commit copies another list"

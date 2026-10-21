@@ -19,6 +19,16 @@ on:
 
 permissions: {}
 
+env:
+  # uv.lock and every file scripts/refresh_locks.py writes, one per line: the
+  # files `regenerate` uploads and `commit` copies. tests/test_dependency_locks.py
+  # keeps it complete.
+  GENERATED_FILES: |-
+    uv.lock
+    NOTICE
+    src/voiced/requirements.lock
+    src/voiced/build-requirements.lock
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -44,6 +54,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          # The uv that wrote main's uv.lock, so `uv lock` here does not
+          # rewrite it in another uv's style. Move it when uv.lock moves.
+          version: "0.9.28"
       - name: Refresh
         id: refresh
         run: |
@@ -58,18 +72,12 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: generated
-          # uv.lock and every file scripts/refresh_locks.py writes;
-          # tests/test_dependency_locks.py keeps this list complete.
-          path: |
-            uv.lock
-            NOTICE
-            src/voiced/requirements.lock
-            src/voiced/build-requirements.lock
+          path: ${{ env.GENERATED_FILES }}
           if-no-files-found: error
           retention-days: 1
 
   commit:
-    # Runs nothing from the branch: copies the four files over its checkout,
+    # Runs nothing from the branch: copies GENERATED_FILES over its checkout,
     # commits them and pushes. The push is not forced, so it fails if
     # Dependabot moved the branch meanwhile; its new commit runs this again.
     needs: regenerate
@@ -82,7 +90,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: true # zizmor: ignore[artipacked] this job pushes, and uploads nothing
+          persist-credentials: true # zizmor: ignore[artipacked] this job pushes; it runs no branch code and uploads nothing
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: generated
@@ -92,11 +100,12 @@ jobs:
           GENERATED: ${{ runner.temp }}/generated
           BRANCH: ${{ github.head_ref }}
         run: |
-          files="uv.lock NOTICE src/voiced/requirements.lock src/voiced/build-requirements.lock"
-          for f in $files; do cp "$GENERATED/$f" "$f"; done
+          # GENERATED_FILES holds plain paths, one per line, so word splitting is safe.
+          # shellcheck disable=SC2086
+          set -- $GENERATED_FILES
+          for f in "$@"; do cp "$GENERATED/$f" "$f"; done
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # shellcheck disable=SC2086 # $files is a list of plain paths
-          git add -- $files
+          git add -- "$@"
           git commit -m "chore(deps): regenerate the shipped locks and NOTICE [dependabot skip]"
           git push origin "HEAD:refs/heads/$BRANCH"

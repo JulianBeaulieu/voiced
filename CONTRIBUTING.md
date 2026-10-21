@@ -199,6 +199,10 @@ git push
 ```
 
 `[dependabot skip]` keeps Dependabot rebasing the branch over the commit.
+When the branch falls behind `main`, comment `@dependabot rebase` on the
+pull request, then approve the workflows again for the new commits. Do not
+select "Update branch": its merge commit lacks `[dependabot skip]`, and
+Dependabot stops rebasing a branch that carries someone else's commit.
 
 To update a package by hand instead, `uv lock --upgrade-package <name>`
 (or edit its pin in `pyproject.toml`), then the same command. A new
