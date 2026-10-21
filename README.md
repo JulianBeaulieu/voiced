@@ -17,12 +17,13 @@ for local speech services.
 
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
-voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
-with Parakeet TDT 0.6B v3, or with the optional Qwen3-ASR for files and
-languages beyond Parakeet's or the optional streaming Nemotron ASR, and
-speaks with Kokoro-82M, or with the optional Soprano-80M, Phonon 31M, Pocket
-TTS or, in 646 languages but slowly, OmniVoice. The numbers below come from
-two machines, both named under [Benchmarks](#benchmarks).
+voiced 0.2.0 is the current release. It transcribes with Parakeet TDT 0.6B
+v3 and speaks with Kokoro-82M. Other models are a download away, from the
+menu bar app or `voiced models download`: Qwen3-ASR for files and languages
+beyond Parakeet's, the streaming Nemotron ASR, and Moonshine on the CPU for
+speech to text; Phonon on the CPU, Pocket TTS, Chatterbox Turbo, Soprano-80M
+and, in 646 languages but slowly, OmniVoice for text to speech. The numbers
+below come from two machines, both named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -30,7 +31,9 @@ listed in [CHANGELOG.md](CHANGELOG.md).
 ## Install
 
 You need an Apple Silicon Mac with macOS 14 or newer. The first install
-downloads about 4.5 GB, mostly models, and takes several minutes.
+downloads about 4.5 GB, mostly the two default models, and takes several
+minutes. Any other model is downloaded only when you choose it
+([Models and licenses](#models-and-licenses)).
 
 Most people want the menu bar app, from [Homebrew](https://brew.sh):
 
@@ -61,8 +64,8 @@ brew install julianbeaulieu/voiced/voiced
 voiced install
 ```
 
-`voiced install` downloads the models and prints one command to run with
-`sudo`, the only step that needs root;
+`voiced install` downloads the default models and prints one command to
+run with `sudo`, the only step that needs root;
 [docs/operations.md](docs/operations.md#commands) says what it does. Both
 the cask and the formula come from the
 [tap](https://github.com/JulianBeaulieu/homebrew-voiced).
@@ -238,18 +241,18 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | Model | Role | Default | License |
 |---|---|---|---|
 | [Parakeet TDT 0.6B v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | STT | yes | CC-BY-4.0 |
+| [Qwen3-ASR 0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) and [1.7B](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit), with [Qwen3-ForcedAligner 0.6B](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) | STT | no, opt-in | Apache-2.0 |
+| [Nemotron 3.5 ASR streaming](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) | STT | no, opt-in | OpenMDW-1.1 |
+| [Nemotron ASR streaming, English](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | STT | no, opt-in | NVIDIA Open Model License |
 | [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming-small) Small, [Tiny](https://huggingface.co/moonshine-ai/moonshine-streaming-tiny) and [Medium](https://huggingface.co/moonshine-ai/moonshine-streaming-medium), English | STT | no, opt-in, macOS 15 and later | MIT |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 40M](https://huggingface.co/gradium/phonon-40m-en), English | TTS | no, opt-in, gated | CC-BY-NC-4.0 |
-| [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) and its HiggsAudio v2 codec | TTS | no, opt-in | CC-BY-NC; codec: Boson Higgs Audio 2 Community License |
-| Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 | [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
-| [Qwen3-ASR 0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) and [1.7B](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit), with [Qwen3-ForcedAligner 0.6B](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) | STT | no, opt-in | Apache-2.0 |
-| [Nemotron 3.5 ASR streaming](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) | STT | no, opt-in | OpenMDW-1.1 |
-| [Nemotron ASR streaming, English](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | STT | no, opt-in | NVIDIA Open Model License |
+| [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) and its HiggsAudio v2 codec | TTS | no, opt-in | CC-BY-NC; codec: Boson Higgs Audio 2 Community License |
+| Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
@@ -282,6 +285,7 @@ the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
 `jean` are CC-BY-NC and are not offered. Kyutai's card prohibits voice
 impersonation without consent, deception (including passing generated
 audio off as a real recording) and unlawful or harmful content.
+
 Moonshine's code and English streaming models are MIT. voiced downloads the
 files its runtime loads from the publisher's Hub mirror,
 [moonshine-ai/moonshine-voice-assets](https://huggingface.co/moonshine-ai/moonshine-voice-assets),
@@ -565,9 +569,15 @@ with 64 GB, each service alone, 2026-10-21:
   10 s, so Parakeet stays the engine for uploads
   ([ADR 0025](docs/decisions/0025-stt-nemotron.md)). 1.44 GB footprint,
   2.2 GB with Kokoro.
+- **Moonshine** (speech to text, opt-in, on the CPU): 3.8% word error rate
+  for Small (3.4% Medium, 7.0% Tiny); finalize 74 ms median after 200 ms of
+  silence, over the 50 ms target, which only Tiny meets
+  ([ADR 0026](docs/decisions/0026-stt-moonshine.md)). 0.32 GB footprint.
 - **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
   worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
-  0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.
+  0.26 GB. **Pocket TTS** (opt-in): 45 ms median, 0.67 GB. **Soprano**
+  (opt-in): 97 ms median, 156 ms worst. **Chatterbox Turbo** (opt-in, 4-bit):
+  317 ms median, over the 200 ms target; 0.90 GB.
   **OmniVoice** (opt-in, 646 languages): 797 ms median, 806 ms worst, four
   times the 200 ms target; 2.13 GB footprint, 3.87 GB beside Parakeet, over
   the 3 GB budget.
@@ -632,8 +642,9 @@ Logs live under `~/Library/Logs/voiced/`. More in
 
 ## Roadmap
 
-Version 1 is English only with Parakeet and Kokoro. More languages and more
-engines (Whisper, Piper, Pocket TTS and others) are plugins, not forks; see
+The defaults stay Parakeet and Kokoro, English first; other languages come
+with the opt-in engines (Qwen3-ASR, Nemotron, OmniVoice). More engines
+(Whisper, Piper and others) are plugins, not forks; see
 [Adding an engine](docs/architecture.md#adding-an-engine). Requests go in the
 [issue tracker](https://github.com/JulianBeaulieu/voiced/issues).
 

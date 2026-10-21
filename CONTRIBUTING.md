@@ -294,11 +294,12 @@ anyone with write access could tag a commit and have it signed with the
 owner's Developer ID.
 
 1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
-   the installed package metadata) and run `uv lock`.
+   the installed package metadata) and run `uv lock`. For a new minor
+   version, also update the supported versions in `SECURITY.md`.
 2. In `CHANGELOG.md`, move the Unreleased entries under
    `## [<version>] - <date>` and leave an empty Unreleased section. That
    section is the release notes, and the app's "What's new".
-3. Open a pull request with the two changes and merge it.
+3. Open a pull request with the changes and merge it.
 4. Tag the merge commit and push the tag:
 
    ```sh

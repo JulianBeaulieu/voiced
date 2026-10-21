@@ -489,13 +489,13 @@ curl -s http://127.0.0.1:8880/health
   "last_inference_at": 1760450000.0,
   "last_inference_ms": 92.3,
   "last_error": null,
-  "version": "0.1.1"
+  "version": "0.2.0"
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. `missing_model` is newer than 0.1.1 (ADR 0022); clients should treat a status they do not know as not ready. |
+| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022); clients should treat a status they do not know as not ready. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
