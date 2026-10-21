@@ -265,8 +265,8 @@ Who calls `set()`:
 - HTTP, until the priming `anext()` returns: the route, which listens on
   `receive()` for `http.disconnect` meanwhile. The request body has been
   read by then, so `receive()` waits until the client goes away, and every
-  ASGI spec version requires the server to report that there, whether or
-  not Starlette listens itself. The route then returns a `499` that is
+  ASGI spec version requires the server to return `http.disconnect` from
+  that `receive()`, whether or not Starlette listens itself. The route then returns a `499` that is
   never delivered. Starting the response before the first chunk instead,
   with the priming moved into the body, would have let Starlette listen,
   but a full queue or a pre-audio `EngineError` would then be a started

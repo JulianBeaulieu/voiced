@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 import openai
 import psutil
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from httpx import AsyncClient
 
@@ -22,6 +23,7 @@ from tests.api.conftest import (
     wait_for_depth,
 )
 from voiced.api import ffmpeg
+from voiced.cli import uvicorn_config
 from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.base import EngineError, PCMChunk, Voice
@@ -366,6 +368,41 @@ async def test_a_hang_up_before_the_first_audio_frees_the_slot_at_the_next_step(
         assert counts["disconnect"] == 1 and counts["ok"] == 0
         assert app.state.ctx.health.snapshot(0).status == "ok"
     assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
+
+
+async def test_a_hang_up_before_the_first_audio_over_a_real_socket(settings: Settings) -> None:
+    """The same hang-up through uvicorn as ``voiced serve`` runs it: the
+    server, not a test double, has to report the closed socket from
+    ``receive()``."""
+    settings.server.bind = "127.0.0.1"
+    engine = SteppedTTSEngine(steps_before_first=STEPS_PER_PIECE)
+    app = build_tts_app(settings, engine)
+    server = uvicorn.Server(uvicorn_config(app, settings, port=0))
+    serving = asyncio.create_task(server.serve())
+    try:
+        await _wait_until(lambda: server.started)
+        await asyncio.wait_for(app.state.load_task, 5.0)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        body = json.dumps({"input": "Hello there."}).encode()
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"POST /v1/audio/speech HTTP/1.1\r\nHost: voiced\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+        )
+        await writer.drain()
+        await _wait_until(lambda: engine.steps > 0)
+        writer.close()
+        await writer.wait_closed()
+        hung_up = time.perf_counter()
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        assert engine.steps < 10
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 0
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(serving, 5.0)
 
 
 async def test_a_queued_request_that_hangs_up_leaves_the_queue(settings: Settings) -> None:

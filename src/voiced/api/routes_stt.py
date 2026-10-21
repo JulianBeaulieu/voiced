@@ -162,9 +162,7 @@ async def transcriptions(request: Request, ctx: Ctx, foreign: ForeignModels) -> 
     except _PayloadTooLarge:
         raise _too_large(limit_mb) from None
     except ClientDisconnect:
-        # The client hung up mid-upload. Not an error, and there is no one to
-        # answer: return quietly (the server discards this response) rather
-        # than raise, which would make the server log a traceback.
+        # The client hung up mid-upload: not an error (see ClientGoneResponse).
         log.debug("client went away during the upload")
         return ClientGoneResponse()
 

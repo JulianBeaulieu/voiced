@@ -262,13 +262,13 @@ since the status line has already been sent:
 | 500 | `ffmpeg_missing` | `mp3` or `opus` requested and ffmpeg is not installed. |
 | 503 | `server_busy` | The inference queue is full, or the model is loading. |
 
-A client that hangs up while synthesis is still running, or while its
-request waits in the queue, stops the synthesis at the engine's next
-generation step and is counted as a `disconnect` on the status page. A hang-up after synthesis finished counts as `ok`: the audio was
-produced and only its delivery failed. A client that stays connected but
-stops reading is cut off after `server.write_timeout_s` (default 10 s),
-which frees its encoder and buffered audio and leaves an expected ERROR
-line in the log ([details](operations.md#logs)).
+A client that hangs up before or during synthesis, or while its request
+waits in the queue, stops the synthesis at the engine's next generation
+step and is counted as a `disconnect` on the status page. A hang-up after
+synthesis finished counts as `ok`: the audio was produced and only its
+delivery failed. A client that stays connected but stops reading is cut
+off after `server.write_timeout_s` (default 10 s), which frees its encoder
+and buffered audio and leaves an expected ERROR line in the log ([details](operations.md#logs)).
 
 ```python
 from openai import OpenAI
@@ -535,9 +535,9 @@ Each service runs one inference at a time and queues the rest, up to
 once with `503`. The exception is STT streaming: up to `stt.streams` sessions
 (default 2) run at once and share the engine (ADR 0020). A WebSocket stream holds its place for the whole session.
 HTTP speech holds it only while synthesizing, not while the client
-downloads. A speech client that hangs up mid-synthesis or while queued,
-before the first audio or after it, over HTTP or Wyoming, frees its place at the engine's next generation step, so its next
-request does not wait for the audio it abandoned; an engine that renders a
+downloads. A speech client that hangs up before or during synthesis, or
+while queued, over HTTP or Wyoming, frees its place at the engine's next
+generation step, so its next request does not wait for the audio it abandoned; an engine that renders a
 sentence in one call (Kokoro, Soprano) finishes that sentence first. Wyoming
 requests share the same queue. How the queue works is
 described in [architecture.md](architecture.md#inference-queue).

@@ -25,9 +25,9 @@ before any header is sent (ADR 0005). A client that hangs up while the engine
 is still producing ends the synthesis at the engine's next step, not its next
 chunk; it frees the slot and is counted as a disconnect. During the priming
 the route itself listens for ``http.disconnect``, so a client gone before the
-first audio (or while queued) is noticed too; once the response has started,
-stopping the body does it. A hang-up after synthesis finished records ``ok``:
-the audio was produced, only its delivery failed. Under ASGI spec 2.4
+first audio, or while queued, is noticed too; once the response has started,
+stopping the body sets the hang-up. A hang-up after synthesis finished records
+``ok``: the audio was produced, only its delivery failed. Under ASGI spec 2.4
 Starlette does not listen for ``http.disconnect`` while streaming, so there
 the body learns of a hang-up only when a send fails, at the next chunk
 (uvicorn reports 2.3).
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager
 from typing import Any, Literal, cast
 
@@ -140,7 +140,7 @@ async def speech(
     hang_up = HangUp()
     pcm = _synthesize(ctx, text, voice.id, speed, hang_up)
     try:
-        async with _hang_up_on_disconnect(request.receive, hang_up):
+        async with _on_disconnect(request.receive, hang_up.set):
             await anext(pcm)
     except ClientHungUp:
         log.debug("client went away before the first audio")
@@ -159,8 +159,8 @@ async def speech(
 
 
 @asynccontextmanager
-async def _hang_up_on_disconnect(receive: Receive, hang_up: HangUp) -> AsyncIterator[None]:
-    """Set ``hang_up`` if the client disconnects during the block.
+async def _on_disconnect(receive: Receive, closed: Callable[[], None]) -> AsyncIterator[None]:
+    """Call ``closed`` if the client disconnects during the block.
 
     The request body has been read, so ``receive()`` waits until the client
     goes away and then returns ``http.disconnect``. Every ASGI spec version
@@ -170,14 +170,19 @@ async def _hang_up_on_disconnect(receive: Receive, hang_up: HangUp) -> AsyncIter
     async def listen() -> None:
         while (await receive())["type"] != "http.disconnect":
             pass
-        hang_up.set()
+        closed()
 
     listener = asyncio.create_task(listen())
     try:
         yield
     finally:
         listener.cancel()
+        # wait(), not await: a cancel of the request task must still propagate,
+        # and the listener's own cancel must not. It is done before the response
+        # starts, so it never reads receive() alongside Starlette's listener.
         await asyncio.wait([listener])
+        if not listener.cancelled() and (exc := listener.exception()) is not None:
+            log.warning("could not listen for a hang-up: %r", exc)
 
 
 _END = object()
