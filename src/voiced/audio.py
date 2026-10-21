@@ -13,7 +13,13 @@ from fractions import Fraction
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.engines.base import STT_SAMPLE_RATE, TTS_SAMPLE_RATE, TTS_SAMPLE_WIDTH, EngineError
+from voiced.engines.base import (
+    STT_SAMPLE_RATE,
+    TTS_SAMPLE_RATE,
+    TTS_SAMPLE_WIDTH,
+    EngineError,
+    Segment,
+)
 from voiced.validate import is_int
 
 _INT_DTYPES: dict[int, tuple[np.dtype[np.signedinteger] | np.dtype[np.unsignedinteger], float]] = {
@@ -115,6 +121,18 @@ def check_samples(samples: object) -> NDArray[np.float32]:
     if not np.all(np.isfinite(arr)):
         raise EngineError("samples must be finite")
     return np.ascontiguousarray(arr, dtype=np.float32)
+
+
+def clip_segment(start: float, end: float, text: str, duration_s: float) -> Segment:
+    """An STT segment with its times inside ``[0, duration_s]`` (no upper
+    bound when ``duration_s`` is 0) and ``end`` never before ``start``,
+    rounded to the millisecond."""
+    start = max(0.0, start)
+    end = max(start, end)
+    if duration_s > 0:
+        end = min(end, duration_s)
+        start = min(start, end)
+    return Segment(start=round(start, 3), end=round(end, 3), text=text)
 
 
 def resample(samples: NDArray[np.floating], src_rate: int, dst_rate: int) -> NDArray[np.float32]:

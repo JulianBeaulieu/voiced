@@ -205,6 +205,7 @@ Registered engines:
 | `pocket` | `voiced.tts_engines` | Kyutai's Pocket TTS via mlx-audio on the GPU, opt-in, each 80 ms frame streamed as it is decoded ([ADR 0028](decisions/0028-tts-pocket.md)) |
 | `chatterbox` | `voiced.tts_engines` | Chatterbox Turbo via mlx-audio, opt-in, each sentence rendered in pieces as its speech tokens arrive ([ADR 0029](decisions/0029-tts-chatterbox-turbo.md)) |
 | `qwen3-asr` | `voiced.stt_engines` | Qwen3-ASR 0.6B or 1.7B via mlx-audio, opt-in, batch with the forced aligner's sentence times; a stream is transcribed at finalize ([ADR 0027](decisions/0027-stt-qwen3-asr.md)) |
+| `moonshine` | `voiced.stt_engines` | Moonshine Streaming via `moonshine-voice` (ONNX Runtime) on the CPU, opt-in, macOS 15 and later, finalized on the client's `end` ([ADR 0026](decisions/0026-stt-moonshine.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
@@ -215,9 +216,10 @@ the loop yields each piece as it comes (Phonon, Pocket TTS). The load and
 every step of a sentence run on the engine's one `ModelThread`, since a
 streaming engine keeps MLX arrays from one piece to the next.
 
-The MLX engines live in the optional extras `stt` and `tts`, and Phonon in
-`phonon`, so the core package installs on any machine and CI runs against
-the fakes. The shipped lock carries all three extras.
+The MLX engines live in the optional extras `stt` and `tts`, Phonon in
+`phonon` and Moonshine in `moonshine`, so the core package installs on any
+machine and CI runs against the fakes. The shipped lock carries all four
+extras; `moonshine-voice` carries a marker that skips it before macOS 15.
 
 ## Engine interfaces
 

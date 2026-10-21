@@ -53,7 +53,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.audio import VAD_FRAME_SAMPLES as _VAD_FRAME
-from voiced.audio import check_samples, is_silent
+from voiced.audio import check_samples, clip_segment, is_silent
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -1023,14 +1023,10 @@ def _to_transcript(result: Any, language: str | None, duration_s: float) -> Tran
     segments: list[Segment] = []
     for sentence in result.sentences:
         text = collapse_whitespace(sentence.text)
-        if not text:
-            continue
-        start = max(0.0, float(sentence.start))
-        end = max(start, float(sentence.end))
-        if duration_s > 0:
-            end = min(end, duration_s)
-            start = min(start, end)
-        segments.append(Segment(start=round(start, 3), end=round(end, 3), text=text))
+        if text:
+            segments.append(
+                clip_segment(float(sentence.start), float(sentence.end), text, duration_s)
+            )
     return Transcript(
         text=collapse_whitespace(result.text),
         language=language,

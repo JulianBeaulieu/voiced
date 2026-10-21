@@ -258,6 +258,23 @@ def test_qwen3_asr_subtitles_kokoro_audio(
     assert all(re.fullmatch(r"\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}", c[1]) for c in cues)
 
 
+def test_moonshine_hears_kokoro(
+    tts_kokoro_service: LiveService, stt_moonshine_service: LiveService
+) -> None:
+    """The other STT engine, through the same OpenAI client call."""
+    audio = (
+        tts_kokoro_service.openai_client()
+        .audio.speech.create(
+            model="voiced", voice="af_heart", input=SENTENCE, response_format="wav"
+        )
+        .read()
+    )
+    heard = _transcribe(stt_moonshine_service, audio, "wav")
+    assert EXPECTED_WORDS <= set(words(heard)), heard
+    models = stt_moonshine_service.get("/v1/models").json()["data"]
+    assert (models[0]["engine"], models[0]["license"]) == ("moonshine", "MIT")
+
+
 # --- discovery --------------------------------------------------------------
 
 

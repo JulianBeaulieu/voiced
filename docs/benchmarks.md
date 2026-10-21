@@ -25,6 +25,9 @@ WER: word error rate over 24 clips of LibriSpeech test-clean (Panayotov et al. 2
 
 | Model | Engine | Quality | Speed | WER | Finalize after 200 ms silence, median / worst | Finalize at the last word, median / worst | Batch RTF | Load | Footprint | MLX peak, load / after use | Size | Languages | Licence | Machine | Version (commit), date |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `moonshine-ai/moonshine-streaming-medium` | moonshine | 4 of 5 | 3 of 5 | 3.4% | 120 / 212 ms | 178 / 207 ms | 0.114 | 0.5 s | 0.47 GB | none / none | 269.1 MB | en | MIT | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a7f58a9+), 2026-10-21 |
+| `moonshine-ai/moonshine-streaming-small` | moonshine | 4 of 5 | 3 of 5 | 3.8% | 74 / 170 ms | 108 / 165 ms | 0.124 | 0.5 s | 0.32 GB | none / none | 142.3 MB | en | MIT | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a7f58a9+), 2026-10-21 |
+| `moonshine-ai/moonshine-streaming-tiny` | moonshine | 3 of 5 | 4 of 5 | 7.0% | 50 / 81 ms | 62 / 88 ms | 0.044 | 0.4 s | 0.20 GB | none / none | 45.2 MB | en | MIT | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a7f58a9+), 2026-10-21 |
 | `mlx-community/parakeet-tdt-0.6b-v3` | parakeet | 5 of 5 | 5 of 5 | 2.0% | 1 / 6 ms | 115 / 129 ms | 0.023 | 1.0 s | 1.52 GB | 3.38 GB / 3.38 GB | 2.5 GB | 25 languages | CC-BY-4.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 | `mlx-community/Qwen3-ASR-0.6B-8bit` | qwen3-asr | 5 of 5 | 3 of 5 | 1.8% | 192 / 242 ms | 184 / 216 ms | 0.056 | 2.4 s | 2.50 GB | 3.14 GB / 3.41 GB | 1.0 GB | 30 languages | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (621273a+), 2026-10-21 |
 | `mlx-community/Qwen3-ASR-1.7B-8bit` | qwen3-asr | 5 of 5 | 2 of 5 | 1.6% | 315 / 354 ms | 307 / 341 ms | 0.071 | 2.0 s | 3.95 GB | 4.60 GB / 4.86 GB | 2.5 GB | 30 languages | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (621273a+), 2026-10-21 |

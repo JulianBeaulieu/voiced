@@ -38,12 +38,15 @@ def test_markers_select_what_installs_on_the_mac(lock_target: ModuleType, tmp_pa
         "Espeakng_Loader==0.2.4 \\\n"
         "    --hash=sha256:ee\n"
         "    # via kokoro-onnx\n"
+        "moonshine-voice==0.1.5 ; platform_release >= '24' and sys_platform == 'darwin' \\\n"
+        "    --hash=sha256:ff\n"
     )
     assert lock_target.installed(lock) == [
         ("espeakng-loader", "0.2.4"),
         ("mlx-metal", "0.32.3"),
         ("numpy", "2.5.4"),
     ]
+    assert ("moonshine-voice", "0.1.5") in lock_target.installed(lock, macos=(15, 0))
 
 
 def test_check_names_every_difference(notice: ModuleType) -> None:

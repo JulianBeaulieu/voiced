@@ -2,8 +2,9 @@
 
 Shared by ``scripts/notice.py`` (NOTICE lists what an install downloads) and
 ``scripts/app_manifest.py`` (the bundle's download size): an Apple Silicon Mac
-on the app's floor, macOS 14, running the CPython patch version installs use,
-which ``menubar/app-python-version`` holds for these scripts and bundle.sh.
+running the CPython patch version installs use, which
+``menubar/app-python-version`` holds for these scripts and bundle.sh, on the
+app's floor, macOS 14, or on another of :data:`MACOS_VERSIONS`.
 """
 
 from __future__ import annotations
@@ -18,6 +19,11 @@ ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "src" / "voiced" / "requirements.lock"
 PYTHON_VERSION_FILE = ROOT / "menubar" / "app-python-version"
 MACOS = (14, 0)
+DARWIN = {MACOS: 23, (15, 0): 24}
+"""The macOS versions whose lock entries differ, each with its Darwin major,
+which ``platform_release`` markers read: moonshine-voice installs on macOS 15
+and later only."""
+MACOS_VERSIONS = tuple(DARWIN)
 
 _REQUIREMENT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;\\]+)\s*(?:;\s*([^\\]+?))?\s*\\?$")
 
@@ -30,10 +36,11 @@ def python_version(path: Path = PYTHON_VERSION_FILE) -> str:
     return version
 
 
-def environment(python: str) -> dict[str, str]:
-    """PEP 508 marker values on the target Mac."""
+def environment(python: str, macos: tuple[int, int] = MACOS) -> dict[str, str]:
+    """PEP 508 marker values on the target Mac, which runs ``macos``."""
     major, minor = python.split(".")[:2]
     return {
+        "platform_release": f"{DARWIN[macos]}.0.0",
         "implementation_name": "cpython",
         "platform_machine": "arm64",
         "platform_python_implementation": "CPython",
@@ -45,9 +52,11 @@ def environment(python: str) -> dict[str, str]:
     }
 
 
-def installed(lock: Path = LOCK, python: str | None = None) -> list[tuple[str, str]]:
+def installed(
+    lock: Path = LOCK, python: str | None = None, macos: tuple[int, int] = MACOS
+) -> list[tuple[str, str]]:
     """``(name, version)`` for every lock entry installed on the target Mac, by name."""
-    values = environment(python or python_version())
+    values = environment(python or python_version(), macos)
     found = []
     for line in lock.read_text().splitlines():
         match = _REQUIREMENT.match(line)

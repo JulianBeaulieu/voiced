@@ -33,6 +33,7 @@ Two service processes, `stt` and `tts`, each built from the same core:
 | `voiced.engines.kokoro` | The Kokoro TTS engine (espeak-ng phonemes into MLX); see ADR 0009. |
 | `voiced.engines.soprano` | The Soprano TTS engine, selectable, not default (repetition penalty and a per-sentence bound against runaways); see ADR 0010. |
 | `voiced.engines.phonon` | The Phonon TTS engine on the CPU through `ptts`, selectable, not default (chunks streamed within a sentence, pinned model and voices); see ADR 0021. |
+| `voiced.engines.moonshine` | The Moonshine Streaming STT engine on the CPU through `moonshine-voice`, selectable, not default (the runtime's stream, finalized on the client's end signal); see ADR 0026. |
 | `voiced.engines.parakeet` | The Parakeet TDT STT engine (`parakeet-mlx`): batch, and streaming through a planner (gate, grid, speculative final call) and a thin library seam; see ADR 0008. |
 | `voiced.engines.qwen3_asr` | The Qwen3-ASR STT engine through mlx-audio, selectable, not default (batch with forced-aligner segments, BCP-47 language mapping, a stream buffered and transcribed at finalize); see ADR 0027. |
 | `voiced.text` | Text normalization and sentence splitting; pure Python, imported by engines and both API layers. |

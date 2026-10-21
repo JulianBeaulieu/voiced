@@ -118,6 +118,35 @@ names them; a test keeps the two in step)."""
 QWEN3_ASR = ("*.json", "*.safetensors", "merges.txt")
 """What mlx-audio loads from a Qwen3-ASR or Qwen3-ForcedAligner checkpoint."""
 
+MOONSHINE_FILES = (
+    "adapter.ort",
+    "cross_kv.ort",
+    "decoder_kv.ort",
+    "encoder.ort",
+    "frontend.model.ort",
+    "frontend.weights.ort",
+    "streaming_config.json",
+    "tokenizer.bin",
+)
+"""What a Moonshine streaming model folder holds that the runtime loads
+without word timestamps (ADR 0026)."""
+
+
+def _moonshine(size: str, quality: int, speed: int, note: str) -> Model:
+    """A Moonshine English streaming model: one folder of the publisher's
+    asset repository, named by its model card."""
+    folder = f"model/{size}-streaming-en/quantized_26_08_21"
+    return Model(
+        "moonshine-ai/moonshine-voice-assets",
+        "MIT",
+        tuple(f"{folder}/{name}" for name in MOONSHINE_FILES),
+        id=f"moonshine-ai/moonshine-streaming-{size}",
+        quality=quality,
+        speed=speed,
+        note=note,
+    )
+
+
 CATALOGUE: tuple[Engine, ...] = (
     Engine(
         "parakeet",
@@ -266,6 +295,30 @@ CATALOGUE: tuple[Engine, ...] = (
         ),
         # The forced aligner, for segment times (ADR 0027).
         shared=(Model("mlx-community/Qwen3-ForcedAligner-0.6B-8bit", "Apache-2.0", QWEN3_ASR),),
+    ),
+    Engine(
+        "moonshine",
+        "stt",
+        models=(
+            _moonshine(
+                "small",
+                quality=4,
+                speed=3,
+                note="Runs on the CPU, leaving the GPU to text to speech; English, macOS 15+",
+            ),
+            _moonshine(
+                "tiny",
+                quality=3,
+                speed=4,
+                note="The fastest Moonshine and the least accurate; English, macOS 15+",
+            ),
+            _moonshine(
+                "medium",
+                quality=4,
+                speed=3,
+                note="The most accurate Moonshine, and the slowest to finalize; English, macOS 15+",
+            ),
+        ),
     ),
 )
 

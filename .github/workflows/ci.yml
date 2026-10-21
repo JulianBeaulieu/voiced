@@ -116,7 +116,7 @@ jobs:
       - name: Install system dependencies
         run: brew install espeak-ng
       - name: Install with engines
-        run: uv sync --group dev --extra stt --extra tts
+        run: uv sync --group dev --extra stt --extra tts --extra moonshine
       - name: Cache Hugging Face models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

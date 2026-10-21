@@ -24,7 +24,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from lock_target import MACOS, ROOT, installed, python_version
+from lock_target import MACOS_VERSIONS, ROOT, installed, python_version
 from packaging.tags import Tag, compatible_tags, cpython_tags, mac_platforms
 from packaging.utils import canonicalize_name, parse_wheel_filename
 
@@ -33,9 +33,9 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def priorities(python: str) -> dict[Tag, int]:
+def priorities(python: str, macos: tuple[int, int]) -> dict[Tag, int]:
     major, minor = (int(part) for part in python.split(".")[:2])
-    platforms = list(mac_platforms(MACOS, "arm64"))
+    platforms = list(mac_platforms(macos, "arm64"))
     tags = [
         *cpython_tags((major, minor), platforms=platforms),
         *compatible_tags((major, minor), platforms=platforms),
@@ -59,16 +59,24 @@ def download_size(package: dict[str, Any], ranks: dict[Tag, int]) -> int:
 
 
 def wheels_bytes(lock: Path, uv_lock: Path, python: str) -> int:
+    """What an install downloads on the app's floor, plus what only a newer
+    one of :data:`MACOS_VERSIONS` adds (moonshine-voice on macOS 15): each
+    package at its wheel for the oldest version that installs it."""
     packages = {
         (canonicalize_name(p["name"]), p["version"]): p
         for p in tomllib.loads(uv_lock.read_text())["package"]
     }
-    ranks = priorities(python)
+    counted: set[tuple[str, str]] = set()
     total = 0
-    for key in installed(lock, python):
-        if key not in packages:
-            raise SystemExit(f"{key[0]}=={key[1]} is in the lock but not in uv.lock")
-        total += download_size(packages[key], ranks)
+    for macos in MACOS_VERSIONS:
+        ranks = priorities(python, macos)
+        for key in installed(lock, python, macos):
+            if key in counted:
+                continue
+            if key not in packages:
+                raise SystemExit(f"{key[0]}=={key[1]} is in the lock but not in uv.lock")
+            counted.add(key)
+            total += download_size(packages[key], ranks)
     return total
 
 

@@ -237,6 +237,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | Model | Role | Default | License |
 |---|---|---|---|
 | [Parakeet TDT 0.6B v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) | STT | yes | CC-BY-4.0 |
+| [Moonshine Streaming](https://huggingface.co/moonshine-ai/moonshine-streaming-small) Small, [Tiny](https://huggingface.co/moonshine-ai/moonshine-streaming-tiny) and [Medium](https://huggingface.co/moonshine-ai/moonshine-streaming-medium), English | STT | no, opt-in, macOS 15 and later | MIT |
 | [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) | TTS | yes | Apache-2.0 |
 | [Soprano-80M](https://huggingface.co/mlx-community/Soprano-80M-bf16) | TTS | no, opt-in | Apache-2.0 |
 | [Phonon 31M](https://huggingface.co/gradium/phonon-31m-en) and its [voices](https://huggingface.co/gradium/phonon-voices) | TTS | no, opt-in | Apache-2.0 |
@@ -270,6 +271,13 @@ the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
 `jean` are CC-BY-NC and are not offered. Kyutai's card prohibits voice
 impersonation without consent, deception (including passing generated
 audio off as a real recording) and unlawful or harmful content.
+Moonshine's code and English streaming models are MIT. voiced downloads the
+files its runtime loads from the publisher's Hub mirror,
+[moonshine-ai/moonshine-voice-assets](https://huggingface.co/moonshine-ai/moonshine-voice-assets),
+at a pinned revision. That repository also holds other languages' models,
+whose licence is stated two ways (MIT in the code's `LICENSE`, the
+non-commercial Moonshine Community License in the repository's README);
+voiced does not use them.
 
 Chatterbox Turbo is Resemble AI's, MIT for the weights, the default voice and
 the code. The cards of the mlx-community conversions voiced loads say
@@ -445,6 +453,36 @@ the more accurate model at about twice the memory. Then run
 `~/.voiced/bin/voiced restart stt`. The details and measurements are in
 [ADR 0027](docs/decisions/0027-stt-qwen3-asr.md).
 
+### Using Moonshine
+
+Moonshine Streaming is a speech-to-text model that runs on the CPU through
+ONNX Runtime, so it leaves the GPU to text-to-speech. It is English only and
+needs macOS 15 or later (its runtime has no wheel for macOS 14, where voiced
+installs without it). To use it, set both keys under `[stt]`:
+
+```toml
+[stt]
+engine = "moonshine"
+model = "moonshine-ai/moonshine-streaming-small"
+```
+
+`moonshine-ai/moonshine-streaming-tiny` and `moonshine-ai/moonshine-streaming-medium`
+work as `model` too. Download the model first (45 MB for Tiny, 142 MB for
+Small, 269 MB for Medium), then restart the service:
+
+```sh
+~/.voiced/bin/voiced models download moonshine-ai/moonshine-streaming-small
+~/.voiced/bin/voiced restart stt
+```
+
+It finalizes more slowly than Parakeet, because its last decoding pass runs
+after the client's `end`. Small and Medium miss the 50 ms median target, and
+the 150 ms worst case: Medium always, Small in some runs and for
+push-to-talk. Tiny meets both after 200 ms of trailing silence (see
+[Benchmarks](#benchmarks)). Segments are Moonshine's phrases, with their
+times; word timestamps are not used. The details are in
+[ADR 0026](docs/decisions/0026-stt-moonshine.md).
+
 ## Benchmarks
 
 Every engine and model is measured the same way, one command each, and
@@ -487,6 +525,9 @@ the reply in 436 ms median with `ministral-3:8b` on Ollama, the LLM taking
 217 ms of it. Finalize is slower while Kokoro synthesizes, most on the
 Studio (510 ms worst at the last word); while Phonon synthesizes, on the
 laptop, the worst was 115 ms ([ADR 0021](docs/decisions/0021-tts-phonon.md)).
+Moonshine Small, on the CPU, finalized in 66 ms median after 200 ms of
+trailing silence and 105 ms median at the last word
+([ADR 0026](docs/decisions/0026-stt-moonshine.md)).
 
 ## Troubleshooting
 
