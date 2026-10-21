@@ -55,6 +55,8 @@ dependencies = [
 # done, and the session's private _encoder.chunk_mel, _encoder.first_chunk_mel and
 # _frontend.lookahead_samples. 0.5.9 is the first release with the English model's
 # nemotron_asr_streaming loader and the first_chunk_mel its first piece is sized by.
+# Whisper (ADR 0032) calls generate(language=, word_timestamps=) and reads
+# result.language and result.segments[] start, end and text.
 stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.5.10"]
 # mlx-audio is pinned to the releases the engines were checked against: Kokoro
 # relies on its internals (load_voice_tensor, model(..., return_output=True),
@@ -131,6 +133,7 @@ parakeet = "voiced.engines.parakeet:ParakeetEngine"
 qwen3-asr = "voiced.engines.qwen3_asr:Qwen3ASREngine"
 moonshine = "voiced.engines.moonshine:MoonshineEngine"
 nemotron = "voiced.engines.nemotron:NemotronEngine"
+whisper = "voiced.engines.whisper:WhisperEngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"

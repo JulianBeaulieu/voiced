@@ -16,6 +16,7 @@ from voiced.vad import (
     EndpointEvent,
     SileroDetector,
     create_endpointer,
+    speech_spans,
 )
 
 CHUNK = STT_SAMPLE_RATE // 10  # 100 ms, deliberately not a multiple of the 512-sample frame
@@ -194,3 +195,42 @@ def test_silero_is_fast_enough() -> None:
     per_frame = (time.perf_counter() - t0) / 100
     print(f"\nsilero: {per_frame * 1000:.2f} ms per 32 ms frame")
     assert per_frame < 0.005, f"{per_frame * 1000:.1f} ms per 32 ms frame"
+
+
+# --- speech_spans -------------------------------------------------------------
+
+
+def test_speech_spans_merge_short_pauses_and_split_long_ones() -> None:
+    audio = np.concatenate(
+        [silence(1.0), noise(1.0), silence(0.5), noise(1.0), silence(3.0), noise(0.5)]
+    )
+    spans = speech_spans(audio, silence_ms=1000, detector=EnergyDetector())
+    assert [(round(a, 2), round(b, 2)) for a, b in spans] == [
+        (0.99, 3.52),
+        (6.5, 6.98),
+    ]  # whole frames
+
+
+def test_speech_spans_of_silence_and_of_a_blip_are_empty() -> None:
+    assert speech_spans(silence(3.0), silence_ms=500, detector=EnergyDetector()) == []
+    blip = np.concatenate([silence(1.0), noise(0.05), silence(1.0)])
+    assert speech_spans(blip, silence_ms=500, detector=EnergyDetector()) == []
+
+
+def test_speech_spans_cross_the_feeding_blocks() -> None:
+    """One span from 25 s to 40 s, across the 30 s block boundary."""
+    audio = np.concatenate([silence(25.0), noise(15.0), silence(2.0)])
+    ((start, end),) = speech_spans(audio, silence_ms=500, detector=EnergyDetector())
+    assert abs(start - 25.0) < 0.05 and abs(end - 40.0) < 0.05
+
+
+def test_silero_speech_spans_find_real_speech_and_not_hum(
+    speech: NDArray[np.float32],
+) -> None:
+    hum = (0.03 * np.sin(2 * np.pi * 50 * np.arange(3 * STT_SAMPLE_RATE) / STT_SAMPLE_RATE)).astype(
+        np.float32
+    )
+    audio = np.concatenate([hum, speech, silence(1.0)])
+    ((start, end),) = speech_spans(audio, silence_ms=500)
+    assert 2.8 < start < 3.4 and end <= 3.0 + len(speech) / STT_SAMPLE_RATE + 0.05
+    assert speech_spans(hum, silence_ms=500) == []

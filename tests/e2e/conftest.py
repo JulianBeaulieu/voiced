@@ -450,6 +450,18 @@ def stt_qwen3_service(e2e_tmp: Path) -> Iterator[LiveService]:
 
 
 @pytest.fixture(scope="package")
+def stt_whisper_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "stt",
+        e2e_tmp / "whisper",
+        **{"engine": '"whisper"', "model": '"mlx-community/whisper-large-v3-turbo-asr-8bit"'},
+    )
+    service = start_service("stt", settings)
+    yield service
+    service.stop()
+
+
+@pytest.fixture(scope="package")
 def stt_moonshine_service(e2e_tmp: Path) -> Iterator[LiveService]:
     pytest.importorskip("moonshine_voice")  # macOS 15 and the moonshine extra only
     settings = _settings_for(
