@@ -3,12 +3,13 @@ and the models step (ADR 0018, ADR 0022)."""
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +17,7 @@ from typing import Any
 import pytest
 
 from tests import hf_cache_support as hf
-from voiced import models
+from voiced import models, ratings
 from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
@@ -25,6 +26,7 @@ from voiced.engines.phonon import PhononEngine
 from voiced.engines.soprano import SopranoEngine
 from voiced.launchd.progress import DOWNLOAD_PREFIX
 from voiced.models import cache, commands, lockfile, pinning
+from voiced.models.catalogue import Engine, Model
 
 # The catalogue and the lock ---------------------------------------------------
 
@@ -120,6 +122,107 @@ def test_a_shared_repository_comes_with_every_model_of_its_engine() -> None:
     assert models.required("someone/else") == ["someone/else"]
     assert models.find("gradium/phonon-voices") is None  # shared, not a model
     assert lockfile.pinned_revision("someone/else") is None
+
+
+# Ratings (ADR 0024) -------------------------------------------------------------
+
+BENCHMARKS = Path(__file__).parents[2] / "docs" / "benchmarks"
+
+
+def _hardware(name: str) -> str:
+    return " ".join(name.split()).casefold()
+
+
+def rows_by_model(results: Iterable[dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """The results of the reference Mac, by kind, engine and model."""
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for result in results:
+        if _hardware(result["hardware"]) != _hardware(ratings.REFERENCE_HARDWARE):
+            continue
+        key = (result["kind"], result["engine"], result["model"])
+        assert key not in rows, f"two results for {key} on the reference Mac"
+        rows[key] = result
+    return rows
+
+
+@functools.cache
+def reference_rows() -> dict[tuple[str, str, str], dict[str, Any]]:
+    """docs/benchmarks/*.json read as JSON (the harness is a script, not a module)."""
+    return rows_by_model(json.loads(p.read_text()) for p in sorted(BENCHMARKS.glob("*.json")))
+
+
+def ratings_problem(
+    engine: Engine, model: Model, rows: dict[tuple[str, str, str], dict[str, Any]]
+) -> str | None:
+    """Why ``model``'s ``quality`` and ``speed`` are not its reference row's,
+    with the command that measures it; None when they are."""
+    measure = (
+        f"uv run python scripts/bench_engine.py {engine.kind} "
+        f"--engine {engine.name} --model {model.id}"
+    )
+    row = rows.get((engine.kind, engine.name, model.id))
+    if row is None:
+        if (model.quality, model.speed) == (None, None):
+            return None
+        return (
+            f"{model.id} has no result on the {ratings.REFERENCE_HARDWARE}: measure it "
+            f"with `{measure}`, or set quality and speed to None"
+        )
+    rating = ratings.rate(ratings.rated(engine.kind, row["metrics"]))
+    if (model.quality, model.speed) == (rating.quality, rating.speed):
+        return None
+    return (
+        f"{model.id}: its result says quality={rating.quality}, speed={rating.speed}; "
+        f"set those in the catalogue (measured by `{measure}`)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("engine", "model"),
+    [(e, m) for e in models.CATALOGUE for m in e.models],
+    ids=lambda v: v.id if isinstance(v, Model) else v.name,
+)
+def test_each_models_ratings_are_its_reference_rows(engine: Engine, model: Model) -> None:
+    """``quality`` and ``speed`` are copied by hand from the model's result on
+    the reference Mac; a model without one has neither."""
+    problem = ratings_problem(engine, model, reference_rows())
+    assert problem is None, problem
+
+
+def test_a_wrong_rating_names_the_values_and_the_command() -> None:
+    parakeet = models.engine("parakeet")
+    assert parakeet is not None
+    real = parakeet.models[0]
+    row = reference_rows()[("stt", "parakeet", real.id)]
+    wrong = models.Model(real.repo, real.license, real.patterns, quality=3, speed=5)
+    problem = ratings_problem(parakeet, wrong, reference_rows())
+    assert problem is not None
+    assert f"quality={real.quality}, speed={real.speed}" in problem
+    assert f"scripts/bench_engine.py stt --engine parakeet --model {real.id}" in problem
+    # Another Mac's result, or one for another model, is not the reference row.
+    other_mac = {**row, "hardware": "Mac Studio, Apple M1 Max, 32 GB"}
+    other_model = {**row, "model": "someone/else"}
+    rows = rows_by_model([other_mac, other_model])
+    assert ratings_problem(parakeet, real, rows) == (
+        f"{real.id} has no result on the {ratings.REFERENCE_HARDWARE}: measure it with "
+        f"`uv run python scripts/bench_engine.py stt --engine parakeet --model {real.id}`, "
+        "or set quality and speed to None"
+    )
+    unrated = models.Model(real.repo, real.license, real.patterns)
+    assert ratings_problem(parakeet, unrated, rows) is None
+    # The hardware is matched however it is spaced or cased.
+    spaced = {**row, "hardware": "  macbook pro,  Apple M1 Max, 64 GB "}
+    assert ratings_problem(parakeet, real, rows_by_model([spaced])) is None
+    with pytest.raises(AssertionError, match="two results"):
+        rows_by_model([row, spaced])
+
+
+def test_notes_fit_one_line_and_shared_repositories_are_not_rated() -> None:
+    for engine in models.CATALOGUE:
+        for model in engine.models:
+            assert len(model.note) <= 80 and "\n" not in model.note, model.id
+        for shared in engine.shared:
+            assert (shared.quality, shared.speed, shared.note) == (None, None, ""), shared.id
 
 
 # The cache on disk -------------------------------------------------------------

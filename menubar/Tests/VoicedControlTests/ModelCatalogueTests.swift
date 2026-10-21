@@ -23,7 +23,10 @@ final class ModelCatalogueTests: XCTestCase {
                   "gated": false, "revision": "8c64b55e", "download_bytes": 65049306,
                   "on_disk_bytes": 65049306, "downloaded": true,
                   "previous": [{"revision": "1a2b", "bytes": 64000000}],
-                  "refs": ["main"], "in_use": true
+                  "refs": ["main"], "in_use": true,
+                  "quality": 5, "speed": 5,
+                  "note": "Runs on the CPU, leaving the GPU to speech to text; 38 English voices",
+                  "recommended": false
                 }
               ],
               "shared": [{"id": "gradium/phonon-voices", "shared": true, "license": "Apache-2.0",
@@ -49,6 +52,28 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(list.engines(of: .stt).map(\.name), ["plugin"])
         XCTAssertEqual(list.model("gradium/phonon-31m-en")?.engine.name, "phonon")
         XCTAssertNil(list.model("gradium/phonon-voices"), "shared models are not rows")
+        XCTAssertEqual(model.quality, 5)
+        XCTAssertEqual(model.speed, 5)
+        XCTAssertEqual(model.note, "Runs on the CPU, leaving the GPU to speech to text; 38 English voices")
+        XCTAssertFalse(model.recommended)
+    }
+
+    /// A voiced from before the ratings lists its models without them, and a field of another
+    /// type does not lose the list.
+    func testModelsWithoutRatingsStillDecode() throws {
+        let older = try decodeJSON(
+            CatalogueModel.self, #"{"id": "org/m", "license": "MIT", "download_bytes": 1, "downloaded": false}"#)
+        XCTAssertNil(older.quality)
+        XCTAssertNil(older.speed)
+        XCTAssertEqual(older.note, "")
+        XCTAssertFalse(older.recommended)
+        let odd = try decodeJSON(
+            CatalogueModel.self,
+            #"{"id": "org/m", "quality": "high", "speed": null, "note": 3, "recommended": "yes"}"#)
+        XCTAssertNil(odd.quality)
+        XCTAssertNil(odd.speed)
+        XCTAssertEqual(odd.note, "")
+        XCTAssertFalse(odd.recommended)
     }
 
     // MARK: - Rows
@@ -98,6 +123,41 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(loading?.canDelete, false)
         XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake")["fake"]?.state, .inUse)
         XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake", ready: false)["fake"]?.state, .inUseLoading)
+    }
+
+    func testRatedModelsShowBarsTheNoteAndTheDefaultsTheBadge() {
+        let tts = rows(kind: .tts, engine: "kokoro", model: kokoro)
+        XCTAssertEqual(tts[kokoro]?.ratings, [.init(label: "Quality", value: 5), .init(label: "Speed", value: 5)])
+        XCTAssertEqual(tts[kokoro]?.isRecommended, true)
+        let soprano = tts["mlx-community/Soprano-80M-bf16"]
+        XCTAssertEqual(soprano?.ratings.map(\.value), [4, 5])
+        XCTAssertEqual(soprano?.isRecommended, false)
+        XCTAssertEqual(soprano?.summary, "One expressive English voice; each reading of a text differs a little")
+
+        // Not measured: no bars, the note only.
+        let p40 = tts["gradium/phonon-40m-en"]
+        XCTAssertEqual(p40?.ratings, [])
+        XCTAssertNotNil(p40?.summary)
+        // A plugin engine has no model to rate or describe.
+        XCTAssertEqual(tts["fake"]?.ratings, [])
+        XCTAssertNil(tts["fake"]?.summary)
+        XCTAssertEqual(tts["fake"]?.isRecommended, false)
+
+        let stt = rows(kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")
+        XCTAssertEqual(stt["mlx-community/parakeet-tdt-0.6b-v3"]?.isRecommended, true)
+
+        // Only one of the two measured, or a value off the scale: only the bars that hold.
+        var state = FakeModelState.sample
+        state.modify(kokoro) { ($0.quality, $0.speed, $0.note) = (nil, 9, "") }
+        let partial = rows(state, kind: .tts, engine: "kokoro", model: kokoro)[kokoro]
+        XCTAssertEqual(partial?.ratings, [])
+        state.modify(kokoro) { $0.speed = 3 }
+        XCTAssertEqual(rows(state, kind: .tts, engine: "kokoro", model: kokoro)[kokoro]?.ratings, [.init(label: "Speed", value: 3)])
+        XCTAssertNil(rows(state, kind: .tts, engine: "kokoro", model: kokoro)[kokoro]?.summary)
+
+        XCTAssertEqual(ModelRow.ratingsHelp, "Measured on an Apple M1 Max; see docs/benchmarks.md")
+        XCTAssertEqual(
+            ModelRow.benchmarks.absoluteString, "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")
     }
 
     func testSelectionForKind() {

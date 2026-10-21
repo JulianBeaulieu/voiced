@@ -3,26 +3,29 @@
 The limits are fixed, so the same numbers give everyone the same rating:
 ``scripts/bench_engine.py`` rates each result with them and generates the
 limits table in docs/benchmarks.md from :data:`SCALES`, and the model
-catalogue's ``quality`` and ``speed`` are checked against them. Standard
-library only.
+catalogue's ``quality`` and ``speed`` are checked against them. Each scale
+names the number of a result's ``metrics`` it rates, so :func:`rated` reads
+the same numbers for both. Standard library only.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
 class Scale:
     """One measured number to a rating of 1 to 5. ``bounds`` are the limits
     for 5, 4, 3 and 2, best first; a value past the last is 1. A value on a
-    bound gets the better rating."""
+    bound gets the better rating. ``metric`` is the field of a benchmark
+    result's ``metrics`` it rates, dotted into nested objects."""
 
     kind: Literal["stt", "tts"]
     axis: Literal["quality", "speed"]
+    metric: str
     measure: str
     unit: str
     bounds: tuple[float, float, float, float]
@@ -37,18 +40,50 @@ class Scale:
         return 1
 
 
-STT_WER = Scale("stt", "quality", "word error rate on the clip set", "%", (3, 5, 8, 12))
+STT_WER = Scale(
+    "stt", "quality", "wer_percent", "word error rate on the clip set", "%", (3, 5, 8, 12)
+)
 STT_FINALIZE = Scale(
-    "stt", "speed", "finalize after 200 ms of silence, worst", " ms", (50, 150, 300, 600)
+    "stt",
+    "speed",
+    "finalize_after_silence.worst_ms",
+    "finalize after 200 ms of silence, worst",
+    " ms",
+    (50, 150, 300, 600),
 )
-STT_RTF = Scale("stt", "speed", "batch real-time factor", "", (0.05, 0.1, 0.2, 0.5))
+STT_RTF = Scale("stt", "speed", "batch_rtf", "batch real-time factor", "", (0.05, 0.1, 0.2, 0.5))
 TTS_UTMOS = Scale(
-    "tts", "quality", "UTMOS naturalness", "", (4.3, 4.0, 3.6, 3.0), higher_is_better=True
+    "tts", "quality", "utmos", "UTMOS naturalness", "", (4.3, 4.0, 3.6, 3.0), higher_is_better=True
 )
-TTS_FIRST_AUDIO = Scale("tts", "speed", "first audio, median", " ms", (100, 200, 400, 800))
-TTS_RTF = Scale("tts", "speed", "real-time factor", "", (0.1, 0.25, 0.5, 1.0))
+TTS_FIRST_AUDIO = Scale(
+    "tts", "speed", "first_audio.median_ms", "first audio, median", " ms", (100, 200, 400, 800)
+)
+TTS_RTF = Scale("tts", "speed", "rtf", "real-time factor", "", (0.1, 0.25, 0.5, 1.0))
 
 SCALES: tuple[Scale, ...] = (STT_WER, STT_FINALIZE, STT_RTF, TTS_UTMOS, TTS_FIRST_AUDIO, TTS_RTF)
+
+REFERENCE_HARDWARE = "MacBook Pro, Apple M1 Max, 64 GB"
+"""The Mac every engine is measured on: the model catalogue's ratings come
+from its results (a result's ``hardware``)."""
+
+
+def rated(kind: Literal["stt", "tts"], metrics: Mapping[str, Any]) -> list[tuple[Scale, float]]:
+    """Each scale of ``kind`` with the number it rates in a benchmark
+    result's ``metrics``, as the result file holds them; a number that was
+    not measured (null) is left out. A field missing from ``metrics`` is a
+    ValueError: skipping a speed scale would quietly raise the rating."""
+    pairs = []
+    for scale in SCALES:
+        if scale.kind != kind:
+            continue
+        value: Any = metrics
+        for key in scale.metric.split("."):
+            if not isinstance(value, Mapping) or key not in value:
+                raise ValueError(f"{scale.metric}: missing from metrics")
+            value = value[key]
+        if value is not None:
+            pairs.append((scale, float(value)))
+    return pairs
 
 
 @dataclass(frozen=True)

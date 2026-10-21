@@ -190,7 +190,8 @@ extension FakeModelState {
     /// One model in each state the rows show, matching `FakeState.sample`'s engines and
     /// settings: Parakeet and Kokoro downloaded and in use (Kokoro with an old version
     /// cached), Soprano with only an old version, Phonon's 31m not downloaded and its gated
-    /// 40m failing without a token, and two plugin engines with nothing to manage.
+    /// 40m failing without a token, and two plugin engines with nothing to manage. Ratings,
+    /// notes and the Recommended badge as the catalogue has them; the 40m is not rated.
     public static var sample: FakeModelState {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var state = FakeModelState(
@@ -203,7 +204,9 @@ extension FakeModelState {
                             CatalogueModel(
                                 id: "mlx-community/parakeet-tdt-0.6b-v3", license: "CC-BY-4.0",
                                 downloadBytes: 2_508_532_829, onDiskBytes: 2_509_044_141, downloaded: true,
-                                refs: ["main"])
+                                refs: ["main"], quality: 5, speed: 5,
+                                note: "The default: accurate and fast, English and 24 European languages",
+                                recommended: true)
                         ]),
                     ModelEngine(name: "fake", label: "Fake", kind: "stt", models: []),
                     ModelEngine(
@@ -212,7 +215,10 @@ extension FakeModelState {
                             CatalogueModel(
                                 id: "mlx-community/Kokoro-82M-bf16", license: "Apache-2.0",
                                 downloadBytes: 355_322_783, onDiskBytes: 389_410_807, downloaded: true,
-                                previous: [.init(revision: "0f1e2d3", bytes: 341_000_000)], refs: ["main"])
+                                previous: [.init(revision: "0f1e2d3", bytes: 341_000_000)], refs: ["main"],
+                                quality: 5, speed: 5,
+                                note: "The default: natural and fast, 28 American and British English voices",
+                                recommended: true)
                         ]),
                     ModelEngine(
                         name: "soprano", label: "Soprano", kind: "tts", voices: ["default"],
@@ -220,17 +226,20 @@ extension FakeModelState {
                             CatalogueModel(
                                 id: "mlx-community/Soprano-80M-bf16", license: "Apache-2.0",
                                 downloadBytes: 220_642_837, downloaded: false,
-                                previous: [.init(revision: "4c5b6a7", bytes: 219_000_000)])
+                                previous: [.init(revision: "4c5b6a7", bytes: 219_000_000)], quality: 4, speed: 5,
+                                note: "One expressive English voice; each reading of a text differs a little")
                         ]),
                     ModelEngine(
                         name: "phonon", label: "Phonon", kind: "tts", voices: ["default"],
                         models: [
                             CatalogueModel(
                                 id: "gradium/phonon-31m-en", license: "Apache-2.0", downloadBytes: 65_049_306,
-                                downloaded: false),
+                                downloaded: false, quality: 5, speed: 5,
+                                note: "Runs on the CPU, leaving the GPU to speech to text; 38 English voices"),
                             CatalogueModel(
                                 id: "gradium/phonon-40m-en", license: "CC-BY-NC-4.0", gated: true,
-                                downloadBytes: 75_090_522, downloaded: false),
+                                downloadBytes: 75_090_522, downloaded: false,
+                                note: "The larger English model, for non-commercial use; not benchmarked yet"),
                         ],
                         shared: [
                             CatalogueModel(

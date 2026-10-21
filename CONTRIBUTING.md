@@ -240,6 +240,15 @@ changed the document, take either side and run
 `uv run python scripts/bench_engine.py render`; a test fails while the
 document and the result files differ.
 
+Then rate each model in the catalogue (`src/voiced/models/catalogue.py`, next
+section): `quality` and `speed` as its row on the reference Mac (MacBook Pro,
+Apple M1 Max, 64 GB, the one every engine is measured on) rates them, and a
+`note` of at most 80 characters on what the model is for. A model without a
+row on that Mac keeps `quality` and `speed` at None until it is measured
+there. `tests/core/test_models.py` reads the result files and fails, with the
+ratings to set and the command that measures the model, while the catalogue
+and the rows disagree.
+
 ## Adding or moving a model
 
 The models voiced runs are listed by hand in `CATALOGUE` in
@@ -264,7 +273,10 @@ download), and keeps a replaced revision in `previous`, so uninstall still
 deletes what an earlier release downloaded. A gated model needs a token
 that has accepted its terms. `tests/core/test_models.py` fails, naming the
 command, until the catalogue and the lock agree. Then run the engine's
-model tests (`VOICED_MODEL_TESTS=1`) against the new pin.
+model tests (`VOICED_MODEL_TESTS=1`) against the new pin. Each model also
+has `quality`, `speed` and `note`, set as "Adding an engine" says; a new
+revision is a new model to the benchmarks, so measure it again and update
+its ratings.
 
 ## Cutting a release
 

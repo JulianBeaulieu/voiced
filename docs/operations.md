@@ -126,7 +126,10 @@ downloaded while its service runs is loaded by `voiced restart <service>`.
           "gated": false, "revision": "8c64b55e...", "download_bytes": 65049306,
           "on_disk_bytes": 65049306, "downloaded": true,
           "previous": [{"revision": "...", "bytes": 64000000}],
-          "refs": ["main"], "in_use": true
+          "refs": ["main"], "in_use": true,
+          "quality": 5, "speed": 5,
+          "note": "Runs on the CPU, leaving the GPU to speech to text; 38 English voices",
+          "recommended": false
         }
       ],
       "shared": [{"id": "gradium/phonon-voices", "shared": true, "...": "as in models"}]
@@ -141,6 +144,11 @@ are folders of one repository. `downloaded` means every locked file is in
 the snapshot at the pin;
 `previous` lists the older pinned revisions in the cache with their size;
 `refs` the branches pointing at the pin; `in_use` follows the config file.
+`quality` and `speed` are 1 to 5, from the model's benchmark on the
+reference Mac ([benchmarks.md](benchmarks.md), ADR 0024), or null when it
+has not been measured; `note` is one line on what the model is for, possibly
+empty; `recommended` is always present: true on each default engine's
+first model (what a new install runs), false otherwise.
 `shared` entries have the same fields as `models`. `downloaded` also checks
 each file's size against the lock, so a truncated file reads as missing.
 `on_disk_bytes` is the whole cached revision: models that are folders of

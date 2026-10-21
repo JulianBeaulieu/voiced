@@ -63,6 +63,51 @@ def test_list_says_what_is_downloaded_in_use_and_old(settings: Settings, model_c
     assert view["total_bytes"] == kokoro["on_disk_bytes"] + rows[P31]["on_disk_bytes"]
 
 
+def test_list_carries_the_ratings_notes_and_the_recommended_defaults(
+    settings: Settings, model_cache: Path
+) -> None:
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    rows = by_repo(json.loads(out[0]))
+    p31 = next(m for m in models.catalogued() if m.id == P31)
+    assert (rows[P31]["quality"], rows[P31]["speed"], rows[P31]["note"]) == (
+        p31.quality,
+        p31.speed,
+        p31.note,
+    )
+    assert rows[P40]["quality"] is None and rows[P40]["speed"] is None  # not measured
+    assert rows[VOICES]["note"] == ""
+    recommended = sorted(i for i, row in rows.items() if row["recommended"])
+    assert recommended == sorted(m.id for m in models.default_models())
+    assert KOKORO in recommended and P31 not in recommended
+    out.clear()
+    cli_models.cmd_list(settings, out.append, as_json=False)
+    lines = out[0].splitlines()
+    assert lines[0].split()[3:5] == ["QUALITY", "SPEED"]
+    assert next(line for line in lines if P40 in line).split()[3:5] == ["-", "-"]
+    assert next(line for line in lines if P31 in line).split()[3:5] == [
+        f"{p31.quality}/5",
+        f"{p31.speed}/5",
+    ]
+
+
+def test_the_documented_list_has_the_fields_the_command_prints(
+    settings: Settings, model_cache: Path
+) -> None:
+    """docs/operations.md's example, which the app's fixture test copies,
+    names every field of an engine and a model, and no other."""
+    doc = (Path(__file__).parents[2] / "docs" / "operations.md").read_text()
+    block = doc.split("`voiced models list --json`, which the menu bar app reads:", 1)[1]
+    example = json.loads(block.split("```json", 1)[1].split("```", 1)[0])
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    view = json.loads(out[0])
+    assert example.keys() == view.keys()
+    engine = next(e for e in view["engines"] if e["models"])
+    assert example["engines"][0].keys() == engine.keys()
+    assert example["engines"][0]["models"][0].keys() == engine["models"][0].keys()
+
+
 def test_an_older_locked_revision_is_an_update(
     settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

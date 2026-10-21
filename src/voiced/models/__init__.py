@@ -71,6 +71,7 @@ from voiced.models.lockfile import (
 from voiced.models.lookup import (
     catalogued,
     default_model,
+    default_models,
     engine,
     find,
     is_shared,
@@ -92,6 +93,7 @@ __all__ = [
     "catalogued",
     "classify",
     "default_model",
+    "default_models",
     "delete_revisions",
     "engine",
     "fetch",

@@ -76,6 +76,15 @@ struct ModelRowView: View {
                                 Text(model.license).font(.caption).foregroundStyle(.secondary)
                             }
                         }
+                        if row.isRecommended {
+                            RecommendedBadge()
+                        }
+                    }
+                    if !row.ratings.isEmpty {
+                        RatingBars(ratings: row.ratings)
+                    }
+                    if let summary = row.summary {
+                        Text(summary).font(.caption).foregroundStyle(.secondary)
                     }
                     Text(([row.sizeLine, row.stateLabel].compactMap { $0 }).joined(separator: " · "))
                         .font(.caption)
@@ -145,6 +154,47 @@ struct ModelRowView: View {
             }
         }
         .controlSize(.small)
+    }
+}
+
+/// The default models' badge, beside the name.
+struct RecommendedBadge: View {
+    var body: some View {
+        Text("Recommended")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+    }
+}
+
+/// Quality and Speed as five-step bars, linking to the benchmarks they come from.
+struct RatingBars: View {
+    let ratings: [ModelRow.Rating]
+
+    var body: some View {
+        Link(destination: ModelRow.benchmarks) {
+            HStack(spacing: 12) {
+                ForEach(ratings, id: \.label) { rating in
+                    HStack(spacing: 4) {
+                        Text(rating.label).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 2) {
+                            ForEach(1...5, id: \.self) { step in
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(step <= rating.value ? Color.accentColor : Color.secondary.opacity(0.25))
+                                    .frame(width: 10, height: 5)
+                            }
+                        }
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(rating.label) \(rating.value) of 5")
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .help(ModelRow.ratingsHelp)
+        .accessibilityHint("Opens the benchmarks on GitHub")
     }
 }
 

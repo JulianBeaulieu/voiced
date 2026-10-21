@@ -100,6 +100,7 @@ def _model_view(
     cached: list[CachedRevision],
     hub_path: Path,
     used: set[str],
+    recommended: set[str],
     *,
     shared: bool,
 ) -> dict[str, Any]:
@@ -123,6 +124,10 @@ def _model_view(
         ],
         "refs": list(pinned.refs) if pinned is not None else [],
         "in_use": model.id in used,
+        "quality": model.quality,
+        "speed": model.speed,
+        "note": model.note,
+        "recommended": model.id in recommended,
     }
 
 
@@ -134,11 +139,14 @@ def listing(settings: Settings) -> dict[str, Any]:
     installed = {(kind, e["name"]): e for kind, entries in engines_list().items() for e in entries}
     scan = models.cached_revisions(hub_path, {m.repo for m in models.catalogued()})
     used = in_use(settings)
+    defaults = {m.id for m in models.default_models()}
     lock = models.lock()
     engines: list[dict[str, Any]] = []
     for engine in models.CATALOGUE:
         found = installed.pop((engine.kind, engine.name), None)
-        view = functools.partial(_model_view, cached=scan.revisions, hub_path=hub_path, used=used)
+        view = functools.partial(
+            _model_view, cached=scan.revisions, hub_path=hub_path, used=used, recommended=defaults
+        )
         engines.append(
             {
                 "name": engine.name,
@@ -184,6 +192,10 @@ def _state(model: dict[str, Any]) -> str:
     return state + ("; gated" if model["gated"] and not model["downloaded"] else "")
 
 
+def _rating(n: int | None) -> str:
+    return "-" if n is None else f"{n}/5"
+
+
 def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
     from voiced.table import render_table
 
@@ -202,11 +214,13 @@ def cmd_list(settings: Settings, echo: Echo, *, as_json: bool) -> int:
                     engine["name"],
                     name,
                     model["license"],
+                    _rating(model["quality"]),
+                    _rating(model["speed"]),
                     f"{size_text(size)} {where}",
                     _state(model),
                 )
             )
-    echo(render_table(("ENGINE", "MODEL", "LICENSE", "SIZE", "STATE"), rows))
+    echo(render_table(("ENGINE", "MODEL", "LICENSE", "QUALITY", "SPEED", "SIZE", "STATE"), rows))
     echo("")
     echo(f"voiced uses {size_text(view['total_bytes'])} in {view['cache']}.")
     echo("This folder is shared with other apps; voiced deletes only its own models.")

@@ -485,6 +485,10 @@ text above:
   carries no expected freed size. Its notes follow the CLI's wording.
 - "Update available" offers "Update (size)", which is Download; a plugin
   engine without catalogued models has one row with Use only.
+- Under the name, each row shows ADR 0024's ratings: a five-step Quality
+  bar and a Speed bar (none for a model not measured), the catalogue's note
+  and a Recommended badge on the default models, from `voiced models list
+  --json`'s `quality`, `speed`, `note` and `recommended`.
 - `token_missing` and `gated_terms` show the gated row's `hf auth login`
   text with the model card; `token_invalid` asks to log in again.
 - A model download has no stall timeout, unlike the installer's: the row
