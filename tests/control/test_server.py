@@ -341,18 +341,23 @@ async def stuck_client(server: ControlServer, config_file: Path, requests: int =
 async def test_a_stuck_client_does_not_hold_up_the_others(
     server: ControlServer, config_file: Path
 ) -> None:
+    """Another client is answered, and a status event to both is queued,
+    while the stuck client's replies still wait. A server that waited on the
+    stuck client's write as long as its sender does, up to the write timeout,
+    could only go on once that write ended: it never completes, so it would
+    end by dropping the client. A shorter wait that keeps the client passes."""
     stuck = await stuck_client(server, config_file)
+    (stuck_state,) = server.clients
+    assert stuck_state.queued_bytes > 0
     good = await Conn.open(server.path)
     await good.recv()
-    loop = asyncio.get_running_loop()
     for i, (op, args) in enumerate(
         [("settings.set", {"zeroconf": False}), ("settings.get", {}), ("status", {})]
     ):
-        started = loop.time()
         await good.send(protocol.encode({"id": 100 + i, "op": op, "args": args}))
-        assert (await good.answer(100 + i))["ok"] is True
-        assert loop.time() - started < 0.1, op
-    await server.poll_once()  # a status event to both: does not wait for the stuck one
+        assert (await good.answer(100 + i))["ok"] is True, op
+    await server.poll_once()  # queues a status event for both
+    assert stuck_state in server.clients and stuck_state.queued_bytes > 0
     await good.close()
     stuck.writer.transport.abort()
 
