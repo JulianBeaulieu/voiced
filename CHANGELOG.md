@@ -6,39 +6,51 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.3.0] - 2026-10-21
+
+Two engines for more languages, each an opt-in download: Whisper for speech to
+text in 100 languages and Marvis for text to speech in French and German as
+well as English. The app's install no longer gives up on a model download
+that is still running. The defaults stay Parakeet and Kokoro.
+
 ### Added
 
-- Marvis text-to-speech engine (Apache-2.0; its Mimi codec CC-BY-4.0), on
-  the GPU, with two English voices, one French and one German, streamed
-  80 ms at a time: `engine = "marvis"`, `model =
-  "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit"` (or the 250M),
-  `default_voice = "conversational_a"`; add `"fr"` and `"de"` to
-  `tts.languages` for the other two. Opt-in: a download of about 850 MB
-  (the 250M, 1.06 GB); first audio about 90 ms; 1.2 GB, 3.04 GB beside
-  Parakeet, just over the 3 GB budget for both services. See ADR 0031.
 - Whisper large-v3-turbo speech-to-text engine (MIT), for languages:
   `engine = "whisper"`, `model = "mlx-community/whisper-large-v3-turbo-asr-8bit"`
   or `-asr-fp16`. 100 languages, detected when the request names none and
-  reported as BCP-47 tags, with segments timed by word timestamps. It does
-  not stream: a live stream is transcribed after the speaker stops, 524 ms
-  median and 542 ms worst later against 50 and 150 ms (about 0.9 s without
-  a language hint), without partials, one stream at a time. While it
-  finalizes, Kokoro's first audio can wait up to 542 ms, against 200 ms.
-  Batch takes about 1 s for 10 s of audio, against 300 ms. Only speech
-  reaches the model: silence and noise are an empty transcript rather than
-  Whisper's "Thank you.", also between sentences in a long recording.
+  reported as BCP-47 tags; uploads get segments timed by word timestamps.
+  A 0.87 GB download. It does not stream: a live stream is transcribed
+  after the speaker stops, without partials, one stream at a time, 524 ms
+  median and 542 ms worst later, against Parakeet's 50 and 150 ms (about
+  1 s without a language hint), so Parakeet stays the engine for Home
+  Assistant and push-to-talk. While it finalizes, Kokoro's first audio can
+  wait 542 ms at worst on short turns, against 200 ms, and longer after
+  long continuous speech. Uploads take about 1 s for 10 s of audio,
+  against 300 ms. Silence and room noise give an empty transcript rather
+  than Whisper's "Thank you.", also between sentences in a long recording.
+- Marvis text-to-speech engine (Apache-2.0; its Mimi audio codec
+  CC-BY-4.0), for French and German voices under a permissive licence:
+  `engine = "marvis"`, `model = "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit"`
+  or the 250M. Four voices, `conversational_a` and `conversational_b` in
+  English, `conversational_fr` and `conversational_de`; add `"fr"` and
+  `"de"` to `tts.languages` for the other two. For English, Kokoro still
+  sounds more natural. A download of about 0.85 GB (the 250M, 1.06 GB). It
+  streams every 80 ms of audio on the GPU, so first audio takes about
+  90 ms, as with Kokoro. The tts service holds about 1.2 GB, 3.04 GB with
+  Parakeet, just over voiced's 3 GB budget for both services. `speed` is
+  ignored. A few sentences in a hundred end with a few seconds of extra
+  sound, which voiced cuts at a bound set by the sentence's length.
 
 ### Fixed
 
-- The app's install no longer mistakes a running model download for a
-  stalled one. Under hf_xet, Hugging Face's download backend, the bytes
-  written to disk do not grow until a file is nearly fetched, and progress
-  counted only those, so a large file such as Parakeet's 2.5 GB was stopped
-  after 60 seconds with "The download stalled" on an ordinary connection,
-  attempt after attempt. Progress now follows the bytes as they arrive,
-  updated four times a second, also while a truncated file is fetched
-  again. A download that does stall names its model and how far it got
-  ("stalled at 1.25 GB of 2.51 GB").
+- Installing the menu bar app no longer stops a model download that is
+  still running with "The download stalled". Progress counted only the
+  bytes written to disk, which under hf_xet, Hugging Face's download
+  backend, do not grow until a file is nearly fetched; for a large file
+  such as Parakeet's 2.5 GB, the install gave up after 60 seconds on an
+  ordinary connection, attempt after attempt. Progress now follows the
+  bytes as they arrive. A download that does stall names its model and
+  how far it got ("stalled at 1.25 GB of 2.51 GB").
 
 ## [0.2.0] - 2026-10-21
 
@@ -598,6 +610,7 @@ bar app or the terminal. The defaults stay Parakeet and Kokoro.
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.3.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.3.0
 [0.2.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.2.0
 [0.1.1]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.1
 [0.1.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.0

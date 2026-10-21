@@ -7,7 +7,8 @@ release before you report; the fix will land there too.
 
 | Version | Supported |
 |---|---|
-| 0.2.x | yes |
+| 0.3.x | yes |
+| 0.2.x | no |
 | 0.1.x | no |
 | older | no |
 

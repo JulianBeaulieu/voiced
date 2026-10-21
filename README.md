@@ -17,7 +17,7 @@ for local speech services.
 
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
-voiced 0.2.0 is the current release. It transcribes with Parakeet TDT 0.6B
+voiced 0.3.0 is the current release. It transcribes with Parakeet TDT 0.6B
 v3 and speaks with Kokoro-82M. Other models are a download away, from the
 menu bar app or `voiced models download`: Qwen3-ASR for files and languages
 beyond Parakeet's, the streaming Nemotron ASR, Moonshine on the CPU, and
@@ -738,8 +738,8 @@ Logs live under `~/Library/Logs/voiced/`. More in
 ## Roadmap
 
 The defaults stay Parakeet and Kokoro, English first; other languages come
-with the opt-in engines (Qwen3-ASR, Nemotron, OmniVoice). More engines
-(Whisper, Piper and others) are plugins, not forks; see
+with the opt-in engines (Qwen3-ASR, Nemotron, Whisper, OmniVoice, Marvis).
+More engines (Piper and others) are plugins, not forks; see
 [Adding an engine](docs/architecture.md#adding-an-engine). Requests go in the
 [issue tracker](https://github.com/JulianBeaulieu/voiced/issues).
 
