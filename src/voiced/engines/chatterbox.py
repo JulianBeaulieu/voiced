@@ -85,6 +85,8 @@ REPETITION_PENALTY = 1.2
 CFM_STEPS = 2
 """mlx-audio's sampling and S3Gen settings for Turbo."""
 
+_NOTHING: NDArray[np.float32] = np.zeros(0, dtype=np.float32)
+
 Render = Callable[[list[int], int, bool], tuple[NDArray[np.float32], int]]
 """``(tokens, first sample wanted, final) -> (samples from there, total)``."""
 
@@ -101,7 +103,12 @@ def speak(
     :data:`CHUNK_TOKENS` more, then, once ``steps`` ends, a final one with
     :data:`SILENCE_TOKENS` of ``silence`` appended. ``wait`` runs before every
     step and every render, each a GPU call. Where renders join they are
-    crossfaded (:class:`_Joins`)."""
+    crossfaded (:class:`_Joins`).
+
+    A step that renders nothing yields an empty piece, which the sentence
+    loop skips: each ``next()`` is then one GPU call, so a client that hangs
+    up frees the slot after the token in flight, not at the next render
+    (ADR 0005)."""
     tokens: list[int] = []
     joins = _Joins()
     render_at = FIRST_TOKENS
@@ -111,12 +118,12 @@ def speak(
         if new is None:
             break
         tokens.extend(new)
-        if len(tokens) >= render_at:
-            wait()
-            piece = joins.emit(*render(tokens, joins.sent, False), final=False)
-            render_at = len(tokens) + CHUNK_TOKENS
-            if piece.size:
-                yield piece
+        if len(tokens) < render_at:
+            yield _NOTHING
+            continue
+        wait()
+        yield joins.emit(*render(tokens, joins.sent, False), final=False)
+        render_at = len(tokens) + CHUNK_TOKENS
     if tokens:
         wait()
         final_tokens = [*tokens, *[silence] * SILENCE_TOKENS]

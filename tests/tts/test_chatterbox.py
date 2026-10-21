@@ -127,7 +127,10 @@ class _Run:
         self.log.append("wait")
 
     def pieces(self) -> list[NDArray[np.float32]]:
-        return list(speak(self.steps(), self.render, self.wait, SILENCE))
+        """The pieces with audio; ``yields`` counts every one."""
+        out = list(speak(self.steps(), self.render, self.wait, SILENCE))
+        self.yields = len(out)
+        return [p for p in out if p.size]
 
 
 def test_renders_the_first_tokens_early_then_in_larger_chunks() -> None:
@@ -168,6 +171,19 @@ def test_waits_for_the_stt_before_every_gpu_call() -> None:
     for i, call in enumerate(run.log):
         if call != "wait":
             assert run.log[i - 1] == "wait", run.log
+
+
+def test_every_step_is_its_own_next_so_a_hang_up_stops_at_the_token() -> None:
+    """One yield per token or render: the sentence loop's hang-up check
+    (ADR 0005) then runs after every GPU call, not only at renders."""
+    run = _Run(FIRST_TOKENS + 3)
+    run.pieces()
+    assert run.yields == FIRST_TOKENS + 3 + 1  # the tokens, the final render
+    stepped = _Run(FIRST_TOKENS + CHUNK_TOKENS)
+    pieces = speak(stepped.steps(), stepped.render, stepped.wait, SILENCE)
+    next(pieces)
+    pieces.close()
+    assert stepped.log.count("step") == 1 and "render" not in stepped.log
 
 
 def test_the_final_render_adds_silence_tokens() -> None:
