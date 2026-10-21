@@ -11,6 +11,6 @@ the HTTP and Wyoming layers can all import them.
 
 from voiced.text.language import primary_subtag
 from voiced.text.normalize import normalize
-from voiced.text.sentences import split_sentences
+from voiced.text.sentences import collapse_whitespace, split_sentences
 
-__all__ = ["normalize", "primary_subtag", "split_sentences"]
+__all__ = ["collapse_whitespace", "normalize", "primary_subtag", "split_sentences"]

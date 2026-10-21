@@ -402,3 +402,15 @@ def tts_chatterbox_service(e2e_tmp: Path) -> Iterator[LiveService]:
     service = start_service("tts", settings)
     yield service
     service.stop()
+
+
+@pytest.fixture(scope="package")
+def stt_qwen3_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "stt",
+        e2e_tmp / "qwen3-asr",
+        **{"engine": '"qwen3-asr"', "model": '"mlx-community/Qwen3-ASR-0.6B-8bit"'},
+    )
+    service = start_service("stt", settings)
+    yield service
+    service.stop()

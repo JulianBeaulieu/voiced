@@ -43,7 +43,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # Real inference engines. Apple Silicon only; not installed in CI.
-stt = ["parakeet-mlx>=0.5,<0.6"]
+# mlx-audio, at the tts extra's range, runs Qwen3-ASR (ADR 0027), which relies on
+# its internals: split_audio_into_chunks from mlx_audio.stt.models.qwen3_asr.qwen3_asr,
+# generate(chunk_duration=inf, max_tokens=) and result.segments[0]["language"], and
+# the aligner's get_supported_languages, items and aligner_processor.encode_timestamp.
+stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.8,<0.5.10"]
 # mlx-audio is pinned to the releases the engines were checked against: Kokoro
 # relies on its internals (load_voice_tensor, model(..., return_output=True),
 # the residual blocks istftnet.AdainResBlk1d and AdaINResBlock1 it wraps for
@@ -98,6 +102,7 @@ voiced = "voiced.entry:main"
 [project.entry-points."voiced.stt_engines"]
 fake = "voiced.testing.fakes:FakeSTTEngine"
 parakeet = "voiced.engines.parakeet:ParakeetEngine"
+qwen3-asr = "voiced.engines.qwen3_asr:Qwen3ASREngine"
 
 [project.entry-points."voiced.tts_engines"]
 fake = "voiced.testing.fakes:FakeTTSEngine"

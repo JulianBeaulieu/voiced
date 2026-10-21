@@ -24,6 +24,7 @@ import pytest
 from numpy.typing import NDArray
 
 from tests.stt.conftest import word_accuracy, words
+from voiced.audio import SILENCE_FLOOR, check_samples, is_silent
 from voiced.config import STT_STREAMS
 from voiced.engines import parakeet
 from voiced.engines.base import (
@@ -42,12 +43,9 @@ from voiced.engines.parakeet import (
     PARAKEET_V3_LANGUAGES,
     PASS_S,
     PRE_ROLL_S,
-    SILENCE_FLOOR,
     URGENT_BACKLOG_S,
     ParakeetEngine,
     ParakeetStreamSession,
-    _check_samples,
-    _is_silent,
     _Library,
     _Planner,
     _Rank,
@@ -194,27 +192,27 @@ async def test_methods_before_load_raise() -> None:
 
 
 def test_check_samples_rejects_wrong_shapes_types_and_values() -> None:
-    assert _check_samples(np.zeros(10, dtype=np.float64)).dtype == np.float32
+    assert check_samples(np.zeros(10, dtype=np.float64)).dtype == np.float32
     with pytest.raises(EngineError):
-        _check_samples(np.zeros((10, 2), dtype=np.float32))
+        check_samples(np.zeros((10, 2), dtype=np.float32))
     with pytest.raises(EngineError):
-        _check_samples(np.zeros(10, dtype=np.int16))
+        check_samples(np.zeros(10, dtype=np.int16))
     with pytest.raises(EngineError):
-        _check_samples(np.array([0.0, np.nan], dtype=np.float32))
+        check_samples(np.array([0.0, np.nan], dtype=np.float32))
     with pytest.raises(EngineError):
-        _check_samples(np.array([0.0, np.inf], dtype=np.float32))
+        check_samples(np.array([0.0, np.inf], dtype=np.float32))
 
 
 def test_silence_gate_uses_the_loudest_frame() -> None:
     quiet_speech = speech_like(0.5, level=0.005)  # about -46 dBFS
-    assert not _is_silent(quiet_speech)
-    assert _is_silent(silence(1.0))
-    assert _is_silent(speech_like(1.0, level=SILENCE_FLOOR / 2))
-    assert _is_silent(np.zeros(0, dtype=np.float32))
+    assert not is_silent(quiet_speech)
+    assert is_silent(silence(1.0))
+    assert is_silent(speech_like(1.0, level=SILENCE_FLOOR / 2))
+    assert is_silent(np.zeros(0, dtype=np.float32))
     # two minutes of silence do not average half a second of quiet speech away
-    assert not _is_silent(np.concatenate([silence(120.0), quiet_speech]))
+    assert not is_silent(np.concatenate([silence(120.0), quiet_speech]))
     # a partial trailing frame counts too
-    assert not _is_silent(np.concatenate([silence(1.0), speech_like(0.01)]))
+    assert not is_silent(np.concatenate([silence(1.0), speech_like(0.01)]))
 
 
 def test_to_transcript_normalizes_and_clamps() -> None:

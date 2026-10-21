@@ -70,6 +70,13 @@ uses [Semantic Versioning](https://semver.org/).
   rendered. Tags such as `[laugh]` or `[sigh]` in the text are performed,
   not read. `mlx-community/chatterbox-turbo-fp16` works as `model` too.
   Both are in the model catalogue (`voiced models download <model>`).
+- Qwen3-ASR speech-to-text engine, opt-in: `engine = "qwen3-asr"`,
+  `model = "mlx-community/Qwen3-ASR-0.6B-8bit"` or the 1.7B (Apache-2.0).
+  It is the engine for files and languages: 30 of them, detected when the
+  request names none and reported as BCP-47, with sentence timestamps from
+  Qwen3-ForcedAligner in 11. It does not stream: a live stream is
+  transcribed when it ends, without partials. `voiced models download`
+  fetches a model with the aligner.
 
 ### Changed
 

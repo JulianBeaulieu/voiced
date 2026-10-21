@@ -239,6 +239,25 @@ def test_chatterbox_audio_says_the_words(
     assert word_accuracy(heard, SENTENCE) >= 0.8, heard
 
 
+def test_qwen3_asr_subtitles_kokoro_audio(
+    tts_kokoro_service: LiveService, stt_qwen3_service: LiveService
+) -> None:
+    """Sentence cues timed by the forced aligner, inside the audio."""
+    text = f"{SENTENCE} What is the weather like tomorrow?"
+    audio = (
+        tts_kokoro_service.openai_client()
+        .audio.speech.create(model="voiced", voice="af_heart", input=text, response_format="wav")
+        .read()
+    )
+    srt = stt_qwen3_service.openai_client().audio.transcriptions.create(
+        model="voiced", file=("speech.wav", audio, "audio/wav"), response_format="srt"
+    )
+    cues = [block.splitlines() for block in str(srt).strip().split("\n\n")]
+    assert len(cues) == 2, srt
+    assert word_accuracy(" ".join(cue[2] for cue in cues), text) >= 0.9, srt
+    assert all(re.fullmatch(r"\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}", c[1]) for c in cues)
+
+
 # --- discovery --------------------------------------------------------------
 
 

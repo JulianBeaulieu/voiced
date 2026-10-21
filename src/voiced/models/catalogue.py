@@ -115,6 +115,9 @@ POCKET_VOICE_FILES = ("alba", "marius", "javert", "fantine", "eponine", "azelma"
 loads, the six whose recordings allow commercial use (``voiced.engines.pocket``
 names them; a test keeps the two in step)."""
 
+QWEN3_ASR = ("*.json", "*.safetensors", "merges.txt")
+"""What mlx-audio loads from a Qwen3-ASR or Qwen3-ForcedAligner checkpoint."""
+
 CATALOGUE: tuple[Engine, ...] = (
     Engine(
         "parakeet",
@@ -238,6 +241,31 @@ CATALOGUE: tuple[Engine, ...] = (
                 note="Chatterbox Turbo at full precision: three times the memory of 4-bit",
             ),
         ),
+    ),
+    Engine(
+        "qwen3-asr",
+        "stt",
+        # The configs, the weights and the tokenizer's merges; not the README.
+        models=(
+            Model(
+                "mlx-community/Qwen3-ASR-0.6B-8bit",
+                "Apache-2.0",
+                QWEN3_ASR,
+                quality=5,
+                speed=3,
+                note="For files, with subtitles, and 30 languages; no live partials",
+            ),
+            Model(
+                "mlx-community/Qwen3-ASR-1.7B-8bit",
+                "Apache-2.0",
+                QWEN3_ASR,
+                quality=5,
+                speed=2,
+                note="The more accurate Qwen3-ASR, at about twice the time and memory",
+            ),
+        ),
+        # The forced aligner, for segment times (ADR 0027).
+        shared=(Model("mlx-community/Qwen3-ForcedAligner-0.6B-8bit", "Apache-2.0", QWEN3_ASR),),
     ),
 )
 

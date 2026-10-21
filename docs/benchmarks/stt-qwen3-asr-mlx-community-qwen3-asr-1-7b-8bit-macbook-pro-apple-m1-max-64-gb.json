@@ -1,0 +1,63 @@
+{
+  "kind": "stt",
+  "engine": "qwen3-asr",
+  "model": "mlx-community/Qwen3-ASR-1.7B-8bit",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "621273a+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en",
+    "zh",
+    "yue",
+    "ar",
+    "de",
+    "fr",
+    "es",
+    "pt",
+    "id",
+    "it",
+    "ko",
+    "ru",
+    "th",
+    "vi",
+    "ja",
+    "tr",
+    "hi",
+    "ms",
+    "nl",
+    "sv",
+    "da",
+    "fi",
+    "pl",
+    "cs",
+    "fil",
+    "fa",
+    "el",
+    "ro",
+    "hu",
+    "mk"
+  ],
+  "licence": "Apache-2.0",
+  "size_bytes": 2467859030,
+  "load_s": 2.0,
+  "footprint_bytes": 3953700032,
+  "mlx_load_peak_bytes": 4598821408,
+  "mlx_peak_bytes": 4863555128,
+  "metrics": {
+    "wer_percent": 1.58,
+    "clips": 24,
+    "batch_rtf": 0.0709,
+    "finalize_after_silence": {
+      "median_ms": 314.9,
+      "worst_ms": 354.3,
+      "n": 64
+    },
+    "finalize_at_last_word": {
+      "median_ms": 306.8,
+      "worst_ms": 340.9,
+      "n": 64
+    }
+  }
+}

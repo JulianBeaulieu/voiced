@@ -53,7 +53,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from voiced.audio import VAD_FRAME_SAMPLES as _VAD_FRAME
-from voiced.audio import dbfs_to_amplitude, frame_rms
+from voiced.audio import check_samples, is_silent
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -67,6 +67,7 @@ from voiced.engines.base import (
 )
 from voiced.gpu import stt_turn
 from voiced.models import default_model
+from voiced.text import collapse_whitespace, primary_subtag
 from voiced.threads import ModelThread
 from voiced.vad import Endpointer, EndpointEvent
 
@@ -134,10 +135,6 @@ URGENT_BACKLOG_S = 2 * PASS_S
 on the GPU (ADR 0019). A session that keeps up holds under one pass in the
 planner plus the few chunks that arrive during a call; this is one more pass."""
 WARMUP_S = 1.0
-SILENCE_FLOOR_DBFS = -60.0
-"""Batch only: input with no 32 ms frame above this RMS is silence, nothing to
-transcribe (the model says "Yeah." on near-silent noise)."""
-SILENCE_FLOOR = dbfs_to_amplitude(SILENCE_FLOOR_DBFS)
 BATCH_CHUNK_S = 20.0
 """Batch input longer than this is transcribed in chunks of this length, overlapping
 by :data:`BATCH_OVERLAP_S`. Bounds the MLX peak at about 2.5 GB for any input length
@@ -192,7 +189,7 @@ class ParakeetEngine(STTEngine):
         """``"en-US"`` to ``"en"``; raise :class:`UnsupportedLanguage` if not supported."""
         if language is None:
             return None
-        code = language.strip().lower().replace("_", "-").split("-")[0]
+        code = primary_subtag(language.strip())
         if code not in cls.languages:
             raise UnsupportedLanguage(language)
         return code
@@ -241,9 +238,9 @@ class ParakeetEngine(STTEngine):
         lang = self.normalize_language(language)
         if audio.sample_rate != _SR:
             raise EngineError(f"expected {_SR} Hz audio, got {audio.sample_rate} Hz")
-        samples = _check_samples(audio.samples)
+        samples = check_samples(audio.samples)
         duration = len(samples) / _SR
-        if len(samples) < LIBRARY_MIN_SAMPLES or _is_silent(samples):
+        if len(samples) < LIBRARY_MIN_SAMPLES or is_silent(samples):
             return Transcript(text="", language=lang, duration_s=duration)
         result = await self._thread.run(_generate, model, samples)
         return _to_transcript(result, lang, duration)
@@ -612,7 +609,7 @@ class _LibraryStream:
         finalized = max(0, encoded - CONTEXT_SIZE[1]) * self._subsampling
         self._finalized += [self._to_session(t, base) for t in stream.finalized_tokens[known:]]
         self._draft = [self._to_session(t, base + finalized) for t in stream.draft_tokens]
-        self.text = _normalize_text(self.result().text)
+        self.text = collapse_whitespace(self.result().text)
         self.calls += 1
         log.debug("encoder call %d in %.0f ms", self.calls, (time.perf_counter() - t0) * 1000)
 
@@ -840,7 +837,7 @@ class ParakeetStreamSession(STTStreamSession):
 
     async def add_audio(self, samples: NDArray[np.float32]) -> None:
         self._check_open()
-        arr = _check_samples(samples)
+        arr = check_samples(samples)
         if len(arr) == 0:
             return
         if len(arr) / _SR > MAX_BACKLOG_S:
@@ -1022,30 +1019,10 @@ def _generate(model: Any, samples: NDArray[np.float32]) -> Any:
         mx.clear_cache()
 
 
-def _is_silent(samples: NDArray[np.float32]) -> bool:
-    """True when no 32 ms frame reaches the absolute silence floor."""
-    return float(np.max(frame_rms(samples), initial=0.0)) < SILENCE_FLOOR
-
-
-def _check_samples(samples: object) -> NDArray[np.float32]:
-    arr = np.asarray(samples)
-    if arr.ndim != 1:
-        raise EngineError(f"expected mono 1-D samples, got shape {arr.shape}")
-    if not np.issubdtype(arr.dtype, np.floating):
-        raise EngineError(f"expected float32 samples, got {arr.dtype}")
-    if not np.all(np.isfinite(arr)):
-        raise EngineError("samples must be finite")
-    return np.ascontiguousarray(arr, dtype=np.float32)
-
-
-def _normalize_text(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _to_transcript(result: Any, language: str | None, duration_s: float) -> Transcript:
     segments: list[Segment] = []
     for sentence in result.sentences:
-        text = _normalize_text(sentence.text)
+        text = collapse_whitespace(sentence.text)
         if not text:
             continue
         start = max(0.0, float(sentence.start))
@@ -1055,7 +1032,7 @@ def _to_transcript(result: Any, language: str | None, duration_s: float) -> Tran
             start = min(start, end)
         segments.append(Segment(start=round(start, 3), end=round(end, 3), text=text))
     return Transcript(
-        text=_normalize_text(result.text),
+        text=collapse_whitespace(result.text),
         language=language,
         duration_s=duration_s,
         segments=tuple(segments),
