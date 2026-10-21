@@ -354,22 +354,6 @@ Their language is `en`:
 }
 ```
 
-Marvis, when selected, has four voices, each a reference clip the model
-continues: `conversational_a` (the default) and `conversational_b` in
-English, `conversational_fr` in French and `conversational_de` in German.
-The French and German ones are listed only when `tts.languages` includes
-`fr` or `de`:
-
-```json
-{
-  "object": "list",
-  "data": [
-    {"object": "voice", "id": "conversational_a", "name": "Conversational A", "language": "en", "gender": "female"},
-    {"object": "voice", "id": "conversational_fr", "name": "Conversational", "language": "fr", "gender": "male"}
-  ]
-}
-```
-
 Chatterbox Turbo, when selected, has one voice, `default`, the one the
 model ships with (`"language": "en"`). Text for it may carry tags such as
 `[laugh]`, `[sigh]` or `[whispering]`, which it performs instead of reading:
@@ -402,6 +386,22 @@ language; each is served when its language is in `tts.languages`. With
 Its `/v1/models` entry lists the configured languages the model speaks
 (646 tags on its model card, `apc` for Levantine Arabic) and the licence
 `CC-BY-NC; codec: Boson Higgs Audio 2 Community License`.
+
+Marvis, when selected, has four voices, each a reference clip the model
+continues: `conversational_a` (the default) and `conversational_b` in
+English, `conversational_fr` in French and `conversational_de` in German.
+The French and German ones are listed only when `tts.languages` includes
+`fr` or `de`:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "voice", "id": "conversational_a", "name": "Conversational A", "language": "en", "gender": "female"},
+    {"object": "voice", "id": "conversational_fr", "name": "Conversational FR", "language": "fr", "gender": "male"}
+  ]
+}
+```
 
 ## GET /v1/models
 

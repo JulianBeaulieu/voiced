@@ -562,8 +562,9 @@ leaves for the model to read
 Marvis is a small model of Sesame's CSM design that speaks English, French
 and German on the GPU, streaming each 80 ms of audio as it is made. Choose
 it for French or German voices under Apache-2.0; for English, Kokoro sounds
-more natural and does less work. The tts service holds about 1.4 GB with it,
-3.2 GB together with Parakeet, over voiced's 3 GB budget for both services.
+more natural and does less work. The tts service holds about 1.2 GB with it,
+3.04 GB together with Parakeet, just over voiced's 3 GB budget for both
+services.
 It is opt-in. To use it, download the
 model, its voices and its codec (about 850 MB) and switch to it:
 
@@ -585,8 +586,10 @@ and `conversational_b` in English, `conversational_fr` and
 when its language is in `languages`. Then run `~/.voiced/bin/voiced restart
 tts`. It has no rate control, so `speed` is accepted and ignored. The 250M
 model (`Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit`) works too, but scored no
-better here, takes more memory and its French voice often keeps talking
-past the end of the sentence. The details are in
+better here and takes more memory. Now and then, a few sentences in a
+hundred, the model keeps making sound after a sentence; voiced cuts it at a
+bound set by the sentence's length, so such a sentence ends with a few
+seconds of extra sound. The 250M does this more often in French. The details are in
 [ADR 0031](docs/decisions/0031-tts-marvis.md).
 
 ## Benchmarks
@@ -624,8 +627,8 @@ with 64 GB, each service alone, 2026-10-21:
   **OmniVoice** (opt-in, 646 languages): 797 ms median, 806 ms worst, four
   times the 200 ms target; 2.13 GB footprint, 3.87 GB beside Parakeet, over
   the 3 GB budget.
-  **Marvis 100M** (opt-in, English, French and German): 89 ms median, 90 ms
-  worst; 1.40 GB footprint, 3.20 GB beside Parakeet, over the 3 GB budget
+  **Marvis 100M** (opt-in, English, French and German): 89 ms median, 89 ms
+  worst; 1.23 GB footprint, 3.04 GB beside Parakeet, over the 3 GB budget
   ([ADR 0031](docs/decisions/0031-tts-marvis.md)).
 - **Qwen3-ASR 0.6B** (speech to text, opt-in, for files and languages):
   1.8% word error rate, batch at 0.056 of real time. It does not stream:

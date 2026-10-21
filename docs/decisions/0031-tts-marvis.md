@@ -47,8 +47,8 @@ mlx-audio, already in voiced's pin (0.5.9), runs it as its `sesame` model
 
 The voice clips are four scripted readings (a paragraph about coffee for
 the two English ones, a sentence each for French and German), published in
-the Apache-2.0 repository with no other terms. The card was trained on
-Emilia (CC-BY-NC-4.0 for the data); as for the other engines, voiced takes
+the Apache-2.0 repository with no other terms. The card says the model
+was trained on Emilia (CC-BY-NC-4.0 for the data); as for the other engines, voiced takes
 the weights' own licence. The card asks for consent before cloning a voice;
 voiced offers no cloning. The licence voiced reports for each model is
 `Apache-2.0; codec: CC-BY-4.0`, and the README carries Kyutai's attribution.
@@ -58,9 +58,9 @@ voiced redistributes none of the files: each Mac downloads them.
 
 `marvis` is a TTS engine, `voiced.engines.marvis.MarvisEngine`, a
 `SentenceTTSEngine`, selectable and never the default. What it is for:
-French and German voices under Apache-2.0 at a quality a little below
-Kokoro's, with first audio as fast as Kokoro's. Not for English, where
-Kokoro sounds more natural and finishes a reply ten times sooner.
+French and German voices under Apache-2.0, at a quality a little below
+Kokoro's (rated 4 of 5 against 5). Not for English, where Kokoro sounds
+more natural and does a twelfth of the work for each second of audio.
 
 - **Its own frame loop.** The engine does not call mlx-audio's `generate`;
   `_stream` runs its steps: the voice's transcript and the sentence as one
@@ -77,12 +77,24 @@ Kokoro sounds more natural and finishes a reply ten times sooner.
 - **GPU, behind the STT.** Before every frame it waits while an STT encoder
   call holds the lock (`voiced.gpu.Yielder`, ADR 0019). A frame is about
   40 ms of GPU work: 32 small decoder passes and one Mimi step.
-- **Bounded sentences.** A sentence may run for at most `sentence_bound`'s
-  seconds (0.12 s a character and 1 s more) in frames, and never past the
-  backbone's 2048 positions; at the bound it stops and logs a warning. That
-  is a truncation: what the model would have said after it is not spoken.
-  It exists for the 250M's French voice (below); no sentence of the 100M
-  reached it in testing.
+- **Bounded sentences.** Now and then the model does not sample its end
+  frame and keeps making sound after the sentence (a run-on). A sentence
+  may run for at most `sentence_bound`'s seconds (0.12 s a character and
+  1 s more) in frames; at the bound it stops, fades out its last 10 ms and
+  logs a warning. That is a truncation, and a run-on still plays up to the
+  bound: for a five-word sentence, about 3 s of extra sound. The splitter's
+  300-character sentences keep a sentence well inside the backbone's 2048
+  positions, so that limit is checked, not relied on. No retry: it would
+  double the latency of the sentences that run on and hide the fault.
+- **Run-on rates.** With the 100M, over 20 everyday assistant sentences
+  per language, each read four times: French 1 of 80, German 4 of 80,
+  English 2 of 80 (`conversational_a`); "Le renard brun rapide saute
+  par-dessus le chien paresseux." ran on 1 time in 10 here and 3 in 8 in
+  an earlier run. With the 250M, French ran on 2 of 20 and German 0 of 20,
+  but "Allume les lumières de la cuisine." ran on every time (5 of 5), and
+  mlx-audio's own `generate` does the same (1.4 to 9 s for that sentence).
+  Run-ons cluster on particular sentences rather than on a language, and
+  at a few in a hundred all three languages are served.
 - **One model thread, one sentence at a time.** The attention caches and
   Mimi's decoder state are MLX arrays on the model, kept from frame to
   frame and reset when a sentence starts; the load and every step run on
@@ -95,7 +107,16 @@ Kokoro sounds more natural and finishes a reply ten times sooner.
   and offers no way to name a file, so for the construction the codec
   module's `hf_hub_download` is replaced by one that returns the pinned
   file (and refuses anything else), then restored, as Chatterbox does for
-  its tokenizer (ADR 0029).
+  its tokenizer (ADR 0029). Once every voice is encoded, Mimi's encoder
+  (about 155 MB of float32 weights) is freed: decoding does not use it.
+- **24 kHz, not resampled.** Mimi decodes at 24 kHz, voiced's rate, so the
+  engine checks the model's rate at load and refuses another rather than
+  resampling.
+- **8-bit conversions.** Marvis-AI publishes 4, 6 and 8-bit conversions of
+  each model; voiced pins the 8-bit ones, the closest to the full-precision
+  weights, the size the survey and issue named. The 4 and 6-bit ones were
+  not measured: the weights are 0.45 GB of a 1.2 GB footprint, so they
+  would save little memory, at a cost in quality not checked.
 - **Models pinned.** The catalogue lists the 100M (default) and the 250M
   8-bit conversions (`config.json`, `model.safetensors*`: 452.4 and
   665.5 MB), and two shared models: `Marvis-AI/marvis-tts-250m-v0.2`'s
@@ -103,18 +124,15 @@ Kokoro sounds more natural and finishes a reply ten times sooner.
   tokenizer and English clips, byte for byte, but no French or German
   ones) and Mimi (384.6 MB). Another `Marvis-AI/` id is refused when the
   engine is made (`ModelRefused`).
-- **The 100M is the default model.** It scored better here (UTMOS 4.16
-  against 3.96), its first audio is shorter, it holds 0.2 GB less, and its
-  French voice ends its sentences. The 250M's French voice ran to the
-  bound on every try of a five-word sentence (4 of 4, 5.1 s for about
-  1.8 s of speech), and mlx-audio's own `generate` ran on the same way
-  (1.4 to 9 s for the same sentence); its English and German end normally.
-  The 250M stays in the catalogue, its note saying so.
+- **The 100M is the default model.** It scored better here (UTMOS 4.27
+  against 3.98), its first audio is shorter, it holds 0.2 GB less, and its
+  French runs on less often. The 250M stays in the catalogue, its note
+  saying so.
 - **Voices.** The four clips, in a static table: `conversational_a`
   (female, the default, mlx-audio's too), `conversational_b` (male), both
-  `en`; `conversational_fr` (male, `fr`) and `conversational_de` (male,
-  `de`). The genders are from the clips' pitch (about 180 Hz against 105
-  to 120 Hz). The model continues a clip, so each voice speaks its own
+  `en`; `conversational_fr` (male, `fr`, named Conversational FR) and
+  `conversational_de` (male, `de`, Conversational DE). The genders are
+  from the clips' pitch (about 180 Hz against 105 to 120 Hz). The model continues a clip, so each voice speaks its own
   language; the engine declares `en`, `fr` and `de`, and a voice is served
   when its language is in `tts.languages` (ADR 0023), whose default is
   English only. A sentence without a letter or a digit is skipped.
@@ -130,14 +148,18 @@ model in `docs/benchmarks.md`:
 
 | Model | UTMOS | First audio, median / worst | While STT streams | RTF | Footprint | MLX peak | Rated |
 |---|---|---|---|---|---|---|---|
-| 100M 8-bit | 4.16 | 89 / 99 ms | 76 / 136 ms | 0.493 | 1.39 GB | 2.31 GB | quality 4, speed 3 |
-| 250M 8-bit | 3.96 | 102 / 127 ms | 84 / 139 ms | 0.503 | 1.58 GB | 2.53 GB | quality 3, speed 2 |
+| 100M 8-bit | 4.27 | 89 / 89 ms | 79 / 114 ms | 0.490 | 1.23 GB | 2.31 GB | quality 4, speed 3 |
+| 250M 8-bit | 3.98 | 102 / 139 ms | 92 / 157 ms | 0.496 | 1.45 GB | 2.53 GB | quality 3, speed 3 |
 | Kokoro, for comparison | 4.52 | 94 / 98 ms | 112 / 226 ms | 0.042 | 0.73 GB | 1.86 GB | quality 5, speed 5 |
 
 UTMOS of a sampled model varies from one reading to the next: over 15
 readings (250M, `conversational_a`) single sentences scored 3.4 to 4.4,
-mean 4.05, so the 0.2 between the two models is within that spread. The
-harness's three readings are what the ratings use.
+mean 4.05, so the 0.3 between the two models is within that spread; the
+100M scored 4.16 and 4.27 in two harness runs, the 250M 3.96 and 3.98. The
+harness's three readings are what the ratings use. One harness run of the
+100M, with another process on the GPU, measured a real-time factor of 0.71
+and 191 / 781 ms first audio while STT streamed; it was run again on a
+quiet machine, and the row above is that run.
 
 `scripts/bench.py` with `--extra-tts Marvis100M=URL,conversational_a` and
 the same for the 250M, against `voiced serve stt` (Parakeet), `voiced serve
@@ -148,33 +170,37 @@ first byte, after one warm-up.
 
 | Metric (`bench.py`) | Measured | Target |
 |---|---|---|
-| Marvis 100M first audio | median 89 / p95 90 / worst 90 ms (n=10) | <= 200 ms |
-| Marvis 250M first audio | median 102 / p95 117 / worst 128 ms (n=10) | <= 200 ms |
-| Kokoro first audio, same run | median 96 / p95 99 / worst 101 ms (n=10) | <= 200 ms |
-| Marvis 100M first audio while another client streams to STT | median 74 / p95 115 / worst 120 ms (n=30) | <= 200 ms |
-| Marvis 250M, the same | median 89 / p95 132 / worst 161 ms (n=30) | <= 200 ms |
-| Streaming finalize, 64 ms chunks, 0 ms trailing silence, alone | median 111 / p95 121 / worst 122 ms (n=32) | <= 150 ms worst |
-| The same, Marvis 100M synthesizing | median 109 / p95 120 / worst 121 ms (n=16) | <= 150 ms worst |
-| The same, Marvis 250M synthesizing | median 97 / p95 101 / worst 101 ms (n=16) | <= 150 ms worst |
+| Marvis 100M first audio | median 90 / p95 104 / worst 115 ms (n=10) | <= 200 ms |
+| Marvis 250M first audio | median 103 / p95 118 / worst 129 ms (n=10) | <= 200 ms |
+| Kokoro first audio, same run | median 95 / p95 98 / worst 99 ms (n=10) | <= 200 ms |
+| Marvis 100M first audio while another client streams to STT | median 78 / p95 149 / worst 182 ms (n=30) | <= 200 ms |
+| Marvis 250M, the same | median 92 / p95 122 / worst 123 ms (n=30) | <= 200 ms |
+| Streaming finalize, 64 ms chunks, 0 ms trailing silence, alone | median 114 / p95 122 / worst 122 ms (n=32) | <= 150 ms worst |
+| The same, Marvis 100M synthesizing | median 105 / p95 122 / worst 123 ms (n=16) | <= 150 ms worst |
+| The same, Marvis 250M synthesizing | median 98 / p95 100 / worst 100 ms (n=16) | <= 150 ms worst |
 | The same with 200 ms trailing silence, either Marvis synthesizing | median 1 / worst 1 ms (n=16 each) | <= 150 ms worst |
-| TTS (Marvis 100M) memory after use | footprint 1.40 GB, RSS 1.12 GB, MLX active 948 MB, peak 2306 MB | |
-| TTS (Marvis 250M) memory after use | footprint 1.61 GB, RSS 1.34 GB, MLX active 1159 MB, peak 2518 MB | |
-| STT (Parakeet) memory, same run | footprint 1.80 GB, MLX peak 3385 MB | |
-| STT + TTS (Marvis 100M) footprint, idle after use | 3.20 GB | <= 3 GB |
-| STT + TTS (Marvis 250M) footprint, idle after use | 3.41 GB | <= 3 GB |
-| STT + TTS (Kokoro) footprint, same run | 2.54 GB | <= 3 GB |
+| TTS (Marvis 100M) memory after use | footprint 1.24 GB, RSS 0.98 GB, MLX active 784 MB, peak 2314 MB | |
+| TTS (Marvis 250M) memory after use | footprint 1.43 GB, RSS 1.18 GB, MLX active 995 MB, peak 2526 MB | |
+| STT (Parakeet) memory, same run | footprint 1.80 GB, MLX peak 3258 MB | |
+| STT + TTS (Marvis 100M) footprint, idle after use | 3.04 GB | <= 3 GB |
+| STT + TTS (Marvis 250M) footprint, idle after use | 3.23 GB | <= 3 GB |
+| STT + TTS (Kokoro) footprint, same run | 2.55 GB | <= 3 GB |
+
+Freeing Mimi's encoder after the voices are encoded took the Marvis
+service's footprint from 1.40 to 1.24 GB (100M) and 1.61 to 1.43 GB (250M);
+before it, the pair took 3.20 and 3.41 GB.
 
 The STT keeps its targets while Marvis synthesizes: the engine waits for
 every encoder call, one frame at a time.
 
 ## Known misses and limits
 
-- **Memory.** Beside the STT service, the pair takes 3.20 GB with the 100M,
-  0.2 GB over the 3 GB budget for both services (ADR 0008), and 3.41 GB
-  with the 250M. Neither model meets it; the 100M misses by less, which is
-  one more reason it is the default. A Mac that runs Marvis needs that
-  headroom.
-- Quality: below Kokoro (4.16 against 4.52), rated 4 of 5; in English,
+- **Memory.** Beside the STT service, the pair takes 3.04 GB with the 100M,
+  just over the 3 GB budget for both services (ADR 0008), and 3.23 GB with
+  the 250M. Neither model meets it; the 100M misses by less, which is one
+  more reason it is the default. Most of the rest is Mimi's float32
+  decoder and the buffers of the per-frame passes.
+- Quality: below Kokoro (4.27 against 4.52), rated 4 of 5; in English,
   Kokoro is the better choice.
 - A real-time factor of about 0.5: a reply takes half its length to
   synthesize, against Kokoro's 4%. Streaming keeps it ahead of playback,
@@ -182,15 +208,16 @@ every encoder call, one frame at a time.
   3 of 5.
 - MLX peaks at 2.3 GB in the TTS process while it synthesizes, for 0.45 GB
   of weights: Mimi and the per-frame decoder passes' buffers.
-- The 250M's French voice runs on to the bound; the bound cuts it, so
-  that model's French replies end with up to a few seconds of extra sound.
+- **Run-ons.** A few sentences in a hundred run on to the bound (above),
+  and some sentences do so far more often; the bound cuts them, so such a
+  sentence ends with a few seconds of extra sound.
 - French and German text is normalized only as ADR 0023 does for those
   languages: digits and symbols are left for the model to read.
 - The engine relies on private parts of mlx-audio's `sesame` model, named
   in `pyproject.toml`'s pin comment; a bump of mlx-audio has to re-run the
   model tier.
-- Upstream is quiet (no commit since 2025-08-28): fixes to the model,
-  French in the 250M among them, are not to be expected.
+- Upstream is quiet (no commit since 2025-08-28): fixes to the model, its
+  run-ons among them, are not to be expected.
 - Not measured on the Mac Studio.
 
 ## Consequences

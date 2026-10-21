@@ -58,7 +58,7 @@ def test_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     assert tts["omnivoice"]["voice_labels"]["zh-CN-male"] == "Young adult (Mandarin Chinese, male)"
     assert len(tts["omnivoice"]["languages"]) == 646
     assert tts["marvis"]["voice_languages"]["conversational_de"] == "de"
-    assert tts["marvis"]["voice_labels"]["conversational_fr"] == "Conversational (French, male)"
+    assert tts["marvis"]["voice_labels"]["conversational_fr"] == "Conversational FR (French, male)"
     assert tts["marvis"]["models"] == [
         "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit",
         "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",

@@ -15,22 +15,22 @@
   "licence": "Apache-2.0; codec: CC-BY-4.0",
   "size_bytes": 452419326,
   "load_s": 2.8,
-  "footprint_bytes": 1387598464,
+  "footprint_bytes": 1232081408,
   "mlx_load_peak_bytes": 2314130665,
   "mlx_peak_bytes": 2314130665,
   "metrics": {
     "voice": "conversational_a",
-    "utmos": 4.16,
+    "utmos": 4.27,
     "first_audio": {
-      "median_ms": 89.2,
-      "worst_ms": 99.1,
+      "median_ms": 89.0,
+      "worst_ms": 89.3,
       "n": 10
     },
     "first_audio_while_stt_streams": {
-      "median_ms": 76.1,
-      "worst_ms": 135.6,
+      "median_ms": 79.2,
+      "worst_ms": 114.1,
       "n": 30
     },
-    "rtf": 0.4928
+    "rtf": 0.4899
   }
 }

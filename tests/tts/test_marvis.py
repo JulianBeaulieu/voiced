@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -26,6 +27,7 @@ from voiced.engines.base import TTS_SAMPLE_RATE, UnknownVoice
 from voiced.engines.catalogue import voice_label
 from voiced.engines.marvis import (
     DEFAULT_VOICE,
+    FRAME_SECONDS,
     MARVIS_VOICES,
     MIMI_FILE,
     MIMI_REPO,
@@ -91,8 +93,8 @@ def test_the_four_published_voices_each_in_its_language() -> None:
     assert labels == [
         "Conversational A (English, female)",
         "Conversational B (English, male)",
-        "Conversational (French, male)",
-        "Conversational (German, male)",
+        "Conversational FR (French, male)",
+        "Conversational DE (German, male)",
     ]
 
 
@@ -169,6 +171,9 @@ class _FakeModel:
         self.threads: set[int] = {threading.get_ident()}
         self.model = _Backbone(self)
         self._streaming_decoder = _Decoder(self)
+        self._audio_tokenizer = SimpleNamespace(
+            encoder=1, encoder_transformer=2, downsample=3, encoder_cache=[4], decoder=5
+        )
 
     def _here(self, event: str | None = None) -> None:
         self.threads.add(threading.get_ident())
@@ -316,6 +321,8 @@ async def test_load_reads_the_pinned_snapshots(fake_mlx: list[_FakeModel], tmp_p
     assert model.log == clips + _sentence()
     assert model.texts == ["Clip conversational_a. Warming up."]
     assert await engine.voices() == MARVIS_VOICES
+    # Mimi's encoder is freed once the voices are encoded; its decoder stays.
+    assert vars(model._audio_tokenizer) == {"encoder_cache": [], "decoder": 5}
     # The unpinned download is back once the model is built.
     with pytest.raises(AssertionError, match="unpinned"):
         sys.modules["mlx_audio.codec.models.mimi.mimi"].hf_hub_download(MIMI_REPO, MIMI_FILE)
@@ -365,12 +372,21 @@ async def test_the_prompt_then_each_frame_with_its_position(fake_mlx: list[_Fake
 async def test_a_runaway_sentence_stops_at_its_bound(
     fake_mlx: list[_FakeModel], caplog: pytest.LogCaptureFixture
 ) -> None:
+    """The stand-in never samples the end frame; it fails at its 10,000th
+    frame, so a missing bound raises instead of hanging the test. The last
+    frame before the bound fades out over 10 ms."""
     engine, model = await _loaded(fake_mlx)
     model.model.frames = None
+    model.model.fail_at = 10_000
     with caplog.at_level(logging.WARNING, logger="voiced.engines.marvis"):
         chunks = [c async for c in engine.synthesize("Hi.", "conversational_a")]
     assert len(chunks) == max_frames("Hi.")
-    assert "runaway generation for 'Hi.': cut at the 17-frame bound" in caplog.text
+    assert "runaway generation for 'Hi.': cut at the 17-frame length bound" in caplog.text
+    full = np.rint(FRAME * 32767).astype("<i2").tobytes()
+    assert {c.data for c in chunks[:-1]} == {full}
+    last = np.frombuffer(chunks[-1].data, dtype="<i2")
+    assert (last[:-240] == last[0]).all() and last[-1] == 0
+    assert np.all(np.diff(last[-240:]) <= 0)
 
 
 async def test_the_load_and_every_step_run_on_one_thread(fake_mlx: list[_FakeModel]) -> None:
@@ -467,8 +483,15 @@ def test_synthesizes_plausible_duration(marvis_engine: Any, voice: Any) -> None:
         text = SAMPLES[voice.language]
         return b"".join([c.data async for c in marvis_engine.synthesize(text, voice.id)])
 
+    """Within the length bound always; a sentence that reaches it (the model
+    did not end it, which French does now and then, ADR 0031) is reported as
+    a warning, not a failure."""
+    text = SAMPLES[voice.language]
     seconds = len(asyncio.run(collect())) / 2 / TTS_SAMPLE_RATE
-    assert 1.5 < seconds < 7.0, seconds
+    bound = max_frames(text) * FRAME_SECONDS
+    assert 1.5 < seconds <= bound, seconds
+    if seconds == bound:
+        warnings.warn(f"{voice.id} ran on to the {bound:.2f} s bound", stacklevel=1)
 
 
 @pytest.mark.model

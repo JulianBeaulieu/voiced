@@ -78,7 +78,12 @@ TEMPERATURE = 0.9
 TOP_K = 50
 """mlx-audio's sampling for the sesame model."""
 MAX_SEQUENCE = 2048
-"""The backbone's context: the voice's prompt plus every frame of the sentence."""
+"""The backbone's context: the voice's prompt plus every frame of the sentence.
+The splitter's longest sentence (300 characters) is bounded at 463 frames and
+the longest prompt is about 300 positions, so a sentence cannot reach it."""
+FADE_SAMPLES = 240
+"""10 ms faded out at the end of a sentence the bound cuts, so it does not
+stop on a click."""
 
 # The reference clips (prompts/<id>.wav and .txt in VOICES_REPO): id, name,
 # language, gender (from the clip's pitch: about 180 Hz for a, 105 to 120 Hz
@@ -86,8 +91,8 @@ MAX_SEQUENCE = 2048
 _CATALOGUE: tuple[tuple[str, str, str, Literal["female", "male"]], ...] = (
     ("conversational_a", "Conversational A", "en", "female"),
     ("conversational_b", "Conversational B", "en", "male"),
-    ("conversational_fr", "Conversational", "fr", "male"),
-    ("conversational_de", "Conversational", "de", "male"),
+    ("conversational_fr", "Conversational FR", "fr", "male"),
+    ("conversational_de", "Conversational DE", "de", "male"),
 )
 
 MARVIS_VOICES: list[Voice] = [
@@ -158,6 +163,7 @@ class MarvisEngine(SentenceTTSEngine):
         if rate != TTS_SAMPLE_RATE:
             raise RuntimeError(f"Marvis model reports {rate} Hz, expected {TTS_SAMPLE_RATE}")
         prompts = {v.id: _prompt(model, voices / "prompts", v.id) for v in MARVIS_VOICES}
+        _drop_mimi_encoder(model._audio_tokenizer)
         for _ in _stream(model, prompts[DEFAULT_VOICE.id], WARMUP_TEXT, self._busy):
             pass
         self._prompts = prompts
@@ -240,7 +246,21 @@ def _prompt(model: Any, folder: Path, voice: str) -> _Prompt:
     return _Prompt(text=text, tokens=tokens, mask=mask)
 
 
+def _drop_mimi_encoder(mimi: Any) -> None:
+    """Free Mimi's encoder (about 155 MB of float32 weights), which only
+    :func:`_prompt` uses, once every voice is encoded. Decoding reads the
+    quantizer, ``upsample``, ``decoder_transformer``, ``decoder`` and
+    ``decoder_cache`` (``Mimi.decode_step`` and ``MimiStreamingDecoder``)."""
+    import mlx.core as mx
+
+    for part in ("encoder", "encoder_transformer", "downsample"):
+        delattr(mimi, part)
+    mimi.encoder_cache = []
+    mx.clear_cache()
+
+
 def max_frames(sentence: str) -> int:
+    """The most frames ``sentence`` may take: :func:`sentence_bound` in 80 ms frames."""
     return sentence_bound(sentence, FRAME_SECONDS).tokens
 
 
@@ -248,9 +268,12 @@ def _stream(model: Any, prompt: _Prompt, sentence: str, busy: threading.Lock) ->
     """One sentence as 24 kHz float32 frames of 80 ms, as mlx-audio's
     ``generate`` makes them with ``voice_match``: the voice's transcript and
     the sentence as one text, then the voice's frames, which the model
-    continues until it samples an all-zero frame. Before each frame it waits
-    for STT encoder calls (ADR 0019). Closing the generator stops the
-    sentence at the next frame.
+    continues until it samples an all-zero frame, or until
+    :func:`max_frames`, where the last frame is faded out. Before each frame
+    it waits for STT encoder calls (ADR 0019). Closing the generator stops
+    the sentence at the next frame. Compare it with ``Model.generate`` in
+    ``mlx_audio/tts/models/sesame/sesame.py`` (lines 774 to 850 in 0.5.9)
+    when mlx-audio is bumped.
 
     The model's attention caches and Mimi's streaming decoder are reset when
     a sentence starts, so two sentences at once would garble each other. The
@@ -266,21 +289,24 @@ def _stream(model: Any, prompt: _Prompt, sentence: str, busy: threading.Lock) ->
         text, text_mask = model._tokenize_text_segment(f"{prompt.text} {sentence}", 0)
         tokens = mx.concat([text, prompt.tokens], axis=0).astype(mx.int32)[None]
         mask = mx.concat([text_mask, prompt.mask], axis=0).astype(mx.bool_)[None]
-        limit = min(max_frames(sentence), MAX_SEQUENCE - tokens.shape[1])
-        if limit <= 0:
+        limit = max_frames(sentence)
+        if tokens.shape[1] + limit > MAX_SEQUENCE:
             raise RuntimeError(f"marvis: sentence too long for the model ({len(sentence)} chars)")
         position = mx.arange(tokens.shape[1], dtype=mx.int32)[None]
         sampler = make_sampler(temp=TEMPERATURE, top_k=TOP_K)
         model.model.reset_caches()
         model._streaming_decoder.reset()
         yielder = gpu.Yielder()
-        for _ in range(limit):
+        for step in range(1, limit + 1):
             yielder()
             frame = model.model.generate_frame(tokens, mask, position, sampler)
             if mx.all(frame == 0).item():
                 return
             audio = model._streaming_decoder.decode_frames(frame[:, :, None])
-            yield np.array(audio, dtype=np.float32).reshape(-1)
+            samples = np.array(audio, dtype=np.float32).reshape(-1)
+            if step == limit:
+                samples[-FADE_SAMPLES:] *= np.linspace(1.0, 0.0, FADE_SAMPLES, dtype=np.float32)
+            yield samples
             # The next input: this frame's codebooks and an empty text slot.
             tokens = mx.concat([frame, mx.zeros((1, 1), dtype=mx.int32)], axis=1)[:, None]
             mask = mx.concat(
@@ -288,7 +314,9 @@ def _stream(model: Any, prompt: _Prompt, sentence: str, busy: threading.Lock) ->
             )[:, None]
             position = position[:, -1:] + 1
         log.warning(
-            "marvis: runaway generation for %r: cut at the %d-frame bound", sentence[:60], limit
+            "marvis: runaway generation for %r: cut at the %d-frame length bound",
+            sentence[:60],
+            limit,
         )
     finally:
         busy.release()

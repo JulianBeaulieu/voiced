@@ -414,17 +414,17 @@ CATALOGUE: tuple[Engine, ...] = (
                 ("config.json", "model.safetensors*"),
                 quality=4,
                 speed=3,
-                note="English, French and German voices; over the memory budget beside Parakeet",
+                note="French and German voices, Apache-2.0; 3.04 GB with Parakeet, over the budget",
             ),
             # Not the default: no better here, more memory, and its French
-            # voice often runs on to the length cap (ADR 0031).
+            # voice runs on to the length bound more often (ADR 0031).
             Model(
                 "Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit",
                 "Apache-2.0; codec: CC-BY-4.0",
                 ("config.json", "model.safetensors*"),
                 quality=3,
-                speed=2,
-                note="The larger Marvis: no better here, and its French voice runs on",
+                speed=3,
+                note="Larger, no better here; 3.23 GB beside Parakeet; French runs on more",
             ),
         ),
         # The text tokenizer and the voices' reference clips, the same in the
