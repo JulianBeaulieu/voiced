@@ -91,3 +91,11 @@ def test_rated_reads_each_scales_number_from_a_results_metrics() -> None:
     ]
     tts_metrics = {"utmos": None, "first_audio": {"median_ms": 94.0}, "rtf": 0.042}
     assert ratings.rated("tts", tts_metrics) == [(TTS_FIRST_AUDIO, 94.0), (TTS_RTF, 0.042)]
+
+
+def test_a_metric_missing_from_a_result_is_refused_not_skipped() -> None:
+    """Skipping a speed scale would raise the rating."""
+    with pytest.raises(ValueError, match=r"finalize_after_silence\.worst_ms: missing"):
+        ratings.rated("stt", {"wer_percent": 2.0, "batch_rtf": 0.02})
+    with pytest.raises(ValueError, match=r"first_audio\.median_ms: missing"):
+        ratings.rated("tts", {"utmos": 4.4, "first_audio": 94.0, "rtf": 0.04})

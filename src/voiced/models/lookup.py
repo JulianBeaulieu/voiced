@@ -17,7 +17,7 @@ def default_model(engine_name: str) -> Model:
     return found.models[0]
 
 
-def defaults() -> list[Model]:
+def default_models() -> list[Model]:
     """What a new install runs and the model lists recommend: each kind's
     default engine's first model."""
     return [default_model(name) for name in DEFAULT_ENGINES.values()]

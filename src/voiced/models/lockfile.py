@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from voiced.models.lookup import defaults, required
+from voiced.models.lookup import default_models, required
 
 LOCK_FILE = Path(__file__).with_name("models.lock.json")
 PIN_COMMAND = "python -m voiced.models pin"
@@ -150,7 +150,7 @@ def resolve(model_id: str) -> Source:
 
 def manifest() -> dict[str, Any]:
     """The default engines' models, which ``voiced install`` downloads."""
-    ids = [m for default in defaults() for m in required(default.id)]
+    ids = [m for default in default_models() for m in required(default.id)]
     return {
         "models": [
             {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}

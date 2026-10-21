@@ -157,7 +157,7 @@ final class ModelCatalogueTests: XCTestCase {
 
         XCTAssertEqual(ModelRow.ratingsHelp, "Measured on an Apple M1 Max; see docs/benchmarks.md")
         XCTAssertEqual(
-            ModelRow.benchmarks?.absoluteString, "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")
+            ModelRow.benchmarks.absoluteString, "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")
     }
 
     func testSelectionForKind() {

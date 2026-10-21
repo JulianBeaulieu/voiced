@@ -100,6 +100,7 @@ def _model_view(
     cached: list[CachedRevision],
     hub_path: Path,
     used: set[str],
+    recommended: set[str],
     *,
     shared: bool,
 ) -> dict[str, Any]:
@@ -126,7 +127,7 @@ def _model_view(
         "quality": model.quality,
         "speed": model.speed,
         "note": model.note,
-        "recommended": model in models.defaults(),
+        "recommended": model.id in recommended,
     }
 
 
@@ -138,11 +139,14 @@ def listing(settings: Settings) -> dict[str, Any]:
     installed = {(kind, e["name"]): e for kind, entries in engines_list().items() for e in entries}
     scan = models.cached_revisions(hub_path, {m.repo for m in models.catalogued()})
     used = in_use(settings)
+    defaults = {m.id for m in models.default_models()}
     lock = models.lock()
     engines: list[dict[str, Any]] = []
     for engine in models.CATALOGUE:
         found = installed.pop((engine.kind, engine.name), None)
-        view = functools.partial(_model_view, cached=scan.revisions, hub_path=hub_path, used=used)
+        view = functools.partial(
+            _model_view, cached=scan.revisions, hub_path=hub_path, used=used, recommended=defaults
+        )
         engines.append(
             {
                 "name": engine.name,

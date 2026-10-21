@@ -78,7 +78,7 @@ def test_list_carries_the_ratings_notes_and_the_recommended_defaults(
     assert rows[P40]["quality"] is None and rows[P40]["speed"] is None  # not measured
     assert rows[VOICES]["note"] == ""
     recommended = sorted(i for i, row in rows.items() if row["recommended"])
-    assert recommended == sorted(m.id for m in models.defaults())
+    assert recommended == sorted(m.id for m in models.default_models())
     assert KOKORO in recommended and P31 not in recommended
     out.clear()
     cli_models.cmd_list(settings, out.append, as_json=False)
@@ -89,6 +89,23 @@ def test_list_carries_the_ratings_notes_and_the_recommended_defaults(
         f"{p31.quality}/5",
         f"{p31.speed}/5",
     ]
+
+
+def test_the_documented_list_has_the_fields_the_command_prints(
+    settings: Settings, model_cache: Path
+) -> None:
+    """docs/operations.md's example, which the app's fixture test copies,
+    names every field of an engine and a model, and no other."""
+    doc = (Path(__file__).parents[2] / "docs" / "operations.md").read_text()
+    block = doc.split("`voiced models list --json`, which the menu bar app reads:", 1)[1]
+    example = json.loads(block.split("```json", 1)[1].split("```", 1)[0])
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    view = json.loads(out[0])
+    assert example.keys() == view.keys()
+    engine = next(e for e in view["engines"] if e["models"])
+    assert example["engines"][0].keys() == engine.keys()
+    assert example["engines"][0]["models"][0].keys() == engine["models"][0].keys()
 
 
 def test_an_older_locked_revision_is_an_update(

@@ -318,7 +318,7 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
 
     /// The bars' help; they link to `benchmarks`.
     public static let ratingsHelp = "Measured on an Apple M1 Max; see docs/benchmarks.md"
-    public static let benchmarks = URL(string: "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")
+    public static let benchmarks = URL(string: "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")!
 
     /// What the model is for, under the bars.
     public var summary: String? { model.flatMap { $0.note.isEmpty ? nil : $0.note } }

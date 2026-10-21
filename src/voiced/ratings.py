@@ -62,17 +62,24 @@ TTS_RTF = Scale("tts", "speed", "rtf", "real-time factor", "", (0.1, 0.25, 0.5, 
 
 SCALES: tuple[Scale, ...] = (STT_WER, STT_FINALIZE, STT_RTF, TTS_UTMOS, TTS_FIRST_AUDIO, TTS_RTF)
 
+REFERENCE_HARDWARE = "MacBook Pro, Apple M1 Max, 64 GB"
+"""The Mac every engine is measured on: the model catalogue's ratings come
+from its results (a result's ``hardware``)."""
+
 
 def rated(kind: Literal["stt", "tts"], metrics: Mapping[str, Any]) -> list[tuple[Scale, float]]:
     """Each scale of ``kind`` with the number it rates in a benchmark
     result's ``metrics``, as the result file holds them; a number that was
-    not measured (null) is left out."""
+    not measured (null) is left out. A field missing from ``metrics`` is a
+    ValueError: skipping a speed scale would quietly raise the rating."""
     pairs = []
     for scale in SCALES:
         if scale.kind != kind:
             continue
         value: Any = metrics
         for key in scale.metric.split("."):
+            if not isinstance(value, Mapping) or key not in value:
+                raise ValueError(f"{scale.metric}: missing from metrics")
             value = value[key]
         if value is not None:
             pairs.append((scale, float(value)))

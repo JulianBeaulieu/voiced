@@ -273,7 +273,10 @@ download), and keeps a replaced revision in `previous`, so uninstall still
 deletes what an earlier release downloaded. A gated model needs a token
 that has accepted its terms. `tests/core/test_models.py` fails, naming the
 command, until the catalogue and the lock agree. Then run the engine's
-model tests (`VOICED_MODEL_TESTS=1`) against the new pin.
+model tests (`VOICED_MODEL_TESTS=1`) against the new pin. Each model also
+has `quality`, `speed` and `note`, set as "Adding an engine" says; a new
+revision is a new model to the benchmarks, so measure it again and update
+its ratings.
 
 ## Cutting a release
 

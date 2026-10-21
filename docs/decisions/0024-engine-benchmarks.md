@@ -193,7 +193,7 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   number, the ratings per row, the limits and how to regenerate. The README's
   "Benchmarks" keeps a short summary of the defaults and links to it; no
   table is kept twice.
-- **The catalogue** (ADR 0022's `CATALOGUE` in `voiced/models/catalogue.py`): each
+- **The catalogue** (ADR 0022's `CATALOGUE` in `src/voiced/models/catalogue.py`): each
   `Model` gains three fields, all with defaults so a model without
   benchmarks stays valid:
 
@@ -215,15 +215,16 @@ Assistant and the endpointer); the push-to-talk case is in the table.
   on `STT_FINALIZE` and `metrics.batch_rtf` on `STT_RTF`; for tts
   `metrics.utmos` on `TTS_UTMOS`, `metrics.first_audio.median_ms` on
   `TTS_FIRST_AUDIO` and `metrics.rtf` on `TTS_RTF` (the pairs
-  `bench_engine.rated()` builds); or both None when there is no reference
+  `voiced.ratings.rated()` builds from each `Scale.metric`, for the harness
+  too); or both None when there is no reference
   row; its failure names the
   command that measures the model. A shared repository (`Engine.shared`) has
   no ratings. The note says what the model is for ("The default: accurate
   and fast, English and 24 European languages"). Size, languages and licence
   are already ADR 0022's (the lock's bytes, the engine class, the
   catalogue's licence). The recommended badge is the install default of each
-  kind (`PINS`' models today, the catalogue's default engine's first model
-  then), not a new field.
+  kind (`voiced.models.default_models()`: each default engine's first
+  model), not a new field.
 - **`voiced models list --json`** adds `"quality"`, `"speed"` (integers or
   null) and `"note"` (a string, possibly empty) to each model object, beside
   ADR 0022's fields, and `"recommended": true` on the install defaults. The
@@ -239,7 +240,7 @@ catalogue fields and their test (`src/voiced/models/catalogue.py`,
 Each `Scale` names the field of a result's `metrics` it rates (`metric`,
 dotted into nested objects), and `voiced.ratings.rated()` builds the pairs
 from a result's JSON for both the harness and the test, so the mapping is
-written once. The recommended models are `voiced.models.defaults()`, the
+written once. The recommended models are `voiced.models.default_models()`, the
 same list the install manifest downloads.
 
 ## Alternatives considered

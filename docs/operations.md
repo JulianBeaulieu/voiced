@@ -147,8 +147,8 @@ the snapshot at the pin;
 `quality` and `speed` are 1 to 5, from the model's benchmark on the
 reference Mac ([benchmarks.md](benchmarks.md), ADR 0024), or null when it
 has not been measured; `note` is one line on what the model is for, possibly
-empty; `recommended` is true on the models a new install runs, the default
-engines' first models.
+empty; `recommended` is always present: true on each default engine's
+first model (what a new install runs), false otherwise.
 `shared` entries have the same fields as `models`. `downloaded` also checks
 each file's size against the lock, so a truncated file reads as missing.
 `on_disk_bytes` is the whole cached revision: models that are folders of

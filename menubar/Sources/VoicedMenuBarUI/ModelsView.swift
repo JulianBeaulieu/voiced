@@ -174,27 +174,27 @@ struct RatingBars: View {
     let ratings: [ModelRow.Rating]
 
     var body: some View {
-        let bars = HStack(spacing: 12) {
-            ForEach(ratings, id: \.label) { rating in
-                HStack(spacing: 4) {
-                    Text(rating.label).font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 2) {
-                        ForEach(1...5, id: \.self) { step in
-                            RoundedRectangle(cornerRadius: 1.5)
-                                .fill(step <= rating.value ? Color.accentColor : Color.secondary.opacity(0.25))
-                                .frame(width: 10, height: 5)
+        Link(destination: ModelRow.benchmarks) {
+            HStack(spacing: 12) {
+                ForEach(ratings, id: \.label) { rating in
+                    HStack(spacing: 4) {
+                        Text(rating.label).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 2) {
+                            ForEach(1...5, id: \.self) { step in
+                                RoundedRectangle(cornerRadius: 1.5)
+                                    .fill(step <= rating.value ? Color.accentColor : Color.secondary.opacity(0.25))
+                                    .frame(width: 10, height: 5)
+                            }
                         }
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(rating.label) \(rating.value) of 5")
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(rating.label) \(rating.value) of 5")
             }
         }
-        if let link = ModelRow.benchmarks {
-            Link(destination: link) { bars }.buttonStyle(.plain).help(ModelRow.ratingsHelp)
-        } else {
-            bars.help(ModelRow.ratingsHelp)
-        }
+        .buttonStyle(.plain)
+        .help(ModelRow.ratingsHelp)
+        .accessibilityHint("Opens the benchmarks on GitHub")
     }
 }
 
