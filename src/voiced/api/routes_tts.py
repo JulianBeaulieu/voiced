@@ -22,12 +22,15 @@ The engine runs inside ``inference()`` in its own task, and the response
 body reads its chunks from a queue. The route primes the body with one
 ``anext()``, so a full queue is still a 503 and an engine error still a 400
 before any header is sent (ADR 0005). A client that hangs up while the engine
-is still producing stops the body; the synthesis then ends at the engine's
-next step, not its next chunk, frees the slot and is counted as a disconnect.
-A hang-up after synthesis finished records ``ok``: the audio was produced, only
-its delivery failed. Under ASGI spec 2.4 Starlette does not listen for
-``http.disconnect``, so there the body learns of a hang-up only when a send
-fails, at the next chunk (uvicorn reports 2.3).
+is still producing ends the synthesis at the engine's next step, not its next
+chunk; it frees the slot and is counted as a disconnect. During the priming
+the route itself listens for ``http.disconnect``, so a client gone before the
+first audio (or while queued) is noticed too; once the response has started,
+stopping the body does it. A hang-up after synthesis finished records ``ok``:
+the audio was produced, only its delivery failed. Under ASGI spec 2.4
+Starlette does not listen for ``http.disconnect`` while streaming, so there
+the body learns of a hang-up only when a send fails, at the next chunk
+(uvicorn reports 2.3).
 """
 
 from __future__ import annotations
@@ -35,20 +38,21 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from typing import Any, Literal, cast
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.types import Receive
 
 from voiced import audio
 from voiced.api import ffmpeg
 from voiced.api.context import APIError, Ctx
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
-from voiced.api.responses import ClosingStreamingResponse
+from voiced.api.responses import ClientGoneResponse, ClosingStreamingResponse
 from voiced.context import ServiceContext
 from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk
-from voiced.inference import HangUp, inference
+from voiced.inference import ClientHungUp, HangUp, inference
 from voiced.metrics import Operation
 from voiced.text import normalize
 
@@ -109,7 +113,9 @@ async def voices(ctx: Ctx) -> dict[str, Any]:
         503: {"description": "Inference queue full; retry later"},
     },
 )
-async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> ClosingStreamingResponse:
+async def speech(
+    body: SpeechRequest, request: Request, ctx: Ctx, foreign: ForeignModels
+) -> Response:
     settings = ctx.settings.tts
     if not body.input.strip():
         raise APIError(status.HTTP_400_BAD_REQUEST, "input must not be empty")
@@ -131,8 +137,14 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
 
     # Prime the body so QueueFull and a pre-audio EngineError surface as
     # 503 / 400 through the app's handlers instead of a broken stream.
-    pcm = _synthesize(ctx, text, voice.id, speed)
-    await anext(pcm)
+    hang_up = HangUp()
+    pcm = _synthesize(ctx, text, voice.id, speed, hang_up)
+    try:
+        async with _hang_up_on_disconnect(request.receive, hang_up):
+            await anext(pcm)
+    except ClientHungUp:
+        log.debug("client went away before the first audio")
+        return ClientGoneResponse()
     stream: AsyncIterator[bytes] = pcm
     if fmt == "wav":
         stream = _prefixed(audio.wav_header(TTS_SAMPLE_RATE), pcm)
@@ -146,6 +158,28 @@ async def speech(body: SpeechRequest, ctx: Ctx, foreign: ForeignModels) -> Closi
     )
 
 
+@asynccontextmanager
+async def _hang_up_on_disconnect(receive: Receive, hang_up: HangUp) -> AsyncIterator[None]:
+    """Set ``hang_up`` if the client disconnects during the block.
+
+    The request body has been read, so ``receive()`` waits until the client
+    goes away and then returns ``http.disconnect``. Every ASGI spec version
+    requires a server to do so, whether or not Starlette listens itself.
+    """
+
+    async def listen() -> None:
+        while (await receive())["type"] != "http.disconnect":
+            pass
+        hang_up.set()
+
+    listener = asyncio.create_task(listen())
+    try:
+        yield
+    finally:
+        listener.cancel()
+        await asyncio.wait([listener])
+
+
 _END = object()
 """Queue marker: synthesis finished."""
 
@@ -154,7 +188,7 @@ _SYNTHESES: set[asyncio.Task[None]] = set()
 
 
 async def _synthesize(
-    ctx: ServiceContext, text: str, voice: str, speed: float
+    ctx: ServiceContext, text: str, voice: str, speed: float, hang_up: HangUp
 ) -> AsyncGenerator[bytes, None]:
     """The response body: PCM bytes from a synthesis running in its own task.
 
@@ -168,10 +202,9 @@ async def _synthesize(
     and nothing would be recorded (ADR 0005). Instead, stopping this generator
     for any reason sets ``hang_up``, and the synthesis ends at the engine's next
     step with a disconnect that ``inference()`` counts. Cancellation itself is
-    untouched.
+    untouched. Before the priming value, the route sets ``hang_up`` itself.
     """
     out: asyncio.Queue[object] = asyncio.Queue()
-    hang_up = HangUp()
     task = asyncio.create_task(_produce(ctx, text, voice, speed, out, hang_up))
     _SYNTHESES.add(task)
     task.add_done_callback(_SYNTHESES.discard)

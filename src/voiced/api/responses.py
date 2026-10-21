@@ -6,12 +6,34 @@ import logging
 from collections.abc import AsyncIterable, Mapping
 from typing import Any
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.types import Message, Receive, Scope, Send
 
 from voiced.inference import DISCONNECT_ERRORS, bounded
 
 log = logging.getLogger(__name__)
+
+CLIENT_CLOSED_REQUEST = 499
+"""Status for a request the client abandoned (nginx's convention); never delivered."""
+
+
+class ClientGoneResponse(Response):
+    """What a route returns when its client hung up before the response began.
+
+    Returning it, rather than raising, keeps the server from logging a
+    traceback for a hang-up. There is no one to deliver it to: a server on
+    ASGI spec 2.4 raises ``OSError`` from ``send`` on a closed connection,
+    which stops here (uvicorn on 2.3 drops the messages).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=CLIENT_CLOSED_REQUEST)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        except OSError as exc:
+            log.debug("no client to answer: %r", exc)
 
 
 class ClosingStreamingResponse(StreamingResponse):

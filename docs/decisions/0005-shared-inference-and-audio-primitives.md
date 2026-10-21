@@ -262,9 +262,19 @@ for every engine, for the same granularity.
 
 Who calls `set()`:
 
-- HTTP: the body's `finally`. Under ASGI spec 2.4 Starlette does not listen
-  for `http.disconnect`, so the body learns of a hang-up only when a send
-  fails, at the next chunk; uvicorn reports spec 2.3.
+- HTTP, until the priming `anext()` returns: the route, which listens on
+  `receive()` for `http.disconnect` meanwhile. The request body has been
+  read by then, so `receive()` waits until the client goes away, and every
+  ASGI spec version requires the server to report that there, whether or
+  not Starlette listens itself. The route then returns a `499` that is
+  never delivered. Starting the response before the first chunk instead,
+  with the priming moved into the body, would have let Starlette listen,
+  but a full queue or a pre-audio `EngineError` would then be a started
+  `200`, not a `503` or `400`.
+- HTTP, once the response has started: the body's `finally`. Under ASGI
+  spec 2.4 Starlette does not listen for `http.disconnect` while streaming,
+  so the body learns of a hang-up only when a send fails, at the next
+  chunk; uvicorn reports spec 2.3.
 - Wyoming, while `handle` waits (a plain `Synthesize`, or a stream's
   remaining sentences after `SynthesizeStop`):
   `VoicedEventHandler.on_close` reads the next event ahead, with no idle
@@ -276,8 +286,6 @@ Who calls `set()`:
   and the handler's `disconnect()` closes the stream instead of cancelling
   its worker.
 
-On Wyoming, and over HTTP once the response has started, the sentence being
-spoken or waiting for the slot is counted as a `disconnect` (a waiting one
-without any engine call), and later sentences are dropped. Before the HTTP
-route's priming `anext()` returns no response has started, so nothing
-watches for `http.disconnect` yet.
+On Wyoming and over HTTP, before the first audio as after it, the sentence
+being spoken or waiting for the slot is counted as a `disconnect` (a
+waiting one without any engine call), and later sentences are dropped.
