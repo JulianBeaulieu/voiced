@@ -97,8 +97,9 @@ rather than waiting for a load thread that cannot be interrupted.
    the event loop free and, unlike `asyncio.to_thread`, holds the slot until
    the thread finishes even when the caller is cancelled. A cancelled client
    therefore cannot start a second MLX call next to a running one. Parakeet
-   uses `voiced.threads.ModelThread`, the same rule on one dedicated thread,
-   because an MLX stream belongs to the thread that created it.
+   and every `SentenceTTSEngine` use `voiced.threads.ModelThread`, the same
+   rule on one dedicated thread, because an MLX stream belongs to the thread
+   that created it.
 5. The transport maps the outcome to its wire format with one table: the
    HTTP status and error type, the WebSocket close code, or the Wyoming
    `Error` code.
@@ -201,13 +202,16 @@ Registered engines:
 | `kokoro` | `voiced.tts_engines` | Kokoro-82M via MLX with espeak-ng phonemes, the default ([ADR 0009](decisions/0009-tts-kokoro-espeak-tokens.md)) |
 | `soprano` | `voiced.tts_engines` | Soprano-80M via mlx-audio, opt-in, with a repetition penalty and a per-sentence length bound against runaway generation ([ADR 0010](decisions/0010-tts-soprano.md)) |
 | `phonon` | `voiced.tts_engines` | Phonon 31M via `ptts` on the CPU, opt-in, each sentence streamed as it is decoded ([ADR 0021](decisions/0021-tts-phonon.md)) |
+| `pocket` | `voiced.tts_engines` | Kyutai's Pocket TTS via mlx-audio on the GPU, opt-in, each 80 ms frame streamed as it is decoded ([ADR 0028](decisions/0028-tts-pocket.md)) |
 | `fake` | both | Deterministic fakes from `voiced.testing`, used by the test suite |
 
 Sentence-at-a-time TTS engines can subclass `voiced.engines.sentence.SentenceTTSEngine`,
 which provides `load()`, the loaded, voice and speed checks and the
-split-synthesize-yield loop; Kokoro, Soprano and Phonon do. An engine that
-decodes a sentence in pieces also overrides `_synth_chunks`, and the loop
-yields each piece as it comes (Phonon).
+split-synthesize-yield loop; Kokoro, Soprano, Phonon and Pocket TTS do. An
+engine that decodes a sentence in pieces also overrides `_synth_chunks`, and
+the loop yields each piece as it comes (Phonon, Pocket TTS). The load and
+every step of a sentence run on the engine's one `ModelThread`, since a
+streaming engine keeps MLX arrays from one piece to the next.
 
 The MLX engines live in the optional extras `stt` and `tts`, and Phonon in
 `phonon`, so the core package installs on any machine and CI runs against
@@ -281,6 +285,11 @@ An engine is a separate package. It implements one of the two classes,
 declares an entry point, and the user installs it into the same environment
 as voiced: the one `~/.voiced/bin/voiced` links to. An update of voiced
 builds a new environment, so install the engine again after one.
+
+A sentence-at-a-time engine can subclass `SentenceTTSEngine` and supply
+`_load_sync`, `_has_voice` and `_synth_sentence`; the base class runs them on
+the engine's model thread. The example below implements `TTSEngine`
+directly, so it runs its own blocking calls through `run_blocking`.
 
 `my_package/piper.py`:
 

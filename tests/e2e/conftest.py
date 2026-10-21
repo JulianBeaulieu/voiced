@@ -18,7 +18,7 @@ for, is tested through the real ``voiced serve`` in a subprocess
 Everything here is used only by ``@pytest.mark.model`` tests, which
 ``tests/conftest.py`` skips unless ``VOICED_MODEL_TESTS=1``; the service
 fixtures therefore never load MLX on CI. The engines (Parakeet, Kokoro,
-Soprano, Phonon) load once for this package and are shared, then are torn down
+Soprano, Phonon, Pocket TTS) load once for this package and are shared, then are torn down
 when the e2e tests finish, so a full ``pytest -m model`` run does not keep the
 extra models resident through the engine suites that follow.
 """
@@ -365,6 +365,22 @@ def tts_phonon_service(e2e_tmp: Path) -> Iterator[LiveService]:
             "engine": '"phonon"',
             "model": '"gradium/phonon-31m-en"',
             "default_voice": '"default"',
+        },
+    )
+    service = start_service("tts", settings)
+    yield service
+    service.stop()
+
+
+@pytest.fixture(scope="package")
+def tts_pocket_service(e2e_tmp: Path) -> Iterator[LiveService]:
+    settings = _settings_for(
+        "tts",
+        e2e_tmp / "pocket",
+        **{
+            "engine": '"pocket"',
+            "model": '"mlx-community/pocket-tts"',
+            "default_voice": '"alba"',
         },
     )
     service = start_service("tts", settings)

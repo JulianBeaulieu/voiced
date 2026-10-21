@@ -62,10 +62,11 @@ path were tuned on, and Phonon is new.
   for nor holds the GPU the STT goes first on, and Kokoro's yield points
   have no counterpart here.
 - **Threads.** Each blocking step (the load, every `next()` of a sentence's
-  stream and its `close()`) runs in a worker thread through `run_blocking`,
-  like the other engines' model calls, so the event loop never waits and a
-  cancelled request keeps the slot until the step returns. No dedicated
-  model thread: `ptts` holds no thread-bound state. `ptts`'s own pool of
+  stream and its `close()`) runs in a worker thread through `run_blocking`
+  (amended by ADR 0028: every `SentenceTTSEngine` step now runs on the
+  engine's `ModelThread`), like the other engines' model calls, so the event
+  loop never waits and a cancelled request keeps the slot until the step
+  returns. No dedicated model thread: `ptts` holds no thread-bound state. `ptts`'s own pool of
   CPU threads defaults to every core, efficiency cores included, beside
   the STT's CPU work, and nothing else would bound it on a Mac with four
   cores or with two STT streams open; the engine sets it to 4

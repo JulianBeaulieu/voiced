@@ -1,25 +1,30 @@
 """Base class for TTS engines that synthesize one sentence at a time.
 
-It owns the parts every such engine repeats: ``load()`` through
-``run_blocking``, the loaded check, the voice and speed checks before the
-first yield, and the split-synthesize-yield loop with each model call in
-``run_blocking`` (so a cancelled request cannot release the inference slot
-while the GPU is still busy). A subclass supplies:
+It owns the parts every such engine repeats: ``load()``, the loaded check,
+the voice and speed checks before the first yield, and the
+split-synthesize-yield loop. A subclass supplies:
 
-* ``_load_sync()``, blocking, run in a worker thread: builds the model in
-  locals, warms up, and assigns ``self._model`` last, so a failure leaves the
-  engine unloaded;
+* ``_load_sync()``, blocking: builds the model in locals, warms up, and
+  assigns ``self._model`` last, so a failure leaves the engine unloaded;
 * ``_has_voice(voice)``, run on the event loop, so a cheap lookup: whether
   ``voice`` is one of ``voices()``;
-* ``_synth_sentence(sentence, voice, speed)``, blocking, run in a worker
-  thread: int16 PCM at :data:`TTS_SAMPLE_RATE` for one sentence, or ``b""``
-  for nothing to say.
+* ``_synth_sentence(sentence, voice, speed)``, blocking: int16 PCM at
+  :data:`TTS_SAMPLE_RATE` for one sentence, or ``b""`` for nothing to say.
 
 An engine that produces a sentence's audio in pieces also overrides
 ``_synth_chunks(sentence, voice, speed)``, a blocking generator of int16 PCM
-pieces; each ``next()`` and its ``close()`` run in a worker thread, so the
-first piece goes out before the sentence is done. By default it is the
-sentence from ``_synth_sentence`` as one piece.
+pieces, so the first piece goes out before the sentence is done. By default
+it is the sentence from ``_synth_sentence`` as one piece.
+
+Every blocking step, the load, each ``next()`` of a sentence's pieces and
+their ``close()``, runs on the engine's one
+:class:`~voiced.threads.ModelThread`. MLX arrays are bound to the thread that
+made them, and a streaming engine keeps them from one piece of a sentence to
+the next (Pocket TTS's attention cache and decoder state); one thread makes
+that safe for every engine. Like :func:`~voiced.threads.run_blocking`, a
+cancelled request waits for the step in flight, so it cannot release the
+inference slot while the model is still busy. A TTS process runs one
+request at a time (the exclusive slot), so the one thread costs nothing.
 
 ``MIN_SPEED`` and ``MAX_SPEED`` bound ``speed``. An engine without rate
 control may ignore ``speed`` within the bounds, as ``TTSEngine.synthesize``
@@ -41,7 +46,7 @@ from voiced.engines.base import (
     UnknownVoice,
 )
 from voiced.text.sentences import split_sentences
-from voiced.threads import run_blocking
+from voiced.threads import ModelThread
 
 __all__ = ["SentenceTTSEngine"]
 
@@ -88,9 +93,10 @@ class SentenceTTSEngine(TTSEngine):
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
         self._model: Any = None
+        self._thread = ModelThread(self.name)
 
     async def load(self) -> None:
-        await run_blocking(self._load_and_bound_cache)
+        await self._thread.run(self._load_and_bound_cache)
 
     def _load_and_bound_cache(self) -> None:
         # The cap is set first so the warm-up's transient is bounded too; the
@@ -111,12 +117,12 @@ class SentenceTTSEngine(TTSEngine):
 
     @abstractmethod
     def _synth_sentence(self, sentence: str, voice: str, speed: float) -> bytes:
-        """Blocking; runs in a worker thread."""
+        """Blocking; runs on the model thread."""
 
     def _synth_chunks(
         self, sentence: str, voice: str, speed: float
     ) -> Generator[bytes, None, None]:
-        """Blocking; each step runs in a worker thread. The whole sentence as
+        """Blocking; each step runs on the model thread. The whole sentence as
         one piece unless the engine streams within a sentence."""
         yield self._synth_sentence(sentence, voice, speed)
 
@@ -133,12 +139,12 @@ class SentenceTTSEngine(TTSEngine):
         for sentence in split_sentences(text):
             pieces = self._synth_chunks(sentence, voice, speed)
             try:
-                while (pcm := await run_blocking(next, pieces, None)) is not None:
+                while (pcm := await self._thread.run(next, pieces, None)) is not None:
                     if pcm:
                         yield PCMChunk(data=pcm, sample_rate=TTS_SAMPLE_RATE)
             finally:
                 # Stops the engine's work for the sentence when the client goes away.
-                await run_blocking(pieces.close)
+                await self._thread.run(pieces.close)
 
     def _check_loaded(self) -> None:
         if self._model is None:

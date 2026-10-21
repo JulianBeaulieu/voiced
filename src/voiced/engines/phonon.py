@@ -9,8 +9,8 @@ runtime in the ``ptts`` wheel (no PyTorch, no espeak-ng). This engine (see
   they are decoded, so first audio is the first chunk, not the sentence;
 * runs on the CPU (``device="cpu"``, a pool of :data:`THREADS` threads), so
   it never waits for or holds the GPU the STT service goes first on
-  (ADR 0019); each blocking step runs in a worker thread through
-  ``run_blocking``, and ``ptts`` releases the GIL while it works;
+  (ADR 0019); each blocking step runs on the engine's model thread
+  (``voiced.engines.sentence``), and ``ptts`` releases the GIL while it works;
 * loads the model and the voices from voiced's pinned snapshots
   (``voiced.models``; the voices are the engine's ``shared`` repository in
   the catalogue), as local folders, so ``ptts`` never reaches the Hub

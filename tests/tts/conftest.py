@@ -40,3 +40,15 @@ def phonon_engine() -> Iterator[object]:
     engine = PhononEngine()
     asyncio.run(engine.load())
     yield engine
+
+
+@pytest.fixture(scope="session")
+def pocket_engine() -> Iterator[object]:
+    """A loaded Pocket TTS engine shared by the model tests. Loaded
+    synchronously so it can be session scoped regardless of the per-test event
+    loop."""
+    from voiced.engines.pocket import PocketEngine
+
+    engine = PocketEngine()
+    asyncio.run(engine.load())
+    yield engine

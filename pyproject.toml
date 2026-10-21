@@ -48,9 +48,18 @@ stt = ["parakeet-mlx>=0.5,<0.6"]
 # relies on its internals (load_voice_tensor, model(..., return_output=True),
 # the residual blocks istftnet.AdainResBlk1d and AdaINResBlock1 it wraps for
 # ADR 0019), and Soprano replaces its token loop (stream_generate) and reads private model
-# attributes. scipy (also an mlx-audio dependency) is declared because
-# voiced.audio.resample uses it to take Soprano's 32 kHz output to 24 kHz.
-tts = ["mlx-audio>=0.5.8,<0.5.10", "kokoro-onnx>=0.4", "huggingface-hub>=1.1", "scipy>=1.11"]
+# attributes. Pocket TTS (ADR 0028) calls the private _run_flow_lm_and_increment_step
+# and _slice_flow_cache and rewrites the config's flow_lm.lookup_table.tokenizer_path.
+# scipy (also an mlx-audio dependency) is declared because voiced.audio.resample uses
+# it to take Soprano's 32 kHz output to 24 kHz; sentencepiece is Pocket TTS's
+# tokenizer, which mlx-audio does not declare.
+tts = [
+    "mlx-audio>=0.5.8,<0.5.10",
+    "kokoro-onnx>=0.4",
+    "huggingface-hub>=1.1",
+    "scipy>=1.11",
+    "sentencepiece>=0.2,<0.3",
+]
 # Phonon on the CPU (ADR 0021): no MLX, so it installs on its own too. ptts is
 # pinned to the minor release the engine was checked against (stream(),
 # add_voice(), voice_catalog= and its default model and voice revisions).
@@ -92,6 +101,7 @@ fake = "voiced.testing.fakes:FakeTTSEngine"
 kokoro = "voiced.engines.kokoro:KokoroEngine"
 soprano = "voiced.engines.soprano:SopranoEngine"
 phonon = "voiced.engines.phonon:PhononEngine"
+pocket = "voiced.engines.pocket:PocketEngine"
 
 [build-system]
 requires = ["hatchling==1.32.4"]
