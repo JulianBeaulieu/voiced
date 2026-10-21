@@ -658,10 +658,10 @@ def render(results: Sequence[Result]) -> str:
             "UTMOS: predicted naturalness, 1 to 5, the mean over three fixed "
             "sentences. First audio: from the request to the first audio byte for "
             '"Turn on the kitchen lights." Every engine serves 24 kHz mono 16-bit audio. '
-            "The requests run back to back and each closes after its first byte; until "
-            "the service stops a closed request at once, an engine whose pieces come far "
-            "apart shows the previous request's next piece in its first audio too: "
-            "Chatterbox's cells include about 0.3 s of that (ADR 0029).",
+            "Requests run back to back, each closed after its first byte. Until the "
+            "service drops a closed request at once, an engine with long gaps between "
+            "pieces also waits for the previous request's next piece: about 0.3 s of "
+            "Chatterbox's cells (ADR 0029).",
         ),
     )
     for kind, title, headers, legend in sections:

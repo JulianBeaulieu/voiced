@@ -98,42 +98,58 @@ def speak(
 ) -> Iterator[NDArray[np.float32]]:
     """One sentence's audio pieces from T3's speech tokens, as ``steps``
     yields them: a render after :data:`FIRST_TOKENS`, then every
-    :data:`CHUNK_TOKENS` more, then a final one with :data:`SILENCE_TOKENS`
-    of ``silence`` appended once ``steps`` ends. ``wait`` runs before every
-    step and every render, each a GPU call.
-
-    The last :data:`CROSSFADE_SAMPLES` of each render but the final one are
-    held back and crossfaded with the next render's samples for the same
-    span, so no join jumps."""
+    :data:`CHUNK_TOKENS` more, then, once ``steps`` ends, a final one with
+    :data:`SILENCE_TOKENS` of ``silence`` appended. ``wait`` runs before every
+    step and every render, each a GPU call. Where renders join they are
+    crossfaded (:class:`_Joins`)."""
     tokens: list[int] = []
-    sent = 0  # samples yielded, the held-back tail not included
-    tail = np.zeros(0, dtype=np.float32)
+    joins = _Joins()
     render_at = FIRST_TOKENS
     while True:
         wait()
         new = next(steps, None)
-        final = new is None
-        if new is not None:
-            tokens.extend(new)
-            if len(tokens) < render_at:
-                continue
-        elif not tokens:
-            return
-        else:
-            tokens.extend([silence] * SILENCE_TOKENS)
+        if new is None:
+            break
+        tokens.extend(new)
+        if len(tokens) >= render_at:
+            wait()
+            piece = joins.emit(*render(tokens, joins.sent, False), final=False)
+            render_at = len(tokens) + CHUNK_TOKENS
+            if piece.size:
+                yield piece
+    if tokens:
         wait()
-        audio, total = render(tokens, sent, final)
-        render_at = len(tokens) + CHUNK_TOKENS
-        if not final and audio.size <= tail.size + CROSSFADE_SAMPLES:
-            continue  # nothing past the held-back tail yet: wait for more tokens
-        audio = _crossfade(tail, audio)
+        final_tokens = [*tokens, *[silence] * SILENCE_TOKENS]
+        piece = joins.emit(*render(final_tokens, joins.sent, True), final=True)
+        if piece.size:
+            yield piece
+
+
+class _Joins:
+    """Where one sentence's renders meet. Each render draws fresh noise, so
+    it does not repeat what the previous one sent: the last
+    :data:`CROSSFADE_SAMPLES` of every render but the final one are held
+    back (``tail``) and faded into the next render's samples for the same
+    span. ``sent`` is the samples yielded, the tail not included: where the
+    next render's audio is wanted from."""
+
+    def __init__(self) -> None:
+        self.sent = 0
+        self.tail = np.zeros(0, dtype=np.float32)
+
+    def emit(self, audio: NDArray[np.float32], total: int, *, final: bool) -> NDArray[np.float32]:
+        """What to yield of a render's ``audio`` (its samples from ``sent``
+        on, ``total`` in all)."""
+        if not final and audio.size <= self.tail.size + CROSSFADE_SAMPLES:
+            return audio[:0]  # nothing past the held-back tail yet: wait for more tokens
+        audio = _crossfade(self.tail, audio)
         if final:
-            if audio.size:
-                yield audio
-            return
-        tail = audio[-CROSSFADE_SAMPLES:]
-        sent = total - CROSSFADE_SAMPLES
-        yield audio[:-CROSSFADE_SAMPLES]
+            # The silence tokens add 0.2 s, so the final render reaches past
+            # the tail; should it not, the rest of the tail still goes out.
+            return np.concatenate([audio, self.tail[audio.size :]])
+        self.tail = audio[-CROSSFADE_SAMPLES:]
+        self.sent = total - CROSSFADE_SAMPLES
+        return audio[:-CROSSFADE_SAMPLES]
 
 
 def _crossfade(tail: NDArray[np.float32], audio: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -204,8 +220,8 @@ class ChatterboxEngine(SentenceTTSEngine):
     def _synth_chunks(
         self, sentence: str, voice: str, speed: float
     ) -> Generator[bytes, None, None]:
-        """Blocking; each step runs in a worker thread. ``speed`` is ignored:
-        the model has no rate control."""
+        """Blocking; each step runs on the engine's model thread. ``speed`` is
+        ignored: the model has no rate control."""
         for piece in _stream(self._model, sentence):
             yield float32_to_pcm16(piece)
 
@@ -222,12 +238,10 @@ _patch_lock = threading.Lock()
 leave the wrapper installed."""
 
 
-class _SkippedTokenizerNote(logging.Filter):
+def _not_the_tokenizer_note(record: logging.LogRecord) -> bool:
     """Drops mlx-audio's warning that the speech tokenizer did not load: it
     was refused on purpose, and the engine's own load line says so."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "S3 speech tokenizer" not in record.getMessage()
+    return "S3 speech tokenizer" not in record.getMessage()
 
 
 @contextmanager
@@ -247,7 +261,7 @@ def _without_speech_tokenizer() -> Iterator[None]:
     """
     import huggingface_hub
 
-    quiet = _SkippedTokenizerNote()
+    quiet = _not_the_tokenizer_note
     hook_log = logging.getLogger("mlx_audio.tts.models.chatterbox_turbo.chatterbox_turbo")
     with _patch_lock:
         original = huggingface_hub.hf_hub_download
@@ -299,7 +313,9 @@ def _stream(model: Any, sentence: str) -> Iterator[NDArray[np.float32]]:
             emitted += int(chunk.shape[-1])
             # Tokens past the speech vocabulary are T3's control tokens.
             yield [t for t in np.array(chunk).reshape(-1).tolist() if t < SPEECH_VOCAB_SIZE]
-        if emitted >= limit:
+        # T3 emits a first token and then at most max_gen_len more, so only
+        # a cut sentence passes the bound.
+        if emitted > limit:
             log.warning(
                 "chatterbox: runaway generation for %r: cut at the %d-token bound",
                 sentence[:60],

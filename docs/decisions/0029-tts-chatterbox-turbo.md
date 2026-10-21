@@ -57,8 +57,8 @@ synthesizes. mlx-audio's port does not: there is no `perth` import or
 watermarking step anywhere in `mlx_audio/tts/models/chatterbox_turbo` at
 0.5.9, and voiced adds none: with the one voice the checkpoint ships, the
 output imitates no one, and PerTh would mean the `resemble-perth` package,
-whose 1.0.1 imports PyTorch and torchaudio (without declaring them). The question returns with cloning, when the
-output can sound like a real person.
+whose 1.0.1 imports PyTorch and torchaudio (without declaring them). The
+question returns with cloning, when the output can sound like a real person.
 
 ## Decision
 
@@ -88,7 +88,8 @@ inside `load()`.
   (`t3.inference_turbo_stream`, one token at a time) and S3Gen's
   `inference_stream` itself, in `speak()`, a function of a token stream, a
   render and a wait, so its schedule is tested without MLX. It renders the
-  first 15 tokens as soon as they exist, then every 25 more, then once more
+  first 15 tokens as soon as they exist (the smallest first chunk that kept
+  playback fed; see Alternatives), then every 25 more, then once more
   at the end with mlx-audio's five silence tokens appended; each render
   yields only the samples not yet sent. Every render draws fresh noise
   (the flow-matching start and HiFiGAN's phases), so render k+1 does not
@@ -96,15 +97,15 @@ inside `load()`.
   sentence, the two versions of the last 20 ms before the second and third
   joins differed by an RMS of 0.06 against a signal RMS of 0.05 (unrelated
   waveforms), and the step at the join reached 0.11, as large as the
-  clip's largest sample-to-sample steps. So the last 20 ms of
-  every render but the final one are held back and crossfaded into the next
-  render's version of them. Before the crossfade the benchmark's UTMOS was
-  3.70 (4-bit) and 3.82 (fp16); after it, 4.14 and 4.01. 15 tokens is the smallest first
-  chunk that kept playback fed: at 10, first audio was about 40 ms earlier
-  but the second piece came 60 to 160 ms after the first had played out.
-  Owning the loop also gives the GPU yield points below and a per-sentence
-  token bound, and skips `stream_generate`'s own sentence split, which
-  voiced has already done.
+  clip's largest sample-to-sample steps. So the last 20 ms of every render
+  but the final one are held back and crossfaded into the next render's
+  version of them; that join measurement is the evidence for it. (UTMOS
+  rose from 3.70 and 3.82 to 4.14 and 4.01, but the earlier figures are
+  single runs on a different build, before the rebase onto ADR 0028's
+  engine thread, and the 3.80 to 4.40 spread between sentences covers
+  both differences.) Owning the loop also gives the GPU yield points below
+  and a per-sentence token bound, and skips `stream_generate`'s own
+  sentence split, which voiced has already done.
 - **One thread.** T3 keeps its KV cache and unevaluated MLX arrays from one
   token to the next, and MLX arrays belong to the thread that made them: a
   sentence whose steps landed on two threads of the shared pool died with
@@ -129,10 +130,8 @@ inside `load()`.
   skip it or to name its revision: `ChatterboxTurboTTS.post_load_hook`
   (`chatterbox_turbo.py`, line 303 at 0.5.9) calls
   `hf_hub_download("mlx-community/S3TokenizerV2", "model.safetensors")`,
-  which resolves `main` on the Hub at every start, and loads it. Building
-  the model without that hook would mean re-doing mlx-audio's generic
-  loader (config, sanitize, quantize, load) and the hook's tokenizer and
-  conditionals, about 40 lines on its internals. Instead, for the duration
+  which resolves `main` on the Hub at every start, and loads it (see
+  Alternatives for why not rebuild the loader). For the duration
   of `load()` only, `huggingface_hub.hf_hub_download` refuses that one
   repository (every other call passes through; a lock serializes
   overlapping loads, and the function is restored in a `finally`); the
@@ -154,13 +153,36 @@ inside `load()`.
 - **Speed.** Turbo has no rate control; `speed` is checked against the
   shared bounds and ignored.
 
+## Alternatives considered
+
+- **mlx-audio's `stream_generate`.** It renders every `chunk_size` tokens,
+  fixed. At 25 tokens first audio was 434 to 466 ms; at 10 it was 329 ms
+  but a long reply ran at 1.7 times real time, so a listener would hear
+  gaps. It also has no point between tokens to wait for the STT, caps a
+  sentence at 2000 tokens whatever its length, and splits sentences again.
+- **A first render at 10 tokens in voiced's loop.** First audio about
+  40 ms earlier (285 ms median), but the second piece came 60 to 160 ms
+  after the first had played out, in every reply. 15 tokens is the
+  smallest first chunk that kept playback fed.
+- **fp16 as the default.** No faster (first audio 331 against 309 ms in
+  process), level on UTMOS and the Parakeet round trip, and three times
+  the memory: 2.99 GB, which beside Parakeet passes the 3 GB budget.
+- **Pinning the speech tokenizer** instead of refusing its download:
+  0.5 GB on disk and in memory for a model only cloning uses, and the
+  hook would still ask for `main`, so it would need the same patch to
+  name the revision.
+- **Building the model without `post_load_hook`.** That means re-doing
+  mlx-audio's generic loader (config, sanitize, quantize, load) and the
+  hook's tokenizer and conditionals, about 40 lines on its internals,
+  against one scoped patch of a public `huggingface_hub` function.
+
 ## Measurements
 
 Apple M1 Max, 64 GB, macOS 15.7.4. Every run held a lock other benchmarks
 on the machine honour.
 
-In process, with no other model loaded, `ChatterboxEngine.synthesize` on normalized text, voice
-`default`, after load and warm-up (n=6 per sentence; first audio is the
+In process, with no other model loaded, `ChatterboxEngine.synthesize` on
+normalized text, voice `default`, after load and warm-up (n=6 per sentence; first audio is the
 call to its first piece; a gap is time a listener playing the pieces as
 they come would hear silence):
 
@@ -172,9 +194,6 @@ they come would hear silence):
 | Footprint after load / after the reply | 0.62 / 0.83 GB | 2.58 / 2.82 GB |
 | Footprint after synthesis with mlx-audio's own load, speech tokenizer included | 1.05 GB | 3.05 GB |
 | Load from the cache | 2.1 s | 2.6 s |
-
-With the first render at 10 tokens instead of 15, the 4-bit build's first
-audio was 285 ms median but every reply had 60 to 160 ms of gaps.
 
 `scripts/bench.py` against `voiced serve stt` (Parakeet), `voiced serve tts`
 (Kokoro) and a third `voiced serve tts` running Chatterbox 4-bit, each in

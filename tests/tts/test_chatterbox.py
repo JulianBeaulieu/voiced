@@ -201,7 +201,8 @@ class _T3:
 
     def inference_turbo_stream(self, **kwargs: Any) -> Iterator[tuple[np.ndarray, bool]]:
         self.kwargs = kwargs
-        for i in range(min(self.n, kwargs["max_gen_len"])):
+        # As T3 does: a first token, then at most max_gen_len more.
+        for i in range(min(self.n, kwargs["max_gen_len"] + 1)):
             self.threads.add(threading.get_ident())  # T3 keeps its KV cache between steps
             yield np.array([[i]]), False
 
@@ -295,6 +296,22 @@ async def test_every_step_of_a_sentence_runs_on_the_engine_thread() -> None:
     threads = model.t3.threads | model.s3gen.threads
     assert len(threads) == 1
     assert threading.get_ident() not in threads
+
+
+@pytest.mark.usefixtures("fake_mlx")
+def test_stopping_on_its_own_at_the_bound_is_no_runaway(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="voiced.engines.chatterbox"):
+        list(chatterbox._stream(_model(_T3(n=max_tokens("Hi."))), "Hi."))
+    assert not caplog.records
+
+
+def test_a_final_render_shorter_than_the_held_tail_still_sends_the_tail() -> None:
+    joins = chatterbox._Joins()
+    first = joins.emit(np.full(2000, 1.0, dtype=np.float32), 2000, final=False)
+    assert first.size == 2000 - CROSSFADE_SAMPLES
+    last = joins.emit(np.full(100, 2.0, dtype=np.float32), joins.sent + 100, final=True)
+    assert last.size == CROSSFADE_SAMPLES  # 100 crossfaded, then the rest of the tail
+    assert np.all(last[100:] == 1.0)
 
 
 # -- the speech tokenizer --------------------------------------------------------
