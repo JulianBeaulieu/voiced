@@ -589,7 +589,8 @@ model (`Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit`) works too, but scored no
 better here and takes more memory. Now and then, a few sentences in a
 hundred, the model keeps making sound after a sentence; voiced cuts it at a
 bound set by the sentence's length, so such a sentence ends with a few
-seconds of extra sound. The 250M does this more often in French. The details are in
+seconds of extra sound. With the 250M, one French sentence in testing
+did this every time. The details are in
 [ADR 0031](docs/decisions/0031-tts-marvis.md).
 
 ## Benchmarks

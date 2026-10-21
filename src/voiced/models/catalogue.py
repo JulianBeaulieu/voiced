@@ -424,7 +424,7 @@ CATALOGUE: tuple[Engine, ...] = (
                 ("config.json", "model.safetensors*"),
                 quality=3,
                 speed=3,
-                note="Larger, no better here; 3.23 GB beside Parakeet; French runs on more",
+                note="Larger, no better here; 3.23 GB beside Parakeet; one French line runs on",
             ),
         ),
         # The text tokenizer and the voices' reference clips, the same in the

@@ -78,9 +78,10 @@ TEMPERATURE = 0.9
 TOP_K = 50
 """mlx-audio's sampling for the sesame model."""
 MAX_SEQUENCE = 2048
-"""The backbone's context: the voice's prompt plus every frame of the sentence.
-The splitter's longest sentence (300 characters) is bounded at 463 frames and
-the longest prompt is about 300 positions, so a sentence cannot reach it."""
+"""The backbone's context: the voice's transcript and the sentence's text, the
+voice's frames, then every frame of the sentence. The splitter's longest
+sentence (300 characters) reaches about 1600 of it: 166 clip frames, at most
+463 sentence frames, and the text tokens."""
 FADE_SAMPLES = 240
 """10 ms faded out at the end of a sentence the bound cuts, so it does not
 stop on a click."""

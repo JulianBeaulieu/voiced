@@ -459,6 +459,9 @@ async def test_an_unknown_voice_never_reaches_the_model(fake_mlx: list[_FakeMode
 
 # -- against the real runtime ------------------------------------------------
 
+FRAME_BYTES = 1920 * 2
+"""One 80 ms frame of 16-bit PCM."""
+
 SAMPLES = {
     "en": "The quick brown fox jumps over the lazy dog.",
     "fr": "Le renard brun rapide saute par-dessus le chien paresseux.",
@@ -479,19 +482,19 @@ def test_the_voices_and_mimi_are_in_the_pinned_snapshots() -> None:
 @pytest.mark.model
 @pytest.mark.parametrize("voice", MARVIS_VOICES, ids=lambda v: v.id)
 def test_synthesizes_plausible_duration(marvis_engine: Any, voice: Any) -> None:
+    """Within the length bound always; a sentence that reaches it (the model
+    did not end it, which happens now and then, ADR 0031) is reported as a
+    warning, not a failure."""
+    text = SAMPLES[voice.language]
+
     async def collect() -> bytes:
-        text = SAMPLES[voice.language]
         return b"".join([c.data async for c in marvis_engine.synthesize(text, voice.id)])
 
-    """Within the length bound always; a sentence that reaches it (the model
-    did not end it, which French does now and then, ADR 0031) is reported as
-    a warning, not a failure."""
-    text = SAMPLES[voice.language]
-    seconds = len(asyncio.run(collect())) / 2 / TTS_SAMPLE_RATE
-    bound = max_frames(text) * FRAME_SECONDS
-    assert 1.5 < seconds <= bound, seconds
-    if seconds == bound:
-        warnings.warn(f"{voice.id} ran on to the {bound:.2f} s bound", stacklevel=1)
+    frames = len(asyncio.run(collect())) // FRAME_BYTES
+    assert 1.5 < frames * FRAME_SECONDS, frames
+    assert frames <= max_frames(text), frames
+    if frames == max_frames(text):
+        warnings.warn(f"{voice.id} ran on to the {frames}-frame bound", stacklevel=1)
 
 
 @pytest.mark.model

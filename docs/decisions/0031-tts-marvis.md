@@ -83,18 +83,22 @@ more natural and does a twelfth of the work for each second of audio.
   1 s more) in frames; at the bound it stops, fades out its last 10 ms and
   logs a warning. That is a truncation, and a run-on still plays up to the
   bound: for a five-word sentence, about 3 s of extra sound. The splitter's
-  300-character sentences keep a sentence well inside the backbone's 2048
-  positions, so that limit is checked, not relied on. No retry: it would
+  300-character sentences reach about 1600 of the backbone's 2048
+  positions (the clip's 166 frames, the text and at most 463 frames), so
+  that limit is checked, not relied on. No retry: it would
   double the latency of the sentences that run on and hide the fault.
-- **Run-on rates.** With the 100M, over 20 everyday assistant sentences
-  per language, each read four times: French 1 of 80, German 4 of 80,
-  English 2 of 80 (`conversational_a`); "Le renard brun rapide saute
-  par-dessus le chien paresseux." ran on 1 time in 10 here and 3 in 8 in
-  an earlier run. With the 250M, French ran on 2 of 20 and German 0 of 20,
-  but "Allume les lumières de la cuisine." ran on every time (5 of 5), and
-  mlx-audio's own `generate` does the same (1.4 to 9 s for that sentence).
-  Run-ons cluster on particular sentences rather than on a language, and
-  at a few in a hundred all three languages are served.
+- **Run-on rates.** `scripts/marvis_runon.py` reads 20 short assistant
+  replies per language (in the script), each four times in its language's
+  voice, and counts a run-on when a sentence's audio reaches its bound.
+  With the 100M: French 1 of 80, German 4 of 80, English 2 of 80
+  (`conversational_a`), each run-on a different sentence; "Le renard brun
+  rapide saute par-dessus le chien paresseux." ran on 1 time in 10 here
+  and 3 in 8 in an earlier run. With the 250M, one reading each: French 2
+  of 20, German 0 of 20; one French sentence, "Allume les lumières de la
+  cuisine.", ran on every time it was read (5 of 5), and mlx-audio's own
+  `generate` does the same with it (1.4 to 9 s). At a few in a hundred,
+  all three languages are served; the 250M's note names that one French
+  sentence.
 - **One model thread, one sentence at a time.** The attention caches and
   Mimi's decoder state are MLX arrays on the model, kept from frame to
   frame and reset when a sentence starts; the load and every step run on
