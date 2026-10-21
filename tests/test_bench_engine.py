@@ -410,6 +410,23 @@ def test_started_stops_the_service_after_use_and_on_error(
     assert "hf_home" in Path(envs[0]["VOICED_CONFIG"]).read_text()
 
 
+def test_started_refuses_a_model_that_is_not_downloaded(
+    be: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def popen(*args: object, **kwargs: object) -> FakeProcess:
+        raise AssertionError("no service starts")
+
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setattr(be.subprocess, "Popen", popen)
+    with (
+        pytest.raises(SystemExit, match="run voiced models download mlx-community/Kokoro-82M-bf16"),
+        be.started("tts", "kokoro", "mlx-community/Kokoro-82M-bf16", tmp_path),
+    ):
+        pass
+
+
 def test_free_ports_are_distinct(be: ModuleType) -> None:
     ports = be._free_ports(4)
     assert len(set(ports)) == 4

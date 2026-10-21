@@ -66,6 +66,7 @@ from voiced.engines.base import (
     UnsupportedLanguage,
 )
 from voiced.gpu import stt_turn
+from voiced.models import default_model
 from voiced.threads import ModelThread
 from voiced.vad import Endpointer, EndpointEvent
 
@@ -171,18 +172,13 @@ class _Rank(IntEnum):
 
 class ParakeetEngine(STTEngine):
     name = "parakeet"
-    model_id = "mlx-community/parakeet-tdt-0.6b-v3"
+    model_id = default_model("parakeet").id
     languages = list(PARAKEET_V3_LANGUAGES)
-    license = "CC-BY-4.0"
+    license = default_model("parakeet").license
     max_streams = 6
     """Its sessions take turns on one model thread, which keeps up with about
     six real-time streams on an M1 Max; ``stt.streams`` (2) is what keeps
     every finalize within the target (ADR 0020)."""
-
-    @classmethod
-    def download_patterns(cls) -> list[str]:
-        """What ``from_pretrained`` reads (``voiced.models``)."""
-        return ["config.json", "model.safetensors"]
 
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)
@@ -211,8 +207,8 @@ class ParakeetEngine(STTEngine):
 
         t0 = time.perf_counter()
         log.info("loading STT model %s", self.model_id)
-        # The pinned revision's directory, from the cache voiced install filled.
-        model = from_pretrained(str(snapshot(self.model_id, self.download_patterns())))
+        # The pinned revision's directory, from the cache; never downloaded here.
+        model = from_pretrained(str(snapshot(self.model_id, check_only=True)))
         load_s = time.perf_counter() - t0
         # Warm up both paths so the first real request does not pay for Metal
         # kernel compilation, and so a broken GPU path fails here, before the

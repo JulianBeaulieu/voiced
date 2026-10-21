@@ -26,6 +26,7 @@ from voiced.control.protocol import (
     BAD_REQUEST,
     INTERNAL,
     INVALID_SETTING,
+    MODEL_NOT_DOWNLOADED,
     NOT_INSTALLED,
     SERVICE_UNAVAILABLE,
     UNKNOWN_OP,
@@ -37,6 +38,7 @@ from voiced.settings_store import (
     ConfigFileError,
     FileStamp,
     InvalidSetting,
+    ModelMissing,
     SettingsChange,
     apply_settings,
     change_view,
@@ -246,6 +248,10 @@ class Operations:
         with self._write_lock:
             try:
                 return apply_settings(args, self.config_file, engines=self.engines)
+            except ModelMissing as exc:
+                raise OpError(
+                    MODEL_NOT_DOWNLOADED, exc.message, field=exc.field, model=exc.model
+                ) from None
             except InvalidSetting as exc:
                 raise OpError(INVALID_SETTING, exc.message, field=exc.field) from None
             except ConfigFileError as exc:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -16,8 +17,11 @@ from voiced.engines.base import (
 )
 from voiced.health import HealthResponse, HealthState
 from voiced.metrics import Metrics
+from voiced.models import ModelNotDownloaded
 from voiced.queue import Admission, InferenceQueue
 from voiced.text import primary_subtag
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -98,25 +102,48 @@ class ServiceContext:
     async def check_voice(self, voice: str | None, *, listed_by: str) -> Voice:
         """Resolve a client's voice to the :class:`Voice` this service serves.
 
-        ``None`` means ``tts.default_voice``. The voice must be one of
-        :meth:`voices`, the engine's voices in the configured languages: an
-        engine may know more, but those are not served. Raises
-        :class:`UnknownVoice` (an ``EngineError``) naming ``listed_by``, where
-        the client can find the served voices.
+        ``None`` means ``tts.default_voice``. A voice that is not one of
+        :meth:`voices` (the engine's voices in the configured languages: an
+        engine may know more, but those are not served) falls back to
+        ``tts.default_voice``, or the first served voice, with a warning:
+        Home Assistant keeps sending its pipeline's voice after the engine
+        changes, and refusing it would leave the assistant silent (ADR
+        0022). Raises :class:`UnknownVoice` (an ``EngineError``) naming
+        ``listed_by`` only when no voice is served at all.
         """
+        served = await self.voices()
         chosen = voice or self.settings.tts.default_voice
-        for served in await self.voices():
-            if served.id == chosen:
-                return served
-        source = "" if voice else " (tts.default_voice)"
-        raise UnknownVoice(f"voice {chosen!r}{source} is not served; see {listed_by}")
+        for candidate in served:
+            if candidate.id == chosen:
+                return candidate
+        if not served:
+            source = "" if voice else " (tts.default_voice)"
+            raise UnknownVoice(f"voice {chosen!r}{source} is not served; see {listed_by}")
+        default = self.settings.tts.default_voice
+        fallback = next((v for v in served if v.id == default), served[0])
+        log.warning(
+            "voice %r is not served by %s; using %r (see %s)",
+            chosen,
+            self.engine.name,
+            fallback.id,
+            listed_by,
+        )
+        return fallback
 
     def check_loaded(self) -> None:
-        """Raise :class:`EngineNotLoaded` until ``load()`` has finished.
+        """Raise :class:`EngineNotLoaded` until ``load()`` has finished, and
+        :class:`ModelNotDownloaded` if it found the model missing.
 
-        Every transport calls this before taking work. ``classify`` maps the
-        error to ``busy``, so clients are told to retry, not that they erred.
+        Every transport calls this before taking work. ``classify`` maps both
+        to ``busy``, so clients are told to retry, not that they erred; HTTP
+        answers a missing model with ``model_not_downloaded`` and no
+        ``Retry-After``, since retrying will not help until it is downloaded.
         """
+        missing = self.health.missing
+        if missing is not None:
+            # A new exception each time: raising the stored one would grow
+            # its traceback with every request.
+            raise ModelNotDownloaded(missing.model_id, missing.revision, missing.missing)
         if not self.health.model_loaded:
             raise EngineNotLoaded("model is still loading")
 

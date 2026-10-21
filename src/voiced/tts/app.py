@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from voiced.api.app import create_tts_app
 from voiced.config import Settings
 from voiced.engines.base import TTSEngine
-from voiced.engines.registry import get_tts_engine
+from voiced.engines.registry import create_tts_engine
 from voiced.wyoming import WYOMING_TTS_SERVICE
 from voiced.wyoming.server import attach
 from voiced.wyoming.tts_handler import TTSEventHandler
@@ -13,8 +13,7 @@ from voiced.wyoming.tts_handler import TTSEventHandler
 
 def build_engine(settings: Settings) -> TTSEngine:
     """Instantiate the configured TTS engine (not loaded yet)."""
-    cls = get_tts_engine(settings.tts.engine)
-    return cls(settings.tts.model)
+    return create_tts_engine(settings.tts.engine, settings.tts.model)
 
 
 def build_tts_app(settings: Settings, engine: TTSEngine | None = None) -> FastAPI:

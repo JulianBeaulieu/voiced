@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from typing import Any
 
 MARKER = ".huggingface-shared-blobs"
 
@@ -57,3 +58,14 @@ def add_revision(
 def du(path: Path) -> int:
     """Bytes of the regular files under ``path``, not following links."""
     return sum(p.lstat().st_size for p in path.rglob("*") if p.is_file() and not p.is_symlink())
+
+
+def add_locked(hub: Path, entry: Any, revision: str | None = None, ref: str | None = None) -> Path:
+    """Cache a ``voiced.models.Locked`` model with every file at its locked
+    size: sparse files, so a 2.5 GB model costs nothing on disk."""
+    rev = revision or entry.revision
+    files = {name: f"{entry.id}/{name}/{rev}".encode() for name in entry.files}
+    snapshot = add_revision(hub, entry.repo, rev, files, ref=ref)
+    for name, locked in entry.files.items():
+        os.truncate(snapshot / name, locked.bytes)
+    return snapshot

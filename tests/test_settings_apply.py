@@ -308,3 +308,47 @@ def test_catalogue_is_only_read_for_engine_changes(cfg: Path) -> None:
 def test_example_config_documents_browser_settings() -> None:
     assert tomllib.loads(EXAMPLE.read_text())["server"]["browser_settings"] is False
     assert os.path.exists(EXAMPLE)
+
+
+# A model that is not downloaded (ADR 0022) ----------------------------------------
+
+PHONON_40M = "gradium/phonon-40m-en"
+
+
+def test_a_catalogued_model_that_is_not_downloaded_is_refused(cfg: Path, model_cache: Path) -> None:
+    """Even without the engine catalogue, every time from the disk, and
+    nothing is written."""
+    before = cfg.read_text()
+    with pytest.raises(store.ModelMissing) as exc:
+        apply_settings({"tts.engine": "phonon", "tts.model": PHONON_40M}, cfg)
+    assert (exc.value.field, exc.value.model) == ("tts.model", PHONON_40M)
+    assert exc.value.message == (
+        f"{PHONON_40M} is not downloaded; run voiced models download {PHONON_40M}, then "
+        f"voiced settings set tts.engine=phonon tts.model={PHONON_40M}"
+    )
+    assert isinstance(exc.value, InvalidSetting)  # callers that know only that still refuse
+    assert cfg.read_text() == before
+    # The model alone needs its engine's shared voices too.
+    from tests import hf_cache_support as hf
+    from voiced import models
+
+    entry = models.lock()[PHONON_40M]
+    hf.add_locked(model_cache, entry)
+    with pytest.raises(store.ModelMissing):
+        apply_settings({"tts.engine": "phonon", "tts.model": PHONON_40M}, cfg)
+    voices = models.lock()["gradium/phonon-voices"]
+    hf.add_locked(model_cache, voices)
+    change = apply_settings({"tts.engine": "phonon", "tts.model": PHONON_40M}, cfg)
+    assert change.changed == ("tts.engine", "tts.model")
+
+
+def test_the_model_an_engine_switch_implies_is_checked(cfg: Path) -> None:
+    catalogue = {"stt": [], "tts": [{"name": "phonon", "models": [PHONON_40M], "voices": []}]}
+    with pytest.raises(store.ModelMissing) as exc:
+        apply_settings({"tts.engine": "phonon"}, cfg, engines=lambda: catalogue)
+    assert exc.value.model == PHONON_40M
+
+
+def test_a_model_outside_the_catalogue_and_other_keys_are_not_checked(cfg: Path) -> None:
+    apply_settings({"tts.model": "someone/own-model"}, cfg)
+    apply_settings({"tts.speed": 1.5}, cfg)  # the configured default is not downloaded either

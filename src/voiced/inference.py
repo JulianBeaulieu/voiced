@@ -39,6 +39,7 @@ from voiced.config import Settings
 from voiced.context import ServiceContext
 from voiced.engines.base import STT_SAMPLE_RATE, EngineError, EngineNotLoaded
 from voiced.metrics import Operation, Outcome
+from voiced.models import ModelNotDownloaded
 from voiced.queue import QueueFull
 
 T = TypeVar("T")
@@ -64,7 +65,7 @@ DISCONNECT_ERRORS: tuple[type[Exception], ...] = (
 
 def classify(exc: Exception) -> Outcome:
     """Map an exception to the outcome a transport reports on the wire."""
-    if isinstance(exc, QueueFull | EngineNotLoaded):
+    if isinstance(exc, QueueFull | EngineNotLoaded | ModelNotDownloaded):
         return Outcome.BUSY
     if isinstance(exc, EngineError):
         return Outcome.CLIENT_ERROR

@@ -197,3 +197,15 @@ Silas Blackwater`, in 28 to 30 pieces.
 - Phonon's voices outside English (65 of the 102) and the other 40M
   languages wait for voiced's languages beyond English.
 - `engines.list` gains `voice_languages` for every TTS engine (ADR 0013).
+
+## Amendment (ADR 0022)
+
+The pins moved to `voiced/models/models.lock.json`, written from the
+catalogue in `voiced/models/catalogue.py`: `OPTIONAL_PINS`,
+`download_patterns()` and `extra_downloads()` are gone, and the voices
+repository is Phonon's `shared` model, downloaded with any of its models
+and deleted with the last. `gradium/phonon-40m-multilingual` is not in the
+catalogue (its gated files could not be hashed for the lock), so the engine
+refuses it like the other 40M variants; `gradium/phonon-40m-en` stays. The
+engine loads from the cache only (`snapshot(..., check_only=True)`): `voiced
+models download gradium/phonon-31m-en` fetches the model and the voices.

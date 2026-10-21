@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from voiced.api.app import create_stt_app
 from voiced.config import Settings
 from voiced.engines.base import STTEngine
-from voiced.engines.registry import get_stt_engine
+from voiced.engines.registry import create_stt_engine
 from voiced.wyoming import WYOMING_STT_SERVICE
 from voiced.wyoming.server import attach
 from voiced.wyoming.stt_handler import STTEventHandler
@@ -13,8 +13,7 @@ from voiced.wyoming.stt_handler import STTEventHandler
 
 def build_engine(settings: Settings) -> STTEngine:
     """Instantiate the configured STT engine (not loaded yet)."""
-    cls = get_stt_engine(settings.stt.engine)
-    return cls(settings.stt.model)
+    return create_stt_engine(settings.stt.engine, settings.stt.model)
 
 
 def build_stt_app(settings: Settings, engine: STTEngine | None = None) -> FastAPI:

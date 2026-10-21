@@ -9,6 +9,8 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from tests import hf_cache_support as hf
+from voiced import models
 from voiced.config import CLEARED_HF_ENV, ENGINE_ENV, Settings
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, FakeTTSEngine, lifespan_client
@@ -26,6 +28,24 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("model") is not None:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def model_cache(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The Hugging Face cache that :func:`voiced.models.hub_dir` names without
+    an ``hf_home`` (the settings checks, ``voiced models``, uninstall): an
+    empty scratch one, never the real cache, which CI does not have."""
+    home = tmp_path_factory.mktemp("hf")
+    monkeypatch.setattr("voiced.models.cache.DEFAULT_HF_HOME", home)
+    return home / "hub"
+
+
+@pytest.fixture
+def models_downloaded(model_cache: Path) -> Path:
+    """Every catalogued repository complete at its pin in :func:`model_cache`."""
+    for entry in models.lock().values():
+        hf.add_locked(model_cache, entry)
+    return model_cache
 
 
 @pytest.fixture(autouse=True)

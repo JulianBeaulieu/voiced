@@ -28,7 +28,7 @@ from voiced.watchdog import (
     poll_health,
 )
 
-State = Literal["running", "starting", "stopped", "degraded", "unknown"]
+State = Literal["running", "starting", "stopped", "degraded", "missing_model", "unknown"]
 
 STATUS_TIMEOUT_S = 2.0
 
@@ -39,6 +39,8 @@ def service_state(obs: Observation, in_grace: bool) -> State:
         return "running"
     if obs.kind == "starting":
         return "starting"
+    if obs.kind == "missing_model":
+        return "missing_model"
     if obs.kind in ("degraded", "stalled", "error"):
         return "degraded"
     # unreachable

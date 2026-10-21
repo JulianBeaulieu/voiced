@@ -68,7 +68,7 @@ installer needs (ADR 0018, "What the app ships and pins"):
 | `Contents/Resources/WhatsNew.md` | This version's section of `CHANGELOG.md`, else the Unreleased one |
 
 The model pins are what the wheel's `python -I -m voiced.models` prints
-(`voiced.models.PINS`). Everything fetched is pinned by
+(the default engines' models in `voiced/models.lock.json`). Everything fetched is pinned by
 hash: uv and its licence in `bundle.sh`, and the build backend and
 `packaging` (which `app_manifest.py` uses to read the lock's markers and wheel
 tags) by `src/voiced/build-requirements.lock`. The first run needs the

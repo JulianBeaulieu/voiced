@@ -206,11 +206,9 @@ async def test_connections_over_the_cap_are_refused_and_counted_again_when_freed
 @pytest.mark.parametrize(
     ("event", "kind"),
     [
-        (Synthesize(text="Hi.", voice=SynthesizeVoice(name="no_such_voice")).event(), "Unknown"),
         (Event("synthesize", {"text": "Hi.", "voice": {"name": 7}}), "Malformed"),
         (Event("synthesize", {"text": 7}), "Malformed"),
         (Event("synthesize", {}), "Malformed"),
-        (SynthesizeStart(voice=SynthesizeVoice(name="no_such_voice")).event(), "Unknown"),
     ],
 )
 async def test_tts_bad_voice_or_text_is_a_client_error(
@@ -225,13 +223,14 @@ async def test_tts_bad_voice_or_text_is_a_client_error(
     assert ctx.health.status == "ok"
 
 
-async def test_tts_voice_outside_the_configured_languages_is_refused(
+async def test_tts_voice_outside_the_configured_languages_is_not_used(
     tts_listener: WyomingListener, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Wyoming serves the voices Describe lists, as HTTP does, not every
     voice the engine knows: a voice in a language that is not configured
-    never reaches the engine. (Kokoro loads only its English voices, so this
-    matters for engines that offer more languages.)"""
+    never reaches the engine, which is asked for the configured voice
+    instead. (Kokoro loads only its English voices, so this matters for
+    engines that offer more languages.)"""
     ctx = tts_listener.ctx
     engine = ctx.tts_engine
     voices = [*await engine.voices(), Voice(id="jf_alpha", name="Alpha", language="ja-JP")]
@@ -242,24 +241,20 @@ async def test_tts_voice_outside_the_configured_languages_is_refused(
 
     def synthesize(text: str, voice: str, speed: float = 1.0) -> object:
         asked.append(voice)
-        raise AssertionError("the engine was asked")
+        raise EngineError("stop here")
 
     monkeypatch.setattr(engine, "voices", with_japanese)
     monkeypatch.setattr(engine, "synthesize", synthesize)
     async with raw(tts_listener) as (reader, writer):
         request = Synthesize(text="Hi.", voice=SynthesizeVoice(name="jf_alpha"))
         await async_write_event(request.event(), writer)
-        error = await read_error(reader)
-    assert error.text.startswith("UnknownVoice")
-    assert asked == []
+        await read_error(reader)
+    assert asked == [ctx.settings.tts.default_voice]
 
 
 @pytest.mark.parametrize(
     "start",
-    [
-        SynthesizeStart(voice=SynthesizeVoice(name="no_such_voice")).event(),
-        Event("synthesize-start", {"voice": {"name": 7}}),
-    ],
+    [Event("synthesize-start", {"voice": {"name": 7}})],
 )
 @pytest.mark.parametrize("gap_s", [0.0, 0.05, 0.3])
 async def test_tts_stream_that_cannot_start_fails_once_and_closes(

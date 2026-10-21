@@ -530,3 +530,28 @@ def test_config_file_mode(tmp_path: Path) -> None:
     assert readable.result == "warn" and "chmod 600" in readable.detail
     path.chmod(0o600)
     assert doctor.check_config_file(path).result == "pass"
+
+
+def test_each_services_model_is_downloaded_or_says_what_fetches_it(
+    settings: Settings, model_cache: Path
+) -> None:
+    from tests import hf_cache_support as hf
+    from voiced import models
+
+    entry = models.lock()[settings.stt.model]
+    hf.add_locked(model_cache, entry)
+    settings.tts.model = "someone/own-voice"
+    stt, tts = doctor.check_models(settings)
+    assert (stt.name, stt.result) == ("STT model", "pass")
+    assert stt.detail == f"{entry.repo} downloaded at {entry.revision[:12]}"
+    assert (tts.result, tts.detail) == (
+        "pass",
+        "someone/own-voice (not in voiced's catalogue; not checked)",
+    )
+    settings.tts.model = "gradium/phonon-31m-en"
+    _, tts = doctor.check_models(settings)
+    assert tts.result == "fail"
+    assert tts.detail == (
+        "gradium/phonon-31m-en, gradium/phonon-voices not downloaded; "
+        "run voiced models download gradium/phonon-31m-en"
+    )

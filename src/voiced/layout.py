@@ -329,17 +329,23 @@ def link_entry_point(state_dir: Path, environment: Path) -> None:
 
 
 @contextlib.contextmanager
-def install_lock(state_dir: Path, waiting: Callable[[], None] = lambda: None) -> Iterator[None]:
+def install_lock(
+    state_dir: Path, waiting: Callable[[], None] = lambda: None, *, wait: bool = True
+) -> Iterator[None]:
     """Hold an exclusive ``flock`` on the state directory itself while
     installing or uninstalling, so that the app and the CLI never prune or
     relink under each other. No lock file: one in a directory that turns
     out not to be voiced's would be litter. ``state_dir`` must exist.
-    ``waiting`` is called once if another holder makes this one wait."""
+    ``waiting`` is called once if another holder makes this one wait;
+    without ``wait``, a held lock raises ``BlockingIOError`` instead
+    (``voiced models``, which the app runs and reports as busy)."""
     fd = os.open(state_dir, os.O_RDONLY)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            if not wait:
+                raise
             waiting()
             fcntl.flock(fd, fcntl.LOCK_EX)
         yield

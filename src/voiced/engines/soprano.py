@@ -37,6 +37,7 @@ from numpy.typing import NDArray
 from voiced.audio import float32_to_pcm16, resample
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, Voice
 from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
+from voiced.models import default_model
 
 log = logging.getLogger(__name__)
 
@@ -87,9 +88,9 @@ def sentence_bound(sentence: str, token_seconds: float) -> SentenceBound:
 
 class SopranoEngine(SentenceTTSEngine):
     name = "soprano"
-    model_id = "mlx-community/Soprano-80M-bf16"
+    model_id = default_model("soprano").id
     languages = ["en-US"]
-    license = "Apache-2.0"
+    license = default_model("soprano").license
 
     @classmethod
     def catalogue_voices(cls) -> list[Voice]:
@@ -132,7 +133,11 @@ def _load_model(model_id: str) -> Any:
     from mlx_audio.lm.sample_utils import make_sampler
     from mlx_audio.tts.utils import load_model
 
-    model = load_model(model_id)
+    from voiced.models import load_pinned
+
+    # At the pinned revision, from the cache; never downloaded here. As for
+    # Kokoro, mlx-audio is given the repo id.
+    model = load_pinned(load_model, model_id)
 
     def stream_generate(
         input_ids: Any,
