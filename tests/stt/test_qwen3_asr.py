@@ -13,7 +13,6 @@ import sys
 import time
 import types
 from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +22,14 @@ import pytest
 from httpx import AsyncClient
 from numpy.typing import NDArray
 
-from tests.stt.conftest import load_fixture, word_accuracy
+from tests.stt.conftest import (
+    TurnRecorder,
+    blocking_first_call,
+    load_fixture,
+    stub_mlx_audio,
+    until,
+    word_accuracy,
+)
 from voiced import models
 from voiced.engines import qwen3_asr
 from voiced.engines.base import (
@@ -102,10 +108,11 @@ class _Model:
         self.texts = ["Hello there. How are you?"]
         self.detects = ["English"]
         self.locked: list[bool] = []
+        self.turns = TurnRecorder()  # the fixture's, once installed
 
     def generate(self, samples: NDArray[np.float32], **kwargs: Any) -> Any:
         self.calls.append({"samples": len(samples), **kwargs})
-        self.locked.append(_HELD[0])
+        self.locked.append(self.turns.held)
         n = len(self.calls) - 1
         text = self.texts[n % len(self.texts)]
         if text == "LOOP":
@@ -140,21 +147,6 @@ class _Aligner:
         return SimpleNamespace(items=items)
 
 
-_HELD = [False]
-_TURNS: list[str] = []  # each enter and exit of the GPU turn lock
-
-
-@contextmanager
-def _turn() -> Iterator[None]:
-    _TURNS.append("enter")
-    _HELD[0] = True
-    try:
-        yield
-    finally:
-        _HELD[0] = False
-        _TURNS.append("exit")
-
-
 def _split(samples: NDArray[np.float32], *, sr: int, chunk_duration: float) -> list[Any]:
     """mlx-audio's splitter without the search for a quiet cut."""
     n = round(chunk_duration * sr)
@@ -171,28 +163,19 @@ def fakes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[_Model, _Ali
         loaded.append(str(path.relative_to(tmp_path)))
         return aligner if "Aligner" in str(path) else model
 
-    core = types.ModuleType("mlx.core")
-    core.clear_cache = lambda: None  # type: ignore[attr-defined]
-    mlx = types.ModuleType("mlx")
-    mlx.core = core  # type: ignore[attr-defined]
-    utils = types.ModuleType("mlx_audio.stt.utils")
-    utils.load_model = load_model  # type: ignore[attr-defined]
     splitter = types.ModuleType("mlx_audio.stt.models.qwen3_asr.qwen3_asr")
     splitter.split_audio_into_chunks = _split  # type: ignore[attr-defined]
-    for name, module in {
-        "mlx": mlx,
-        "mlx.core": core,
-        "mlx_audio": types.ModuleType("mlx_audio"),
-        "mlx_audio.stt": types.ModuleType("mlx_audio.stt"),
-        "mlx_audio.stt.utils": utils,
-        "mlx_audio.stt.models": types.ModuleType("mlx_audio.stt.models"),
-        "mlx_audio.stt.models.qwen3_asr": types.ModuleType("mlx_audio.stt.models.qwen3_asr"),
-        "mlx_audio.stt.models.qwen3_asr.qwen3_asr": splitter,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
+    model.turns = stub_mlx_audio(
+        monkeypatch,
+        qwen3_asr,
+        load_model,
+        {
+            "mlx_audio.stt.models": types.ModuleType("mlx_audio.stt.models"),
+            "mlx_audio.stt.models.qwen3_asr": types.ModuleType("mlx_audio.stt.models.qwen3_asr"),
+            "mlx_audio.stt.models.qwen3_asr.qwen3_asr": splitter,
+        },
+    )
     monkeypatch.setattr(models, "snapshot", lambda repo, check_only: tmp_path / repo)
-    monkeypatch.setattr(qwen3_asr, "stt_turn", _turn)
-    _TURNS.clear()
     monkeypatch.setitem(qwen3_asr._TOKENIZERS, "japanese", "voiced_no_such_tokenizer")
     return model, aligner, loaded
 
@@ -339,17 +322,25 @@ async def test_a_silent_piece_never_reaches_the_model(
     assert [(s.start, s.end) for s in transcript.segments] == [(0.0, 3.0), (6.0, 9.0)]
 
 
-async def test_a_closed_session_stops_between_pieces(
+async def test_a_cancelled_finalize_stops_between_pieces(
     fakes: tuple[_Model, _Aligner, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled finalize closes its session; the turn's later pieces are
-    then not decoded."""
+    """A client that hangs up during finalize cancels it; the piece being
+    decoded finishes, the turn's later pieces are not decoded."""
     model, _, _ = fakes
     monkeypatch.setattr(qwen3_asr, "CHUNK_S", 1.0)
     engine = await _loaded(fakes)
-    transcript = engine._finalize_blocking([SPEECH], "en", lambda: len(model.calls) >= 1)
+    with blocking_first_call(model) as started:
+        session = await engine.stream("en")
+        await session.add_audio(SPEECH)
+        task = asyncio.create_task(session.finalize())
+        await started()
+        task.cancel()
+        await until(session._stop.is_set)  # the cancel reached the session
+    with pytest.raises(asyncio.CancelledError):
+        await task
     assert len(model.calls) == 1
-    assert transcript.text == "Hello there. How are you?"
+    assert engine._session is None
 
 
 async def test_aligned_times_stay_inside_their_piece(
@@ -454,7 +445,7 @@ async def test_a_stream_buffers_and_transcribes_the_turn_at_finalize(
     )
     assert [c["samples"] for c in model.calls] == [2 * SR, SR]
     assert model.locked == [True, True]
-    assert _TURNS == ["enter", "exit"] * 2  # once a piece, not around the turn
+    assert model.turns.log == ["enter", "exit"] * 2  # once a piece, not around the turn
     assert aligner.calls == []
 
 
@@ -468,41 +459,16 @@ async def test_one_session_at_a_time_and_no_batch_meanwhile(
     with pytest.raises(EngineError, match="session is open"):
         await engine.transcribe(AudioInput(SPEECH))
     await session.finalize()
-    with pytest.raises(EngineError, match="closed"):
-        await session.add_audio(SPEECH)
-    with pytest.raises(EngineError, match="closed"):
-        await session.finalize()
     await engine.transcribe(AudioInput(SPEECH))  # free again
 
 
-async def test_closing_without_finalize_discards_the_turn(
+async def test_an_empty_stream_is_an_empty_transcript(
     fakes: tuple[_Model, _Aligner, list[str]],
 ) -> None:
     engine = await _loaded(fakes)
-    async with await engine.stream() as session:
-        await session.add_audio(SPEECH)
-    await session.close()  # idempotent
-    assert fakes[0].calls == []
     empty = await (await engine.stream()).finalize()
     assert (empty.text, empty.duration_s) == ("", 0.0)
-
-
-async def test_a_failed_finalize_closes_the_session(
-    fakes: tuple[_Model, _Aligner, list[str]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    engine = await _loaded(fakes)
-    session = await engine.stream()
-    await session.add_audio(SPEECH)
-
-    def broken(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("decoder fell over")
-
-    monkeypatch.setattr(fakes[0], "generate", broken)
-    with pytest.raises(RuntimeError, match="fell over"):
-        await session.finalize()
-    with pytest.raises(EngineError, match="closed"):
-        await session.add_audio(SPEECH)
-    assert engine._session is None
+    assert fakes[0].calls == [] and fakes[0].turns.log == []
 
 
 # --- against the real models ------------------------------------------------

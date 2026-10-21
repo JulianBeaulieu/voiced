@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import sys
+import threading
+import time
+import types
 import wave
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -49,3 +57,86 @@ def speech() -> NDArray[np.float32]:
 @pytest.fixture
 def speech_with_trailing_silence() -> NDArray[np.float32]:
     return load_fixture("speech_en_trailing_silence.wav")
+
+
+@contextmanager
+def blocking_first_call(model: Any) -> Iterator[Callable[[], Awaitable[None]]]:
+    """Hold ``model.generate``'s first call on the model thread until the
+    ``with`` block ends; the block awaits the yielded function to know that
+    call has started. For tests that cancel a finalize mid-decode."""
+    started, release = threading.Event(), threading.Event()
+    generate = model.generate
+
+    def held(*args: Any, **kwargs: Any) -> Any:
+        if not started.is_set():
+            started.set()
+            release.wait(30)
+        return generate(*args, **kwargs)
+
+    async def wait_started() -> None:
+        # Generous: Silero runs over the turn first, slowly on CI runners.
+        assert await asyncio.to_thread(started.wait, 30), "the decode never started"
+
+    model.generate = held
+    try:
+        yield wait_started
+    finally:
+        release.set()
+
+
+async def until(condition: Callable[[], bool], timeout_s: float = 5.0) -> None:
+    """Yield to the event loop until ``condition`` holds (a cancel reaching a
+    task, say); fail after ``timeout_s``."""
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        assert time.monotonic() < deadline, "condition not met"
+        await asyncio.sleep(0)
+
+
+class TurnRecorder:
+    """Stands in for :func:`voiced.gpu.stt_turn`: ``log`` has each enter and
+    exit, ``held`` whether a turn is held now."""
+
+    def __init__(self) -> None:
+        self.log: list[str] = []
+        self.held = False
+
+    @contextmanager
+    def __call__(self) -> Iterator[None]:
+        self.log.append("enter")
+        self.held = True
+        try:
+            yield
+        finally:
+            self.held = False
+            self.log.append("exit")
+
+
+def stub_mlx_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    engine_module: types.ModuleType,
+    load_model: Callable[[Path], Any],
+    extra: dict[str, types.ModuleType] | None = None,
+) -> TurnRecorder:
+    """Stand-in ``mlx`` and ``mlx_audio`` modules for an engine that loads its
+    model with ``mlx_audio.stt.utils.load_model`` (``extra`` adds modules by
+    name), and a :class:`TurnRecorder` as ``engine_module``'s ``stt_turn``."""
+    core = types.ModuleType("mlx.core")
+    core.clear_cache = lambda: None  # type: ignore[attr-defined]
+    mlx = types.ModuleType("mlx")
+    mlx.core = core  # type: ignore[attr-defined]
+    utils = types.ModuleType("mlx_audio.stt.utils")
+    utils.load_model = load_model  # type: ignore[attr-defined]
+    modules = {
+        "mlx": mlx,
+        "mlx.core": core,
+        "mlx_audio": types.ModuleType("mlx_audio"),
+        "mlx_audio.stt": types.ModuleType("mlx_audio.stt"),
+        "mlx_audio.stt.utils": utils,
+        **(extra or {}),
+    }
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    turns = TurnRecorder()
+    monkeypatch.setattr(engine_module, "stt_turn", turns)
+    return turns

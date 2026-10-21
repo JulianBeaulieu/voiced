@@ -12,7 +12,8 @@ language-coverage engine, not the push-to-talk one:
   piece's words to the audio with Qwen3-ForcedAligner-0.6B, giving one
   segment per sentence; a language the aligner does not cover, or a failed
   alignment, gets one segment per piece;
-* a stream session only buffers: ``partial()`` is always ``""`` and
+* a stream session (:class:`~voiced.engines.buffered.BufferedStreamSession`)
+  only buffers: ``partial()`` is always ``""`` and
   ``finalize()`` transcribes the whole turn without the aligner, holding
   :func:`voiced.gpu.stt_turn` around each piece because the client is
   waiting for it, so finalize grows with the length of the turn;
@@ -33,13 +34,13 @@ import importlib.util
 import logging
 import time
 from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
-from voiced.audio import check_samples, is_silent, stt_input
+from voiced.audio import is_silent, stt_input
 from voiced.engines.base import (
     STT_SAMPLE_RATE,
     AudioInput,
@@ -51,15 +52,16 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
+from voiced.engines.buffered import BufferedStreamSession
 from voiced.engines.registry import ModelRefused
-from voiced.gpu import stt_turn
+from voiced.gpu import Turn, stt_turn
 from voiced.models import default_model, engine
 from voiced.text import collapse_whitespace, primary_subtag, split_sentences
 from voiced.threads import ModelThread
 
 log = logging.getLogger(__name__)
 
-__all__ = ["ALIGNER_REPO", "LANGUAGES", "Qwen3ASREngine", "Qwen3ASRStreamSession"]
+__all__ = ["ALIGNER_REPO", "LANGUAGES", "Qwen3ASREngine"]
 
 # BCP-47 primary subtag to the model's name for it: the 30 entries of
 # ``support_languages`` in the checkpoints' config.json, English first.
@@ -124,8 +126,6 @@ MIN_SAMPLES = 1600
 
 _SR = STT_SAMPLE_RATE
 
-Turn = Callable[[], AbstractContextManager[object]]
-
 
 class Qwen3ASREngine(STTEngine):
     name = "qwen3-asr"
@@ -145,7 +145,7 @@ class Qwen3ASREngine(STTEngine):
         self._split: Any = None  # mlx-audio's splitter, imported with the model
         self._aligned: set[str] = set()  # the aligner's languages, lower case
         self._thread = ModelThread("qwen3-asr")
-        self._session: Qwen3ASRStreamSession | None = None
+        self._session: BufferedStreamSession | None = None
 
     @classmethod
     def normalize_language(cls, language: str | None) -> str | None:
@@ -205,22 +205,22 @@ class Qwen3ASREngine(STTEngine):
     async def stream(self, language: str | None = None) -> STTStreamSession:
         """A buffering session; one at a time (:attr:`max_streams` is 1)."""
         self._require_idle()
-        session = Qwen3ASRStreamSession(self, self.normalize_language(language))
+        code = self.normalize_language(language)
+        # No aligner on a stream's turn, and each piece under the GPU lock,
+        # since a client is waiting for it (ADR 0019).
+        session = BufferedStreamSession(
+            self._thread,
+            lambda audio, stop: self._transcribe_blocking(
+                audio, code, align=False, turn=stt_turn, stop=stop
+            ),
+            self._session_closed,
+        )
         self._session = session
         return session
 
-    def _session_closed(self, session: Qwen3ASRStreamSession) -> None:
+    def _session_closed(self, session: BufferedStreamSession) -> None:
         if self._session is session:
             self._session = None
-
-    def _finalize_blocking(
-        self, chunks: list[NDArray[np.float32]], code: str | None, stop: Callable[[], bool]
-    ) -> Transcript:
-        """A stream's turn: no aligner, and each piece under the GPU lock,
-        since a client is waiting for it (ADR 0019); ``stop`` ends it between
-        pieces once the session is closed (a cancelled finalize)."""
-        audio = AudioInput(np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32))
-        return self._transcribe_blocking(audio, code, align=False, turn=stt_turn, stop=stop)
 
     def _transcribe_blocking(
         self,
@@ -323,43 +323,6 @@ class Qwen3ASREngine(STTEngine):
             first = max(0.0, float(spoken[0].start_time))
             sentences.append((sentence, first, max(float(w.end_time) for w in spoken)))
         return sentences if not words else None
-
-
-class Qwen3ASRStreamSession(STTStreamSession):
-    """Buffers the turn and transcribes it at :meth:`finalize`; no partials."""
-
-    def __init__(self, engine: Qwen3ASREngine, language: str | None) -> None:
-        self._engine = engine
-        self._language = language
-        self._chunks: list[NDArray[np.float32]] = []
-        self._closed = False
-
-    async def add_audio(self, samples: NDArray[np.float32]) -> None:
-        self._check_open()
-        self._chunks.append(check_samples(samples))
-
-    def partial(self) -> str:
-        return ""
-
-    async def finalize(self) -> Transcript:
-        self._check_open()
-        chunks, self._chunks = self._chunks, []
-        try:
-            engine = self._engine
-            return await engine._thread.run(
-                engine._finalize_blocking, chunks, self._language, lambda: self._closed
-            )
-        finally:
-            await self.close()
-
-    async def close(self) -> None:
-        self._closed = True
-        self._chunks = []
-        self._engine._session_closed(self)
-
-    def _check_open(self) -> None:
-        if self._closed:
-            raise EngineError("stream session is closed")
 
 
 def _decode(model: Any, piece: NDArray[np.float32], language: str | None) -> Any:

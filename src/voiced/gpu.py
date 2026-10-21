@@ -35,13 +35,22 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-__all__ = ["LOCK_NAME", "MAX_WAIT_S", "TAKE_S", "Yielder", "lock_path", "stt_running", "stt_turn"]
+__all__ = [
+    "LOCK_NAME",
+    "MAX_WAIT_S",
+    "TAKE_S",
+    "Turn",
+    "Yielder",
+    "lock_path",
+    "stt_running",
+    "stt_turn",
+]
 
 LOCK_NAME = "voiced-gpu.lock"
 MAX_WAIT_S = 0.3
@@ -107,6 +116,11 @@ def _warn(message: str) -> None:
     if not _warned:
         _warned = True
         log.warning("GPU priority for speech-to-text is unavailable: %s", message)
+
+
+Turn = Callable[[], AbstractContextManager[object]]
+"""What an engine holds around an STT call: :func:`stt_turn`, or
+``contextlib.nullcontext`` where no client is waiting."""
 
 
 @contextmanager
