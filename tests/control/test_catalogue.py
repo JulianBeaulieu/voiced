@@ -34,6 +34,7 @@ def test_kokoro_and_phonon_catalogues_without_mlx_or_ptts() -> None:
     # The catalogue's models, the default first.
     assert tts["phonon"]["models"] == ["gradium/phonon-31m-en", "gradium/phonon-40m-en"]
     assert tts["pocket"]["voices"][0] == "alba"
+    assert tts["pocket"]["models"] == ["mlx-community/pocket-tts"]
     assert json.loads(out[1]) == []
 
 
