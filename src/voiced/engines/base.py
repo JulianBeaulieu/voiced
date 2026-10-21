@@ -290,4 +290,9 @@ class TTSEngine(_EngineMeta):
 
         Must be an async generator (``async def`` containing ``yield``) so the
         server can stop it early with ``aclose()`` when the client disconnects.
+        The server may also cancel it at any await when the client hangs up
+        (ADR 0005), so blocking work goes through
+        ``voiced.threads.run_blocking`` or a ``ModelThread``, which let the
+        current call finish first: the slot is released only once the
+        engine's step is done.
         """

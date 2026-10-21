@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import struct
 import time
 from collections.abc import AsyncIterator
 
 import pytest
 from fastapi import FastAPI
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
+from wyoming.client import AsyncTcpClient
 from wyoming.error import Error
 from wyoming.info import Describe, Info
 from wyoming.tts import (
@@ -19,11 +22,13 @@ from wyoming.tts import (
 )
 
 from voiced import __version__
+from voiced.config import Settings
 from voiced.engines.base import PCMChunk, Voice
 from voiced.inference import ClientTimeout
 from voiced.testing import FakeTTSEngine
-from voiced.testing.fakes import FAKE_VOICES
-from voiced.wyoming import WYOMING_TTS_SERVICE
+from voiced.testing.fakes import FAKE_VOICES, PIECE_GAP_S, STEP_S, SteppedTTSEngine
+from voiced.tts import build_tts_app
+from voiced.wyoming import WYOMING_TTS_SERVICE, handlers
 from voiced.wyoming.server import WyomingListener
 from voiced.wyoming.tts_handler import TTSEventHandler
 
@@ -337,6 +342,120 @@ async def test_plain_disconnect_mid_synthesis_stays_healthy(
     assert ctx.health.last_error is None
 
 
+@pytest.mark.parametrize("reset", [False, True], ids=["close", "reset"])
+async def test_a_hang_up_frees_the_slot_at_the_next_step_not_the_next_chunk(
+    settings: Settings, reset: bool
+) -> None:
+    """The engine's audio pieces are a second apart; a client that closes the
+    connection (or resets it) after the first one frees the slot at the
+    engine's next step, and the next request gets it at once. The hang-up is
+    still a disconnect."""
+    engine = SteppedTTSEngine()
+    listener = await _listener(settings, engine)
+    ctx = listener.ctx
+    async with listener:
+        async with client(listener) as c:
+            await c.write_event(Synthesize(text="Hello there.").event())
+            await read_until(c, "audio-chunk")
+            if reset:
+                _reset_on_close(c)
+        hung_up = time.perf_counter()
+        await wait_for(lambda: ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        assert engine.steps < 10, "the synthesis stopped at its next step"
+
+        engine.steps_per_piece = 1  # this one is read to the end
+        async with client(listener) as c:
+            asked = time.perf_counter()
+            await c.write_event(Synthesize(text="Hi.").event())
+            await read_until(c, "audio-chunk")
+            assert time.perf_counter() - asked < 0.2
+            await read_until(c, "audio-stop")
+    counts = ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+    assert counts["disconnect"] == 1 and counts["ok"] == 1
+    assert ctx.health.status == "ok"
+
+
+async def test_a_stream_closed_while_its_text_arrives_frees_the_slot_at_the_next_step(
+    settings: Settings,
+) -> None:
+    """No SynthesizeStop yet: the loop is reading, sees the close itself, and
+    ends the sentence being spoken as a disconnect."""
+    engine = SteppedTTSEngine()
+    listener = await _listener(settings, engine)
+    ctx = listener.ctx
+    async with listener:
+        async with client(listener) as c:
+            await c.write_event(SynthesizeStart().event())
+            await c.write_event(SynthesizeChunk(text="One. Two. Three. ").event())
+            await read_until(c, "audio-chunk")
+        hung_up = time.perf_counter()
+        await wait_for(lambda: ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        await wait_for(lambda: not listener._handlers)
+    assert engine.steps < 10, "neither the rest of the sentence nor the next was spoken"
+    counts = ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+    assert counts["disconnect"] == 1 and counts["ok"] == 0
+
+
+async def test_a_stream_closed_after_synthesize_stop_frees_the_slot_at_the_next_step(
+    settings: Settings,
+) -> None:
+    """Home Assistant sends SynthesizeStop once its text is written, so most of
+    a stream is spoken after it, while the handler waits for the worker."""
+    engine = SteppedTTSEngine()
+    listener = await _listener(settings, engine)
+    ctx = listener.ctx
+    async with listener:
+        async with client(listener) as c:
+            await c.write_event(SynthesizeStart().event())
+            await c.write_event(SynthesizeChunk(text="One. Two. Three.").event())
+            await c.write_event(SynthesizeStop().event())
+            await read_until(c, "audio-chunk")
+        hung_up = time.perf_counter()
+        await wait_for(lambda: ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        await wait_for(lambda: not listener._handlers)
+    assert engine.steps < 10, "neither the rest of the sentence nor the next was spoken"
+    counts = ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+    assert counts["disconnect"] == 1 and counts["ok"] == 0
+    assert ctx.health.status == "ok"
+
+
+async def test_a_synthesis_longer_than_the_idle_bound_is_not_a_hang_up(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The idle bound on the next event runs from the end of the request, so a
+    client that waits quietly for a long synthesis gets all of it."""
+    engine = SteppedTTSEngine(steps_per_piece=5)
+    monkeypatch.setattr(handlers, "CONNECTION_IDLE_S", 5 * STEP_S / 2)
+    listener = await _listener(settings, engine)
+    async with listener, client(listener) as c:
+        await c.write_event(Synthesize(text="Hello there.").event())
+        events = await read_until(c, "audio-stop")
+        assert [e.type for e in events].count("audio-chunk") == 2
+        assert await c.read_event() is None, "then closed for being idle"
+    counts = listener.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+    assert counts["ok"] == 1 and counts["disconnect"] == 0
+
+
+def _reset_on_close(c: AsyncTcpClient) -> None:
+    """Make closing ``c`` send a reset instead of end of file."""
+    sock = c._writer.get_extra_info("socket")  # type: ignore[union-attr]
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+
+async def _listener(settings: Settings, engine: SteppedTTSEngine) -> WyomingListener:
+    """A TTS listener on ``engine``, loaded."""
+    settings.server.zeroconf = False
+    ctx = build_tts_app(settings, engine).state.ctx
+    await engine.load()
+    ctx.health.mark_loaded()
+    return WyomingListener(
+        ctx, "127.0.0.1", 0, handler_cls=TTSEventHandler, service_name=WYOMING_TTS_SERVICE
+    )
+
+
 async def test_synthesize_stopped_is_last(tts_listener: WyomingListener) -> None:
     async with client(tts_listener) as c:
         await c.write_event(SynthesizeStart().event())
@@ -388,8 +507,8 @@ async def test_disconnect_while_worker_waits_for_text_ends_the_worker(
         worker = stream.worker
         assert not worker.done()
     await wait_for(worker.done)
-    assert worker.cancelled()
     assert tts_listener.ctx.queue.depth == 0
+    assert tts_listener.ctx.metrics.snapshot()["operations"] == {}, "nothing was spoken"
 
 
 async def test_synthesis_before_the_model_loads_is_busy(tts_app: FastAPI) -> None:

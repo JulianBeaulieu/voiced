@@ -22,9 +22,12 @@ The engine runs inside ``inference()`` in its own task, and the response
 body reads its chunks from a queue. The route primes the body with one
 ``anext()``, so a full queue is still a 503 and an engine error still a 400
 before any header is sent (ADR 0005). A client that hangs up while the engine
-is still producing stops the body; the synthesis then ends at the next chunk
-and is counted as a disconnect. A hang-up after synthesis finished records
-``ok``: the audio was produced, only its delivery failed.
+is still producing stops the body; the synthesis then ends at the engine's
+next step, not its next chunk, frees the slot and is counted as a disconnect.
+A hang-up after synthesis finished records ``ok``: the audio was produced, only
+its delivery failed. Under ASGI spec 2.4 Starlette does not listen for
+``http.disconnect``, so there the body learns of a hang-up only when a send
+fails, at the next chunk (uvicorn reports 2.3).
 """
 
 from __future__ import annotations
@@ -37,7 +40,6 @@ from typing import Any, Literal, cast
 
 from fastapi import APIRouter, status
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.requests import ClientDisconnect
 
 from voiced import audio
 from voiced.api import ffmpeg
@@ -46,7 +48,7 @@ from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.api.responses import ClosingStreamingResponse
 from voiced.context import ServiceContext
 from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk
-from voiced.inference import inference
+from voiced.inference import HangUp, inference
 from voiced.metrics import Operation
 from voiced.text import normalize
 
@@ -164,12 +166,13 @@ async def _synthesize(
     client hangs up, the server cancels the task streaming this body; if the
     block were in this generator, the ``CancelledError`` would land inside it
     and nothing would be recorded (ADR 0005). Instead, stopping this generator
-    for any reason sets ``stop``, and the synthesis ends at the next chunk with
-    a disconnect that ``inference()`` counts. Cancellation itself is untouched.
+    for any reason sets ``hang_up``, and the synthesis ends at the engine's next
+    step with a disconnect that ``inference()`` counts. Cancellation itself is
+    untouched.
     """
     out: asyncio.Queue[object] = asyncio.Queue()
-    stop = asyncio.Event()
-    task = asyncio.create_task(_produce(ctx, text, voice, speed, out, stop))
+    hang_up = HangUp()
+    task = asyncio.create_task(_produce(ctx, text, voice, speed, out, hang_up))
     _SYNTHESES.add(task)
     task.add_done_callback(_SYNTHESES.discard)
     try:
@@ -183,7 +186,9 @@ async def _synthesize(
             if isinstance(item, Exception):
                 raise item
     finally:
-        stop.set()
+        # A no-op once the synthesis has ended: a body that read to the end,
+        # or a hang-up after synthesis finished, leaves its outcome alone.
+        hang_up.set()
 
 
 async def _produce(
@@ -192,7 +197,7 @@ async def _produce(
     voice: str,
     speed: float,
     out: asyncio.Queue[object],
-    stop: asyncio.Event,
+    hang_up: HangUp,
 ) -> None:
     """Run the engine inside ``inference()`` and hand each chunk to the body.
 
@@ -201,15 +206,13 @@ async def _produce(
     is bounded by ``tts.max_input_chars``).
     """
     try:
-        async with inference(ctx, Operation.SPEECH):
+        async with inference(ctx, Operation.SPEECH, hang_up):
             # base.py requires synthesize() to be an async generator.
             chunks = cast(
                 AsyncGenerator[PCMChunk, None], ctx.tts_engine.synthesize(text, voice, speed)
             )
             async with aclosing(chunks):
                 async for chunk in chunks:
-                    if stop.is_set():
-                        raise ClientDisconnect  # the body stopped reading: a disconnect
                     out.put_nowait(chunk.data)
     except Exception as exc:
         # inference() has already recorded the outcome; hand the error to the body.

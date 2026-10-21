@@ -213,6 +213,29 @@ async def test_aclose_stops_synthesis(
     assert [s for s, _ in calls] == ["One."]
 
 
+async def test_a_failing_close_does_not_replace_what_ended_the_sentence(
+    engine_and_voice: tuple[SentenceTTSEngine, str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hang-up must stay a hang-up even if stopping the engine's work fails."""
+    engine, voice = engine_and_voice
+    _stub_loaded(engine, voice, monkeypatch)
+
+    def pieces(sentence: str, voice: str, speed: float) -> Generator[bytes, None, None]:
+        try:
+            yield bytes(480)
+            yield bytes(480)
+        finally:
+            raise RuntimeError("engine stream would not stop")
+
+    monkeypatch.setattr(engine, "_synth_chunks", pieces)
+    gen = engine.synthesize("One.", voice)
+    await gen.__anext__()
+    await gen.aclose()  # the close's RuntimeError is logged, not raised
+    assert "closing the sentence's synthesis failed" in caplog.text
+
+
 async def test_synthesis_runs_off_the_event_loop(
     engine_and_voice: tuple[SentenceTTSEngine, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

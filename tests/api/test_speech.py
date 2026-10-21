@@ -26,6 +26,7 @@ from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.base import PCMChunk, Voice
 from voiced.testing import FakeTTSEngine, lifespan_client
+from voiced.testing.fakes import PIECE_GAP_S, SteppedTTSEngine
 from voiced.tts import build_tts_app
 
 TEXT = "Hello there. This is a test."
@@ -299,6 +300,41 @@ async def test_client_disconnect_mid_stream_releases_slot(
         assert [r.getMessage() for r in caplog.records if r.levelname == "ERROR"] == []
         # The next request gets the slot immediately.
         assert (await _asgi_post(app, {"input": "Hi."})).status == 200
+
+
+async def test_a_hang_up_frees_the_slot_at_the_next_step_not_the_next_chunk(
+    settings: Settings,
+) -> None:
+    """The engine's audio pieces are a second apart; a client that hangs up
+    after the first one frees the slot at the engine's next step, and the
+    next request gets it at once. The hang-up is still a disconnect."""
+    engine = SteppedTTSEngine()
+    app = build_tts_app(settings, engine)
+    async with loaded(app):
+        disconnect = asyncio.Event()
+
+        async def on_body(body: bytes) -> None:
+            if body:
+                disconnect.set()  # hang up after the first audio
+
+        first = asyncio.create_task(
+            _asgi_post(app, {"input": "Hello there."}, disconnect=disconnect, on_body=on_body)
+        )
+        await asyncio.wait_for(disconnect.wait(), 2.0)
+        hung_up = time.perf_counter()
+        await _wait_until(lambda: app.state.ctx.queue.depth == 0)
+        assert time.perf_counter() - hung_up < PIECE_GAP_S / 4
+        await asyncio.wait_for(first, 2.0)
+        steps = engine.steps
+        assert steps < 10, "the synthesis stopped at its next step"
+        engine.steps_per_piece = 1  # this one is read to the end
+
+        engine_started = time.perf_counter()
+        second = await _asgi_post(app, {"input": "Hi.", "response_format": "pcm"})
+        assert second.status == 200 and second.body_times[0] - engine_started < 0.2
+        counts = app.state.ctx.metrics.snapshot()["operations"]["speech"]["counts"]
+        assert counts["disconnect"] == 1 and counts["ok"] == 1
+        assert app.state.ctx.health.snapshot(0).status == "ok"
 
 
 @pytest.mark.parametrize("spec_version", ["2.3", "2.4"])

@@ -17,6 +17,16 @@ the engine works. Each sentence takes the inference slot on its own
 (``async with inference(ctx, Operation.SPEECH)``), so a slow conversation
 agent does not hold the GPU between sentences.
 
+A client that closes the connection mid-synthesis frees the slot at the
+engine's next step, and the sentence it abandoned is counted as a disconnect,
+through a :class:`voiced.inference.HangUp`. The loop reads no event while
+``handle`` runs, so a plain ``Synthesize`` and the wait for a stream's last
+sentences after ``SynthesizeStop`` (where most of a Home Assistant stream is
+spoken) watch for the close with :meth:`VoicedEventHandler.on_close`; while
+a stream's text is still arriving the loop sees the close itself
+(:meth:`TTSEventHandler.disconnect`). A sentence still waiting for the slot
+ends at once, also as a disconnect; later sentences are dropped.
+
 A stream that fails (its ``SynthesizeStart`` refused, its text over
 ``tts.max_input_chars``, the engine or the slot failing in the worker) sends
 one ``Error``. Home Assistant writes the whole stream before it reads, so the
@@ -54,7 +64,7 @@ from voiced.engines.base import (
     PCMChunk,
     Voice,
 )
-from voiced.inference import inference
+from voiced.inference import HangUp, inference
 from voiced.metrics import Operation
 from voiced.text import normalize
 from voiced.wyoming.handlers import MalformedEvent, VoicedEventHandler, cancel_task, parse
@@ -74,6 +84,22 @@ class _Stream:
     accumulator: SentenceAccumulator = field(default_factory=SentenceAccumulator)
     worker: asyncio.Task[None] | None = None
     chars: int = 0
+    closed: bool = False
+    """The client is gone: the sentence being spoken ends, no other starts."""
+    speaking: HangUp | None = None
+
+    def next_hang_up(self) -> HangUp:
+        """The :class:`HangUp` for the next sentence."""
+        self.speaking = HangUp()
+        return self.speaking
+
+    def close(self) -> None:
+        """End the sentence being spoken, or waiting for the slot, and wake a
+        worker waiting for text so that it ends too."""
+        self.closed = True
+        if self.speaking is not None:
+            self.speaking.set()
+        self.sentences.put_nowait(None)
 
 
 def _require_text(text: object, event: Event) -> None:
@@ -176,10 +202,11 @@ class TTSEventHandler(VoicedEventHandler):
         await self._ensure_audio_start()
         await self.write_event(AudioStop().event())
 
-    async def _speak(self, text: str, voice: str) -> None:
+    async def _speak(self, text: str, voice: str, hang_up: HangUp | None = None) -> None:
         """Synthesize ``text`` while holding the inference slot, sending
-        ``AudioStart`` before the first chunk and an ``AudioChunk`` per chunk."""
-        async with inference(self.ctx, Operation.SPEECH):
+        ``AudioStart`` before the first chunk and an ``AudioChunk`` per chunk.
+        Setting ``hang_up`` ends it at the engine's next step."""
+        async with inference(self.ctx, Operation.SPEECH, hang_up):
             self.ctx.check_loaded()
             # base.py guarantees synthesize() is an async generator, so it can
             # be closed early (aclose) when the client disconnects.
@@ -197,7 +224,9 @@ class TTSEventHandler(VoicedEventHandler):
         log.info("tts %s: synthesize %d chars with %s", self.peer, len(text), voice.id)
         self._audio_started = False
         if text:
-            await self._speak(text, voice.id)
+            hang_up = HangUp()
+            with self.on_close(hang_up.set):
+                await self._speak(text, voice.id, hang_up)
         await self._end_audio()
 
     async def _worker(self, stream: _Stream) -> None:
@@ -206,10 +235,12 @@ class TTSEventHandler(VoicedEventHandler):
         drops the rest of the stream."""
         try:
             while (sentence := await stream.sentences.get()) is not None:
+                if stream.closed:
+                    return
                 text = normalize(sentence, language=stream.voice.language)
                 if not text:
                     continue
-                await self._speak(text, stream.voice.id)
+                await self._speak(text, stream.voice.id, stream.next_hang_up())
         except Exception as exc:
             # A broken stream always ends, whatever the outcome; report()'s
             # keep-open answer only applies to request/response events.
@@ -221,7 +252,8 @@ class TTSEventHandler(VoicedEventHandler):
         for sentence in stream.accumulator.finish():
             stream.sentences.put_nowait(sentence)
         stream.sentences.put_nowait(None)
-        await stream.worker
+        with self.on_close(stream.close):
+            await stream.worker
         self._stream = None
         if self._dropping_until is not None:
             return False  # the worker failed and sent the stream's one Error
@@ -229,6 +261,15 @@ class TTSEventHandler(VoicedEventHandler):
         await self.write_event(SynthesizeStopped().event())
         log.debug("tts %s: stream finished", self.peer)
         return True
+
+    async def disconnect(self) -> None:
+        """The connection is closing: a stream's sentence in progress ends at
+        the engine's next step as a disconnect, and the rest are dropped."""
+        stream = self._stream
+        if stream is not None and stream.worker is not None:
+            stream.close()
+            await stream.worker
+        await self.cleanup()
 
     async def cleanup(self) -> None:
         stream, self._stream = self._stream, None
