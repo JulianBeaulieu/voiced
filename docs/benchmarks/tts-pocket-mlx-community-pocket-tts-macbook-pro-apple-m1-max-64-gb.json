@@ -1,0 +1,34 @@
+{
+  "kind": "tts",
+  "engine": "pocket",
+  "model": "mlx-community/pocket-tts",
+  "hardware": "MacBook Pro, Apple M1 Max, 64 GB",
+  "macos": "15.7.4",
+  "commit": "a2be27c+",
+  "version": "0.1.1",
+  "date": "2026-10-21",
+  "languages": [
+    "en"
+  ],
+  "licence": "CC-BY-4.0",
+  "size_bytes": 240322540,
+  "load_s": 1.4,
+  "footprint_bytes": 667241856,
+  "mlx_load_peak_bytes": 957264684,
+  "mlx_peak_bytes": 967528124,
+  "metrics": {
+    "voice": "alba",
+    "utmos": 4.31,
+    "first_audio": {
+      "median_ms": 45.0,
+      "worst_ms": 46.9,
+      "n": 10
+    },
+    "first_audio_while_stt_streams": {
+      "median_ms": 38.1,
+      "worst_ms": 68.5,
+      "n": 30
+    },
+    "rtf": 0.1669
+  }
+}

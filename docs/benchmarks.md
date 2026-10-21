@@ -35,6 +35,7 @@ UTMOS: predicted naturalness, 1 to 5, the mean over three fixed sentences. First
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `mlx-community/Kokoro-82M-bf16` | kokoro | 5 of 5 | 5 of 5 | 4.52 | 94 / 98 ms | 112 / 226 ms | 0.042 | `af_heart` | 1.8 s | 0.73 GB | 0.76 GB / 1.86 GB | 389.4 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 | `gradium/phonon-31m-en` | phonon | 5 of 5 | 5 of 5 | 4.50 | 27 / 31 ms | 18 / 28 ms | 0.038 | `default` | 0.6 s | 0.26 GB | none / none | 65.1 MB | en-US, en-GB | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
+| `mlx-community/pocket-tts` | pocket | 5 of 5 | 4 of 5 | 4.31 | 45 / 47 ms | 38 / 68 ms | 0.167 | `alba` | 1.4 s | 0.67 GB | 0.96 GB / 0.97 GB | 240.3 MB | en | CC-BY-4.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a2be27c+), 2026-10-21 |
 | `mlx-community/Soprano-80M-bf16` | soprano | 4 of 5 | 5 of 5 | 4.25 | 97 / 156 ms | 142 / 219 ms | 0.071 | `default` | 2.1 s | 0.39 GB | 0.23 GB / 0.29 GB | 220.6 MB | en-US | Apache-2.0 | MacBook Pro, Apple M1 Max, 64 GB, macOS 15.7.4 | 0.1.1 (a9b3c96+), 2026-10-21 |
 
 ## Ratings
