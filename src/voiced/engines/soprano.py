@@ -25,10 +25,8 @@ imports (the entry-point registry does so) without the ``tts`` extra.
 from __future__ import annotations
 
 import logging
-import math
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -36,7 +34,7 @@ from numpy.typing import NDArray
 
 from voiced.audio import float32_to_pcm16, resample
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, Voice
-from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine
+from voiced.engines.sentence import WARMUP_TEXT, SentenceTTSEngine, sentence_bound
 from voiced.models import default_model
 
 log = logging.getLogger(__name__)
@@ -50,40 +48,8 @@ REPETITION_CONTEXT = 64
 TEMPERATURE = 0.3
 TOP_P = 0.95
 
-SECONDS_PER_CHAR = 0.12
-"""Upper bound on speech per character of text. Normal English runs about
-0.07 s per character; this leaves room for slow delivery."""
-EXTRA_SECONDS = 1.0
-"""Added to the bound for very short sentences. One-word replies that stop on
-their own run about 1 to 1.8 s, so 1 s keeps most of them whole; one-word
-replies that run away carry up to about 1 s of sustained sound before the
-cut."""
 FADE_SECONDS = 0.01
 """Linear fade-out applied where runaway audio is cut, so the cut does not click."""
-
-
-@dataclass(frozen=True, slots=True)
-class SentenceBound:
-    """How long one sentence may run: ``tokens`` for generation, ``seconds``
-    for the audio. They are the same bound in two units; see
-    :func:`sentence_bound`."""
-
-    tokens: int
-    seconds: float
-
-
-def sentence_bound(sentence: str, token_seconds: float) -> SentenceBound:
-    """The longest plausible reading of ``sentence``.
-
-    ``seconds`` is ``SECONDS_PER_CHAR`` per character plus ``EXTRA_SECONDS``.
-    ``tokens`` covers ``seconds`` at ``token_seconds`` per token and is the
-    generation cap, so a runaway stops early; :func:`penalized_stream` also
-    keeps it inside the model's context. The audio is still cut to ``seconds``,
-    because rounding up to whole tokens (and mlx-audio's own sub-sentence
-    split, each part with its own cap) can leave it slightly longer.
-    """
-    seconds = len(sentence) * SECONDS_PER_CHAR + EXTRA_SECONDS
-    return SentenceBound(tokens=max(1, math.ceil(seconds / token_seconds)), seconds=seconds)
 
 
 class SopranoEngine(SentenceTTSEngine):

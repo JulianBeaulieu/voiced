@@ -16,15 +16,13 @@ import pytest
 
 from voiced.engines import get_tts_engine
 from voiced.engines.base import TTS_SAMPLE_RATE, EngineError, EngineNotLoaded
+from voiced.engines.sentence import EXTRA_SECONDS, SECONDS_PER_CHAR, sentence_bound
 from voiced.engines.soprano import (
-    EXTRA_SECONDS,
     FADE_SECONDS,
     REPETITION_CONTEXT,
-    SECONDS_PER_CHAR,
     SOPRANO_VOICE,
     SopranoEngine,
     penalized_stream,
-    sentence_bound,
 )
 
 # -- registry, metadata --------------------------------------------------------

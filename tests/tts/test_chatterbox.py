@@ -5,11 +5,11 @@ without MLX (they run on CI), then against the real model (``model``)."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,18 +24,25 @@ from voiced.engines import chatterbox
 from voiced.engines.base import TTS_SAMPLE_RATE, UnknownVoice
 from voiced.engines.chatterbox import (
     CHUNK_TOKENS,
+    CROSSFADE_SAMPLES,
     DEFAULT_VOICE,
     FIRST_TOKENS,
     MODELS,
     S3_TOKENIZER_REPO,
-    SILENCE_TOKEN,
     SILENCE_TOKENS,
     ChatterboxEngine,
     SpeechTokenizerSkipped,
     max_tokens,
     speak,
 )
-from voiced.engines.registry import get_tts_engine
+from voiced.engines.registry import ModelRefused, get_tts_engine
+from voiced.text import normalize
+from voiced.text.sentences import split_sentences
+
+SILENCE = 4299
+"""What the stand-ins use for S3Gen's silence token."""
+SAMPLES_PER_TOKEN = 960
+"""What the stand-in S3Gen renders per token: 40 ms."""
 
 
 def test_registered_with_its_model_and_licence() -> None:
@@ -53,6 +60,17 @@ def test_both_models_are_pinned_with_the_default_voice() -> None:
     assert models.find(S3_TOKENIZER_REPO) is None  # never downloaded
 
 
+@pytest.mark.parametrize(
+    "model", ["mlx-community/chatterbox-fp16", "mlx-community/chatterbox-turbo-8bit"]
+)
+def test_other_chatterbox_models_are_refused(model: str) -> None:
+    """Not in the catalogue: the original Chatterbox has no Turbo token
+    stream, and the other conversions are not pinned."""
+    with pytest.raises(ModelRefused, match="not in voiced's model catalogue"):
+        ChatterboxEngine(model)
+    assert ChatterboxEngine("/some/local/folder").model_id == "/some/local/folder"
+
+
 def test_the_module_imports_without_mlx() -> None:
     """The registry imports every engine module; MLX is imported in load()."""
     code = (
@@ -67,49 +85,78 @@ def test_a_sentence_is_bounded_by_its_length() -> None:
     assert max_tokens("x" * 100) == 325
 
 
+def test_tags_survive_normalization_and_the_sentence_split() -> None:
+    """The model performs ``[laugh]`` and its kind; voiced must hand them over."""
+    text = normalize("Oh, that is hilarious! [chuckle] Um, anyway. [laugh] Yes.", language="en")
+    assert split_sentences(text) == [
+        "Oh, that is hilarious!",
+        "[chuckle] Um, anyway.",
+        "[laugh] Yes.",
+    ]
+    assert normalize("[sigh] Fine.", language="en") == "[sigh] Fine."
+    assert normalize("[3] more", language="en") == "[three] more."
+
+
 # -- the streaming schedule ----------------------------------------------------
 
 
 class _Run:
     """A sentence of ``n`` tokens from a stand-in T3 and S3Gen, with every
-    wait, step and render recorded in order."""
+    wait, step and render recorded in order. Each render of ``k`` tokens is
+    ``k * SAMPLES_PER_TOKEN`` samples of the render's number, so a test can
+    tell which render a sample came from."""
 
-    def __init__(self, n: int, *, last_flag: bool = True) -> None:
+    def __init__(self, n: int) -> None:
         self.n = n
-        self.last_flag = last_flag
         self.log: list[str] = []
         self.renders: list[tuple[int, int, bool]] = []
 
-    def steps(self) -> Iterator[tuple[list[int], bool]]:
+    def steps(self) -> Iterator[list[int]]:
         for i in range(self.n):
             self.log.append("step")
-            yield [i], self.last_flag and i == self.n - 1
+            yield [i]
 
-    def render(self, tokens: list[int], done: int, final: bool) -> tuple[NDArray[np.float32], int]:
+    def render(self, tokens: list[int], start: int, final: bool) -> tuple[NDArray[np.float32], int]:
         self.log.append("render")
-        self.renders.append((len(tokens), done, final))
-        total = len(tokens) * 10
-        return np.ones(total - done, dtype=np.float32), total
+        self.renders.append((len(tokens), start, final))
+        total = len(tokens) * SAMPLES_PER_TOKEN
+        return np.full(total - start, float(len(self.renders)), dtype=np.float32), total
 
     def wait(self) -> None:
         self.log.append("wait")
 
     def pieces(self) -> list[NDArray[np.float32]]:
-        return list(speak(self.steps(), self.render, self.wait))
+        return list(speak(self.steps(), self.render, self.wait, SILENCE))
 
 
 def test_renders_the_first_tokens_early_then_in_larger_chunks() -> None:
     run = _Run(FIRST_TOKENS + 2 * CHUNK_TOKENS + 3)
     pieces = run.pieces()
-    final = run.n + SILENCE_TOKENS
+    first, second = FIRST_TOKENS, FIRST_TOKENS + CHUNK_TOKENS
+    third, final = FIRST_TOKENS + 2 * CHUNK_TOKENS, run.n + SILENCE_TOKENS
+    held = CROSSFADE_SAMPLES
     assert run.renders == [
-        (FIRST_TOKENS, 0, False),
-        (FIRST_TOKENS + CHUNK_TOKENS, FIRST_TOKENS * 10, False),
-        (FIRST_TOKENS + 2 * CHUNK_TOKENS, (FIRST_TOKENS + CHUNK_TOKENS) * 10, False),
-        (final, (FIRST_TOKENS + 2 * CHUNK_TOKENS) * 10, True),
+        (first, 0, False),
+        (second, first * SAMPLES_PER_TOKEN - held, False),
+        (third, second * SAMPLES_PER_TOKEN - held, False),
+        (final, third * SAMPLES_PER_TOKEN - held, True),
     ]
-    # Each piece is only the audio not yet sent: together, the whole sentence.
-    assert sum(len(p) for p in pieces) == final * 10
+    # Together the pieces are the whole sentence, each sample sent once.
+    assert sum(len(p) for p in pieces) == final * SAMPLES_PER_TOKEN
+
+
+def test_each_join_is_crossfaded_from_one_render_into_the_next() -> None:
+    """Renders draw fresh noise, so render 2's version of the held-back tail
+    differs from render 1's: the join must ramp from one to the other."""
+    run = _Run(FIRST_TOKENS + 3)
+    audio = np.concatenate(run.pieces())
+    join = FIRST_TOKENS * SAMPLES_PER_TOKEN - CROSSFADE_SAMPLES
+    assert np.all(audio[:join] == 1.0)  # render 1
+    fade = audio[join : join + CROSSFADE_SAMPLES]
+    assert fade[0] == pytest.approx(1.0) and fade[-1] == pytest.approx(2.0)
+    assert np.all(np.diff(fade) >= 0)  # a ramp, no jump
+    assert np.all(audio[join + CROSSFADE_SAMPLES :] == 2.0)  # render 2
+    assert np.abs(np.diff(audio)).max() < 0.01
 
 
 def test_waits_for_the_stt_before_every_gpu_call() -> None:
@@ -125,17 +172,9 @@ def test_waits_for_the_stt_before_every_gpu_call() -> None:
 def test_the_final_render_adds_silence_tokens() -> None:
     tokens: list[list[int]] = []
     run = _Run(3)
-    run.render = lambda t, done, final: (tokens.append(list(t)), (np.zeros(0, np.float32), 0))[1]  # type: ignore[method-assign]
+    run.render = lambda t, start, final: (tokens.append(list(t)), (np.zeros(0, np.float32), 0))[1]  # type: ignore[method-assign]
     run.pieces()
-    assert tokens == [[0, 1, 2] + [SILENCE_TOKEN] * SILENCE_TOKENS]
-
-
-def test_a_stream_that_ends_without_a_final_flag_still_finalizes() -> None:
-    """T3 stops without flagging the last token when the stop token comes
-    right after a chunk."""
-    run = _Run(FIRST_TOKENS + 4, last_flag=False)
-    run.pieces()
-    assert run.renders[-1] == (FIRST_TOKENS + 4 + SILENCE_TOKENS, FIRST_TOKENS * 10, True)
+    assert tokens == [[0, 1, 2] + [SILENCE] * SILENCE_TOKENS]
 
 
 def test_nothing_to_say_renders_nothing() -> None:
@@ -146,8 +185,85 @@ def test_nothing_to_say_renders_nothing() -> None:
 
 def test_empty_renders_are_not_yielded() -> None:
     run = _Run(FIRST_TOKENS + 1)
-    run.render = lambda t, done, final: (np.zeros(0, np.float32), done)  # type: ignore[method-assign]
+    run.render = lambda t, start, final: (np.zeros(0, np.float32), start)  # type: ignore[method-assign]
     assert run.pieces() == []
+
+
+# -- _stream, against stand-ins for MLX and mlx-audio --------------------------
+
+
+class _T3:
+    def __init__(self, n: int) -> None:
+        self.n = n
+        self.kwargs: dict[str, Any] = {}
+
+    def inference_turbo_stream(self, **kwargs: Any) -> Iterator[tuple[np.ndarray, bool]]:
+        self.kwargs = kwargs
+        for i in range(min(self.n, kwargs["max_gen_len"])):
+            yield np.array([[i]]), False
+
+
+class _S3Gen:
+    def inference_stream(
+        self, *, speech_tokens: np.ndarray, prev_audio_samples: int, **_: Any
+    ) -> tuple[np.ndarray, int]:
+        total = speech_tokens.shape[-1] * SAMPLES_PER_TOKEN
+        return np.zeros((1, max(0, total - prev_audio_samples)), dtype=np.float32), total
+
+
+@pytest.fixture
+def fake_mlx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``mlx.core`` and the mlx-audio modules ``_stream`` imports."""
+    core = SimpleNamespace(array=lambda x, dtype=None: np.array(x), int32=np.int32)
+    names = {
+        "mlx": SimpleNamespace(core=core),
+        "mlx.core": core,
+        "mlx_audio": SimpleNamespace(),
+        "mlx_audio.tts": SimpleNamespace(),
+        "mlx_audio.tts.models": SimpleNamespace(),
+        "mlx_audio.tts.models.chatterbox_turbo": SimpleNamespace(),
+        "mlx_audio.tts.models.chatterbox_turbo.chatterbox_turbo": SimpleNamespace(
+            punc_norm=lambda text: text
+        ),
+        "mlx_audio.tts.models.chatterbox_turbo.models": SimpleNamespace(),
+        "mlx_audio.tts.models.chatterbox_turbo.models.s3gen": SimpleNamespace(),
+        "mlx_audio.tts.models.chatterbox_turbo.models.s3gen.s3gen": SimpleNamespace(
+            S3GEN_SIL=SILENCE, SPEECH_VOCAB_SIZE=6561
+        ),
+    }
+    for name, module in names.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def _model(t3: _T3) -> Any:
+    return SimpleNamespace(
+        tokenizer=lambda text, return_tensors: SimpleNamespace(input_ids=np.array([[1, 2]])),
+        _conds=SimpleNamespace(t3="t3 cond", gen="gen cond"),
+        t3=t3,
+        s3gen=_S3Gen(),
+    )
+
+
+@pytest.mark.usefixtures("fake_mlx")
+def test_t3_is_capped_at_the_sentence_bound(caplog: pytest.LogCaptureFixture) -> None:
+    sentence = "Hello there."
+    t3 = _T3(n=20)
+    with caplog.at_level(logging.WARNING, logger="voiced.engines.chatterbox"):
+        audio = np.concatenate(list(chatterbox._stream(_model(t3), sentence)))
+    assert t3.kwargs["max_gen_len"] == max_tokens(sentence)
+    assert t3.kwargs["chunk_size"] == 1
+    assert audio.size == (20 + SILENCE_TOKENS) * SAMPLES_PER_TOKEN
+    assert not caplog.records  # stopped on its own
+
+
+@pytest.mark.usefixtures("fake_mlx")
+def test_a_runaway_cut_at_the_bound_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    t3 = _T3(n=10_000)
+    with caplog.at_level(logging.WARNING, logger="voiced.engines.chatterbox"):
+        list(chatterbox._stream(_model(t3), "Hi."))
+    assert [r.getMessage() for r in caplog.records] == [
+        "chatterbox: runaway generation for 'Hi.': cut at the 34-token bound"
+    ]
 
 
 # -- the speech tokenizer --------------------------------------------------------
@@ -170,20 +286,35 @@ def test_the_speech_tokenizer_download_is_refused_for_the_load_only(
     assert huggingface_hub.hf_hub_download is original
 
 
+def test_mlx_audios_note_about_the_refused_tokenizer_is_dropped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    hook_log = logging.getLogger("mlx_audio.tts.models.chatterbox_turbo.chatterbox_turbo")
+    with caplog.at_level(logging.INFO):
+        with chatterbox._without_speech_tokenizer():
+            hook_log.warning("Could not load S3 speech tokenizer: not loaded")
+            hook_log.warning("Failed to load conds.safetensors: broken")
+        hook_log.warning("Could not load S3 speech tokenizer: later")
+    assert [r.getMessage() for r in caplog.records] == [
+        "Failed to load conds.safetensors: broken",
+        "Could not load S3 speech tokenizer: later",
+    ]
+
+
 # -- load, without MLX ---------------------------------------------------------
 
 
 @pytest.fixture
-def fake_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[Any]:
-    """``mlx_audio.tts.utils.load_model`` and ``_stream`` stand-ins; the
-    models built, and snapshots that are folders under ``tmp_path``."""
+def fake_load(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """``mlx_audio.tts.utils.load_model``, ``load_pinned`` and ``_stream``
+    stand-ins; the models built."""
     built: list[Any] = []
 
-    def load_model(path: Path) -> Any:
+    def load_model(repo: str) -> Any:
         with pytest.raises(SpeechTokenizerSkipped):  # what the hook would meet
             huggingface_hub.hf_hub_download(S3_TOKENIZER_REPO, "model.safetensors")
         model = SimpleNamespace(
-            path=path, sample_rate=TTS_SAMPLE_RATE, _conds=object(), _s3tokenizer=object()
+            repo=repo, sample_rate=TTS_SAMPLE_RATE, _conds=object(), _s3tokenizer=object()
         )
         built.append(model)
         return model
@@ -198,17 +329,17 @@ def fake_load(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[Any]:
     monkeypatch.setitem(sys.modules, "mlx_audio.tts", SimpleNamespace(utils=utils))
     monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", utils)
     monkeypatch.setattr(chatterbox, "_stream", stream)
-    monkeypatch.setattr(models, "snapshot", lambda repo, check_only=False: tmp_path / repo)
+    monkeypatch.setattr(models, "load_pinned", lambda loader, model_id: loader(model_id))
     return built
 
 
-async def test_load_reads_the_pinned_snapshot_and_drops_the_speech_tokenizer(
-    fake_load: list[Any], tmp_path: Path
+async def test_load_reads_the_pinned_model_and_drops_the_speech_tokenizer(
+    fake_load: list[Any],
 ) -> None:
     engine = ChatterboxEngine("mlx-community/chatterbox-turbo-fp16")
     await engine.load()
     (model,) = fake_load
-    assert model.path == tmp_path / "mlx-community/chatterbox-turbo-fp16"
+    assert model.repo == "mlx-community/chatterbox-turbo-fp16"
     assert model._s3tokenizer is None
     assert model.said == ["Warming up."]
     assert await engine.voices() == [DEFAULT_VOICE]
@@ -219,6 +350,7 @@ async def test_load_reads_the_pinned_snapshot_and_drops_the_speech_tokenizer(
     [
         (lambda m: setattr(m, "sample_rate", 44_100), "44100 Hz"),
         (lambda m: setattr(m, "_conds", None), "no default voice"),
+        (lambda m: delattr(m, "_conds"), "no default voice"),  # the hook never set it
     ],
 )
 async def test_a_load_that_fails_leaves_it_unloaded(
@@ -226,7 +358,7 @@ async def test_a_load_that_fails_leaves_it_unloaded(
 ) -> None:
     utils = sys.modules["mlx_audio.tts.utils"]
     load = utils.load_model  # type: ignore[attr-defined]
-    monkeypatch.setattr(utils, "load_model", lambda path: (m := load(path), spoil(m))[0])
+    monkeypatch.setattr(utils, "load_model", lambda repo: (m := load(repo), spoil(m))[0])
     engine = ChatterboxEngine()
     with pytest.raises(RuntimeError, match=message):
         await engine.load()
@@ -254,13 +386,6 @@ async def test_an_unknown_voice_never_reaches_the_model(fake_load: list[Any]) ->
 
 
 # -- against the real model ----------------------------------------------------
-
-
-@pytest.mark.model
-def test_the_constants_match_mlx_audio() -> None:
-    from mlx_audio.tts.models.chatterbox_turbo.models.s3gen import S3GEN_SIL
-
-    assert SILENCE_TOKEN == S3GEN_SIL
 
 
 @pytest.mark.model

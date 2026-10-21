@@ -215,11 +215,25 @@ CATALOGUE: tuple[Engine, ...] = (
             ),
         "chatterbox",
         "tts",
-        # Resemble AI's MIT weights; the conversions' cards say Apache-2.0,
-        # which a conversion cannot make so (ADR 0029). 4-bit is the default.
+        # The conversions' cards say Apache-2.0, but Resemble AI released the
+        # weights under MIT (ADR 0029). 4-bit is the default, provisionally.
         models=(
-            Model("mlx-community/chatterbox-turbo-4bit", "MIT", CHATTERBOX),
-            Model("mlx-community/chatterbox-turbo-fp16", "MIT", CHATTERBOX),
+            Model(
+                "mlx-community/chatterbox-turbo-4bit",
+                "MIT",
+                CHATTERBOX,
+                quality=3,
+                speed=2,
+                note="One expressive English voice that performs tags like [laugh]",
+            ),
+            Model(
+                "mlx-community/chatterbox-turbo-fp16",
+                "MIT",
+                CHATTERBOX,
+                quality=3,
+                speed=2,
+                note="Chatterbox Turbo at full precision: three times the memory of 4-bit",
+            ),
         ),
     ),
 )

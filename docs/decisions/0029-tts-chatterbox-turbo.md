@@ -44,18 +44,21 @@ Max (64 GB, macOS 15.7.4) with Python 3.12 before building anything:
 |---|---|---|
 | `ResembleAI/chatterbox-turbo` (weights, text tokenizer, default voice) | MIT | model card, `license: mit` |
 | `resemble-ai/chatterbox`, the reference code | MIT | the repository's LICENSE |
-| `mlx-community/chatterbox-turbo-4bit` and `-fp16` | MIT, Resemble AI's | their cards say `apache-2.0`, but a conversion cannot relicense the weights it converts |
+| `mlx-community/chatterbox-turbo-4bit` and `-fp16` | MIT, Resemble AI's | their cards say `apache-2.0` |
 | `mlx-audio`, the port voiced runs | MIT | already a dependency |
 
-The mlx-community cards are mislabelled: the converted weights carry the
-original's MIT licence, which is what voiced reports (`/v1/models`, the
-README). Neither repository is gated. voiced redistributes none of it:
+The conversions' cards say Apache-2.0, but Resemble AI released the weights
+under MIT, which is the licence voiced reports (`/v1/models`, the README,
+the catalogue). Neither repository is gated. voiced redistributes none of it:
 each Mac downloads the weights from Hugging Face.
 
 Resemble's own package adds an inaudible PerTh watermark to everything it
 synthesizes. mlx-audio's port does not: there is no `perth` import or
 watermarking step anywhere in `mlx_audio/tts/models/chatterbox_turbo` at
-0.5.9, and voiced adds none.
+0.5.9, and voiced adds none: with the one voice the checkpoint ships, the
+output imitates no one, and PerTh would mean the `resemble-perth` package,
+whose 1.0.1 imports PyTorch and torchaudio (without declaring them). The question returns with cloning, when the
+output can sound like a real person.
 
 ## Decision
 
@@ -70,17 +73,15 @@ inside `load()`.
   with the files the engine loads: the config, the weights, the text
   tokenizer's files and `conds.safetensors`, pinned in `models.lock.json`;
   `voiced models download` fetches them and the engine loads them with
-  `check_only`, so the service never downloads. The 4-bit build is the
-  default because it lost little against fp16 and costs a third of the
-  memory. UTMOS, the benchmark's predicted naturalness, gives fp16 3.82 and
-  4-bit 3.70 (docs/benchmarks.md). In
+  `check_only`, so the service never downloads. **The 4-bit default was
+  chosen without a listening test and is provisional until one is done.**
+  Two measurements stand in for it: UTMOS, the benchmark's predicted
+  naturalness, gives fp16 3.82 and 4-bit 3.70 (docs/benchmarks.md), and in
   a round trip of twelve household sentences through Parakeet, 4-bit had no
   word errors in 82 and fp16 one ("three fifteen" heard as "thirty
-  fifteen"), neither build clicked where pieces join (the largest step
-  between samples stayed within the 99.9th percentile of the clip's own),
-  and both read a 70-word reply word for word. This is a check of
-  intelligibility; with UTMOS's 0.12 it is all the comparison there is so
-  far, and nobody has yet compared the two by ear.
+  fifteen"); both read a 70-word reply word for word. On those, 4-bit loses
+  little and holds a third of fp16's memory, which keeps it beside Parakeet
+  under the 3 GB budget.
 - **Streaming, voiced's own loop.** The engine does not call
   `stream_generate`. It drives mlx-audio's T3 token stream
   (`t3.inference_turbo_stream`, one token at a time) and S3Gen's
@@ -88,7 +89,15 @@ inside `load()`.
   render and a wait, so its schedule is tested without MLX. It renders the
   first 15 tokens as soon as they exist, then every 25 more, then once more
   at the end with mlx-audio's five silence tokens appended; each render
-  yields only the samples not yet sent. 15 tokens is the smallest first
+  yields only the samples not yet sent. Every render draws fresh noise
+  (the flow-matching start and HiFiGAN's phases), so render k+1 does not
+  repeat what render k sent before their join. Measured on a 4.5 s
+  sentence, the two versions of the last 20 ms before the second and third
+  joins differed by an RMS of 0.06 against a signal RMS of 0.05 (unrelated
+  waveforms), and the step at the join reached 0.11, as large as the
+  clip's largest sample-to-sample steps. So the last 20 ms of
+  every render but the final one are held back and crossfaded into the next
+  render's version of them. 15 tokens is the smallest first
   chunk that kept playback fed: at 10, first audio was about 40 ms earlier
   but the second piece came 60 to 160 ms after the first had played out.
   Owning the loop also gives the GPU yield points below and a per-sentence
@@ -102,8 +111,10 @@ inside `load()`.
   350 ms that the engine cannot split without patching S3Gen, so an encoder
   call that starts during one waits for it (see Measurements).
 - **Length bound.** Each sentence may emit at most 0.12 s of speech per
-  character plus 1 s, in tokens, Soprano's bound (ADR 0010); mlx-audio's
-  own is 2000 tokens, 80 s, whatever the sentence.
+  character plus 1 s, in tokens: Soprano's bound (ADR 0010), now
+  `sentence_bound` in `voiced.engines.sentence` for both. mlx-audio's own is
+  2000 tokens, 80 s, whatever the sentence. A sentence cut at the bound is
+  logged as a runaway.
 - **The speech tokenizer is not loaded.** mlx-audio offers no argument to
   skip it or to name its revision: `ChatterboxTurboTTS.post_load_hook`
   (`chatterbox_turbo.py`, line 303 at 0.5.9) calls
@@ -113,12 +124,15 @@ inside `load()`.
   loader (config, sanitize, quantize, load) and the hook's tokenizer and
   conditionals, about 40 lines on its internals. Instead, for the duration
   of `load()` only, `huggingface_hub.hf_hub_download` refuses that one
-  repository (every other call passes through, and the function is
-  restored in a `finally`); the hook logs that the tokenizer was not loaded
-  and goes on, and the engine drops the unloaded module. Nothing at load
-  resolves anything online, which matters once the services run with
-  `HF_HUB_OFFLINE` (ADR 0022), and the service holds 0.5 GB less. Cloning
-  from a reference clip, later, would pin the tokenizer and load it.
+  repository (every other call passes through; a lock serializes
+  overlapping loads, and the function is restored in a `finally`); the
+  hook goes on without it, its warning about that is filtered out, and the
+  engine drops the unloaded module, so the service holds 0.5 GB less. The
+  services already load with `HF_HUB_OFFLINE`, where the download fails on
+  its own; the guard is for `voiced install`, which runs each engine's load
+  once with the network (ADR 0022) and would otherwise fetch 0.5 GB from
+  `main`, unpinned. Cloning from a reference clip, later, would pin the
+  tokenizer and load it.
 - **Voices.** One, `default`: the conditionals the checkpoint ships,
   pinned with the model. Cloning from a user's clip is later; it needs the
   speech tokenizer, a place to keep the clips and their consent, and its
@@ -132,10 +146,10 @@ inside `load()`.
 
 ## Measurements
 
-Apple M1 Max, 64 GB, macOS 15.7.4, with no other model running (the runs
-took a lock other benchmarks on the machine honour).
+Apple M1 Max, 64 GB, macOS 15.7.4. Every run held a lock other benchmarks
+on the machine honour.
 
-In process, `ChatterboxEngine.synthesize` on normalized text, voice
+In process, with no other model loaded, `ChatterboxEngine.synthesize` on normalized text, voice
 `default`, after load and warm-up (n=6 per sentence; first audio is the
 call to its first piece; a gap is time a listener playing the pieces as
 they come would hear silence):
@@ -190,9 +204,11 @@ row will be measured again after it.
 
 - First audio is 310 to 340 ms for a fresh request, three times Kokoro's
   95 ms and over the 200 ms target Kokoro is held to: an opt-in engine for
-  those who want its voice and its tags, not for the lowest latency. The floor is
-  S3Gen's fixed cost per render; a smaller first chunk does not move it
-  much and starves playback.
+  those who want its voice and its tags, not for the lowest latency. The
+  floor is S3Gen's fixed cost per render; a smaller first chunk does not
+  move it much and starves playback.
+- The listening comparison of 4-bit and fp16 is owed; the default is
+  provisional until it is done.
 - An STT encoder call that starts during a render waits for it, and a
   render is up to about 350 ms. In the runs above the push-to-talk
   finalize stayed inside its 150 ms worst case (131 and 143 ms) while
@@ -205,10 +221,12 @@ row will be measured again after it.
 ## Consequences
 
 - A fifth engine to keep working against mlx-audio's T3 and S3Gen methods,
-  which are not a documented API; the existing `<0.5.10` pin holds them,
-  and a model test checks the silence token voiced copies.
+  which are not a documented API; the existing `<0.5.10` pin holds them.
 - Every new mlx-audio release needs `post_load_hook` checked: if it gains a
   way to skip the speech tokenizer or pin its revision, the download guard
   goes.
 - Cloning, when it comes, adds `mlx-community/S3TokenizerV2` to the pins
-  and loads it on demand.
+  and loads it on demand, and reopens the watermark question.
+- bench.py has a flag per extra TTS server (`--soprano-url`,
+  `--phonon-url`), and Chatterbox borrowed Phonon's; a generic flag for any
+  number of TTS servers is a follow-up.

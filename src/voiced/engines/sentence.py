@@ -34,8 +34,10 @@ allows.
 from __future__ import annotations
 
 import logging
+import math
 from abc import abstractmethod
 from collections.abc import AsyncIterator, Generator
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from voiced.engines.base import (
@@ -51,7 +53,7 @@ from voiced.threads import ModelThread
 
 log = logging.getLogger(__name__)
 
-__all__ = ["SentenceTTSEngine"]
+__all__ = ["SentenceBound", "SentenceTTSEngine", "sentence_bound"]
 
 WARMUP_TEXT = "Warming up."
 
@@ -69,6 +71,36 @@ about 14 ms to Kokoro's first audio. A cap keeps enough buffers to reuse: at
 service's footprint is about 0.7 GB. The limit is process-wide, and a TTS
 process runs one engine.
 """
+
+
+SECONDS_PER_CHAR = 0.12
+"""Upper bound on speech per character of text. Normal English runs about
+0.07 s per character; this leaves room for slow delivery."""
+EXTRA_SECONDS = 1.0
+"""Added to the bound for very short sentences. One-word replies that stop on
+their own run about 1 to 1.8 s (Soprano), so 1 s keeps most of them whole."""
+
+
+@dataclass(frozen=True, slots=True)
+class SentenceBound:
+    """How long one sentence may run: ``tokens`` for generation, ``seconds``
+    for the audio. They are the same bound in two units; see
+    :func:`sentence_bound`."""
+
+    tokens: int
+    seconds: float
+
+
+def sentence_bound(sentence: str, token_seconds: float) -> SentenceBound:
+    """The longest plausible reading of ``sentence``, for engines that
+    generate audio tokens until they decide to stop (Soprano, Chatterbox).
+
+    ``seconds`` is ``SECONDS_PER_CHAR`` per character plus ``EXTRA_SECONDS``.
+    ``tokens`` covers ``seconds`` at ``token_seconds`` per token and is the
+    generation cap, so a runaway stops early.
+    """
+    seconds = len(sentence) * SECONDS_PER_CHAR + EXTRA_SECONDS
+    return SentenceBound(tokens=max(1, math.ceil(seconds / token_seconds)), seconds=seconds)
 
 
 def _limit_mlx_cache() -> None:

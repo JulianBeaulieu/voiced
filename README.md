@@ -269,9 +269,9 @@ the VCTK corpus, University of Edinburgh (CC-BY-4.0). Kyutai's `cosette` and
 impersonation without consent, deception (including passing generated
 audio off as a real recording) and unlawful or harmful content.
 Chatterbox Turbo is Resemble AI's, MIT for the weights, the default voice and
-the code. The mlx-community conversions voiced loads label themselves
-Apache-2.0; a conversion cannot change the licence of the weights, which
-stays Resemble AI's MIT. Resemble's own package watermarks its output
+the code. The cards of the mlx-community conversions voiced loads say
+Apache-2.0, but Resemble AI released the weights under MIT, which is the
+licence voiced reports. Resemble's own package watermarks its output
 (PerTh); the MLX port voiced runs does not.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
