@@ -194,8 +194,8 @@ extension FakeModelState {
     /// settings: Parakeet and Kokoro downloaded and in use (Kokoro with an old version
     /// cached), Soprano with only an old version, Phonon's 31m not downloaded and its gated
     /// 40m failing without a token, Nemotron not downloaded, Moonshine unable to run here,
-    /// and two plugin engines with nothing to manage. Ratings,
-    /// notes and the Recommended badge as the catalogue has them; the 40m is not rated.
+    /// and two plugin engines with nothing to manage. Ratings, notes and the Recommended
+    /// badge as the catalogue has them; the 40m is not rated.
     public static var sample: FakeModelState {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var state = FakeModelState(

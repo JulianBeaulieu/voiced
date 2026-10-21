@@ -150,6 +150,7 @@ def test_list_marks_an_engine_that_cannot_run_here(settings: Settings, model_cac
     assert not any(P31 in line and "cannot run here" in line for line in lines)
 
 
+@pytest.mark.usefixtures("macos_14")
 def test_an_engine_that_is_not_installed_is_not_marked(
     settings: Settings, model_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
