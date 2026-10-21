@@ -22,6 +22,7 @@ from voiced.config import Settings
 from voiced.engines import registry
 from voiced.engines.kokoro import KokoroEngine
 from voiced.engines.moonshine import MoonshineEngine
+from voiced.engines.nemotron import NemotronEngine
 from voiced.engines.parakeet import ParakeetEngine
 from voiced.engines.phonon import PhononEngine
 from voiced.engines.qwen3_asr import Qwen3ASREngine
@@ -99,6 +100,7 @@ def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
         PhononEngine,
         Qwen3ASREngine,
         MoonshineEngine,
+        NemotronEngine,
     ],
     ids=lambda c: c.name,
 )

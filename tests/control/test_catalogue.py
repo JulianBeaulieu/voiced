@@ -61,6 +61,7 @@ def test_labels() -> None:
         "label": "Parakeet",
         "models": ["mlx-community/parakeet-tdt-0.6b-v3"],
         "languages": stt["parakeet"]["languages"],
+        "model_languages": {"mlx-community/parakeet-tdt-0.6b-v3": stt["parakeet"]["languages"]},
     }
     assert stt["moonshine"] == {
         "name": "moonshine",
@@ -71,7 +72,26 @@ def test_labels() -> None:
             "moonshine-ai/moonshine-streaming-medium",
         ],
         "languages": ["en"],
+        "model_languages": {
+            m: ["en"]
+            for m in [
+                "moonshine-ai/moonshine-streaming-small",
+                "moonshine-ai/moonshine-streaming-tiny",
+                "moonshine-ai/moonshine-streaming-medium",
+            ]
+        },
     }
+    nemotron = stt["nemotron"]
+    assert nemotron["models"] == [
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b",
+        "nvidia/nemotron-speech-streaming-en-0.6b",
+    ]
+    assert nemotron["languages"][:3] == ["en-US", "en-GB", "es-US"]
+    assert nemotron["model_languages"] == {
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b": nemotron["languages"],
+        "nvidia/nemotron-speech-streaming-en-0.6b": ["en-US"],
+    }
+
     assert voice_label(Voice("x", "X", "xx-XX", "male")) == "X (xx-XX, male)"
 
 

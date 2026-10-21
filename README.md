@@ -19,10 +19,10 @@ The recording's timings are curl fetching a WAV, slower than the streamed benchm
 
 voiced 0.1.1 is the current release; 0.1.0 was the first. It transcribes
 with Parakeet TDT 0.6B v3, or with the optional Qwen3-ASR for files and
-languages beyond Parakeet's, and speaks with Kokoro-82M, or with the
-optional Soprano-80M, Phonon 31M, Pocket TTS or, in 646 languages but
-slowly, OmniVoice. The numbers below come from two machines, both named
-under [Benchmarks](#benchmarks).
+languages beyond Parakeet's or the optional streaming Nemotron ASR, and
+speaks with Kokoro-82M, or with the optional Soprano-80M, Phonon 31M, Pocket
+TTS or, in 646 languages but slowly, OmniVoice. The numbers below come from
+two machines, both named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -248,9 +248,18 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 | [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
 | [Qwen3-ASR 0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) and [1.7B](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit), with [Qwen3-ForcedAligner 0.6B](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) | STT | no, opt-in | Apache-2.0 |
+| [Nemotron 3.5 ASR streaming](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) | STT | no, opt-in | OpenMDW-1.1 |
+| [Nemotron ASR streaming, English](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) | STT | no, opt-in | NVIDIA Open Model License |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
 weights. It says nothing about the transcripts you produce.
+
+NVIDIA relicensed Nemotron 3.5 under OpenMDW-1.1 on 2026-06-05; the MLX
+conversion's model card still names the earlier licence but defers to the
+original's terms. The English Nemotron model is under the NVIDIA Open Model
+License, which allows commercial use; redistributing its weights needs
+NVIDIA's notice. voiced redistributes neither
+([ADR 0025](docs/decisions/0025-stt-nemotron.md)).
 
 Phonon is Gradium's. It builds on Kyutai's Pocket TTS and Mimi codec, both
 released under CC-BY-4.0; Gradium releases Phonon 31M's weights, tokenizer
@@ -549,6 +558,13 @@ with 64 GB, each service alone, 2026-10-21:
   stops at the last word, which misses the project's 50 ms median target
   ([ADR 0008](docs/decisions/0008-stt-engine-parakeet.md)). 1.52 GB
   footprint; MLX peaks at 3.4 GB once while loading.
+- **Nemotron** (speech to text, opt-in, streaming): 2.5% word error rate
+  (2.0% with the English model); finalize 54 ms median and 65 ms worst after
+  200 ms of silence, 60 and 72 ms at the last word, and the cost of a chunk
+  stays flat however long the utterance; batch is slow, about 800 ms for
+  10 s, so Parakeet stays the engine for uploads
+  ([ADR 0025](docs/decisions/0025-stt-nemotron.md)). 1.44 GB footprint,
+  2.2 GB with Kokoro.
 - **Kokoro** (text to speech, default): first audio 94 ms median, 98 ms
   worst; 0.73 GB footprint. **Phonon** (opt-in, on the CPU): 27 ms median,
   0.26 GB. **Soprano** (opt-in): 97 ms median, 156 ms worst.

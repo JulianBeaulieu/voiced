@@ -194,7 +194,7 @@ The connection holds one inference slot for its whole life. Up to
 `stt.streams` sessions (default 2) are transcribed at once, WebSocket and
 Wyoming together. Setting `stt.streams` above `queue_depth` is an error, and
 the service opens no more than the engine can interleave (its `max_streams`: 6
-for parakeet, 1 for an engine that declares nothing). The next session waits
+for parakeet, 1 for nemotron or an engine that declares nothing). The next session waits
 for one of them to end while its audio is held, and a batch transcription
 waits until none is open (ADR 0020). `queue_depth` bounds the sessions open or
 waiting. A session carries at most `stt.max_upload_mb` worth of 16-bit 16 kHz
