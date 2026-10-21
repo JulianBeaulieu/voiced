@@ -369,7 +369,8 @@ async def test_a_hang_up_frees_the_slot_at_the_next_step_not_the_next_chunk(
             asked = time.perf_counter()
             await c.write_event(Synthesize(text="Hi.").event())
             await read_until(c, "audio-chunk")
-            assert time.perf_counter() - asked < 0.2
+            # A synthesis left running would hold the model to its next piece.
+            assert time.perf_counter() - asked < PIECE_GAP_S / 4
             await read_until(c, "audio-stop")
     counts = ctx.metrics.snapshot()["operations"]["speech"]["counts"]
     assert counts["disconnect"] == 1 and counts["ok"] == 1
