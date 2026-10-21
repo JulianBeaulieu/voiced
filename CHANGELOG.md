@@ -6,6 +6,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- Marvis text-to-speech engine (Apache-2.0; its Mimi codec CC-BY-4.0), on
+  the GPU, with two English voices, one French and one German, streamed
+  80 ms at a time: `engine = "marvis"`, `model =
+  "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit"` (or the 250M),
+  `default_voice = "conversational_a"`; add `"fr"` and `"de"` to
+  `tts.languages` for the other two. Opt-in; see ADR 0031.
+
 ## [0.2.0] - 2026-10-21
 
 Choose your models: seven new engines, each an opt-in download from the menu

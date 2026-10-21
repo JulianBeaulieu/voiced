@@ -21,9 +21,10 @@ voiced 0.2.0 is the current release. It transcribes with Parakeet TDT 0.6B
 v3 and speaks with Kokoro-82M. Other models are a download away, from the
 menu bar app or `voiced models download`: Qwen3-ASR for files and languages
 beyond Parakeet's, the streaming Nemotron ASR, and Moonshine on the CPU for
-speech to text; Phonon on the CPU, Pocket TTS, Chatterbox Turbo, Soprano-80M
-and, in 646 languages but slowly, OmniVoice for text to speech. The numbers
-below come from two machines, both named under [Benchmarks](#benchmarks).
+speech to text; Phonon on the CPU, Pocket TTS, Chatterbox Turbo, Soprano-80M,
+Marvis in English, French and German and, in 646 languages but slowly,
+OmniVoice for text to speech. The numbers below come from two machines,
+both named under [Benchmarks](#benchmarks).
 The HTTP and Wyoming API and the config file are stable; see
 [CONTRIBUTING.md](CONTRIBUTING.md#what-is-stable). Breaking changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
@@ -252,6 +253,7 @@ VAD is the exception: it ships inside the `pysilero-vad` wheel.
 | [Pocket TTS](https://huggingface.co/mlx-community/pocket-tts) and six of its [voices](https://huggingface.co/kyutai/pocket-tts-without-voice-cloning) | TTS | no, opt-in | CC-BY-4.0 (voices CC-BY-4.0 or CC0) |
 | [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo), as the MLX [4-bit](https://huggingface.co/mlx-community/chatterbox-turbo-4bit) and [fp16](https://huggingface.co/mlx-community/chatterbox-turbo-fp16) conversions | TTS | no, opt-in | MIT |
 | [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) and its HiggsAudio v2 codec | TTS | no, opt-in | CC-BY-NC; codec: Boson Higgs Audio 2 Community License |
+| [Marvis 100M](https://huggingface.co/Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit) and [250M](https://huggingface.co/Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit), with its [voices](https://huggingface.co/Marvis-AI/marvis-tts-250m-v0.2) and Kyutai's [Mimi codec](https://huggingface.co/kyutai/moshiko-pytorch-bf16) | TTS | no, opt-in | Apache-2.0; codec: CC-BY-4.0 |
 | Silero VAD v6.2 via `pysilero-vad`, bundled | speech detection | yes | MIT |
 
 CC-BY-4.0 requires attribution to NVIDIA when you redistribute the Parakeet
@@ -314,6 +316,15 @@ Platforms, Inc., All Rights Reserved. voiced never uses OmniVoice unless
 the config names it, and redistributes none of it: each Mac downloads it
 from Hugging Face. (The `mlx-community` conversions are tagged Apache-2.0
 on the Hub; the original model card's licence is the one that applies.)
+
+Marvis is by Marvis-AI (Prince Canuma and Lucas Newman), built on Sesame's
+CSM design. Its weights, tokenizer and voice clips are Apache-2.0, not
+gated. It speaks in Mimi codes, and the Mimi weights voiced downloads for
+it come from Kyutai's
+[kyutai/moshiko-pytorch-bf16](https://huggingface.co/kyutai/moshiko-pytorch-bf16),
+released under CC-BY-4.0. Marvis's card asks users to obtain consent before
+cloning a voice and to follow local law on voice synthesis; voiced offers
+only the four clips Marvis publishes and no cloning.
 
 Kokoro reads phonemes produced by espeak-ng, which is GPL-3. voiced does not
 vendor or redistribute it, and the voiced code stays MIT. The engine loads
@@ -546,6 +557,38 @@ leaves for the model to read
 `~/.voiced/bin/voiced restart tts`. `speed` works. The details are in
 [ADR 0030](docs/decisions/0030-tts-omnivoice.md).
 
+### Using Marvis
+
+Marvis is a small model of Sesame's CSM design that speaks English, French
+and German on the GPU, streaming each 80 ms of audio as it is made. Choose
+it for French or German voices under Apache-2.0; for English, Kokoro sounds
+more natural and does less work. The tts service holds about 1.4 GB with it,
+3.2 GB together with Parakeet, over voiced's 3 GB budget for both services.
+It is opt-in. To use it, download the
+model, its voices and its codec (about 850 MB) and switch to it:
+
+```sh
+~/.voiced/bin/voiced models download Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit
+```
+
+```toml
+[tts]
+engine = "marvis"
+model = "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit"
+default_voice = "conversational_a"
+languages = ["en", "fr", "de"]
+```
+
+Its voices are the clips Marvis publishes: `conversational_a` (the default)
+and `conversational_b` in English, `conversational_fr` and
+`conversational_de`. Each speaks its own language, and a voice is served
+when its language is in `languages`. Then run `~/.voiced/bin/voiced restart
+tts`. It has no rate control, so `speed` is accepted and ignored. The 250M
+model (`Marvis-AI/marvis-tts-250m-v0.2-MLX-8bit`) works too, but scored no
+better here, takes more memory and its French voice often keeps talking
+past the end of the sentence. The details are in
+[ADR 0031](docs/decisions/0031-tts-marvis.md).
+
 ## Benchmarks
 
 Every engine and model is measured the same way, one command each, and
@@ -581,6 +624,9 @@ with 64 GB, each service alone, 2026-10-21:
   **OmniVoice** (opt-in, 646 languages): 797 ms median, 806 ms worst, four
   times the 200 ms target; 2.13 GB footprint, 3.87 GB beside Parakeet, over
   the 3 GB budget.
+  **Marvis 100M** (opt-in, English, French and German): 89 ms median, 90 ms
+  worst; 1.40 GB footprint, 3.20 GB beside Parakeet, over the 3 GB budget
+  ([ADR 0031](docs/decisions/0031-tts-marvis.md)).
 - **Qwen3-ASR 0.6B** (speech to text, opt-in, for files and languages):
   1.8% word error rate, batch at 0.056 of real time. It does not stream:
   finalize is a decode of the whole turn, 184 ms median for a 3.4 s turn

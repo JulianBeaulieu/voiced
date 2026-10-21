@@ -224,6 +224,23 @@ def test_pocket_audio_says_the_words(
     assert word_accuracy(heard, SENTENCE) >= 0.8, heard
 
 
+@pytest.mark.parametrize("voice", ["conversational_a", "conversational_b"])
+def test_marvis_audio_says_the_words(
+    tts_marvis_service: LiveService, stt_service: LiveService, voice: str
+) -> None:
+    """Streamed frame by frame while the STT service shares the GPU."""
+    client = tts_marvis_service.openai_client()
+    streamed: list[bytes] = []
+    with client.audio.speech.with_streaming_response.create(
+        model="voiced", voice=voice, input=SENTENCE, response_format="wav"
+    ) as response:
+        streamed += [chunk for chunk in response.iter_bytes(chunk_size=4096) if chunk]
+    audio = b"".join(streamed)
+    assert len(streamed) > 1 and _audio_signature_ok("wav", audio)
+    heard = _transcribe(stt_service, audio, "wav")
+    assert word_accuracy(heard, SENTENCE) >= 0.8, heard
+
+
 def test_chatterbox_audio_says_the_words(
     tts_chatterbox_service: LiveService, stt_service: LiveService
 ) -> None:

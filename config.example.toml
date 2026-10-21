@@ -106,6 +106,10 @@ wyoming_port = 10200
 # model "k2-fsa/OmniVoice" (CC-BY-NC, non-commercial) with default_voice
 # "en-US-female"; add a voice's language to languages to serve it, e.g.
 # ["en", "de", "apc", "es", "fr", "zh"] (ADR 0030).
+# Marvis (engine "marvis") runs on the GPU: model
+# "Marvis-AI/marvis-tts-100m-v0.2-MLX-8bit" (Apache-2.0; codec CC-BY-4.0) with
+# default_voice "conversational_a"; add "fr" and "de" to languages to serve
+# its French and German voices (ADR 0031).
 engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"
