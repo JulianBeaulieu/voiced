@@ -157,21 +157,30 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var previousBytes: Int64 { previous.reduce(0) { $0 + $1.bytes } }
 }
 
-/// `voiced models delete <model> --yes --json` on success.
-public struct ModelDeletion: Codable, Sendable, Equatable {
-    public var model: String
-    public var freed: Int64
-    public var notes: [String]
+/// What `voiced models delete <model> --yes --json` prints: what it deleted, or, for a
+/// refusal or a failure, `{"error": {"code": ..., "message": ...}}`.
+public enum ModelDeleteResult: Decodable, Sendable, Equatable {
+    case deleted(freed: Int64, notes: [String])
+    case failed(code: String?, message: String)
 
     enum CodingKeys: String, CodingKey {
-        case model, freed, notes
+        case freed, notes, error
+    }
+
+    struct Failure: Decodable {
+        var code: String?
+        var message: String?
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
-        freed = try c.decodeIfPresent(Int64.self, forKey: .freed) ?? 0
-        notes = (try? c.decodeIfPresent([String].self, forKey: .notes)) ?? []
+        if let error = try c.decodeIfPresent(Failure.self, forKey: .error) {
+            self = .failed(code: error.code, message: error.message ?? "")
+        } else {
+            self = .deleted(
+                freed: try c.decode(Int64.self, forKey: .freed),
+                notes: (try? c.decodeIfPresent([String].self, forKey: .notes)) ?? [])
+        }
     }
 }
 
@@ -188,6 +197,9 @@ public struct ModelMessage: Sendable, Equatable {
         self.link = link
         self.command = command
     }
+
+    /// Why the model in use cannot be deleted; its row and the CLI's `in_use` say it.
+    public static let inUse = "In use. Choose another model first."
 
     /// A gated model before the token sheet exists (ADR 0022, "First implementation"):
     /// `huggingface_hub` finds the token `hf auth login` stores.
@@ -213,19 +225,31 @@ public struct ModelMessage: Sendable, Equatable {
         case "disk":
             return ModelMessage(text: "Not enough free disk space. \(message)")
         case "busy":
-            return ModelMessage(text: "voiced is installing or updating; try again when it ends.")
+            // The install lock: held by an install, an update, an uninstall, or another
+            // download or delete from the command line.
+            return ModelMessage(
+                text: "voiced is busy installing, updating or changing models; try again when it ends.")
         case "in_use":
-            return ModelMessage(text: "In use. Choose another model first.")
+            return ModelMessage(text: inUse)
         default:
             return ModelMessage(text: message.isEmpty ? "The command failed." : message)
         }
+    }
+
+    /// After Use switched text to speech: Home Assistant keeps its pipeline's voice.
+    public static func homeAssistantHint(engine: String) -> String {
+        "In Home Assistant, pick a \(engine) voice under Settings > Voice assistants > your "
+            + "assistant > Text-to-speech > Voice. If the new voices are missing, reload voiced "
+            + "under Devices & services."
     }
 }
 
 /// What a model row shows (ADR 0022, section 5).
 public enum ModelRowState: Sendable, Equatable {
-    /// The configured model, downloaded.
+    /// The configured model, downloaded, its service ready.
     case inUse
+    /// The configured model, downloaded, its service starting or restarting into it.
+    case inUseLoading
     /// The configured model is not downloaded: the service reports `missing_model`.
     case inUseMissing
     case downloaded
@@ -235,11 +259,26 @@ public enum ModelRowState: Sendable, Equatable {
     /// Not downloaded, and Hugging Face shares it only with accounts that accepted its terms.
     case gated
     case downloading
+    /// A plugin engine the catalogue does not know, not in use: it fetches its own model, so
+    /// its one row has Use only.
+    case selfManaged
+}
+
+extension SettingsPayload {
+    /// The configured engine and model of `kind`.
+    public func selection(for kind: ServiceKind) -> (engine: String, model: String) {
+        kind == .stt ? (stt.engine, stt.model) : (tts.engine, tts.model)
+    }
+}
+
+extension ServiceStatus {
+    /// Running with its model loaded.
+    public var isReady: Bool { state == .running && warm }
 }
 
 public struct ModelRow: Sendable, Equatable, Identifiable {
     public var engine: ModelEngine
-    /// Nil for a plugin engine the catalogue does not know: one row with Use only.
+    /// Nil for a plugin engine the catalogue does not know.
     public var model: CatalogueModel?
     public var state: ModelRowState
 
@@ -254,53 +293,62 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     }
 
     public var stateLabel: String {
-        if model == nil, state != .inUse { return "Manages its own model" }
-        return switch state {
+        switch state {
         case .inUse: "In use"
+        case .inUseLoading: "In use, loading"
         case .inUseMissing: "In use, not downloaded"
         case .downloaded: "Downloaded"
         case .notDownloaded: "Not downloaded"
         case .oldVersion: "Update available"
         case .gated: "Needs a Hugging Face token"
         case .downloading: "Downloading"
+        case .selfManaged: "Manages its own model"
         }
     }
 
     /// Download, or Update for an old version, while the pin is not on disk.
     public var downloadTitle: String? {
-        guard model != nil else { return nil }
         switch state {
-        case .notDownloaded, .gated, .inUseMissing: return "Download"
-        case .oldVersion: return "Update (\(Formatting.bytes(model?.downloadBytes ?? 0)))"
-        case .inUse, .downloaded, .downloading: return nil
+        case .notDownloaded, .gated, .inUseMissing: "Download"
+        case .oldVersion: "Update (\(Formatting.bytes(model?.downloadBytes ?? 0)))"
+        case .inUse, .inUseLoading, .downloaded, .downloading, .selfManaged: nil
         }
     }
 
     public var canUse: Bool {
         guard engine.installed else { return false }
-        switch state {
-        case .downloaded, .notDownloaded, .oldVersion, .gated: return true
-        case .inUse, .inUseMissing, .downloading: return false
+        return switch state {
+        case .downloaded, .notDownloaded, .oldVersion, .gated, .selfManaged: true
+        case .inUse, .inUseLoading, .inUseMissing, .downloading: false
         }
     }
 
-    public var canDelete: Bool { model?.downloaded == true && state != .inUse }
+    public var isInUse: Bool { [.inUse, .inUseLoading, .inUseMissing].contains(state) }
 
-    /// "Delete old version (2.1 GB)", on any row with an older pinned revision cached.
+    /// Delete shows on every downloaded model; on the one in use it is disabled, with `note`.
+    public var showsDelete: Bool { model?.downloaded == true }
+    public var canDelete: Bool { showsDelete && !isInUse }
+
+    /// Under the row: why Delete is disabled.
+    public var note: String? { showsDelete && isInUse ? ModelMessage.inUse : nil }
+
+    /// "Delete Old Version (2.1 GB)", on any row with an older pinned revision cached.
     public var deleteOldTitle: String? {
         guard let model, !model.previous.isEmpty else { return nil }
         return "Delete Old Version (\(Formatting.bytes(model.previousBytes)))"
     }
 
-    /// The rows of one service's pane, grouped by engine in the list's order. `engine` and
-    /// `model` are the configured ones, from the settings; `downloading` the id in flight.
+    /// The rows of one service's pane, grouped by engine in the list's order, for the
+    /// configured engine and model in `settings`. `downloading` is the id in flight; `ready`
+    /// whether the service has loaded what it runs.
     public static func rows(
-        _ list: ModelList, kind: ServiceKind, engine current: String, model configured: String,
-        downloading: String?
+        _ list: ModelList, kind: ServiceKind, settings: SettingsPayload, downloading: String?, ready: Bool = true
     ) -> [ModelRow] {
-        list.engines(of: kind).flatMap { engine -> [ModelRow] in
+        let (current, configured) = settings.selection(for: kind)
+        return list.engines(of: kind).flatMap { engine -> [ModelRow] in
             guard !engine.models.isEmpty else {
-                return [ModelRow(engine: engine, model: nil, state: engine.name == current ? .inUse : .downloaded)]
+                let inUse = engine.name == current
+                return [ModelRow(engine: engine, model: nil, state: inUse ? (ready ? .inUse : .inUseLoading) : .selfManaged)]
             }
             return engine.models.map { model in
                 let inUse = engine.name == current && model.id == configured
@@ -308,7 +356,7 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
                 if model.id == downloading {
                     state = .downloading
                 } else if inUse {
-                    state = model.downloaded ? .inUse : .inUseMissing
+                    state = !model.downloaded ? .inUseMissing : ready ? .inUse : .inUseLoading
                 } else if model.downloaded {
                     state = .downloaded
                 } else if model.gated {
@@ -319,6 +367,11 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
                 return ModelRow(engine: engine, model: model, state: state)
             }
         }
+    }
+
+    /// Whether a service has loaded its model: ready per `status`, and no restart under way.
+    public static func isReady(_ status: ServiceStatus?, restarting: Bool) -> Bool {
+        (status?.isReady ?? true) && !restarting
     }
 
     /// "Delete <model>? This frees <freed>. Downloading it again takes <size>.", with the
@@ -340,6 +393,26 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
         }
         return ("Delete \(model.name)?", message)
     }
+
+    /// The confirmation for Delete Old Version: the older pinned revisions only.
+    public func deleteOldConfirmation() -> (title: String, message: String)? {
+        guard let model, !model.previous.isEmpty else { return nil }
+        return (
+            "Delete the old version of \(model.name)?",
+            "This frees \(Formatting.bytes(model.previousBytes)). The current version stays."
+        )
+    }
+}
+
+extension ModelList {
+    /// The footer's first line.
+    public var usageLine: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let folder = cache.hasPrefix(home + "/") ? "~" + cache.dropFirst(home.count) : cache
+        return "voiced's models use \(Formatting.bytes(totalBytes)) in \(folder)."
+    }
+
+    public static let sharedFolderNote = "This folder is shared with other apps; voiced deletes only its own models."
 }
 
 extension Formatting {

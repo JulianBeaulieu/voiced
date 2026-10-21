@@ -38,8 +38,9 @@ public enum OverallHealth: Sendable, Equatable {
 }
 
 /// The menu bar icon (ADR 0018, "In the menu bar"): idle while voiced runs, busy while it
-/// starts, loads a model, connects, installs or downloads a model (ADR 0022), and an error badge for everything else that
-/// needs a look (degraded, stopped, not running, not installed, an incompatible version).
+/// starts, loads a model, connects, installs or downloads a model (ADR 0022), and an error
+/// badge for everything else that needs a look (degraded, stopped, a missing model, not
+/// running, not installed, an incompatible version).
 public enum MenuBarIconState: Sendable, Hashable {
     case idle, busy, error
 }

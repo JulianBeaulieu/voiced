@@ -89,14 +89,14 @@ public struct PopoverView: View {
     let update: (() -> Void)?
     /// "Repair voiced…" while an install the app manages does not answer; nil hides it.
     let repair: (() -> Void)?
-    /// The model download's progress row and the Download of a missing model; nil hides them.
-    let models: ModelManager?
+    /// The model download's progress row and the Download of a missing model.
+    let models: ModelManager
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
     public init(
-        model: AppModel, canInstall: Bool = false, launch: LaunchChecks? = nil, update: (() -> Void)? = nil,
-        repair: (() -> Void)? = nil, models: ModelManager? = nil
+        model: AppModel, models: ModelManager, canInstall: Bool = false, launch: LaunchChecks? = nil,
+        update: (() -> Void)? = nil, repair: (() -> Void)? = nil
     ) {
         self.model = model
         self.canInstall = canInstall
@@ -107,7 +107,7 @@ public struct PopoverView: View {
     }
 
     /// Update and Repair wait for a model download (ADR 0022).
-    private var downloading: Bool { models?.isDownloading == true }
+    private var downloading: Bool { models.isDownloading }
 
     public var body: some View {
         let dashboard = model.dashboard
@@ -132,6 +132,13 @@ public struct PopoverView: View {
                     }
                 }
                 .padding(14)
+            }
+            // Outside the service rows: a download goes on while the services or the
+            // watchdog are down, and Cancel must stay in reach.
+            if models.isDownloading {
+                DownloadProgressRow(models: models)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 12)
             }
             NoticeStrip(model: model) {
                 // The LAN warning's action: the key is set on the Network pane.
@@ -274,7 +281,7 @@ extension ServiceTone {
 struct ServiceList: View {
     let model: AppModel
     let dashboard: Dashboard
-    let models: ModelManager?
+    let models: ModelManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -292,17 +299,16 @@ struct ServiceList: View {
                     restart: { Task { await model.restart(.service(row.kind)) } },
                     openLogs: { Task { await model.open(.logsDirectory) } },
                     download: download(row),
-                    message: row.missingModel.flatMap { models?.messages[$0] })
+                    message: row.missingModel.flatMap { models.messages[$0] })
             }
-            if let models { DownloadProgressRow(models: models) }
         }
         .padding(14)
     }
 
     /// Download for a service whose model is missing, then the restart that loads it.
     private func download(_ row: ServiceRowState) -> (() -> Void)? {
-        guard let models, let id = row.missingModel, !models.isDownloading else { return nil }
-        return { Task { await models.downloadMissing(id, for: row.kind) } }
+        guard let id = row.missingModel, !models.isDownloading, models.deleting == nil else { return nil }
+        return { Task { await models.download(id) } }
     }
 }
 

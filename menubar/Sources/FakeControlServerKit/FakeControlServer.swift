@@ -445,6 +445,11 @@ public final class FakeControlServer: @unchecked Sendable {
                 message: "\(model) is not downloaded; run voiced models download \(model)", field: field))
         }
         state = next
+        // The fake `voiced models delete` refuses the configured models, as the real one reads
+        // the config file.
+        if let file = options.modelsFile {
+            FakeModels(file: file).update { $0.inUse = [next.settings.stt.model, next.settings.tts.model] }
+        }
 
         var restart = Set<String>()
         for key in keys {

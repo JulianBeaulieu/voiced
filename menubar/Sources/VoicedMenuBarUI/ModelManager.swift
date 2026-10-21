@@ -50,20 +50,28 @@ public final class ModelManager {
             return
         }
         let ran = await collect(["models", "list", "--json"])
-        if let list = try? JSONDecoder().decode(ModelList.self, from: Data(ran.stdout.joined(separator: "\n").utf8)), ran.status == 0 {
-            self.list = list
-            listError = nil
-        } else {
+        // A pane left while the list ran: the next one lists again.
+        guard !Task.isCancelled else { return }
+        guard ran.status == 0, ran.failure == nil else {
             let detail = ran.stderr.last ?? ran.failure ?? "it exited with status \(ran.status)"
             listError = "Cannot list the models (\(detail)). An older voiced has no `voiced models`; update voiced."
+            return
+        }
+        do {
+            list = try JSONDecoder().decode(ModelList.self, from: Data(ran.stdout.joined(separator: "\n").utf8))
+            listError = nil
+        } catch {
+            listError = "voiced models list printed a list this app cannot read (\(error.localizedDescription)). Update the app."
         }
     }
 
     /// `voiced models download <id> --json-progress`. True once the model is on disk; false
-    /// when it failed (the row says why), was cancelled, or another download runs.
+    /// when it failed (the row says why), was cancelled, or another download or a delete
+    /// runs. A service that reports `missing_model` for this model is restarted into it, from
+    /// the pane and the menu window alike: the watchdog leaves that state alone.
     @discardableResult
     public func download(_ id: String) async -> Bool {
-        guard download == nil else { return false }
+        guard download == nil, deleting == nil else { return false }
         messages[id] = nil
         download = Download(model: id)
         let task = Task { await runDownload(id) }
@@ -72,6 +80,12 @@ public final class ModelManager {
         download = nil
         downloadTask = nil
         await refresh()
+        if done {
+            for kind in ServiceKind.allCases {
+                guard let status = app.status?[kind], status.state == .missingModel, status.model == id else { continue }
+                await app.restart(.service(kind))
+            }
+        }
         return done
     }
 
@@ -88,11 +102,13 @@ public final class ModelManager {
         deleting = id
         let ran = await collect(["models", "delete", id] + (previous ? ["--previous"] : []) + ["--yes", "--json"])
         deleting = nil
-        let answer = (try? JSONValue(data: Data(ran.stdout.joined(separator: "\n").utf8)))?.objectValue
-        if let error = answer?["error"] {
-            messages[id] = ModelMessage.failure(
-                code: error["code"]?.stringValue, message: error["message"]?.stringValue ?? "", model: model(id))
-        } else if ran.status != 0 || answer == nil {
+        let result = try? JSONDecoder().decode(ModelDeleteResult.self, from: Data(ran.stdout.joined(separator: "\n").utf8))
+        switch result {
+        case .deleted? where ran.status == 0:
+            break
+        case .failed(let code, let message)?:
+            messages[id] = ModelMessage.failure(code: code, message: message, model: model(id))
+        default:
             messages[id] = ModelMessage(text: ran.stderr.last ?? ran.failure ?? "The delete exited with status \(ran.status).")
         }
         await refresh()
@@ -109,13 +125,6 @@ public final class ModelManager {
             ? .sttEngine(row.engine.name, model: row.model?.id) : .ttsEngine(row.engine.name, model: row.model?.id)
         guard await app.apply(edit) else { return }
         if kind == .tts { switchedVoiceEngine = row.engine.label }
-        await app.restart(.service(kind))
-    }
-
-    /// The Download on a service that reports `missing_model`: the model, then a restart
-    /// that loads it.
-    public func downloadMissing(_ id: String, for kind: ServiceKind) async {
-        guard await download(id) else { return }
         await app.restart(.service(kind))
     }
 
@@ -145,7 +154,8 @@ public final class ModelManager {
             messages[id] = ModelMessage(text: "Cannot run \(executable): \(error.localizedDescription)")
             return false
         }
-        if Task.isCancelled { return false }
+        // Cancel landing after `done`: the model is on disk all the same.
+        if Task.isCancelled { return session.finish(status: 0) == .done }
         switch session.finish(status: status) {
         case .done:
             return true

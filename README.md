@@ -309,6 +309,7 @@ then switch to it (`settings set` picks the engine's model and voice):
 ```
 
 Or press Use on its row in the menu bar app's Text to Speech pane.
+
 Know its limits before you switch. Its first audio varies more than
 Kokoro's from run to run (it samples its tokens); the current numbers are in
 [docs/benchmarks.md](docs/benchmarks.md). It has no rate control, so `speed` is

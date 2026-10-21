@@ -6,6 +6,7 @@ import VoicedMenuBarUI
 struct VoicedMenuBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model: AppModel
+    @State private var models: ModelManager
     @State private var loginItem = LoginItem()
     @State private var launch: LaunchChecks
     @State private var whatsNew: WhatsNew
@@ -14,7 +15,9 @@ struct VoicedMenuBarApp: App {
         let model = AppModel()
         model.start()
         _model = State(initialValue: model)
-        Install.models = ModelManager(app: model, runner: Install.runner)
+        let models = ModelManager(app: model, runner: Install.runner)
+        _models = State(initialValue: models)
+        Install.models = models
         let resources = InstallResources.inBundle()
         let installSource = DevelopmentOverride.installSource()
         Install.installer = resources.map {
@@ -31,13 +34,13 @@ struct VoicedMenuBarApp: App {
     var body: some Scene {
         MenuBarExtra {
             PopoverView(
-                model: model, canInstall: Install.installer != nil, launch: launch,
+                model: model, models: models, canInstall: Install.installer != nil, launch: launch,
                 update: Install.installer.map { installer in { installer.update() } },
-                repair: Install.installer.map { installer in { installer.repair() } }, models: Install.models)
+                repair: Install.installer.map { installer in { installer.repair() } })
         } label: {
             MenuBarIcon(
                 dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false,
-                downloading: Install.models?.isDownloading ?? false)
+                downloading: models.isDownloading)
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
         }
@@ -45,7 +48,7 @@ struct VoicedMenuBarApp: App {
 
         Settings {
             SettingsView(
-                model: model, loginItem: loginItem, launch: launch, installer: Install.installer, models: Install.models)
+                model: model, models: models, loginItem: loginItem, launch: launch, installer: Install.installer)
         }
         .windowResizability(.contentSize)
 
@@ -65,8 +68,9 @@ struct VoicedMenuBarApp: App {
     }
 }
 
-/// The installer, when the bundle carries what it needs (ADR 0018), the model rows' runner of
-/// `voiced models` (ADR 0022), and the runner whose children are terminated when the app quits.
+/// The installer, when the bundle carries what it needs (ADR 0018), the model rows (ADR 0022),
+/// which the app delegate asks before quitting, and the runner whose children are terminated
+/// when the app quits.
 @MainActor
 enum Install {
     static let runner = SystemInstallRunner()

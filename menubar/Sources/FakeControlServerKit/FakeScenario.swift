@@ -94,15 +94,15 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     }
 
     /// What the fake's cache holds at the start: every row state in `FakeModelState.sample`,
-    /// and for `missing-model` the configured Kokoro gone with its old version.
+    /// the scenario's configured models in use, and for `missing-model` the configured Kokoro
+    /// gone with its old version.
     public var initialModels: FakeModelState {
         var models = FakeModelState.sample
+        let settings = initialState.settings
+        models.inUse = [settings.stt.model, settings.tts.model]
         if self == .missingModel {
             models.setDownloaded("mlx-community/Kokoro-82M-bf16", false)
-            for e in models.list.engines.indices where models.list.engines[e].name == "kokoro" {
-                models.list.engines[e].models[0].previous = []
-            }
-            models.recount()
+            models.modify("mlx-community/Kokoro-82M-bf16") { $0.previous = [] }
         }
         return models
     }

@@ -59,9 +59,8 @@ public struct SettingsView: View {
     let loginItem: LoginItem
     let launch: LaunchChecks?
     let installer: Installer?
-    /// The model rows of the Speech to Text and Text to Speech panes; nil shows the
-    /// configured model only.
-    let models: ModelManager?
+    /// The model rows of the Speech to Text and Text to Speech panes.
+    let models: ModelManager
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -71,8 +70,8 @@ public struct SettingsView: View {
     @Environment(\.openWindow) private var openWindow
 
     public init(
-        model: AppModel, loginItem: LoginItem, launch: LaunchChecks? = nil, installer: Installer? = nil,
-        models: ModelManager? = nil, pane: SettingsPane? = nil
+        model: AppModel, models: ModelManager, loginItem: LoginItem, launch: LaunchChecks? = nil,
+        installer: Installer? = nil, pane: SettingsPane? = nil
     ) {
         self.model = model
         self.loginItem = loginItem
@@ -110,7 +109,7 @@ public struct SettingsView: View {
                 .scrollContentBackground(.hidden)
                 .disabled(model.isSaving)
                 // Pinned below the scrolling rows (ADR 0022).
-                if let list = models?.list, pane.hasModels, model.settings != nil {
+                if let list = models.list, pane.hasModels, model.settings != nil {
                     Divider()
                     ModelFooter(list: list)
                 }
@@ -120,7 +119,7 @@ public struct SettingsView: View {
         .frame(width: 700, height: 500)
         .navigationTitle(pane.title)
         .onAppear { loginItem.refresh() }
-        .task(id: pane) { if pane.hasModels { await models?.refresh() } }
+        .task(id: pane) { if pane.hasModels { await models.refresh() } }
     }
 
     private var selection: Binding<SettingsPane?> {
@@ -287,14 +286,13 @@ public struct SettingsView: View {
     @ViewBuilder
     private func speechToText(_ settings: SettingsPayload) -> some View {
         Section {
-            if models == nil { LabeledContent("Model", value: settings.stt.model) }
             LabeledContent("Language", value: Self.languageName(settings.stt.language))
         } header: {
             Text("Speech to text")
         } footer: {
             Text("Use switches to a model, downloading it first if needed, and restarts the service.").footnote()
         }
-        if let models { ModelSections(models: models, app: model, kind: .stt, settings: settings) }
+        ModelSections(models: models, app: model, kind: .stt, settings: settings)
     }
 
     @ViewBuilder
@@ -306,7 +304,6 @@ public struct SettingsView: View {
                     Text(engine?.voiceName(voice) ?? voice).tag(voice)
                 }
             }
-            if models == nil { LabeledContent("Model", value: settings.tts.model) }
             LabeledContent("Speed", value: Self.speedText(settings.tts.speed))
         } header: {
             Text("Text to speech")
@@ -314,7 +311,7 @@ public struct SettingsView: View {
             Text("The voice is the default for requests that do not name one; the list is the engine in use's. Use switches to a model, downloading it first if needed, and restarts the service.")
                 .footnote()
         }
-        if let models { ModelSections(models: models, app: model, kind: .tts, settings: settings) }
+        ModelSections(models: models, app: model, kind: .tts, settings: settings)
     }
 
     // MARK: - About
@@ -384,7 +381,7 @@ public struct SettingsView: View {
                 }
                 if let installer, managed {
                     // Update and Repair wait for a model download (ADR 0022).
-                    let working = installer.isWorking || models?.isDownloading == true
+                    let working = installer.isWorking || models.isDownloading
                     if case .differs = launch?.installMatch {
                         Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
                     }

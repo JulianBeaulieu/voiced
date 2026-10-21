@@ -110,7 +110,8 @@ final class ModelManagerTests: XCTestCase {
             ], status: 1)
         }
         _ = await f.models.download(phonon31)
-        XCTAssertEqual(f.models.messages[phonon31]?.text, "voiced is installing or updating; try again when it ends.")
+        XCTAssertEqual(
+            f.models.messages[phonon31]?.text, "voiced is busy installing, updating or changing models; try again when it ends.")
     }
 
     func testCancelEndsTheDownloadAndLeavesTheModelAsItWas() async throws {
@@ -139,7 +140,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, engine: "kokoro", model: kokoro, downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
                 .first { $0.model?.id == phonon31 })
         // The server refuses a model that is not downloaded.
         let refused = await f.app.apply(.ttsEngine("phonon", model: phonon31))
@@ -165,7 +166,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .stt, engine: "parakeet", model: "x", downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .stt, settings: try XCTUnwrap(f.app.settings), downloading: nil)
                 .first { $0.model == nil })
         await f.models.use(row, for: .stt)
         // The engine's own model, from `engines.list`, as an engine switch has always sent.
@@ -178,7 +179,7 @@ final class ModelManagerTests: XCTestCase {
         let f = try await fixture()
         defer { f.stop() }
         let row = try XCTUnwrap(
-            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, engine: "kokoro", model: kokoro, downloading: nil)
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
                 .first { $0.model?.id == "gradium/phonon-40m-en" })
         await f.models.use(row, for: .tts)
         XCTAssertFalse(f.server.requests.contains { $0.op == "settings.set" })
@@ -188,11 +189,15 @@ final class ModelManagerTests: XCTestCase {
     func testDeleteAndDeleteOldVersion() async throws {
         let f = try await fixture()
         defer { f.stop() }
-        await f.models.delete("mlx-community/parakeet-tdt-0.6b-v3")
+        _ = await f.models.download(phonon31)
+        await f.models.delete(phonon31)
         XCTAssertEqual(
             f.runner.commands.first { $0.arguments.contains("delete") }?.arguments,
-            ["models", "delete", "mlx-community/parakeet-tdt-0.6b-v3", "--yes", "--json"])
-        XCTAssertEqual(f.models.list?.model("mlx-community/parakeet-tdt-0.6b-v3")?.model.downloaded, false)
+            ["models", "delete", phonon31, "--yes", "--json"])
+        XCTAssertEqual(f.models.list?.model(phonon31)?.model.downloaded, false)
+        XCTAssertEqual(
+            f.models.list?.engines.first { $0.name == "phonon" }?.shared.first?.downloaded, false,
+            "its voices go with Phonon's last model")
 
         await f.models.delete(kokoro, previous: true)
         XCTAssertEqual(
@@ -206,13 +211,73 @@ final class ModelManagerTests: XCTestCase {
     func testARefusedDeleteSaysWhy() async throws {
         let f = try await fixture()
         defer { f.stop() }
-        f.runner.respond = { command in
-            guard command.arguments.contains("delete") else { return .models(command.arguments, in: f.cache) }
-            return .init([.stdout(#"{"error": {"code": "in_use", "message": "kokoro uses it"}}"#), .exit(1)])
-        }
+        // The fake, like the real command, refuses the configured model.
         await f.models.delete(kokoro)
         XCTAssertEqual(f.models.messages[kokoro]?.text, "In use. Choose another model first.")
         XCTAssertNil(f.models.deleting)
+        XCTAssertEqual(f.models.list?.model(kokoro)?.model.downloaded, true)
+        // After Use moves away from it, it can go.
+        let row = try XCTUnwrap(
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+                .first { $0.model?.id == phonon31 })
+        await f.models.use(row, for: .tts)
+        await f.models.delete(kokoro)
+        XCTAssertNil(f.models.messages[kokoro])
+        XCTAssertEqual(f.models.list?.model(kokoro)?.model.downloaded, false)
+    }
+
+    func testAnotherVoicedCommandHoldingTheLockIsBusy() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        let marker = f.cache.busyMarker.path
+        FileManager.default.createFile(atPath: marker, contents: nil)
+        defer { try? FileManager.default.removeItem(atPath: marker) }
+        let busy = "voiced is busy installing, updating or changing models; try again when it ends."
+        _ = await f.models.download(phonon31)
+        XCTAssertEqual(f.models.messages[phonon31]?.text, busy)
+        await f.models.delete("mlx-community/Soprano-80M-bf16", previous: true)
+        XCTAssertEqual(f.models.messages["mlx-community/Soprano-80M-bf16"]?.text, busy)
+    }
+
+    func testNoDownloadStartsWhileADeleteRuns() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        f.runner.respond = { command in
+            command.arguments.contains("delete") ? .init([.stdout("{}")], hangs: true) : .models(command.arguments, in: f.cache)
+        }
+        let delete = Task { await f.models.delete(kokoro, previous: true) }
+        let deleting = await eventually { f.models.deleting != nil }
+        XCTAssertTrue(deleting)
+        let started = await f.models.download(phonon31)
+        XCTAssertFalse(started)
+        delete.cancel()
+    }
+
+    func testACancelThatLandsAfterDoneStillCounts() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        f.runner.respond = { command in
+            guard command.arguments.contains("download") else { return .models(command.arguments, in: f.cache) }
+            return .init(
+                [RecordedProgress.hello, RecordedProgress.download(self.phonon31, 10, 10), RecordedProgress.done]
+                    .map(ProcessOutput.stdout), hangs: true)
+        }
+        let download = Task { await f.models.download(phonon31) }
+        let finished = await eventually { f.models.download?.progress?.isFinished == true }
+        XCTAssertTrue(finished)
+        try await Task.sleep(for: .milliseconds(50))
+        f.models.cancelDownload()
+        let done = await download.value
+        XCTAssertTrue(done, "the model is on disk: Use goes on")
+    }
+
+    func testAListThisAppCannotReadIsNotCalledAnOldVoiced() async throws {
+        let app = AppModel(socketPath: temporarySocketPath())
+        let runner = FakeInstallRunner()
+        runner.respond = { _ in .init([.stdout(#"{"engines": "not a list"}"#), .exit(0)]) }
+        let models = ModelManager(app: app, runner: runner, executable: "/usr/bin/true")
+        await models.refresh()
+        XCTAssertTrue(models.listError?.hasPrefix("voiced models list printed a list this app cannot read") == true)
     }
 
     func testAMissingModelDownloadsThenTheServiceRestartsIntoIt() async throws {
@@ -227,40 +292,41 @@ final class ModelManagerTests: XCTestCase {
         let stillMissing = await eventually { f.app.status?[.tts]?.state == .missingModel }
         XCTAssertTrue(stillMissing)
 
-        await f.models.downloadMissing(kokoro, for: .tts)
+        // The menu window's Download.
+        await f.models.download(kokoro)
         XCTAssertEqual(f.server.requests.last?.op, "service.restart")
         let running = await eventually { f.app.status?[.tts]?.state == .running && f.app.status?[.tts]?.warm == true }
         XCTAssertTrue(running)
         XCTAssertEqual(f.app.dashboard.headline, "Running")
     }
-}
 
-/// Against a real `voiced` through the real runner, skipped unless `VOICED_REAL_CLI` names
-/// one: `VOICED_REAL_CLI=~/.voiced/bin/voiced swift test --filter RealCLITests`. It downloads
-/// Phonon 31m (65 MB) into the Hugging Face cache, cancelling the first try.
-@MainActor
-final class RealCLITests: XCTestCase {
-    func testListDownloadAndCancelWithTheRealCommand() async throws {
-        guard let path = ProcessInfo.processInfo.environment["VOICED_REAL_CLI"] else {
-            throw XCTSkip("set VOICED_REAL_CLI to a voiced with `voiced models`")
-        }
-        let id = "gradium/phonon-31m-en"
-        let models = ModelManager(
-            app: AppModel(socketPath: temporarySocketPath()), runner: SystemInstallRunner(),
-            executable: (path as NSString).expandingTildeInPath)
-        await models.refresh()
-        XCTAssertNil(models.listError)
-        XCTAssertNotNil(models.list?.model(id))
+    /// The pane's Download on the row in use restarts the service too: the watchdog leaves
+    /// `missing_model` alone, so without it the service would stay at 503.
+    func testDownloadFromTheRowInUseRestartsAMissingModelService() async throws {
+        let f = try await fixture(.missingModel)
+        defer { f.stop() }
+        let row = try XCTUnwrap(
+            ModelRow.rows(try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil)
+                .first { $0.model?.id == kokoro })
+        XCTAssertEqual(row.state, .inUseMissing)
+        XCTAssertEqual(row.downloadTitle, "Download")
+        let restartsBefore = f.server.requests.filter { $0.op == "service.restart" }.count
+        await f.models.download(try XCTUnwrap(row.model?.id))
+        XCTAssertEqual(f.server.requests.filter { $0.op == "service.restart" }.count, restartsBefore + 1)
+        XCTAssertEqual(f.server.requests.last?.args, ["service": "tts"])
+        let running = await eventually { f.app.status?[.tts]?.isReady == true }
+        XCTAssertTrue(running)
+        let ready = ModelRow.isReady(f.app.status?[.tts], restarting: f.app.restarting.contains(.tts))
+        let after = ModelRow.rows(
+            try XCTUnwrap(f.models.list), kind: .tts, settings: try XCTUnwrap(f.app.settings), downloading: nil, ready: ready)
+        XCTAssertEqual(after.first { $0.model?.id == self.kokoro }?.state, .inUse)
+    }
 
-        let cancelled = Task { await models.download(id) }
-        _ = await eventually(timeout: .seconds(60)) { models.download?.progress != nil }
-        models.cancelDownload()
-        let first = await cancelled.value
-        XCTAssertNil(models.messages[id], "a cancel is not a failure")
-        if !first { XCTAssertEqual(models.list?.model(id)?.model.downloaded, false) }
-
-        let done = await models.download(id)
-        XCTAssertTrue(done, "\(models.messages[id]?.text ?? "")")
-        XCTAssertEqual(models.list?.model(id)?.model.downloaded, true)
+    func testADownloadOfAModelNoServiceIsMissingRestartsNothing() async throws {
+        let f = try await fixture()
+        defer { f.stop() }
+        _ = await f.models.download(phonon31)
+        XCTAssertFalse(f.server.requests.contains { $0.op == "service.restart" })
     }
 }
+

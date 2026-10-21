@@ -1,15 +1,19 @@
 import Foundation
 
-/// ADR 0018's development override: in a debug build, the `installSource` user default names
-/// a voiced wheel, which the installer installs instead of the wheel in the bundle, so a
-/// development build of the app can install the matching, unpushed voiced:
+/// The development overrides, both only in debug builds (`swift build`, `swift run`).
+/// bundle.sh and the release build in release configuration, which compiles them out, so no
+/// process can steer what a shipped app installs or runs.
+///
+/// ADR 0018's `installSource` user default names a voiced wheel, which the installer installs
+/// instead of the wheel in the bundle, so a development build of the app can install the
+/// matching, unpushed voiced:
 ///
 ///     uv build --wheel                  # in the checkout
 ///     defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.2.0-py3-none-any.whl
 ///
-/// It exists only in debug builds (`swift build`, `swift run`). bundle.sh and the release
-/// build in release configuration, which compiles it out, so no process can steer what a
-/// shipped app installs by writing a default.
+/// ADR 0022's `VOICED_EXECUTABLE` environment variable names the program the model rows run
+/// as `voiced models`. It is the environment, like `VOICED_CONTROL_SOCKET`, because the fake
+/// (`voiced-fake-control models`) finds its cache through the socket path it inherits.
 public enum DevelopmentOverride {
     public static let key = "installSource"
 

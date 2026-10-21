@@ -49,9 +49,9 @@ public enum InstallEvent: Sendable, Equatable {
         case "done":
             self = .done
         case "error":
-            let message = fields["message"]?.stringValue ?? ""
+            // An empty message is worded by the session, which knows the command.
             self = .error(
-                step: fields["step"]?.stringValue, message: message.isEmpty ? "voiced install failed." : message,
+                step: fields["step"]?.stringValue, message: fields["message"]?.stringValue ?? "",
                 code: fields["code"]?.stringValue)
         default:
             return nil
@@ -224,7 +224,7 @@ struct InstallSession {
         }
         switch terminal {
         case .error(let step, let message, let code)?:
-            return .failed(step: step, cause: message, code: code)
+            return .failed(step: step, cause: message.isEmpty ? "\(command) failed." : message, code: code)
         case .done? where status == 0:
             return .done
         case .done?:

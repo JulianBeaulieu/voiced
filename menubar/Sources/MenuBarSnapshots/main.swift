@@ -80,6 +80,8 @@ let shots = [
     Shot(name: "missing-model", scenario: .missingModel),
     Shot(name: "missing-model-settings", scenario: .missingModel, window: .settings, pane: .textToSpeech),
     Shot(name: "model-downloading", scenario: .running, modelSteps: [.downloading(phonon31)]),
+    // The watchdog gone mid-download: the progress row and Cancel stay.
+    Shot(name: "model-downloading-disconnected", scenario: nil, installed: true, modelSteps: [.downloading(phonon31)]),
     Shot(name: "settings-tts-downloading", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.downloading(phonon31)]),
     Shot(name: "settings-tts-after-use", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.use(.tts, phonon31)]),
 ]
@@ -109,9 +111,7 @@ func modelManager(_ model: AppModel, socket: String, steps: [ModelStep]) async -
             }
         case .use(let kind, let id):
             guard let list = manager.list, let settings = model.settings else { continue }
-            let (engine, configured) =
-                kind == .stt ? (settings.stt.engine, settings.stt.model) : (settings.tts.engine, settings.tts.model)
-            let rows = ModelRow.rows(list, kind: kind, engine: engine, model: configured, downloading: nil)
+            let rows = ModelRow.rows(list, kind: kind, settings: settings, downloading: nil)
             if let row = rows.first(where: { $0.model?.id == id }) { await manager.use(row, for: kind) }
         }
     }
@@ -200,11 +200,11 @@ func run() async {
             case .status:
                 // With launch cards, Update is offered as it will be once Update exists.
                 let view = PopoverView(
-                    model: model, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} }, models: models)
+                    model: model, models: models, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
                 await render(view, dark: dark, to: file)
             case .settings:
                 await render(
-                    SettingsView(model: model, loginItem: LoginItem(), launch: launch, models: models, pane: shot.pane),
+                    SettingsView(model: model, models: models, loginItem: LoginItem(), launch: launch, pane: shot.pane),
                     dark: dark, to: file)
             }
             print(file.path)

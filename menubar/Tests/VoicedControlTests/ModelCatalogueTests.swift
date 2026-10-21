@@ -54,9 +54,18 @@ final class ModelCatalogueTests: XCTestCase {
     // MARK: - Rows
 
     private func rows(
-        _ state: FakeModelState = .sample, kind: ServiceKind, engine: String, model: String, downloading: String? = nil
+        _ state: FakeModelState = .sample, kind: ServiceKind, engine: String, model: String, downloading: String? = nil,
+        ready: Bool = true
     ) -> [String: ModelRow] {
-        let rows = ModelRow.rows(state.list, kind: kind, engine: engine, model: model, downloading: downloading)
+        var settings = FakeState.sample.settings
+        if kind == .stt {
+            (settings.stt.engine, settings.stt.model) = (engine, model)
+        } else {
+            (settings.tts.engine, settings.tts.model) = (engine, model)
+        }
+        XCTAssertEqual(settings.selection(for: kind).engine, engine)
+        XCTAssertEqual(settings.selection(for: kind).model, model)
+        let rows = ModelRow.rows(state.list, kind: kind, settings: settings, downloading: downloading, ready: ready)
         return Dictionary(uniqueKeysWithValues: rows.map { ($0.model?.id ?? $0.engine.name, $0) })
     }
 
@@ -68,7 +77,10 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(tts["mlx-community/Soprano-80M-bf16"]?.state, .oldVersion)
         XCTAssertEqual(tts["gradium/phonon-31m-en"]?.state, .notDownloaded)
         XCTAssertEqual(tts["gradium/phonon-40m-en"]?.state, .gated)
-        XCTAssertEqual(tts["fake"]?.state, .downloaded, "a plugin engine: Use only")
+        XCTAssertEqual(tts["fake"]?.state, .selfManaged, "a plugin engine: Use only")
+        XCTAssertEqual(tts["fake"]?.canUse, true)
+        XCTAssertNil(tts["fake"]?.downloadTitle)
+        XCTAssertEqual(tts["fake"]?.showsDelete, false)
         XCTAssertNil(tts["gradium/phonon-voices"])
 
         let stt = rows(kind: .stt, engine: "parakeet", model: "mlx-community/parakeet-tdt-0.6b-v3")
@@ -80,6 +92,23 @@ final class ModelCatalogueTests: XCTestCase {
 
         let missing = rows(FakeScenario.missingModel.initialModels, kind: .tts, engine: "kokoro", model: kokoro)
         XCTAssertEqual(missing[kokoro]?.state, .inUseMissing)
+
+        // The model in use while its service loads it, and a plugin engine in use.
+        let loading = rows(kind: .tts, engine: "kokoro", model: kokoro, ready: false)[kokoro]
+        XCTAssertEqual(loading?.state, .inUseLoading)
+        XCTAssertEqual(loading?.stateLabel, "In use, loading")
+        XCTAssertEqual(loading?.canDelete, false)
+        XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake")["fake"]?.state, .inUse)
+        XCTAssertEqual(rows(kind: .tts, engine: "fake", model: "fake", ready: false)["fake"]?.state, .inUseLoading)
+    }
+
+    func testAServiceIsReadyOnceWarmAndNotRestarting() {
+        let warm = ServiceStatus(state: .running, warm: true)
+        XCTAssertTrue(ModelRow.isReady(warm, restarting: false))
+        XCTAssertFalse(ModelRow.isReady(warm, restarting: true))
+        XCTAssertFalse(ModelRow.isReady(ServiceStatus(state: .running, warm: false), restarting: false))
+        XCTAssertFalse(ModelRow.isReady(ServiceStatus(state: .starting), restarting: false))
+        XCTAssertTrue(ModelRow.isReady(nil, restarting: false), "no status yet: nothing to wait for")
     }
 
     func testEachStateOffersItsActions() {
@@ -87,7 +116,9 @@ final class ModelCatalogueTests: XCTestCase {
         let inUse = tts[kokoro]
         XCTAssertNil(inUse?.downloadTitle)
         XCTAssertEqual(inUse?.canUse, false)
+        XCTAssertEqual(inUse?.showsDelete, true)
         XCTAssertEqual(inUse?.canDelete, false, "Delete is disabled on the model in use")
+        XCTAssertEqual(inUse?.note, "In use. Choose another model first.")
         XCTAssertEqual(inUse?.sizeLine, "389.4 MB on disk")
         XCTAssertEqual(inUse?.deleteOldTitle, "Delete Old Version (341 MB)", "offered on the row in use too")
 
@@ -101,6 +132,7 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertEqual(new?.downloadTitle, "Download")
         XCTAssertEqual(new?.canUse, true)
         XCTAssertEqual(new?.canDelete, false)
+        XCTAssertNil(new?.note)
         XCTAssertNil(new?.deleteOldTitle)
 
         XCTAssertEqual(tts["gradium/phonon-40m-en"]?.downloadTitle, "Download")
@@ -151,6 +183,37 @@ final class ModelCatalogueTests: XCTestCase {
         state.setDownloaded("gradium/phonon-40m-en", true)
         let notLast = try XCTUnwrap(rows(state, kind: .tts, engine: "kokoro", model: kokoro)["gradium/phonon-31m-en"]?.deleteConfirmation())
         XCTAssertEqual(notLast.message, "This frees 65 MB. Downloading it again takes 65 MB.")
+
+        let old = try XCTUnwrap(tts[kokoro]?.deleteOldConfirmation())
+        XCTAssertEqual(old.title, "Delete the old version of Kokoro-82M-bf16?")
+        XCTAssertEqual(old.message, "This frees 341 MB. The current version stays.")
+        XCTAssertNil(tts["gradium/phonon-31m-en"]?.deleteOldConfirmation())
+    }
+
+    func testTheDeleteOutputDecodes() throws {
+        XCTAssertEqual(
+            try decodeJSON(
+                ModelDeleteResult.self,
+                #"{"model": "m", "deleted": [{"repo": "m", "revision": "r", "bytes": 5}], "freed": 5, "notes": ["n"]}"#),
+            .deleted(freed: 5, notes: ["n"]))
+        XCTAssertEqual(
+            try decodeJSON(ModelDeleteResult.self, #"{"error": {"code": "in_use", "message": "used"}}"#),
+            .failed(code: "in_use", message: "used"))
+        XCTAssertThrowsError(try decodeJSON(ModelDeleteResult.self, #"{"something": "else"}"#))
+    }
+
+    func testTheFooterAndTheHomeAssistantHint() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let list = ModelList(cache: "\(home)/.cache/huggingface/hub", totalBytes: 3_460_000_000, engines: [])
+        XCTAssertEqual(list.usageLine, "voiced's models use 3.46 GB in ~/.cache/huggingface/hub.")
+        XCTAssertEqual(
+            ModelList(cache: "/Volumes/Models/hub", totalBytes: 0, engines: []).usageLine,
+            "voiced's models use Zero KB in /Volumes/Models/hub.")
+        XCTAssertEqual(ModelList.sharedFolderNote, "This folder is shared with other apps; voiced deletes only its own models.")
+        XCTAssertEqual(
+            ModelMessage.homeAssistantHint(engine: "Phonon"),
+            "In Home Assistant, pick a Phonon voice under Settings > Voice assistants > your assistant > "
+                + "Text-to-speech > Voice. If the new voices are missing, reload voiced under Devices & services.")
     }
 
     // MARK: - Messages
@@ -169,7 +232,7 @@ final class ModelCatalogueTests: XCTestCase {
             "Not enough free disk space. Needs 2.1 GB free.")
         XCTAssertEqual(
             ModelMessage.failure(code: "busy", message: "", model: nil).text,
-            "voiced is installing or updating; try again when it ends.")
+            "voiced is busy installing, updating or changing models; try again when it ends.")
         XCTAssertEqual(ModelMessage.failure(code: "in_use", message: "", model: nil).text, "In use. Choose another model first.")
         XCTAssertEqual(ModelMessage.failure(code: "failed", message: "No such repo.", model: nil).text, "No such repo.")
         XCTAssertEqual(ModelMessage.failure(code: "from_the_future", message: "Something new.", model: nil).text, "Something new.")

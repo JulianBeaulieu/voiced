@@ -9,8 +9,9 @@ Settings window with a sidebar of panes: General (open at login, settings
 from the status page), Network (listen on this Mac or the local network,
 Home Assistant discovery, the API key), Speech to Text and Text to Speech
 (a row per model, grouped by engine, to download, delete or use it, and the
-voice of the engine in use; see [Models](#models)), About (versions, the control socket, the
-config file and logs, the third-party notices) and, once "Show Debug pane"
+voice of the engine in use; see [Models](#models)), About (versions, the
+control socket, the config file and logs, the third-party notices) and, once
+"Show Debug pane"
 in General turns it on, Debug (the app, its pins, the installed environment,
 the installer's state, each service's Login Items status and every path,
 with "Copy Diagnostics"). The window ends with the app's
@@ -147,7 +148,11 @@ with the scenario's models at start: one model in each state, Phonon's gated
 takes five seconds; SIGTERM ends it with exit 143), the fake server reads it:
 `settings.set` refuses a model that is not downloaded with
 `model_not_downloaded`, and a restarted service without its model reports
-`missing_model`. Pointed at a development checkout's `voiced`, the rows run
+`missing_model`; the fake `delete` refuses the configured models with
+`in_use`. To try other failures, edit the file's `failures` (model id to an
+error code such as `network` or `disk`); while `<socket>.models.json.busy`
+exists, download and delete fail with `busy`. Pointed at a development
+checkout's `voiced`, the rows run
 the real command; `VOICED_REAL_CLI=<voiced> swift test --filter RealCLITests`
 runs a list, a cancelled download and a download through the app's code.
 

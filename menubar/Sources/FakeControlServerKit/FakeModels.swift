@@ -2,15 +2,20 @@ import Foundation
 import VoicedControl
 
 /// What the fake's Hugging Face cache holds: the catalogue as `voiced models list --json`
-/// prints it, and the code each model's download fails with, if any.
+/// prints it, the code each model's download fails with, if any, and the configured models,
+/// which the fake server keeps up to date and `delete` refuses.
 public struct FakeModelState: Codable, Sendable, Equatable {
     public var list: ModelList
-    /// Model id to an ADR 0022 error code (`token_missing`, `network`, ...).
+    /// Model id to an ADR 0022 error code (`token_missing`, `network`, ...). Edit the file by
+    /// hand to make another download fail.
     public var failures: [String: String]
+    /// The models the fake config uses.
+    public var inUse: [String]
 
-    public init(list: ModelList, failures: [String: String] = [:]) {
+    public init(list: ModelList, failures: [String: String] = [:], inUse: [String] = []) {
         self.list = list
         self.failures = failures
+        self.inUse = inUse
     }
 
     /// Whether `id` is a catalogued model that is not downloaded; nil for one the catalogue
@@ -19,17 +24,23 @@ public struct FakeModelState: Codable, Sendable, Equatable {
         list.model(id).map { !$0.model.downloaded }
     }
 
-    public mutating func setDownloaded(_ id: String, _ downloaded: Bool) {
+    /// Changes the model or shared model `id`, then counts the bytes again.
+    public mutating func modify(_ id: String, _ change: (inout CatalogueModel) -> Void) {
         for e in list.engines.indices {
             for kind in [\ModelEngine.models, \ModelEngine.shared] {
                 for m in list.engines[e][keyPath: kind].indices where list.engines[e][keyPath: kind][m].id == id {
-                    list.engines[e][keyPath: kind][m].downloaded = downloaded
-                    let model = list.engines[e][keyPath: kind][m]
-                    list.engines[e][keyPath: kind][m].onDiskBytes = downloaded ? model.downloadBytes : 0
+                    change(&list.engines[e][keyPath: kind][m])
                 }
             }
         }
         recount()
+    }
+
+    public mutating func setDownloaded(_ id: String, _ downloaded: Bool) {
+        modify(id) { model in
+            model.downloaded = downloaded
+            model.onDiskBytes = downloaded ? model.downloadBytes : 0
+        }
     }
 
     /// `total_bytes`: what is on disk, old versions included.
@@ -44,9 +55,12 @@ public struct FakeModelState: Codable, Sendable, Equatable {
 /// cache) and the fake `voiced models` command, which changes it, as the real CLI does.
 public struct FakeModels: Sendable {
     public let file: URL
+    /// While this file exists, download and delete fail with `busy`.
+    public let busyMarker: URL
 
-    public init(file: URL) {
+    public init(file: URL, busyMarker: URL? = nil) {
         self.file = file
+        self.busyMarker = busyMarker ?? URL(fileURLWithPath: file.path + ".busy")
     }
 
     /// Next to the socket, so the fake command run by the app finds it through the app's
@@ -73,7 +87,9 @@ public struct FakeModels: Sendable {
 
     /// `voiced models list --json`, `download <model> --json-progress` and `delete <model>
     /// [--previous] --yes --json`, with the real command's output shapes and exit statuses.
-    /// `pause` runs between progress lines; a download takes ten of them.
+    /// `pause` runs between progress lines; a download takes ten of them. While `busyMarker`
+    /// exists, download and delete fail with `busy`, as the real ones do while an install
+    /// holds its lock.
     public func run(_ arguments: [String], output: (String) -> Void, pause: () -> Void) -> Int32 {
         guard let state = read() else {
             output(Self.object(["error": ["code": "failed", "message": "No fake models at \(file.path)."]]))
@@ -84,8 +100,18 @@ public struct FakeModels: Sendable {
         case ("list"?, nil):
             output(Self.encoded(state.list))
             return 0
+        case ("download"?, let id?) where isLocked:
+            output(#"{"event": "hello", "protocol": 1, "version": "0.0.1"}"#)
+            output(Self.object(["event": "error", "code": "busy", "message": Self.busy, "repo": id]))
+            return 1
+        case ("delete"?, _?) where isLocked:
+            output(Self.object(["error": ["code": "busy", "message": Self.busy]]))
+            return 1
         case ("download"?, let id?):
             return download(id, state: state, output: output, pause: pause)
+        case ("delete"?, let id?) where state.inUse.contains(id) && !arguments.contains("--previous"):
+            output(Self.object(["error": ["code": "in_use", "message": "\(id) is the model the config uses."]]))
+            return 1
         case ("delete"?, let id?):
             return delete(id, previous: arguments.contains("--previous"), state: state, output: output)
         default:
@@ -128,14 +154,7 @@ public struct FakeModels: Sendable {
         var notes: [String] = []
         if previous {
             deleted = model.previous.map { ["repo": model.repo, "revision": $0.revision, "bytes": $0.bytes] }
-            update { state in
-                for e in state.list.engines.indices {
-                    for m in state.list.engines[e].models.indices where state.list.engines[e].models[m].id == id {
-                        state.list.engines[e].models[m].previous = []
-                    }
-                }
-                state.setDownloaded(id, model.downloaded)
-            }
+            update { $0.modify(id) { $0.previous = [] } }
         } else if model.downloaded {
             deleted = [["repo": model.repo, "revision": "fake", "bytes": model.onDiskBytes]]
             let isLast = engine.models.allSatisfy { $0.id == id || !$0.downloaded }
@@ -150,6 +169,10 @@ public struct FakeModels: Sendable {
         output(Self.object(["model": id, "deleted": deleted, "freed": freed, "notes": notes] as [String: Any]))
         return 0
     }
+
+    private var isLocked: Bool { FileManager.default.fileExists(atPath: busyMarker.path) }
+
+    private static let busy = "The state directory is locked by another voiced command."
 
     private static func encoded(_ value: Encodable) -> String {
         (try? JSONEncoder().encode(value)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"

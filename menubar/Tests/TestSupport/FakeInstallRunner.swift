@@ -112,7 +112,7 @@ extension FakeInstallRunner.Response {
     /// out, so a cancelled download changes nothing, as a real one leaves only partial files.
     @MainActor
     public static func models(_ arguments: [String], in models: FakeModels, delay: Duration = .zero) -> Self {
-        let scratch = FakeModels(file: models.file.appendingPathExtension(UUID().uuidString))
+        let scratch = FakeModels(file: models.file.appendingPathExtension(UUID().uuidString), busyMarker: models.busyMarker)
         defer { try? FileManager.default.removeItem(at: scratch.file) }
         if let state = models.read() { scratch.write(state) }
         var lines: [String] = []

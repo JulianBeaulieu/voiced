@@ -49,7 +49,7 @@ final class ProgressProtocolTests: XCTestCase {
         XCTAssertNil(InstallEvent(line: #"{"event": "step", "step": "x", "state": "halfway"}"#))
         XCTAssertNil(InstallEvent(line: #"{"event": "download", "model": "m", "bytes": "1", "total": 2}"#))
         XCTAssertNil(InstallEvent(line: #"{"event": "hello"}"#))
-        XCTAssertEqual(InstallEvent(line: #"{"event": "error"}"#), .error(step: nil, message: "voiced install failed."))
+        XCTAssertEqual(InstallEvent(line: #"{"event": "error"}"#), .error(step: nil, message: ""))
     }
 
     func testDryRunPlannedStepsAreIgnored() {
@@ -221,6 +221,14 @@ final class ProgressProtocolTests: XCTestCase {
             .failed(step: nil, cause: "This voiced does not report download progress. Update voiced."))
         _ = silent.receive(line: RecordedProgress.hello, at: start)
         XCTAssertEqual(silent.finish(status: 143), .failed(step: nil, cause: "voiced models download exited with status 143."))
+        _ = silent.receive(line: #"{"event": "error", "code": "failed"}"#, at: start)
+        XCTAssertEqual(
+            silent.finish(status: 1), .failed(step: nil, cause: "voiced models download failed.", code: "failed"),
+            "an empty message is worded as the command")
+        var install = InstallSession()
+        _ = install.receive(line: RecordedProgress.hello, at: start)
+        _ = install.receive(line: #"{"event": "error"}"#, at: start)
+        XCTAssertEqual(install.finish(status: 1), .failed(step: nil, cause: "voiced install failed."))
     }
 
     /// The fake command speaks the protocol as the real one does: the model, then its
@@ -247,10 +255,9 @@ final class ProgressProtocolTests: XCTestCase {
 
         lines = []
         XCTAssertEqual(models.run(["delete", "gradium/phonon-31m-en", "--yes", "--json"], output: { lines.append($0) }, pause: {}), 0)
-        let deletion = try JSONDecoder().decode(ModelDeletion.self, from: Data(lines.joined().utf8))
-        XCTAssertEqual(deletion.model, "gradium/phonon-31m-en")
-        XCTAssertEqual(deletion.freed, 65_049_306 + 9_510_439)
-        XCTAssertEqual(deletion.notes, ["Phonon's shared files (gradium/phonon-voices) are deleted with it."])
+        XCTAssertEqual(
+            try JSONDecoder().decode(ModelDeleteResult.self, from: Data(lines.joined().utf8)),
+            .deleted(freed: 65_049_306 + 9_510_439, notes: ["Phonon's shared files (gradium/phonon-voices) are deleted with it."]))
         XCTAssertEqual(models.read()?.isMissing("gradium/phonon-31m-en"), true)
     }
 }

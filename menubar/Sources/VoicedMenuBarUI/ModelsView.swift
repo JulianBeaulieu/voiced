@@ -11,19 +11,23 @@ struct ModelSections: View {
     let settings: SettingsPayload
 
     var body: some View {
+        // A failed refresh keeps the last list; it says so above it.
+        if let error = models.listError {
+            Section("Models") {
+                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                Button("Try Again") { Task { await models.refresh() } }
+            }
+        }
         if let list = models.list {
-            let (engine, model) =
-                kind == .stt ? (settings.stt.engine, settings.stt.model) : (settings.tts.engine, settings.tts.model)
+            let ready = ModelRow.isReady(app.status?[kind], restarting: app.restarting.contains(kind))
             let rows = ModelRow.rows(
-                list, kind: kind, engine: engine, model: model, downloading: models.download?.model)
+                list, kind: kind, settings: settings, downloading: models.download?.model, ready: ready)
             // Next to the voice picker: the voice is what changes for Home Assistant.
             if kind == .tts, let switched = models.switchedVoiceEngine {
                 Section {
                     Notice(
                         symbol: "house", tint: .accentColor,
-                        text: "In Home Assistant, pick a \(switched) voice under Settings > Voice assistants > "
-                            + "your assistant > Text-to-speech > Voice. If the new voices are missing, reload "
-                            + "voiced under Devices & services.",
+                        text: ModelMessage.homeAssistantHint(engine: switched),
                         actionTitle: "Dismiss"
                     ) { models.dismissVoiceHint() }
                 }
@@ -41,12 +45,7 @@ struct ModelSections: View {
                     }
                 }
             }
-        } else if let error = models.listError {
-            Section("Models") {
-                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
-                Button("Try Again") { Task { await models.refresh() } }
-            }
-        } else {
+        } else if models.listError == nil {
             Section("Models") { Working(text: "Reading the models") }
         }
     }
@@ -78,7 +77,7 @@ struct ModelRowView: View {
                             }
                         }
                     }
-                    Text(([row.sizeLine, stateLine].compactMap { $0 }).joined(separator: " · "))
+                    Text(([row.sizeLine, row.stateLabel].compactMap { $0 }).joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(row.state == .inUseMissing ? Color.red : Color.secondary)
                 }
@@ -87,6 +86,9 @@ struct ModelRowView: View {
             }
             if row.state == .downloading {
                 DownloadBar(models: models)
+            }
+            if let note = row.note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
             }
             if let message = models.messages[row.model?.id ?? ""] {
                 ModelMessageView(message: message)
@@ -119,21 +121,8 @@ struct ModelRowView: View {
         models.isDownloading || models.deleting != nil || app.restarting.contains(kind)
     }
 
-    /// The state, with the service's own while the model in use loads.
-    private var stateLine: String {
-        guard row.state == .inUse, let status = app.status?[kind] else { return row.stateLabel }
-        let ready = status.state == .running && status.warm
-        return ready && !app.restarting.contains(kind) ? row.stateLabel : "In use, loading"
-    }
-
     private var dialog: (title: String, message: String) {
-        if confirming == .previous, let model = row.model {
-            return (
-                "Delete the old version of \(model.name)?",
-                "This frees \(Formatting.bytes(model.previousBytes)). The current version stays."
-            )
-        }
-        return row.deleteConfirmation() ?? ("", "")
+        (confirming == .previous ? row.deleteOldConfirmation() : row.deleteConfirmation()) ?? ("", "")
     }
 
     @ViewBuilder
@@ -150,10 +139,9 @@ struct ModelRowView: View {
                     .disabled(busy)
                     .help(row.model?.downloaded == false ? "Downloads the model, then switches to it." : "")
             }
-            if row.model?.downloaded == true {
+            if row.showsDelete {
                 Button("Delete", role: .destructive) { confirming = .model }
                     .disabled(!row.canDelete || busy)
-                    .help(row.canDelete ? "" : "In use. Choose another model first.")
             }
         }
         .controlSize(.small)
@@ -210,11 +198,11 @@ struct ModelFooter: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("voiced's models use \(Formatting.bytes(list.totalBytes)) in \(Self.abbreviated(list.cache)).")
+                Text(list.usageLine)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("This folder is shared with other apps; voiced deletes only its own models.").footnote()
+                Text(ModelList.sharedFolderNote).footnote()
             }
             Spacer(minLength: 8)
             Button("Show in Finder") {
@@ -225,12 +213,6 @@ struct ModelFooter: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
-    }
-
-    /// The home directory as `~`.
-    nonisolated static func abbreviated(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 }
 
@@ -243,7 +225,7 @@ struct DownloadProgressRow: View {
         if let download = models.download {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Downloading \(download.model.split(separator: "/").last.map(String.init) ?? download.model)")
+                    Text("Downloading \(models.list?.model(download.model)?.model.name ?? download.model)")
                         .font(.body.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)

@@ -229,11 +229,12 @@ final class LaunchTests: XCTestCase {
 
     func testTheInstallButtonHonoursTranslocation() {
         let (launch, model) = makeChecks()
+        let models = ModelManager(app: model, runner: FakeInstallRunner(), executable: "/usr/bin/true")
         let translocated = makeChecks(translocation: { _ in URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app") }).0
-        XCTAssertNotNil(PopoverView(model: model, canInstall: true, launch: launch).installAction)
-        XCTAssertNotNil(PopoverView(model: model, canInstall: true, launch: nil).installAction)
-        XCTAssertNil(PopoverView(model: model, canInstall: true, launch: translocated).installAction, "move it first")
-        XCTAssertNil(PopoverView(model: model, canInstall: false, launch: launch).installAction, "no resources: the guide")
+        XCTAssertNotNil(PopoverView(model: model, models: models, canInstall: true, launch: launch).installAction)
+        XCTAssertNotNil(PopoverView(model: model, models: models, canInstall: true, launch: nil).installAction)
+        XCTAssertNil(PopoverView(model: model, models: models, canInstall: true, launch: translocated).installAction, "move it first")
+        XCTAssertNil(PopoverView(model: model, models: models, canInstall: false, launch: launch).installAction, "no resources: the guide")
     }
 
     /// Repair is offered while an install the app made is in place but does not answer.
@@ -243,18 +244,32 @@ final class LaunchTests: XCTestCase {
             to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.2.0", "lock_sha256": "ab12"}"#)
         let (launch, model) = makeChecks()
+        let runner = FakeInstallRunner()
+        runner.respond = { command in
+            command.arguments.contains("download")
+                ? .init([.stdout(RecordedProgress.hello)], hangs: true) : FakeInstallRunner.defaultResponse(command)
+        }
+        let models = ModelManager(app: model, runner: runner, executable: "/usr/bin/true")
         await launch.refresh()
-        XCTAssertNil(PopoverView(model: model, launch: launch, repair: {}).repairAction, "still connecting")
+        XCTAssertNil(PopoverView(model: model, models: models, launch: launch, repair: {}).repairAction, "still connecting")
         model.start()
         let unreachable = await eventually {
             if case .unreachable(installed: true, _) = model.connection { true } else { false }
         }
         XCTAssertTrue(unreachable)
-        XCTAssertNotNil(PopoverView(model: model, launch: launch, repair: {}).repairAction)
-        XCTAssertNil(PopoverView(model: model, launch: launch).repairAction, "no installer")
+        XCTAssertNotNil(PopoverView(model: model, models: models, launch: launch, repair: {}).repairAction)
+        // Repair waits for a model download (ADR 0022).
+        let download = Task { await models.download("m") }
+        let downloading = await eventually { models.isDownloading }
+        XCTAssertTrue(downloading)
+        XCTAssertNil(PopoverView(model: model, models: models, launch: launch, repair: {}).repairAction, "a download runs")
+        models.cancelDownload()
+        _ = await download.value
+        XCTAssertNotNil(PopoverView(model: model, models: models, launch: launch, repair: {}).repairAction)
+        XCTAssertNil(PopoverView(model: model, models: models, launch: launch).repairAction, "no installer")
         try writeInstallJSON(#"{"source": "homebrew", "environment": "/opt/homebrew/opt/voiced/libexec"}"#)
         await launch.refresh()
-        XCTAssertNil(PopoverView(model: model, launch: launch, repair: {}).repairAction, "Homebrew's to repair")
+        XCTAssertNil(PopoverView(model: model, models: models, launch: launch, repair: {}).repairAction, "Homebrew's to repair")
     }
 
     func testWatchingStopsWhenCancelled() async throws {

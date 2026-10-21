@@ -491,4 +491,12 @@ text above:
   has Cancel. While it runs, the app's Update and Repair are not offered.
 - The fake control server reads a fake cache file that a fake `voiced
   models` (`voiced-fake-control models ...`) changes, so `model_not_downloaded`
-  and `missing_model` come from the same state the rows show.
+  and `missing_model` come from the same state the rows show. A debug build
+  runs the fake (or a checkout's `voiced`) in place of `~/.voiced/bin/voiced`
+  when the `VOICED_EXECUTABLE` environment variable names it: the
+  environment, like `VOICED_CONTROL_SOCKET`, since the fake finds its cache
+  through the socket path it inherits; ADR 0018's `installSource` user
+  default stays the installer's. Release builds compile both out.
+- Download restarts a service that reports `missing_model` for that model,
+  from the pane's row in use as from the menu window: the watchdog leaves
+  the state alone, since a restart cannot download.
