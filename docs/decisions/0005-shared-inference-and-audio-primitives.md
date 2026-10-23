@@ -292,3 +292,14 @@ Who calls `set()`:
 On Wyoming and over HTTP, before the first audio as after it, the sentence
 being spoken or waiting for the slot is counted as a `disconnect` (a
 waiting one without any engine call), and later sentences are dropped.
+
+## Amendment (ADR 0033)
+
+`inference()` now awaits `ServiceContext.residency.ensure_loaded()` once it
+holds the slot: a model unloaded after `idle_unload_s` loads again there,
+and the request waits for it instead of being refused. The load is not
+counted in the request's latency, and a load that fails is the request's
+`failure`. `check_loaded` still answers `busy` before the first load, and
+passes once it is done, while the model is unloaded too. The end of every
+`inference()` block restarts the idle time. See
+[ADR 0033](0033-model-residency.md).

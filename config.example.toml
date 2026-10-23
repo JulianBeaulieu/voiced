@@ -52,6 +52,17 @@ write_timeout_s = 10
 http_port = 8881
 # Wyoming protocol listener used by Home Assistant.
 wyoming_port = 10300
+# Off (false): the service runs nothing. Its LaunchDaemon still starts it at
+# boot, but the process loads no model, opens no port, is not announced to
+# Home Assistant, and waits; `voiced status` and the app say "off". Change it
+# with `voiced settings set stt.enabled=false`, then `voiced restart stt`.
+enabled = true
+# Unload the model after this many seconds without a request, and load it
+# again when the next one arrives: that request waits for the load (about
+# 0.4 s for Parakeet, which frees 1.4 GB). 0 keeps the model loaded, as always
+# before; at most 604800 (a week). The watchdog's probe skips a service
+# with it set, since a probe would load the model (ADR 0033).
+idle_unload_s = 0
 # Engine plugin name (see `voiced doctor` for the installed list).
 # parakeet (default), qwen3-asr, moonshine or nemotron; change engine and model
 # together. qwen3-asr is for files and its 30 languages: model
@@ -94,6 +105,17 @@ max_upload_mb = 50
 [tts]
 http_port = 8880
 wyoming_port = 10200
+# Off (false): the service runs nothing. Its LaunchDaemon still starts it at
+# boot, but the process loads no model, opens no port, is not announced to
+# Home Assistant, and waits; `voiced status` and the app say "off". Change it
+# with `voiced settings set tts.enabled=false`, then `voiced restart tts`.
+enabled = true
+# Unload the model after this many seconds without a request, and load it
+# again when the next one arrives: that request waits for the load (about
+# 0.25 s for Kokoro, which frees 0.4 GB). 0 keeps the model loaded, as always
+# before; at most 604800 (a week). The watchdog's probe skips a service
+# with it set, since a probe would load the model (ADR 0033).
+idle_unload_s = 0
 # kokoro (default), soprano or phonon. Change engine, model and default_voice
 # together. Phonon runs on the CPU: model "gradium/phonon-31m-en" (Apache-2.0)
 # with default_voice "default" or a preset such as "Easton"; the
@@ -157,7 +179,8 @@ restart_cooldown_s = 120
 # this long is treated as hung and restarted.
 stall_after_s = 60
 # Also send a tiny inference request each poll (only while the queue is empty)
-# and treat a timeout as a hang. Off by default.
+# and treat a timeout as a hang. Off by default. Never sent to a service with
+# idle_unload_s set: it would keep the model loaded.
 probe = false
 # How long the probe request may take before it counts as a hang.
 probe_timeout_s = 20

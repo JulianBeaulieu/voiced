@@ -16,9 +16,13 @@ need; a client configured for the tts port cannot transcribe, and the other
 way round. The `api_key` argument is required by the client library; any
 value works unless you configured one (see [Authentication](#authentication)).
 
-While the model is still loading, every `/v1` route answers `503`
-`server_busy` with the message `EngineNotLoaded: model is still loading`
-and `Retry-After: 1`. `/health` shows the same state as `starting`.
+While the model is still loading after the service starts, every `/v1`
+route answers `503` `server_busy` with the message `EngineNotLoaded: model
+is still loading` and `Retry-After: 1`. `/health` shows the same state as
+`starting`. A model unloaded after `idle_unload_s` is different: the next
+request waits while it loads again, a fraction of a second, and is answered
+(ADR 0033). A service switched off (`enabled = false`) does not listen at
+all.
 
 ## Authentication
 
@@ -480,8 +484,9 @@ for model in tts.models.list():
 
 ## GET /health
 
-No authentication. `200` once the model is loaded and warm, `503` with
-`"status": "starting"` before that, or `"status": "missing_model"` when the
+No authentication. `200` once the model is loaded and warm, and while it
+is unloaded on purpose (`idle`, `loading`), `503` with
+`"status": "starting"` before the first load, or `"status": "missing_model"` when the
 configured model is not downloaded (the services never download one; the
 process stays up and `last_error` names the `voiced models download`
 command); the body is the same document either way. The services bind their ports before loading the model, so a loading
@@ -511,11 +516,14 @@ curl -s http://127.0.0.1:8880/health
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022); clients should treat a status they do not know as not ready. |
+| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference (or a load for one) failed on the server side, `idle` while the model is unloaded after `idle_unload_s` without a request, `loading` while it loads again for a request that waits, `ok` otherwise. A request to an `idle` service is answered after the load, not refused. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022), `idle` and `loading` are new in the next release (ADR 0033); clients should treat a status they do not know as not ready, except that a `200` answer takes requests. |
+| `model_loaded` | Whether the model is in memory now: false while `starting`, `idle` and `loading`. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
 | `last_error` | Exception name and message of the last failed inference, cleared by the next success. With `server.api_key` set only the exception name is shown, since the message can echo what a client sent; the full text is in the service log. |
+
+<!-- TODO(release): name the version that brings idle and loading in the /health status row and services_off in /metrics.json -->
 
 The schema is frozen because the watchdog and the status page depend on it.
 
@@ -528,7 +536,8 @@ stt). It is one self-contained HTML file and fetches nothing from the
 internet. If an API key is set, type it into the page to use the test box.
 
 With `[server] browser_settings = true` the page also shows a settings form
-(engine, model, voice, speed, `bind`, API key, zeroconf). It is off by
+(engine, model, voice, speed, whether each service runs and when its model
+unloads, `bind`, API key, zeroconf). It is off by
 default. When on, it always needs the API key as a bearer token: with no
 key set it is refused (403), on loopback too, because a web page you open
 can reach a loopback port (DNS rebinding). It reads from
@@ -550,6 +559,7 @@ not downloaded is refused with 409 `model_not_downloaded`.
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
 | `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |
+| `services_off` | The other service, when it is switched off and its process is parked (the pid in its marker is the one launchd runs for it); `[]` otherwise. New in the next release (ADR 0033). |
 
 Metrics live in memory and reset when the service restarts.
 

@@ -118,7 +118,21 @@ STT_STREAMS = 2
 """Stream sessions within the finalize target for Parakeet on an M1 Max (ADR 0020)."""
 
 
-class STTConfig(_Section):
+MAX_IDLE_UNLOAD_S = 7 * 24 * 3600
+
+
+class _ServiceSection(_Section):
+    """What both inference services share: whether the service runs and how
+    long its model stays loaded while unused (ADR 0033)."""
+
+    # Off: the service's process serves nothing and loads no model.
+    enabled: bool = True
+    # Seconds without a request after which the model is unloaded; the next
+    # request loads it again. 0 keeps it loaded; at most a week.
+    idle_unload_s: int = Field(default=0, ge=0, le=MAX_IDLE_UNLOAD_S)
+
+
+class STTConfig(_ServiceSection):
     http_port: int = Field(default=8881, ge=1, le=65535)
     wyoming_port: int = Field(default=10300, ge=1, le=65535)
     engine: str = DEFAULT_ENGINES["stt"]
@@ -152,7 +166,7 @@ class STTConfig(_Section):
         return self.max_upload_mb * 1_000_000 / _PCM16_BYTES / _STT_RATE
 
 
-class TTSConfig(_Section):
+class TTSConfig(_ServiceSection):
     http_port: int = Field(default=8880, ge=1, le=65535)
     wyoming_port: int = Field(default=10200, ge=1, le=65535)
     engine: str = DEFAULT_ENGINES["tts"]
@@ -250,6 +264,10 @@ class Settings(BaseSettings):
             "[tts] http_port": self.tts.http_port,
             "[tts] wyoming_port": self.tts.wyoming_port,
         }
+
+    def service(self, service: ServiceName) -> STTConfig | TTSConfig:
+        """The ``[stt]`` or ``[tts]`` section."""
+        return self.stt if service == "stt" else self.tts
 
     def http_port(self, service: ServiceName) -> int:
         return self.stt.http_port if service == "stt" else self.tts.http_port

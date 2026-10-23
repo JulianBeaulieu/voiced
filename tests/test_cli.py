@@ -149,3 +149,24 @@ def test_request_foreground_role_is_a_no_op_off_macos(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(os, "getpriority", lambda *a: pytest.fail("called off macOS"))
     cli.request_foreground_role()
+
+
+@pytest.mark.parametrize(
+    ("pair", "parsed"),
+    [
+        ("stt.enabled=false", ("stt.enabled", False)),
+        ("tts.enabled=on", ("tts.enabled", True)),
+        ("tts.idle_unload_s=300", ("tts.idle_unload_s", 300)),
+    ],
+)
+def test_parse_enabled_and_idle_unload(pair: str, parsed: tuple[str, object]) -> None:
+    from voiced.cli_lifecycle import parse_setting
+
+    assert parse_setting(pair) == parsed
+
+
+def test_parse_idle_unload_wants_whole_seconds() -> None:
+    from voiced.cli_lifecycle import parse_setting
+
+    with pytest.raises(ValueError, match="whole number of seconds"):
+        parse_setting("stt.idle_unload_s=5m")

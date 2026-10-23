@@ -46,3 +46,34 @@ async def test_api_key_guards_v1_but_not_health(stt_app: FastAPI) -> None:
         assert (await c.get("/v1/models")).status_code == 401
         ok = await c.get("/v1/models", headers={"Authorization": "Bearer secret-for-test"})
         assert ok.status_code == 200
+
+
+async def test_health_idle_is_200_and_not_loaded(stt_client: AsyncClient, stt_app: FastAPI) -> None:
+    stt_app.state.ctx.health.mark_unloaded()
+    r = await stt_client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "idle"
+    assert r.json()["model_loaded"] is False
+
+
+def test_status_table() -> None:
+    """ADR 0012's table, extended by ADR 0033: what each state reports."""
+    from voiced.health import READY_STATUSES, HealthState
+    from voiced.models import ModelNotDownloaded
+
+    h = HealthState(service="stt", engine="e", model="m", version="v", queue_capacity=1)
+    assert h.status == "starting" and "starting" not in READY_STATUSES
+    h.mark_loaded()
+    assert h.status == "ok"
+    h.mark_unloaded()
+    assert h.status == "idle" and not h.model_loaded and h.started
+    h.mark_reloading()
+    assert h.status == "loading" and not h.model_loaded
+    h.mark_unloaded()
+    h.record_error(RuntimeError("load failed"))
+    assert h.status == "degraded", "an error outranks idle"
+    h.mark_loaded()
+    assert h.status == "ok" and h.model_state == "loaded"
+    h.mark_missing(ModelNotDownloaded("m", "r", ("m",)))
+    assert h.status == "missing_model"
+    assert READY_STATUSES == {"ok", "degraded", "idle", "loading"}

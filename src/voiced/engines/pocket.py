@@ -112,6 +112,10 @@ class PocketEngine(SentenceTTSEngine):
         self._prompts: dict[str, Any] = {}
         self._busy = threading.Lock()
 
+    def _unload_sync(self) -> None:
+        self._model = None
+        self._prompts = {}
+
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way
         leaves the engine unloaded."""

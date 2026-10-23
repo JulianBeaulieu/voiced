@@ -73,3 +73,12 @@ reference implementations and ship registered as `fake`.
 - Language lists are per engine and advertised through `/v1/models` and the
   Wyoming `Info` message, which is what makes adding German later a plugin
   concern rather than a server change.
+
+## Amendment (ADR 0033)
+
+Both interfaces gain `async def unload()`, whose default raises
+`NotImplementedError`; no existing signature changed. An engine that
+implements it drops every reference to its model and returns the memory
+(`voiced.engines.memory.release_memory()`), and `load()` is called again
+before any other method. `load()` is therefore no longer called exactly
+once. See [ADR 0033](0033-model-residency.md).

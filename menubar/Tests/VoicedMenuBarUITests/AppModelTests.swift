@@ -260,6 +260,59 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.restartRequired, [])
     }
 
+    func testSwitchingOffAndBackOnThroughTheFakeServer() async throws {
+        let server = try startServer()
+        defer { server.stop() }
+        let model = try await connectedModel(server)
+        defer { model.stop() }
+
+        let switchedOff = await model.apply(.enabled(.stt, false))
+        XCTAssertTrue(switchedOff)
+        XCTAssertEqual(server.requests.last { $0.op == "settings.set" }?.args, ["stt.enabled": false])
+        XCTAssertEqual(model.restartRequired, [.stt])
+        await model.restart(.service(.stt))
+        let off = await eventually { model.status?[.stt]?.state == .off }
+        XCTAssertTrue(off)
+        XCTAssertEqual(model.dashboard.rows.first?.stateLabel, "Off")
+
+        let unloadSet = await model.apply(.idleUnload(.tts, seconds: 300))
+        XCTAssertTrue(unloadSet)
+        XCTAssertEqual(server.requests.last { $0.op == "settings.set" }?.args, ["tts.idle_unload_s": 300])
+        XCTAssertEqual(model.settings?.idleUnloadSeconds(.tts), 300)
+
+        let switchedOn = await model.apply(.enabled(.stt, true))
+        XCTAssertTrue(switchedOn)
+        await model.restart(.service(.stt))
+        let back = await eventually { model.status?[.stt]?.state == .running }
+        XCTAssertTrue(back)
+    }
+
+    func testTheSTTOffScenario() async throws {
+        let server = try startServer(.sttOff)
+        defer { server.stop() }
+        let model = try await connectedModel(server)
+        defer { model.stop() }
+        let shown = await eventually { model.status?[.stt]?.state == .off }
+        XCTAssertTrue(shown)
+        XCTAssertEqual(model.settings?.isEnabled(.stt), false)
+        XCTAssertEqual(model.settings?.idleUnloadSeconds(.tts), 300)
+        XCTAssertEqual(model.dashboard.rows.map(\.stateLabel), ["Off", "Idle, model unloaded"])
+        XCTAssertEqual(model.dashboard.health, .running)
+    }
+
+    func testAnUnloadTimeThatIsNotWholeSecondsIsRefused() async throws {
+        let server = try startServer()
+        defer { server.stop() }
+        let client = try await connectedClient(server)
+        defer { client.close() }
+        do {
+            _ = try await client.setSettings(["tts.idle_unload_s": 1.5])
+            XCTFail("accepted")
+        } catch ControlError.remote(let error) {
+            XCTAssertEqual(error.field, "tts.idle_unload_s")
+        }
+    }
+
     func testSwitchingToPhononTakesItsModelAndDefaultVoiceThenAPresetByName() async throws {
         let server = try startServer()
         defer { server.stop() }

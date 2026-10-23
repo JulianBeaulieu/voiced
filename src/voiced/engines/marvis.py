@@ -136,6 +136,10 @@ class MarvisEngine(SentenceTTSEngine):
         self._prompts: dict[str, _Prompt] = {}
         self._busy = threading.Lock()
 
+    def _unload_sync(self) -> None:
+        self._model = None
+        self._prompts = {}
+
     def _load_sync(self) -> None:
         """Build in locals and assign ``_model`` last, so a failure part-way
         leaves the engine unloaded. The steps are mlx-audio's ``load_model``

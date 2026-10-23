@@ -23,6 +23,8 @@ public enum ServiceState: String, Codable, Sendable, Equatable {
     case running, starting, stopped, degraded, unknown
     /// The service is up but its model is not downloaded; `model` names it (ADR 0022).
     case missingModel = "missing_model"
+    /// Switched off in the settings: its process serves nothing (ADR 0033).
+    case off
 
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
@@ -107,11 +109,24 @@ public struct STTSettings: Codable, Sendable, Equatable {
     public var engine: String
     public var model: String
     public var language: String
+    /// Run the service (ADR 0033); nil from an older voiced, which means on.
+    public var enabled: Bool?
+    /// Seconds unused before the model unloads; nil from an older voiced, which means never.
+    public var idleUnloadS: Int?
 
-    public init(engine: String, model: String, language: String) {
+    public init(
+        engine: String, model: String, language: String, enabled: Bool? = nil, idleUnloadS: Int? = nil
+    ) {
         self.engine = engine
         self.model = model
         self.language = language
+        self.enabled = enabled
+        self.idleUnloadS = idleUnloadS
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case engine, model, language, enabled
+        case idleUnloadS = "idle_unload_s"
     }
 }
 
@@ -120,12 +135,25 @@ public struct TTSSettings: Codable, Sendable, Equatable {
     public var model: String
     public var voice: String
     public var speed: Double
+    /// As in `STTSettings`.
+    public var enabled: Bool?
+    public var idleUnloadS: Int?
 
-    public init(engine: String, model: String, voice: String, speed: Double) {
+    public init(
+        engine: String, model: String, voice: String, speed: Double, enabled: Bool? = nil,
+        idleUnloadS: Int? = nil
+    ) {
         self.engine = engine
         self.model = model
         self.voice = voice
         self.speed = speed
+        self.enabled = enabled
+        self.idleUnloadS = idleUnloadS
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case engine, model, voice, speed, enabled
+        case idleUnloadS = "idle_unload_s"
     }
 }
 
@@ -209,6 +237,16 @@ public struct SettingsPayload: Codable, Sendable, Equatable {
 
     /// The condition the contract asks the UI to warn about.
     public var isLANWithoutAPIKey: Bool { bind == .lan && !apiKeySet }
+
+    /// Whether `kind` runs (ADR 0033); on unless the server says otherwise.
+    public func isEnabled(_ kind: ServiceKind) -> Bool {
+        (kind == .stt ? stt.enabled : tts.enabled) ?? true
+    }
+
+    /// Seconds unused before `kind`'s model unloads; 0 is never.
+    public func idleUnloadSeconds(_ kind: ServiceKind) -> Int {
+        (kind == .stt ? stt.idleUnloadS : tts.idleUnloadS) ?? 0
+    }
 }
 
 /// The `settings.set` result: the new settings plus what still needs a restart.
@@ -422,4 +460,14 @@ public enum SettingKey: String, Sendable, CaseIterable {
     case ttsVoice = "tts.voice"
     case ttsSpeed = "tts.speed"
     case browserSettings = "browser_settings"
+    case sttEnabled = "stt.enabled"
+    case sttIdleUnload = "stt.idle_unload_s"
+    case ttsEnabled = "tts.enabled"
+    case ttsIdleUnload = "tts.idle_unload_s"
+
+    public static func enabled(_ kind: ServiceKind) -> SettingKey { kind == .stt ? .sttEnabled : .ttsEnabled }
+
+    public static func idleUnload(_ kind: ServiceKind) -> SettingKey {
+        kind == .stt ? .sttIdleUnload : .ttsIdleUnload
+    }
 }

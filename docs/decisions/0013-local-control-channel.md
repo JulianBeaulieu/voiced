@@ -324,3 +324,16 @@ it holds the entry point link `bin/voiced`, the environments voiced built,
 engine catalogue child process runs the interpreter of the environment
 `bin/voiced` resolves to, not the watchdog's `sys.executable`, which an
 upgrade may have deleted.
+
+## Amendment (ADR 0033)
+
+`stt.enabled`, `stt.idle_unload_s`, `tts.enabled` and `tts.idle_unload_s`
+are settable; each needs its service restarted. A service's `state` in
+`status` can be `off` (switched off, its process parked), and `warm` is
+true once the first load is done, while the model is unloaded too
+(`health.status` says `idle` or `loading`). `off` is a new value in the
+closed `state` set and stays at protocol 1, as `missing_model` did (ADR
+0022): an older app decodes it as `unknown` and shows the service as
+"Unknown", which is wrong but harmless, and only someone who switched a
+service off sees it; bumping the protocol would make every older app
+refuse to connect at all. See [ADR 0033](0033-model-residency.md).

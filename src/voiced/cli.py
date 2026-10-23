@@ -17,12 +17,19 @@ import resource
 import socket
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from voiced import __version__
 from voiced.cli_lifecycle import add_lifecycle_parsers, run_lifecycle
 from voiced.cli_models import add_models_parser, run_models
-from voiced.config import Settings, apply_engine_environment, config_path, load_settings
+from voiced.config import (
+    ServiceName,
+    Settings,
+    apply_engine_environment,
+    config_path,
+    load_settings,
+)
 from voiced.launchd.ports import bind_port
 from voiced.launchd.progress import Progress
 from voiced.launchd.stdio import follow_log_dir, redirect_stdio_from_env
@@ -133,7 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_serve(settings: Settings, service: str) -> int:
+def cmd_serve(settings: Settings, service: ServiceName) -> int:
+    from voiced.control import state_dir
+    from voiced.launchd import parked
+    from voiced.layout import off_marker
+
+    marker = off_marker(state_dir(settings), service)
+    if not settings.service(service).enabled:
+        return cmd_park(settings, service, marker)
+    parked.clear(marker)
+
     import uvicorn
 
     from voiced.engines.registry import ModelRefused, UnknownEngine
@@ -154,6 +170,18 @@ def cmd_serve(settings: Settings, service: str) -> int:
         raise_open_file_limit()  # after logging is configured, before any connection
         request_foreground_role()
         uvicorn.Server(uvicorn_config(app, settings)).run(sockets=[http_socket])
+    return 0
+
+
+def cmd_park(settings: Settings, service: ServiceName, off_marker: Path) -> int:
+    """A service switched off: serve nothing until launchd stops the process
+    (``voiced.launchd.parked``, ADR 0033)."""
+    from voiced.launchd import parked
+    from voiced.logging import configure_logging
+
+    configure_logging(service, settings.server.log_level, settings.server.log_dir)
+    log.info("%s: %s. Serving nothing until then.", service, parked.off_detail(service))
+    parked.park(off_marker)
     return 0
 
 

@@ -205,9 +205,14 @@ public enum DashboardReducer {
         let services = ServiceKind.allCases.map { ($0, status[$0] ?? ServiceStatus(state: .unknown)) }
         let rows = services.map { row(kind: $0.0, status: $0.1) }
 
-        let ready = services.filter { $0.1.state == .running && $0.1.warm }
+        // A service switched off is as it should be; the others decide (ADR 0033).
+        let active = services.filter { $0.1.state != .off }
+        if active.isEmpty {
+            return Dashboard(health: .off, headline: "Both services off", rows: rows)
+        }
+        let ready = active.filter { $0.1.state == .running && $0.1.warm }
         let stopped = services.filter { $0.1.state == .stopped }
-        if ready.count == services.count {
+        if ready.count == active.count {
             return Dashboard(health: .running, headline: "Running", rows: rows)
         }
         if stopped.count == services.count {
@@ -233,9 +238,14 @@ public enum DashboardReducer {
     static func row(kind: ServiceKind, status: ServiceStatus) -> ServiceRowState {
         let label: String
         let tone: ServiceTone
+        // `/health` says whether a warm service holds its model now (ADR 0033).
+        let health = status.health?["status"]?.stringValue
         switch status.state {
+        case .running where health == "loading": (label, tone) = ("Loading model", .busy)
+        case .running where health == "idle": (label, tone) = ("Idle, model unloaded", .good)
         case .running where status.warm: (label, tone) = ("Running", .good)
         case .running: (label, tone) = ("Loading model", .busy)
+        case .off: (label, tone) = ("Off", .inactive)
         case .starting: (label, tone) = ("Starting", .busy)
         case .degraded: (label, tone) = ("Degraded", .bad)
         case .stopped: (label, tone) = ("Stopped", .inactive)
@@ -249,6 +259,9 @@ public enum DashboardReducer {
         }
         if status.restarts > 0 {
             details.append(status.restarts == 1 ? "1 restart" : "\(status.restarts) restarts")
+        }
+        if status.state == .off {
+            details = ["Switched off in Settings"]
         }
         if details.isEmpty { details.append(status.state == .stopped ? "Not running" : "No details") }
 

@@ -429,7 +429,8 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
 
     /// Whether a service has loaded its model: ready per `status`, and no restart under way.
     public static func isReady(_ status: ServiceStatus?, restarting: Bool) -> Bool {
-        (status?.isReady ?? true) && !restarting
+        // A service switched off loads nothing: its model is not "loading" (ADR 0033).
+        (status?.isReady ?? true || status?.state == .off) && !restarting
     }
 
     /// "Delete <model>? This frees <freed>. Downloading it again takes <size>.", with the

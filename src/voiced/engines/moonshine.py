@@ -52,6 +52,7 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
+from voiced.engines.memory import unload_on
 from voiced.engines.registry import ModelRefused
 from voiced.models import default_model, engine, find
 from voiced.text import collapse_whitespace, primary_subtag
@@ -130,6 +131,12 @@ class MoonshineEngine(STTEngine):
 
     async def load(self) -> None:
         await self._thread.run(self._load_blocking)
+
+    async def unload(self) -> None:
+        await unload_on(self._thread, self._drop)
+
+    def _drop(self) -> None:
+        self._transcriber = None
 
     def _load_blocking(self) -> None:
         """Build in locals and assign ``_transcriber`` last, so a failure

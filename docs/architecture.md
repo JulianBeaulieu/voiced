@@ -2,8 +2,8 @@
 
 voiced is one Python package that runs as two services on an Apple Silicon
 Mac. Each service is one long-lived process that loads one model onto the
-GPU through MLX, keeps it resident, and serves it over two protocols from
-one event loop. This page explains the pieces; the decision records under
+GPU through MLX, keeps it resident (unless `idle_unload_s` says to unload
+it while unused), and serves it over two protocols from one event loop. This page explains the pieces; the decision records under
 [decisions/](decisions/README.md) explain why.
 
 ## Services
@@ -77,6 +77,22 @@ download` or `voiced install` fetches it.
 If `load()` raises, the process logs the traceback and exits with status 1,
 so launchd restarts it. A stop request during a load exits immediately
 rather than waiting for a load thread that cannot be interrupted.
+
+A service switched off (`enabled = false`) does none of this: `voiced
+serve` writes its pid to `<state dir>/<service>.off` and waits for launchd
+to stop it, with no engine and no ports, and the watchdog takes that pid
+for `off` (`voiced.launchd.parked`).
+
+## Model residency
+
+`voiced.residency.Residency` owns every `load()` and `unload()` of the
+engine. With `idle_unload_s` above 0, a timer unloads the model once that
+long has passed since the last request and the queue is empty; `/health`
+says `idle`. `inference()` calls `Residency.ensure_loaded()` once it holds
+the slot, so the next request, on any transport, waits while the model
+loads again (`loading`) and is then served; an unload never overlaps a
+request. Measurements and the engine contract are in
+[ADR 0033](decisions/0033-model-residency.md).
 
 ## Request path
 
@@ -237,6 +253,7 @@ the Wyoming layer and every engine depend on it.
 class STTEngine:
     name: str; model_id: str; languages: list[str]; license: str
     async def load(self) -> None
+    async def unload(self) -> None  # default raises NotImplementedError
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript
     async def stream(self, language: str | None = None) -> STTStreamSession
 
@@ -249,6 +266,7 @@ class STTStreamSession:
 class TTSEngine:
     name: str; model_id: str; languages: list[str]; license: str
     async def load(self) -> None
+    async def unload(self) -> None  # default raises NotImplementedError
     async def voices(self) -> list[Voice]
     def synthesize(self, text: str, voice: str, speed: float = 1.0) -> AsyncIterator[PCMChunk]
 ```
@@ -261,8 +279,13 @@ Rules every engine follows:
   tied to the thread that created them. The server never
   calls two inference methods on one engine at once, so engines need no
   locking.
-- `load()` is called once, before anything else, and must warm the model.
-  It must not block the event loop, or `/health` stalls during the load.
+- `load()` is called before anything else, and again after each `unload()`,
+  and must warm the model. It must not block the event loop, or `/health`
+  stalls during the load.
+- `unload()` drops every reference to the model and returns its memory
+  (`voiced.engines.memory.unload_on()`); it is called only while no other
+  method runs. An engine that keeps the default is never unloaded
+  ([ADR 0033](decisions/0033-model-residency.md)).
 - Errors the client caused (`UnknownVoice`, `UnsupportedLanguage`, bad
   input) are `EngineError` subclasses and become `400`. Any other exception
   is an engine failure: `500`, `degraded`, and possibly a restart. An engine
