@@ -103,10 +103,16 @@ class FakeSTTEngine(STTEngine):
         self.latency_s = latency_s
         self.loaded = False
         self.calls = 0
+        self.loads = self.unloads = 0
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
         self.loaded = True
+        self.loads += 1
+
+    async def unload(self) -> None:
+        self.loaded = False
+        self.unloads += 1
 
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
         self._check()
@@ -152,10 +158,16 @@ class FakeTTSEngine(TTSEngine):
         self.latency_s = latency_s
         self.loaded = False
         self.calls = 0
+        self.loads = self.unloads = 0
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
         self.loaded = True
+        self.loads += 1
+
+    async def unload(self) -> None:
+        self.loaded = False
+        self.unloads += 1
 
     async def voices(self) -> list[Voice]:
         self._check()

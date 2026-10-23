@@ -6,6 +6,8 @@ split-synthesize-yield loop. A subclass supplies:
 
 * ``_load_sync()``, blocking: builds the model in locals, warms up, and
   assigns ``self._model`` last, so a failure leaves the engine unloaded;
+  an engine that keeps more than ``self._model`` overrides ``_unload_sync()``
+  to drop it as well (``unload()``, ADR 0033);
 * ``_has_voice(voice)``, run on the event loop, so a cheap lookup: whether
   ``voice`` is one of ``voices()``;
 * ``_synth_sentence(sentence, voice, speed)``, blocking: int16 PCM at
@@ -50,6 +52,7 @@ from voiced.engines.base import (
     TTSEngine,
     UnknownVoice,
 )
+from voiced.engines.memory import release_memory
 from voiced.text.sentences import split_sentences
 from voiced.threads import ModelThread
 
@@ -147,6 +150,19 @@ class SentenceTTSEngine(TTSEngine):
     @abstractmethod
     def _load_sync(self) -> None:
         """Blocking load and warm-up; assigns ``self._model`` last."""
+
+    async def unload(self) -> None:
+        await self._thread.run(self._unload_and_release)
+
+    def _unload_and_release(self) -> None:
+        self._unload_sync()
+        release_memory()
+
+    def _unload_sync(self) -> None:
+        """Blocking: drop every reference ``_load_sync`` made. The model by
+        default; an engine that keeps more (voice tensors, prompts, a
+        tokenizer) drops those too."""
+        self._model = None
 
     @abstractmethod
     def _has_voice(self, voice: str) -> bool:

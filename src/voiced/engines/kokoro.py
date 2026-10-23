@@ -334,6 +334,11 @@ class KokoroEngine(SentenceTTSEngine):
             time.perf_counter() - started,
         )
 
+    def _unload_sync(self) -> None:
+        self._model = self._tokenizer = None
+        self._packs = {}
+        self._voices = []
+
     def _load_voice_packs(self, root: Path, voices: list[Voice]) -> dict[str, Any]:
         from mlx_audio.tts.models.kokoro.voice import load_voice_tensor
 
