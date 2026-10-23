@@ -91,12 +91,14 @@ public struct PopoverView: View {
     let repair: (() -> Void)?
     /// The model download's progress row and the Download of a missing model.
     let models: ModelManager
+    /// The app's own updates (ADR 0034); nil in a build without a feed, which hides them.
+    let updates: AppUpdates?
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
     public init(
         model: AppModel, models: ModelManager, canInstall: Bool = false, launch: LaunchChecks? = nil,
-        update: (() -> Void)? = nil, repair: (() -> Void)? = nil
+        update: (() -> Void)? = nil, repair: (() -> Void)? = nil, updates: AppUpdates? = nil
     ) {
         self.model = model
         self.canInstall = canInstall
@@ -104,6 +106,7 @@ public struct PopoverView: View {
         self.update = update
         self.repair = repair
         self.models = models
+        self.updates = updates
     }
 
     /// Update and Repair wait for a model download or delete (ADR 0022).
@@ -116,6 +119,9 @@ public struct PopoverView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             Divider()
+            if let updates {
+                AppUpdateCard(updates: updates)
+            }
             if let launch {
                 LaunchCards(launch: launch, update: downloading ? nil : update.map(inInstaller))
             }
@@ -161,6 +167,10 @@ public struct PopoverView: View {
                         Task { await model.restart(.all) }
                     }
                     .disabled(!model.restarting.isEmpty)
+                }
+                if let updates {
+                    ActionRow(title: "Check for Updates…", symbol: "arrow.down.circle", action: updates.check)
+                        .disabled(updates.isBusy)
                 }
                 ActionRow(title: "Settings…", symbol: "gearshape", shortcut: "⌘,", action: showSettings)
                     .keyboardShortcut(",")

@@ -17,7 +17,8 @@
 #       temporary directory) that is deleted on exit. Without them the identity comes from
 #       the keychain search list: by hand, the login keychain.
 #
-# No entitlements: the app needs none, and uv runs Python as a separate process.
+# No entitlements: the app needs none, uv runs Python as a separate process, and Sparkle
+# needs none outside a sandbox (ADR 0034).
 set -euo pipefail
 
 adhoc=0
@@ -118,8 +119,8 @@ if (( ! adhoc )); then
     fi
     notary=(--key "$work/AuthKey_$NOTARY_KEY_ID.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
 
-    sign --options runtime "$app/Contents/Helpers/uv"
-    sign --options runtime "$app"
+    "$(dirname "$0")/codesign-app.sh" "$app" --timestamp --options runtime --sign "$identity" \
+        ${keychain_args[@]+"${keychain_args[@]}"}
     codesign --verify --strict --deep --verbose=2 "$app"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$work/notarize.zip"
     notarize "$work/notarize.zip"

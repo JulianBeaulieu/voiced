@@ -1,6 +1,6 @@
 voiced is released under the MIT licence (LICENSE). It uses the third-party
 software below, under the licences given. The menu bar app carries only
-voiced and uv. Everything else is downloaded from PyPI and the Python
+voiced, uv and Sparkle. Everything else is downloaded from PyPI and the Python
 releases by your own Mac when voiced is installed; it is not part of voiced
 and voiced does not distribute it. Each entry links to its source.
 
@@ -10,6 +10,10 @@ Programs and data
     MIT OR Apache-2.0
     in the app bundle (Contents/Helpers/uv)
     https://github.com/astral-sh/uv
+  Sparkle
+    MIT
+    in the app bundle (Contents/Frameworks/Sparkle.framework), which it updates
+    https://github.com/sparkle-project/Sparkle
   CPython (python-build-standalone)
     PSF-2.0
     installed by uv into ~/.voiced/python; the libraries it links list their own licences

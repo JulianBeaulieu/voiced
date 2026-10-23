@@ -11,6 +11,7 @@ struct VoicedMenuBarApp: App {
     @State private var loginItem = LoginItem()
     @State private var launch: LaunchChecks
     @State private var whatsNew: WhatsNew
+    @State private var updates: AppUpdates?
 
     init() {
         let model = AppModel()
@@ -31,6 +32,7 @@ struct VoicedMenuBarApp: App {
         Task { await launch.refresh() }
         _launch = State(initialValue: launch)
         _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.version))
+        _updates = State(initialValue: SparkleUpdater.start())
     }
 
     var body: some Scene {
@@ -38,7 +40,7 @@ struct VoicedMenuBarApp: App {
             PopoverView(
                 model: model, models: models, canInstall: Install.installer != nil, launch: launch,
                 update: Install.installer.map { installer in { installer.update() } },
-                repair: Install.installer.map { installer in { installer.repair() } })
+                repair: Install.installer.map { installer in { installer.repair() } }, updates: updates)
         } label: {
             MenuBarIcon(
                 dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false,
@@ -46,13 +48,14 @@ struct VoicedMenuBarApp: App {
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
                 .background(InstallerOpener(installer: Install.installer, launch: launch))
+                .background(VoicedUpdateContinuation(launch: launch, updates: updates))
         }
         .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(
                 model: model, models: models, loginItem: loginItem, launch: launch, installer: Install.installer,
-                preview: preview)
+                updates: updates, preview: preview)
         }
         .windowResizability(.contentSize)
 
@@ -111,6 +114,25 @@ private struct InstallerOpener: View {
     var body: some View {
         Color.clear.onAppear {
             guard let installer, installer.opensAtLaunch, launch.allowsInstall else { return }
+            NSApplication.shared.activate()
+            openWindow(id: InstallerView.windowID)
+        }
+    }
+}
+
+/// After the app relaunched into its own update, updates the installed voiced to the one it
+/// now carries, in the installer window, without asking again (ADR 0034).
+private struct VoicedUpdateContinuation: View {
+    let launch: LaunchChecks
+    let updates: AppUpdates?
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear.onChange(of: launch.installMatch, initial: true) {
+            guard let updates, updates.continuesWithVoicedUpdate(launch.installMatch), launch.allowsInstall,
+                let installer = Install.installer, !installer.isWorking, Install.models?.isBusy != true
+            else { return }
+            installer.update()
             NSApplication.shared.activate()
             openWindow(id: InstallerView.windowID)
         }

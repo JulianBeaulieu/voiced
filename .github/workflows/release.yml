@@ -1,8 +1,9 @@
 name: release
 
 # Builds a release (ADR 0018, "Signing and release CI"): the voiced wheel and
-# sdist, and voiced.app as a zip and a DMG, with sha256 sums. Pushing a `v*`
-# tag also creates a draft GitHub release for it, which a person publishes,
+# sdist, and voiced.app as a zip and a DMG, with sha256 sums, and for a signed
+# tag build the appcast the app checks for its own updates (ADR 0034). Pushing
+# a `v*` tag also creates a draft GitHub release for it, which a person publishes,
 # and leaves the Homebrew formula and cask for the tag as an artifact for the
 # tap. `workflow_dispatch` is a dry run: the same build, uploaded as workflow
 # artifacts only, never a release. Started on a tag ref it signs and notarizes
@@ -166,6 +167,33 @@ jobs:
         if: steps.signing.outputs.signed != 'true'
         run: menubar/Scripts/sign.sh --adhoc "$APP" "$DIST" "voiced-$VERSION-macos-adhoc"
 
+      - name: Appcast
+        # The app's update feed (ADR 0034): an asset of every release, which the
+        # app reads at releases/latest/download/appcast.xml. Only a pushed tag's
+        # signed build has one, since its enclosure is this release's notarized
+        # zip; a dry run, an ad hoc build or a run without SPARKLE_PRIVATE_KEY (a
+        # fork) has none, and installed apps keep the feed of the latest release
+        # that had one. The key reaches sign_update on stdin, never a file or argv.
+        if: github.event_name == 'push' && steps.signing.outputs.signed == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          UV_NO_CONFIG: "1"
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+              echo "::warning::No appcast: SPARKLE_PRIVATE_KEY is not set, so installed apps will not be offered this release"
+              exit 0
+          fi
+          zip="$DIST/voiced-$VERSION-macos.zip"
+          # Sparkle's tools come with the framework SwiftPM fetched and checked for bundle.sh.
+          sign_update=menubar/.build/artifacts/sparkle/Sparkle/bin/sign_update
+          signature="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$zip")"
+          swift menubar/Scripts/verify-update.swift "$APP" "$zip" "$signature"
+          "$APP/Contents/Helpers/uv" run --no-project --python "$(tr -d '[:space:]' < menubar/app-python-version)" \
+              scripts/release.py appcast --version "$VERSION" \
+              --bundle-version "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" \
+              --signature "$signature" --length "$(stat -f %z "$zip")" > "$DIST/appcast.xml"
+          cat "$DIST/appcast.xml"
+
       - name: Remove the keychain
         # sign.sh deletes it on exit; this covers a job cancelled mid-step.
         if: always() && steps.signing.outputs.signed == 'true'
@@ -190,6 +218,11 @@ jobs:
               echo
               if [ "$SIGNED" = true ]; then
                   echo "voiced.app is signed with the Developer ID, notarized and stapled."
+                  if [ -f "$DIST/appcast.xml" ]; then
+                      echo "The release carries \`appcast.xml\`: once it is published, installed apps offer this version."
+                  else
+                      echo "No \`appcast.xml\`: installed apps will not offer this version (see the Appcast step)."
+                  fi
               else
                   echo "> [!WARNING]"
                   echo "> **Ad hoc build.** voiced.app is not signed with a Developer ID and not notarized:"
