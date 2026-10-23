@@ -28,9 +28,15 @@ final class InstallerTests: XCTestCase {
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
         try? FileManager.default.removeItem(at: daemons)
+        UserDefaults.standard.removePersistentDomain(forName: defaultsSuite)
     }
 
     private var resources: InstallResources!
+    /// The installer's own user defaults, thrown away after each test.
+    private let defaultsSuite = "voiced-installer-tests-\(UUID().uuidString)"
+    private let recommendedFallback =
+        "To download the models by hand, fetch \(RecordedProgress.parakeet) at revision 0a1b2c3 and "
+        + "\(RecordedProgress.kokoro) at revision 4d5e6f7 into the Hugging Face cache, then try again."
     private var capacity: Int64? = 100_000_000_000
     private var models: [AppModel] = []
 
@@ -40,6 +46,7 @@ final class InstallerTests: XCTestCase {
         let probe = InstallProbe(launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.installSource = installSource
+        configuration.defaultsSuite = defaultsSuite
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
@@ -224,11 +231,11 @@ final class InstallerTests: XCTestCase {
                 stt: ServiceChoice(isOn: true, model: RecordedProgress.parakeet),
                 tts: ServiceChoice(isOn: true, model: RecordedProgress.kokoro)))
         XCTAssertEqual(
-            SetupChoice.options(in: installer.catalogue, for: .stt).compactMap(\.model?.id),
+            SetupChoice.options(in: installer.catalogue, for: .stt).flatMap(\.models).map(\.id),
             [RecordedProgress.parakeet, RecordedProgress.whisper])
         // The gated Phonon needs a token first; Settings offers it once voiced is installed.
         XCTAssertEqual(
-            SetupChoice.options(in: installer.catalogue, for: .tts).compactMap(\.model?.id),
+            SetupChoice.options(in: installer.catalogue, for: .tts).flatMap(\.models).map(\.id),
             [RecordedProgress.kokoro, RecordedProgress.phonon])
     }
 
@@ -282,6 +289,100 @@ final class InstallerTests: XCTestCase {
         installer.retry()
         await reach(installer) { if case .failed = $0 { self.runner.commands(named: "voiced").count == 2 } else { false } }
         XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments).last, runner.commands(named: "voiced").first?.arguments)
+    }
+
+    /// install-manifest.json as bundle.sh writes it, its catalogue cut from what
+    /// `python -I -m voiced.models` printed (two engines of it).
+    private static let writtenManifest = #"""
+        {"version": "0.4.0", "python": "3.12.15", "lock_sha256": "ab",
+         "wheel": {"name": "voiced-0.4.0-py3-none-any.whl", "sha256": "cd"}, "wheels_bytes": 1,
+         "catalogue": {"engines": [
+          {"name": "parakeet", "label": "Parakeet", "kind": "stt", "shared": [], "models": [
+           {"id": "mlx-community/parakeet-tdt-0.6b-v3", "repo": "mlx-community/parakeet-tdt-0.6b-v3",
+            "license": "CC-BY-4.0", "url": "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3",
+            "gated": false, "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", "download_bytes": 2508532829,
+            "quality": 5, "speed": 5, "note": "The default: accurate and fast, English and 24 European languages",
+            "recommended": true}]},
+          {"name": "phonon", "label": "Phonon", "kind": "tts", "models": [
+           {"id": "gradium/phonon-31m-en", "repo": "gradium/phonon-31m-en", "license": "Apache-2.0",
+            "url": "https://huggingface.co/gradium/phonon-31m-en", "gated": false,
+            "revision": "8c64b55ec301728e2d1695bfea87a08a267d0c2d", "download_bytes": 65049306, "quality": 5,
+            "speed": 5, "note": "Runs on the CPU, leaving the GPU to speech to text; 38 English voices",
+            "recommended": false},
+           {"id": "gradium/phonon-40m-en", "repo": "gradium/phonon-40m-en", "license": "CC-BY-NC-4.0",
+            "url": "https://huggingface.co/gradium/phonon-40m-en", "gated": true,
+            "revision": "9b95393286eaeeebf1330b2ae90a14a2074c415d", "download_bytes": 75090522, "quality": null,
+            "speed": null, "note": "The larger English model, for non-commercial use; not benchmarked yet",
+            "recommended": false}],
+           "shared": [
+           {"id": "gradium/phonon-voices", "repo": "gradium/phonon-voices", "license": "Apache-2.0",
+            "url": "https://huggingface.co/gradium/phonon-voices", "gated": false,
+            "revision": "da6c9ec0d47be8df5c87c730a3aa97187f3229c3", "download_bytes": 9510439, "quality": null,
+            "speed": null, "note": "", "recommended": false}]}]}}
+        """#
+
+    func testTheManifestBundleShWritesDecodesIntoTheSetup() throws {
+        let manifest = try JSONDecoder().decode(InstallManifest.self, from: Data(Self.writtenManifest.utf8))
+        let choice = SetupChoice.recommended(in: manifest.catalogue)
+        XCTAssertEqual(choice.stt, ServiceChoice(isOn: true, model: "mlx-community/parakeet-tdt-0.6b-v3"))
+        // No recommended Phonon here: the first model that needs no token.
+        XCTAssertEqual(choice.tts, ServiceChoice(isOn: true, model: "gradium/phonon-31m-en"))
+        let request = InstallRequest(settings: [], models: choice.downloads(in: manifest.catalogue))
+        XCTAssertEqual(
+            request.manualDownload,
+            "To download the models by hand, fetch mlx-community/parakeet-tdt-0.6b-v3 at revision "
+                + "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15 and gradium/phonon-31m-en at revision "
+                + "8c64b55ec301728e2d1695bfea87a08a267d0c2d and gradium/phonon-voices at revision "
+                + "da6c9ec0d47be8df5c87c730a3aa97187f3229c3 into the Hugging Face cache, then try again.")
+        XCTAssertEqual(manifest.catalogue.model("gradium/phonon-31m-en")?.model.ratings.map(\.value), [5, 5])
+    }
+
+    func testAFailedChoiceGoesBackToTheSetup() async throws {
+        let installer = installerWithProgress(
+            .progress([RecordedProgress.hello, RecordedProgress.error("models", "moonshine needs macOS 15 or later.")], status: 1))
+        installer.setup.stt.model = RecordedProgress.whisper
+        installer.install()
+        _ = await failure(installer)
+        XCTAssertTrue(installer.offersSetup)
+        installer.changeChoices()
+        XCTAssertEqual(installer.phase, .welcome)
+        XCTAssertEqual(installer.setup.stt.model, RecordedProgress.whisper, "the choice is kept to change")
+
+        // Closing the window on the failure goes back too.
+        installer.install()
+        _ = await failure(installer)
+        installer.windowClosed()
+        XCTAssertEqual(installer.phase, .welcome)
+    }
+
+    func testOtherFailuresDoNotOfferTheSetup() async throws {
+        runner.isOnline = false
+        let installer = makeInstaller()
+        installer.install()
+        _ = await failure(installer)
+        XCTAssertFalse(installer.offersSetup)
+    }
+
+    func testClosingTheSetupUnusedKeepsItFromOpeningAtLaunch() {
+        let installer = makeInstaller()
+        XCTAssertTrue(installer.opensAtLaunch)
+        installer.windowClosed()
+        XCTAssertFalse(makeInstaller().opensAtLaunch, "the menu still offers it")
+    }
+
+    func testHomeAssistantNamesOnlyTheServicesThatAreOn() async throws {
+        let server = try startServer()
+        server.update { $0.settings.tts.enabled = false }
+        let installer = makeInstaller()
+        installer.install()
+        await reachApproval(installer)
+        installer.approve()
+        await reach(installer) { $0 == .homeAssistant(.asking) }
+        installer.connectHomeAssistant(true)
+        await reach(installer, "connected") { if case .homeAssistant(.connected) = $0 { true } else { false } }
+        guard case .homeAssistant(.connected(let info)) = installer.phase else { return XCTFail() }
+        XCTAssertEqual(info.sttPort, 10300)
+        XCTAssertNil(info.ttsPort)
     }
 
     func testTheSetupOpensAtLaunchOnlyWhenNothingIsInstalled() throws {
@@ -599,7 +700,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(failure?.stage, .install)
         XCTAssertEqual(failure?.step, "Downloading the models")
         XCTAssertEqual(failure?.cause, "Connection reset.")
-        XCTAssertEqual(failure?.fallback, resources.manifest.manualDownload)
+        XCTAssertEqual(failure?.fallback, recommendedFallback)
         let built = runner.commands(named: "uv").count
 
         installer.retry()
@@ -618,7 +719,7 @@ final class InstallerTests: XCTestCase {
             failure?.cause,
             "The download of \(RecordedProgress.kokoro) stalled at \(ByteText.size(177_650_000)) of "
                 + "\(ByteText.size(355_300_000)): no data for 0 seconds. Try again to resume it.")
-        XCTAssertEqual(failure?.fallback, resources.manifest.manualDownload)
+        XCTAssertEqual(failure?.fallback, recommendedFallback)
         XCTAssertTrue(failure?.fallback?.contains("\(RecordedProgress.parakeet) at revision 0a1b2c3") == true)
         let terminated = await eventually { self.runner.terminated.count == 1 }
         XCTAssertTrue(terminated)

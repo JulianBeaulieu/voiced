@@ -6,6 +6,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `voiced install --set KEY=VALUE`, for `stt.enabled`, `stt.engine`,
+  `stt.model` and the same for `tts`: the install downloads the models for
+  these settings and writes them to the config once the models are in, as
+  `voiced settings set` would. The app passes its setup this way.
+
 ### Changed
 
 - `brew uninstall --cask voiced` removes the app and leaves the services
@@ -18,10 +25,8 @@ uses [Semantic Versioning](https://semver.org/).
   installed off (`enabled = false`); Settings turns it on later. The app
   opens the setup by itself when it starts with nothing installed; an
   install made by `voiced install` or an earlier app is left as it is.
-- `voiced install --set KEY=VALUE` writes a setting to the config before
-  the models are downloaded, as `voiced settings set` would; the app passes
-  its setup this way. The install no longer downloads a model for a service
-  that is off, nor checks that service's ports.
+- The install no longer downloads a model for a service that is off, nor
+  checks that service's ports.
 
 ### Fixed
 

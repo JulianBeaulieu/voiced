@@ -69,13 +69,23 @@ public final class Installer {
         configuration.resources.manifest.wheelsBytes + setup.downloads(in: catalogue).reduce(0) { $0 + $1.downloadBytes }
     }
 
-    /// Opening the app shows the setup by itself when nothing is installed yet: no plists,
-    /// and no other account's. An install the command line or an older app made is left to
-    /// the menu, as before.
-    public var opensAtLaunch: Bool { phase == .welcome && !isInstalled }
+    /// Opening the app shows the setup by itself when nothing is installed yet (no plists,
+    /// and no other account's) and the setup was not closed unused or voiced uninstalled
+    /// since: then the menu offers it. An install the command line or an older app made is
+    /// left to the menu, as before.
+    public var opensAtLaunch: Bool {
+        phase == .welcome && !isInstalled && !configuration.defaults.bool(forKey: Self.setupClosedKey)
+    }
 
-    /// What the pinned models take in the Hugging Face cache, for the uninstall's box.
-    public var modelBytes: Int64 { configuration.resources.manifest.models.reduce(0) { $0 + $1.bytes } }
+    /// The user default that keeps the setup from opening at launch.
+    static let setupClosedKey = "setupClosed"
+
+    /// A first install failed at `voiced install`, perhaps on the model chosen: the failure
+    /// offers the setup again beside Try Again.
+    public var offersSetup: Bool {
+        guard task == .install, case .failed(let failure) = phase else { return false }
+        return failure.stage == .install
+    }
 
     private var isInstalled: Bool { configuration.installProbe.isInstalled() }
 
@@ -136,6 +146,7 @@ public final class Installer {
     /// "Install" or "Continue" on the welcome screen.
     public func install() {
         guard phase == .welcome, !setup.isEmpty else { return }
+        configuration.defaults.removeObject(forKey: Self.setupClosedKey)
         refreshWelcome()
         guard welcome.hasRoom else { return }
         begin { [self] in await firstInstall() }
@@ -203,9 +214,24 @@ public final class Installer {
         begin { [self] in await runUninstall(choices) }
     }
 
+    /// "Change Choices" on a first install that failed at `voiced install`: back to the
+    /// setup; Install then runs again in the environment already built.
+    public func changeChoices() {
+        guard offersSetup else { return }
+        phase = .welcome
+        refreshWelcome()
+    }
+
     /// The window was closed: a run that ended starts from the welcome screen next time, so
-    /// "Install voiced…" after an uninstall installs.
+    /// "Install voiced…" after an uninstall installs, and so does a first install that failed
+    /// at `voiced install`. The setup closed unused, or an uninstall, keeps it from opening by
+    /// itself at the next launch.
     public func windowClosed() {
+        switch phase {
+        case .welcome, .uninstalled: configuration.defaults.set(true, forKey: Self.setupClosedKey)
+        default: break
+        }
+        if offersSetup { return changeChoices() }
         switch phase {
         case .done, .finished, .uninstalled, .confirmUninstall:
             task = .install
@@ -360,13 +386,7 @@ public final class Installer {
     /// writes the setup's choice to the config; the Lifecycle keeps the config as it is.
     private func installAndContinue(in environment: URL) async {
         phase = .installing(InstallProgress())
-        let settings = task == .install ? setup.settings(in: catalogue) : []
-        let fallback =
-            task == .install
-            ? InstallManifest.manualDownload(setup.downloads(in: catalogue).map { ($0.repo, $0.revision ?? "main") })
-            : configuration.resources.manifest.manualDownload
-        let installed = await stages.runInstall(
-            in: environment, settings: settings, fallback: fallback, progress: { self.phase = .installing($0) })
+        let installed = await stages.runInstall(in: environment, request, progress: { self.phase = .installing($0) })
         guard value(installed) != nil else { return }
         if task == .install {
             await showApproval()
@@ -474,11 +494,25 @@ public final class Installer {
         return errorMessage == nil
     }
 
+    /// What `voiced install` is asked for: the setup's choice on a first install; otherwise
+    /// nothing to write, and the models that run now (the recommended ones while the services
+    /// do not say).
+    private var request: InstallRequest {
+        guard task != .install else {
+            return InstallRequest(settings: setup.settings(in: catalogue), models: setup.downloads(in: catalogue))
+        }
+        let running = model.settings.map(SetupChoice.init(running:)) ?? .recommended(in: catalogue)
+        return InstallRequest(settings: [], models: running.downloads(in: catalogue))
+    }
+
+    /// The Wyoming ports of the services that are on; one that is off opens none (ADR 0033).
     private func homeAssistantInfo() -> HomeAssistantInfo {
-        let ports = model.settings?.ports
+        let settings = model.settings
+        let ports = settings?.ports
+        func on(_ kind: ServiceKind) -> Bool { settings?.isEnabled(kind) ?? true }
         return HomeAssistantInfo(
-            identity: configuration.hostIdentity(), sttPort: ports?.sttWyoming ?? 10300,
-            ttsPort: ports?.ttsWyoming ?? 10200, apiKey: nil)
+            identity: configuration.hostIdentity(), sttPort: on(.stt) ? ports?.sttWyoming ?? 10300 : nil,
+            ttsPort: on(.tts) ? ports?.ttsWyoming ?? 10200 : nil, apiKey: nil)
     }
 
     /// 32 random bytes, base64url without padding.

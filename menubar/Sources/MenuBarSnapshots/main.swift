@@ -269,10 +269,7 @@ func launchChecks(model: AppModel, in directory: URL) async -> LaunchChecks {
     let manifest = InstallManifest(
         version: "0.2.0", python: "3.12.15", lockSHA256: "64d1af59",
         wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "a12bd9c2"), wheelsBytes: 190_060_576,
-        models: [
-            .init(repo: "mlx-community/parakeet-tdt-0.6b-v3", revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", bytes: 2_508_532_829),
-            .init(repo: "mlx-community/Kokoro-82M-bf16", revision: "a71e4d38b236d968966a2002c4c895dbd12b1c3c", bytes: 355_322_783),
-        ])
+        catalogue: RecordedProgress.catalogue)
     let checks = LaunchChecks(
         model: model, manifest: manifest,
         paths: VoicedPaths(home: directory, bundle: URL(fileURLWithPath: "/Applications/voiced.app")),

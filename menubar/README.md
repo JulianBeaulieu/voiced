@@ -63,15 +63,14 @@ installer needs (ADR 0018, "What the app ships and pins"):
 | `Contents/Helpers/uv` | uv at the version and sha256 pinned in `bundle.sh` |
 | `Contents/Resources/voiced-*.whl` | The voiced wheel, built from this checkout with that uv |
 | `Contents/Resources/requirements.lock` | The lock the wheel carries |
-| `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), each default model's repository, revision and size, and the model catalogue the setup offers; written by `scripts/app_manifest.py` |
+| `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), and the model catalogue the setup offers, each model with its revision and size, the defaults marked recommended; written by `scripts/app_manifest.py` |
 | `Contents/Resources/uv-LICENSE` | uv's licence text, fetched at the same tag and checked |
 | `Contents/Resources/NOTICE` | The repository's third-party notice (`scripts/notice.py` writes it from the lock) |
 | `Contents/Resources/WhatsNew.md` | This version's section of `CHANGELOG.md`, else the Unreleased one |
 
-The model pins and the catalogue are what the wheel's `python -I -m
-voiced.models` prints (the default engines' models in
-`voiced/models.lock.json`, and every catalogued engine and model as
-`voiced models list --json` shows them, without the cache). Everything fetched is pinned by
+The catalogue is what the wheel's `python -I -m voiced.models` prints:
+every catalogued engine and model as `voiced models list --json` shows
+them, without the cache, pinned by `voiced/models.lock.json`. Everything fetched is pinned by
 hash: uv and its licence in `bundle.sh`, and the build backend and
 `packaging` (which `app_manifest.py` uses to read the lock's markers and wheel
 tags) by `src/voiced/build-requirements.lock`. The first run needs the

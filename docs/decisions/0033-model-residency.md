@@ -247,5 +247,5 @@ spare.
   load at start exits at once instead, as before; the reload does not.
 - The watchdog reads one small file per service per poll.
 - `voiced install` still downloads the models of a service that is off.
-  Changed 2026-10-23 (ADR 0018, "Amendment: the setup"): it no longer
+  Changed 2026-10-23 (ADR 0018, "Amendment (2026-10-23)"): it no longer
   does, and it does not check that service's ports either.

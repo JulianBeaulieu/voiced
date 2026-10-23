@@ -524,6 +524,7 @@ def test_models_in_one_download_are_deleted_together_unless_one_is_in_use(
     catalogue = (*models.CATALOGUE, engine)
     monkeypatch.setattr(models, "CATALOGUE", catalogue)
     monkeypatch.setattr("voiced.models.lookup.CATALOGUE", catalogue)
+    monkeypatch.setattr("voiced.models.lockfile.CATALOGUE", catalogue)
     for m, name in ((small, "small/w"), (base, "base/w")):
         entry = models.Locked(
             m.id, m.repo, SHA, m.patterns, {name: lockfile.LockedFile(1, "e" * 64)}

@@ -125,7 +125,7 @@ extension FakeInstallRunner.Response {
 }
 
 /// What a bundle would carry, in `directory`: a lock and a wheel with the hashes the manifest
-/// pins, two default models, and a catalogue to choose from.
+/// pins, and a catalogue to choose from.
 public func installResources(in directory: URL) throws -> InstallResources {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let lock = directory.appendingPathComponent("requirements.lock")
@@ -140,12 +140,7 @@ public func installResources(in directory: URL) throws -> InstallResources {
         manifest: InstallManifest(
             version: "0.1.0", python: "3.12.15", lockSHA256: try sha256(lock),
             wheel: .init(name: wheel.lastPathComponent, sha256: try sha256(wheel)),
-            wheelsBytes: 205_000_000,
-            models: [
-                .init(repo: RecordedProgress.parakeet, revision: "0a1b2c3", bytes: 2_508_500_000),
-                .init(repo: RecordedProgress.kokoro, revision: "4d5e6f7", bytes: 355_300_000),
-            ],
-            catalogue: RecordedProgress.catalogue))
+            wheelsBytes: 205_000_000, catalogue: RecordedProgress.catalogue))
 }
 
 /// Lines of `voiced install --json-progress` as ADR 0018's protocol 1 specifies them, `shown`

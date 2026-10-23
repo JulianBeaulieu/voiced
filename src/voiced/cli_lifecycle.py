@@ -66,7 +66,13 @@ from voiced.layout import (
     installed_manifest,
     off_marker,
 )
-from voiced.settings_store import BOOLEAN_SETTINGS, INTEGER_SETTINGS, SETTABLE
+from voiced.settings_store import (
+    INSTALL_SETTABLE,
+    SETTABLE,
+    InvalidSetting,
+    parse_setting,
+    staged_settings,
+)
 from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
@@ -128,8 +134,9 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="write a setting to the config before the models are downloaded, as "
-        "`voiced settings set` does (the app's first-run choices); repeatable",
+        help="run with a setting of stt.enabled, stt.engine, stt.model or the same for tts "
+        "(the app's first-run choices): the models step downloads for it and the config "
+        "gets it once the models are in, as `voiced settings set` writes; repeatable",
     )
 
     start = sub.add_parser("start", help="start the daemons")
@@ -300,11 +307,25 @@ def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
 def _install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
 ) -> InstallPlan:
+    from voiced.engines.catalogue import engines_list
     from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
     try:
         changes = dict(parse_setting(pair) for pair in args.pairs)
     except ValueError as exc:
+        raise InstallError(f"--set {exc}") from None
+    if other := sorted(set(changes) - set(INSTALL_SETTABLE)):
+        raise InstallError(
+            f"--set {other[0]}: install sets only {', '.join(INSTALL_SETTABLE)}; "
+            "use voiced settings set for the rest"
+        )
+    try:
+        # Planned and downloaded from these; written once the models are in.
+        # Checked against this voiced's engines, the new environment's for
+        # the app; a --source build's are checked again at the switch.
+        engines = None if args.source is not None else engines_list
+        settings = staged_settings(settings, changes, engines=engines)
+    except InvalidSetting as exc:
         raise InstallError(f"--set {exc}") from None
     plan = plan_install(
         settings,
@@ -692,38 +713,6 @@ def _not_installed_hint(settings: Settings) -> str:
 
 
 # settings -----------------------------------------------------------------
-
-_TRUE = ("true", "yes", "on", "1")
-_FALSE = ("false", "no", "off", "0")
-
-
-def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
-    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
-    key, sep, raw = pair.partition("=")
-    key = key.strip()
-    if not sep:
-        raise ValueError(f"{pair!r}: expected KEY=VALUE")
-    if key not in SETTABLE:
-        raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
-    if key in BOOLEAN_SETTINGS:
-        if raw.lower() in _TRUE:
-            return key, True
-        if raw.lower() in _FALSE:
-            return key, False
-        raise ValueError(f"{key}: expected true or false, got {raw!r}")
-    if key == "tts.speed":
-        try:
-            return key, float(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
-    if key in INTEGER_SETTINGS:
-        try:
-            return key, int(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
-    if key == "api_key" and raw == "-":
-        return key, stdin().rstrip("\r\n")
-    return key, raw
 
 
 def _flatten(value: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:

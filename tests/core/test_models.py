@@ -62,10 +62,15 @@ def test_the_config_defaults_are_the_default_engines_first_models() -> None:
     assert (defaults.stt.engine, defaults.tts.engine) == ("parakeet", "kokoro")
     assert defaults.stt.model == models.default_model("parakeet").repo
     assert defaults.tts.model == models.default_model("kokoro").repo
-    assert lockfile.manifest()["models"] == [
-        {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
-        for e in (models.lock()[defaults.stt.model], models.lock()[defaults.tts.model])
+    # The app's setup preselects these: one per service, none behind a token.
+    recommended = [
+        (engine["kind"], m["id"])
+        for engine in lockfile.catalogue_view()["engines"]
+        for m in engine["models"]
+        if m["recommended"]
     ]
+    assert recommended == [("stt", defaults.stt.model), ("tts", defaults.tts.model)]
+    assert not any(models.find(m)[1].gated for _, m in recommended)  # type: ignore[index]
 
 
 def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:

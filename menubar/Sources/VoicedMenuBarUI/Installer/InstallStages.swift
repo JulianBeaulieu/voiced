@@ -425,16 +425,12 @@ struct InstallStages {
 
     // MARK: - voiced install
 
-    /// `voiced install --origin app --json-progress` from `environment`, with a stall check
-    /// while a download is unfinished. `settings` go to the config first (`--set`); a failed
-    /// download names `fallback`, how to fetch its models by hand.
+    /// `voiced install --origin app --json-progress` from `environment`, asked for `request`,
+    /// with a stall check while a download is unfinished.
     func runInstall(
-        in environment: URL, settings: [String] = [], fallback: String? = nil,
-        progress: @escaping (InstallProgress) -> Void
+        in environment: URL, _ request: InstallRequest, progress: @escaping (InstallProgress) -> Void
     ) async -> Result<Void, InstallFailure> {
-        let command = InstallCommand(
-            environment.appendingPathComponent("bin/voiced").path,
-            ["install", "--origin", "app", "--json-progress"] + settings.flatMap { ["--set", $0] })
+        let command = InstallCommand(environment.appendingPathComponent("bin/voiced").path, request.arguments)
         let state = InstallRun()
         let runner = runner
         let consume = Task {
@@ -472,7 +468,7 @@ struct InstallStages {
 
         let session = state.session
         let models = InstallProgress.Step.title(id: "models", shown: "models")
-        let fallback = fallback ?? configuration.resources.manifest.manualDownload
+        let fallback = request.manualDownload
         if state.stalled {
             let waited = stallTimeout.formatted(.units(allowed: [.seconds], width: .wide))
             let stuck = session.progress.downloads.last { !$0.isFinished }

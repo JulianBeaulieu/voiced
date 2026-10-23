@@ -5,8 +5,9 @@
 menubar/Scripts/bundle.sh runs it. The manifest names the voiced version, the
 CPython patch version (``menubar/app-python-version``), the wheel and the
 lock with their sha256, the download size of the locked wheels, and from M,
-what the wheel's ``python -I -m voiced.models`` printed, the pinned default
-models and the catalogue the app's first-run setup chooses from.
+what the wheel's ``python -I -m voiced.models`` printed, the model catalogue
+with each model's pinned revision and size: the setup chooses from it, its
+recommended models preselected.
 
 The download size is summed from uv.lock: for each lock entry installed on the
 app's target Mac (``lock_target``), the file uv would pick there, the most
@@ -81,33 +82,19 @@ def wheels_bytes(lock: Path, uv_lock: Path, python: str) -> int:
     return total
 
 
-def models(path: Path) -> list[dict[str, Any]]:
-    found = json.loads(path.read_text())["models"]
-    if not found:
-        raise SystemExit(f"{path}: no models")
-    for model in found:
-        if not re.fullmatch(r"[0-9a-f]{40}", str(model.get("revision", ""))):
-            raise SystemExit(f"{model.get('repo')}: the revision must be a commit SHA")
-        size = model.get("bytes")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            raise SystemExit(f"{model.get('repo')}: no size")
-    return [{"repo": m["repo"], "revision": m["revision"], "bytes": m["bytes"]} for m in found]
-
-
 def catalogue(path: Path) -> dict[str, Any]:
-    """The catalogue as M has it, after checking each service has one
-    recommended model to preselect."""
+    """The catalogue as M has it, after checking each model is pinned to a
+    commit with a size: the setup's sizes and the downloads come from it."""
     found: dict[str, Any] = json.loads(path.read_text())["catalogue"]
-    for kind in ("stt", "tts"):
-        recommended = [
-            model["id"]
-            for engine in found["engines"]
-            if engine["kind"] == kind
-            for model in engine["models"]
-            if model["recommended"]
-        ]
-        if len(recommended) != 1:
-            raise SystemExit(f"{path}: {kind} needs one recommended model, not {recommended}")
+    if not found["engines"]:
+        raise SystemExit(f"{path}: no models")
+    for engine in found["engines"]:
+        for model in (*engine["models"], *engine["shared"]):
+            if not re.fullmatch(r"[0-9a-f]{40}", str(model.get("revision", ""))):
+                raise SystemExit(f"{model.get('id')}: the revision must be a commit SHA")
+            size = model.get("download_bytes")
+            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                raise SystemExit(f"{model.get('id')}: no size")
     return found
 
 
@@ -122,7 +109,6 @@ def manifest(wheel: Path, lock: Path, uv_lock: Path, pins: Path) -> dict[str, An
         "lock_sha256": sha256(lock),
         "wheel": {"name": wheel.name, "sha256": sha256(wheel)},
         "wheels_bytes": wheels_bytes(lock, uv_lock, python),
-        "models": models(pins),
         "catalogue": catalogue(pins),
     }
 

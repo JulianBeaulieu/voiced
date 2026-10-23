@@ -192,6 +192,16 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var name: String { id.split(separator: "/").last.map(String.init) ?? id }
     public var cardURL: URL? { url.flatMap(URL.init(string:)) }
     public var previousBytes: Int64 { previous.reduce(0) { $0 + $1.bytes } }
+
+    /// Quality and Speed, each only when measured (ADR 0024).
+    public var ratings: [ModelRow.Rating] {
+        [("Quality", quality), ("Speed", speed)].compactMap { label, value in
+            value.flatMap { (1...5).contains($0) ? ModelRow.Rating(label: label, value: $0) : nil }
+        }
+    }
+
+    /// What the model is for; nil when the catalogue says nothing.
+    public var summary: String? { note.isEmpty ? nil : note }
 }
 
 /// What `voiced models delete <model> --yes --json` prints: what it deleted, or, for a
@@ -335,19 +345,14 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     }
 
     /// Quality and Speed, each only when measured (ADR 0024).
-    public var ratings: [Rating] {
-        guard let model else { return [] }
-        return [("Quality", model.quality), ("Speed", model.speed)].compactMap { label, value in
-            value.flatMap { (1...5).contains($0) ? Rating(label: label, value: $0) : nil }
-        }
-    }
+    public var ratings: [Rating] { model?.ratings ?? [] }
 
     /// The bars' help; they link to `benchmarks`.
     public static let ratingsHelp = "Measured on an Apple M1 Max; see docs/benchmarks.md"
     public static let benchmarks = URL(string: "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")!
 
     /// What the model is for, under the bars.
-    public var summary: String? { model.flatMap { $0.note.isEmpty ? nil : $0.note } }
+    public var summary: String? { model?.summary }
 
     public var isRecommended: Bool { model?.recommended == true }
 

@@ -80,7 +80,7 @@ brew install julianbeaulieu/voiced/voiced
 voiced install
 ```
 
-`voiced install` downloads the default models and prints one command to
+`voiced install` downloads the configured models and prints one command to
 run with `sudo`, the only step that needs root;
 [docs/operations.md](docs/operations.md#commands) says what it does. Both
 the cask and the formula come from the

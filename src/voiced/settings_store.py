@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
@@ -359,7 +360,6 @@ def apply_settings(
     path: Path | None = None,
     *,
     engines: Callable[[], Engines] | None = None,
-    require_downloaded: bool = True,
 ) -> SettingsChange:
     """Write ``changes`` (settable name -> value) to the config file.
 
@@ -367,10 +367,8 @@ def apply_settings(
     unknown sections and comments are left alone. ``engines`` supplies the
     ``engines.list`` catalogue for engine and voice changes; it is only
     called when one of those is being changed, and without it they are not
-    checked. A change of engine or model is checked against the model
-    lock and the cache (:func:`check_downloaded`) unless
-    ``require_downloaded`` is false, which only ``voiced install`` passes:
-    its models step downloads them right after. Returns the
+    checked. A change of engine or model is always checked against the
+    model lock and the cache (:func:`check_downloaded`). Returns the
     effective settings afterwards (environment overrides included), the
     services that must restart for the change to apply, and warnings for the
     operator.
@@ -393,7 +391,7 @@ def apply_settings(
         wanted[name] = _coerce(name, value, table if isinstance(table, Mapping) else {})
     if engines is not None and _ENGINE_KEYS & set(wanted):
         complete_engine_change(wanted, old_sections, engines())
-    if require_downloaded and _MODEL_KEYS & set(wanted):
+    if _MODEL_KEYS & set(wanted):
         check_downloaded(wanted, old_sections, load_settings(path).install.hf_home)
 
     new_data: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}
@@ -442,6 +440,77 @@ def apply_settings(
         restart_required=tuple(s for s in HTTP_SERVICES if s in restart),
         warnings=tuple(warnings),
     )
+
+
+def staged_settings(
+    settings: Settings,
+    changes: Mapping[str, object],
+    *,
+    engines: Callable[[], Engines] | None = None,
+) -> Settings:
+    """``settings`` with ``changes`` applied in memory, coerced and validated
+    as :func:`apply_settings` would write them, the engines checked when
+    ``engines`` is given. Nothing is written and the models are not checked:
+    ``voiced install`` plans and downloads from this, then writes the same
+    changes with :func:`apply_settings` once the models are in."""
+    unknown = sorted(set(changes) - set(SETTABLE))
+    if unknown:
+        raise InvalidSetting(unknown[0], "not a settable key")
+    wanted = {name: _coerce(name, value, {}) for name, value in changes.items()}
+    if engines is not None and _ENGINE_KEYS & set(wanted):
+        complete_engine_change(wanted, {"stt": settings.stt, "tts": settings.tts}, engines())
+    updates: dict[str, dict[str, object]] = {}
+    for name, value in wanted.items():
+        section, key = SETTABLE[name]
+        updates.setdefault(section, {})[key] = value
+    sections: dict[str, BaseModel] = {}
+    for section, values in updates.items():
+        current = getattr(settings, section)
+        try:
+            sections[section] = type(current).model_validate({**current.model_dump(), **values})
+        except ValidationError as exc:
+            err = exc.errors()[0]
+            key = str(err["loc"][0]) if err["loc"] else ""
+            raise InvalidSetting(_settable_name(section, key), err["msg"]) from None
+    return settings.model_copy(update=sections)
+
+
+INSTALL_SETTABLE = tuple(
+    f"{kind}.{key}" for kind in HTTP_SERVICES for key in ("enabled", "engine", "model")
+)
+"""What ``voiced install --set`` takes: which services run, with which model."""
+
+_TRUE = ("true", "yes", "on", "1")
+_FALSE = ("false", "no", "off", "0")
+
+
+def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
+    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
+    key, sep, raw = pair.partition("=")
+    key = key.strip()
+    if not sep:
+        raise ValueError(f"{pair!r}: expected KEY=VALUE")
+    if key not in SETTABLE:
+        raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
+    if key in BOOLEAN_SETTINGS:
+        if raw.lower() in _TRUE:
+            return key, True
+        if raw.lower() in _FALSE:
+            return key, False
+        raise ValueError(f"{key}: expected true or false, got {raw!r}")
+    if key == "tts.speed":
+        try:
+            return key, float(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
+    if key in INTEGER_SETTINGS:
+        try:
+            return key, int(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
+    if key == "api_key" and raw == "-":
+        return key, stdin().rstrip("\r\n")
+    return key, raw
 
 
 _MISSING = object()

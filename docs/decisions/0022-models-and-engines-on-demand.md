@@ -147,7 +147,9 @@ follows the config file, not the running process. The app always runs this
 command; the control protocol gains no op. `engines.list` stays for the
 settings checks, built from the catalogue joined with the registry; a
 third-party engine the catalogue does not know is listed as today, with
-nothing to manage. `install-manifest.json` keeps the default models only.
+nothing to manage. `install-manifest.json` keeps the default models only (changed
+2026-10-23: it carries the catalogue, for the app's first-run setup; ADR
+0018, "Amendment (2026-10-23)").
 
 ### 2. Packages: every catalogued engine in the one lock
 

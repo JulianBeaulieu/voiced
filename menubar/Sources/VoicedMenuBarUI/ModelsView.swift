@@ -69,7 +69,7 @@ struct ModelRowView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
                 ModelSummary(
-                    row: row, detail: ([row.sizeLine, row.stateLabel].compactMap { $0 }).joined(separator: " · "),
+                    title: row.title, model: row.model, detail: ([row.sizeLine, row.stateLabel].compactMap { $0 }).joined(separator: " · "),
                     detailTint: row.state == .inUseMissing ? .red : .secondary)
                 Spacer(minLength: 8)
                 actions
@@ -141,29 +141,31 @@ struct ModelRowView: View {
 /// A model's name, licence, Recommended badge, ratings and what it is for, then `detail`: the
 /// left of a row in the Models pane, and the chosen model on the setup screen.
 struct ModelSummary: View {
-    let row: ModelRow
+    let title: String
+    /// Nil for a plugin engine the catalogue does not know.
+    let model: CatalogueModel?
     let detail: String
     var detailTint: Color = .secondary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(row.title).font(.body.weight(.medium))
-                if let model = row.model, !model.license.isEmpty {
+                Text(title).font(.body.weight(.medium))
+                if let model, !model.license.isEmpty {
                     if let card = model.cardURL {
                         Link(model.license, destination: card).font(.caption)
                     } else {
                         Text(model.license).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if row.isRecommended {
+                if model?.recommended == true {
                     RecommendedBadge()
                 }
             }
-            if !row.ratings.isEmpty {
-                RatingBars(ratings: row.ratings)
+            if let ratings = model?.ratings, !ratings.isEmpty {
+                RatingBars(ratings: ratings)
             }
-            if let summary = row.summary {
+            if let summary = model?.summary {
                 Text(summary).font(.caption).foregroundStyle(.secondary)
             }
             Text(detail)

@@ -308,7 +308,9 @@ The release job builds, from one commit:
   (`3.12.15`), the lock's sha256, the wheel's name and sha256, the total
   download size of the locked wheels, and each default model's repository,
   commit SHA and size. The welcome screen's numbers and every pin come from
-  it.
+  it. (Changed 2026-10-23: the models are the `catalogue`, every catalogued
+  model with its pin and size, the defaults marked recommended; see
+  "Amendment (2026-10-23)".)
 
 ### Python and the environment
 
@@ -441,7 +443,8 @@ Done since (`voiced.models`):
   pinned, one the config names, loads `main` as before.
   `python -m voiced.models` prints `{"models": [{"repo", "revision",
   "bytes"}]}` with the standard library alone, for the bundle script's
-  `install-manifest.json`; `bytes` is the size of what
+  `install-manifest.json` (changed 2026-10-23: it prints the `catalogue`
+  instead; see "Amendment (2026-10-23)"); `bytes` is the size of what
   `download_patterns()` names at that revision (Parakeet `config.json` and
   `model.safetensors`, 2,508,532,829 bytes; Kokoro `config.json` and every
   `*.safetensors`, the 54 voices included, 355,322,783 bytes), checked
@@ -502,8 +505,9 @@ The app's existing states (ADR 0014) gain an installer in front of them.
 "Not installed" opens the installer instead of the guide link. Each screen
 says what it does in one sentence. There is no model picker on first run:
 each engine gets its pinned default, and the model is chosen later in the
-Speech to Text and Text to Speech panes. (Changed: the welcome screen is now
-a setup with a model per service; see "Amendment: the setup".)
+Speech to Text and Text to Speech panes. (Changed 2026-10-23: the welcome
+screen is now a setup with a model per service; see "Amendment
+(2026-10-23)".)
 
 0. **Before anything.** If the app is translocated
    (`SecTranslocateIsTranslocatedURL`, an app opened from Downloads
@@ -1051,7 +1055,7 @@ progress protocol's `error` event carries a `code` (`failed` for the
 installer's own errors). The `download` event's `model` is the model's id in the
 catalogue, which is its repository for every model so far.
 
-## Amendment: the setup (2026-10-23)
+## Amendment (2026-10-23)
 
 Until now a first install downloaded both default models, and opening the
 app showed only the menu, where Install voiced opened the installer. Some
@@ -1064,7 +1068,7 @@ to speech, each on or off, each with a model picker over the catalogue (ADR
 0022) with the recommended model preselected; under the picker the chosen
 model as a row of the Models pane shows it (`ModelRow` and the same summary
 view: licence, Recommended, Quality and Speed, what it is for, size). Gated
-models are left out, since they need a Hugging Face login first; Settings
+models are left out, since they need a Hugging Face token first; Settings
 has them. Under a switch that is off: nothing is downloaded for it, its
 service loads no model and opens no port, and Settings turns it on later.
 Below that, what goes where, the download size of this choice (the locked
@@ -1080,36 +1084,53 @@ translocated), so the first open is the setup; an install the CLI, Homebrew
 or an older app made is left to the menu, as before. Update, Roll back,
 Repair and Uninstall keep their flows and never show the setup.
 
-**What is written when.** The choice reaches the config through `voiced
-install --set KEY=VALUE`, the settings writer `voiced settings set` and the
-control socket use (`settings_store.apply_settings`, with the engines the
-new environment has), as an install step `settings` after `config` (which
-creates the file from the example if needed) and before `claim`, `ports`
-and `models`. The app passes `stt.enabled`, and for a service that is on
-its `engine` and `model`, the same for `tts`. Only this one check is
-skipped: that the model is already downloaded, since the models step comes
-next. A refused value stops the install before anything else is written.
-The models step reads the config, so it downloads exactly the chosen models
-and nothing for a service that is off (this changes ADR 0033's last
-consequence), and the ports step checks only the ports of services that are
-on. The first install's choice is written whatever the config said before
-(a config kept from an earlier uninstall included): the screen shows what
-will run. Update, Repair and Roll back pass no `--set`.
+**Back to the setup.** A first install that fails at `voiced install`
+(perhaps on the model chosen: Moonshine below macOS 15, a download that
+keeps failing) offers "Change Choices" beside Try Again, and closing the
+window there goes back to the setup too; Install then runs again in the
+environment already built. Closing the setup unused, or uninstalling,
+keeps it from opening by itself at the next launch (a user default); the
+menu still offers it.
+
+**What is written when.** The app runs `voiced install --origin app
+--json-progress --set KEY=VALUE ...` with `stt.enabled`, and for a service
+that is on its `engine` and `model`, the same for `tts`; `--set` takes these
+six keys only, parsed as `voiced settings set` parses them. Nothing the
+daemons use changes before the models are in (ADR 0017), and a configured
+model is a downloaded one (ADR 0022), so the config is not written first:
+`voiced install` applies the changes in memory (`staged_settings`, the
+coercion and validation `apply_settings` uses, the engines checked against
+the voiced that runs the install, the new environment's for the app) and
+plans from those settings (a service that is off has its ports left out);
+the models step gets the same `--set` arguments and downloads for them,
+nothing for a service that is off (this changes ADR 0033's last
+consequence). The config itself is written at the switch, as the `settings`
+step after `models` and before `link`, through `apply_settings` with every
+check `voiced settings set` makes, the engines listed by the environment
+being installed. A download that fails leaves the config as it was. The
+first install's choice replaces what a config kept from an earlier
+uninstall said: the screen shows what will run. Update, Repair and Roll
+back pass no `--set`.
 
 **Where the setup's list comes from.** No voiced is installed when it is
 shown, so `voiced models list --json` cannot run. `python -I -m
-voiced.models` (standard library only) now also prints `catalogue`: every
-catalogued engine and model with the fields of the list that do not depend
-on the cache or the installed engines (`voiced.models.lockfile.model_view`,
-which the list uses too, so the two cannot drift; a test compares them).
-`scripts/app_manifest.py` copies it into `install-manifest.json` after
-checking each service has exactly one recommended model, and the app
-decodes it with the Models pane's own `ModelList`. Engine-level languages
-and whether an engine can run on this Mac need the engines themselves, so
-the setup shows a model's languages as the pane does, in its note; a model
-whose engine cannot run here (Moonshine below macOS 15) fails at the models
-step with the engine's own message and Try Again, as before.
+voiced.models` (standard library only) now prints `{"catalogue":
+{"engines": [...]}}`: every catalogued engine and model with the fields of
+the list that do not depend on the cache or the installed engines
+(`voiced.models.lockfile.catalogue_view`, which the list starts from, so
+the two cannot drift), the recommended ones marked. `scripts/app_manifest.py`
+copies it into `install-manifest.json` in place of the default models,
+after checking each model is pinned to a commit with a size; a catalogue
+test checks there is one recommended model per service and that neither
+needs a token. The app decodes it with the Models pane's own `ModelList`
+and derives from it what the default models were (the recommended choice).
+Engine-level languages and whether an engine can run on this Mac need the
+engines themselves, so the setup shows a model's languages as the pane
+does, in its note.
 
-A model chosen in setup that fails to download leaves the flow in the
-models step's failure with Try Again, and the manual fallback names the
-chosen models at their pinned revisions.
+A failed download's manual fallback names the models of that run at their
+pinned revisions: the chosen ones on a first install, the configured ones
+(as the services report them) on an update or repair. The uninstall box
+for the models no longer gives a size, which only the cache knows. With a
+service off, the Connect Home Assistant screen names only the Wyoming port
+that is open.

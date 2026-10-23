@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from voiced.models.catalogue import CATALOGUE, Model, engine_label
-from voiced.models.lookup import default_models, required
+from voiced.models.lookup import default_models
 
 LOCK_FILE = Path(__file__).with_name("models.lock.json")
 PIN_COMMAND = "python -m voiced.models pin"
@@ -172,7 +172,7 @@ def catalogue_view() -> dict[str, Any]:
     """Every catalogued engine and model as ``voiced models list --json``
     shows them, without what only an installed voiced knows (the cache, the
     installed engines): the menu bar app's first-run setup offers these
-    before anything is installed (ADR 0018, "The setup")."""
+    before anything is installed (ADR 0018, "Amendment (2026-10-23)")."""
     defaults = {m.id for m in default_models()}
     return {
         "engines": [
@@ -189,13 +189,6 @@ def catalogue_view() -> dict[str, Any]:
 
 
 def manifest() -> dict[str, Any]:
-    """The default engines' models, which a new install downloads, and the
-    catalogue the app's setup chooses from."""
-    ids = [m for default in default_models() for m in required(default.id)]
-    return {
-        "models": [
-            {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
-            for e in (lock()[m] for m in ids)
-        ],
-        "catalogue": catalogue_view(),
-    }
+    """What ``python -m voiced.models`` prints for the app's
+    install-manifest.json: the catalogue, the recommended models included."""
+    return {"catalogue": catalogue_view()}

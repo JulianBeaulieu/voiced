@@ -16,6 +16,9 @@ public struct InstallerConfiguration: Sendable {
     /// The development override (`DevelopmentOverride`): a wheel or checkout to install
     /// instead of the bundled wheel. Nil in release builds.
     public var installSource: URL?
+    /// The suite of the installer's own user default (whether the setup opens at launch);
+    /// nil for the app's.
+    public var defaultsSuite: String?
     /// The name and address Home Assistant reaches this Mac by.
     public var hostIdentity: @Sendable () -> HostIdentity = HostIdentity.current
     /// Free space on the volume holding a path.
@@ -37,6 +40,8 @@ public struct InstallerConfiguration: Sendable {
     }
 
     public var paths: VoicedPaths { VoicedPaths(home: home) }
+
+    var defaults: UserDefaults { defaultsSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard }
 }
 
 /// This Mac as Home Assistant on the network sees it.

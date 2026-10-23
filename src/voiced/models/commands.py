@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -17,9 +17,13 @@ from voiced.models.pinning import pin
 # The models step -------------------------------------------------------------
 
 
-def download(config: Path, write: Write | None) -> None:
+def download(
+    config: Path, write: Write | None, changes: Mapping[str, object] | None = None
+) -> None:
     """The models step: each configured model, then each engine loaded once;
     nothing for a service that is off (ADR 0033), which loads no model.
+    ``changes`` (``voiced install --set``) apply on top of the config, which
+    the install writes only after this step.
     The engine is built first, so a model it refuses fails before anything
     is fetched. A catalogued engine's model is fetched (:func:`fetch`) at
     its pin with its shared models, any other model of a catalogued engine
@@ -31,6 +35,10 @@ def download(config: Path, write: Write | None) -> None:
     from voiced.engines.registry import UnknownEngine, create_engine
 
     settings = load_settings(config)
+    if changes:
+        from voiced.settings_store import staged_settings
+
+        settings = staged_settings(settings, changes)
     print(f"Hugging Face cache: {cache_dir()}", flush=True)
     jobs: tuple[tuple[Literal["stt", "tts"], str, str], ...] = (
         ("stt", settings.stt.engine, settings.stt.model),
@@ -66,12 +74,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     download_parser.add_argument("--config", type=Path, required=True)
     download_parser.add_argument("--report", action="store_true", help="write byte progress lines")
+    download_parser.add_argument(
+        "--set",
+        dest="pairs",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="a setting voiced install has not written yet",
+    )
     pins = sub.add_parser("pin", help="lock catalogued models (needs the network)")
     pins.add_argument("models", nargs="*", help="default: every one the lock lacks or has stale")
     pins.add_argument("--revision", help="branch, tag or commit (default: the pin, else main)")
     args = parser.parse_args(argv)
     if args.command == "download":
-        download(args.config, (lambda line: print(line, flush=True)) if args.report else None)
+        from voiced.settings_store import parse_setting
+
+        report = (lambda line: print(line, flush=True)) if args.report else None
+        download(args.config, report, dict(parse_setting(pair) for pair in args.pairs))
         return 0
     if args.command == "pin":
         for model_id in pin(args.models, args.revision):

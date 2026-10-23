@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Sequence
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
@@ -256,13 +257,13 @@ class Settings(BaseSettings):
         values = {env: getattr(getattr(self, s), key) for env, (s, key) in ENGINE_ENV.items()}
         return {env: str(value) for env, value in values.items() if value is not None}
 
-    def ports(self) -> dict[str, int]:
-        """The four service ports, by the config key that sets each."""
+    def ports(self, services: Sequence[ServiceName] = HTTP_SERVICES) -> dict[str, int]:
+        """The ports of ``services`` (by default both), by the config key
+        that sets each."""
         return {
-            "[stt] http_port": self.stt.http_port,
-            "[stt] wyoming_port": self.stt.wyoming_port,
-            "[tts] http_port": self.tts.http_port,
-            "[tts] wyoming_port": self.tts.wyoming_port,
+            f"[{service}] {key}": getattr(self.service(service), key)
+            for service in services
+            for key in ("http_port", "wyoming_port")
         }
 
     def service(self, service: ServiceName) -> STTConfig | TTSConfig:

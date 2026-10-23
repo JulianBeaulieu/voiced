@@ -99,7 +99,7 @@ private struct WhatsNewOpener: View {
 }
 
 /// Opens the installer when the app launches with nothing installed, so the first open is the
-/// setup (ADR 0018, "The setup"). A translocated app asks to be moved first, in its card.
+/// setup (ADR 0018, "Amendment (2026-10-23)"). A translocated app asks to be moved first, in its card.
 private struct InstallerOpener: View {
     let installer: Installer?
     let launch: LaunchChecks
