@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from voiced.config import ServiceName
 from voiced.control.ops import NotInstalled, ServiceUnavailable
+from voiced.health_status import HEALTHY
 from voiced.launchd.control import Runner, plist_path, run_command
 from voiced.watchdog import (
     Observation,
@@ -25,18 +26,22 @@ from voiced.watchdog import (
     ServiceState,
     Watchdog,
     launchd_view,
-    poll_health,
+    look,
 )
 
-State = Literal["running", "starting", "stopped", "degraded", "missing_model", "unknown"]
+State = Literal["running", "starting", "stopped", "degraded", "missing_model", "off", "unknown"]
 
 STATUS_TIMEOUT_S = 2.0
 
 
 def service_state(obs: Observation, in_grace: bool) -> State:
-    """Map one observation to the protocol's service state."""
-    if obs.kind == "ok":
+    """Map one observation to the protocol's service state. A model
+    unloaded while idle, or loading again, is ``running``: the service takes
+    requests (``health.status`` says which, ADR 0033)."""
+    if obs.kind in HEALTHY:
         return "running"
+    if obs.kind == "off":
+        return "off"
     if obs.kind == "starting":
         return "starting"
     if obs.kind == "missing_model":
@@ -49,6 +54,14 @@ def service_state(obs: Observation, in_grace: bool) -> State:
     if obs.loaded is None:
         return "unknown"
     return "starting" if in_grace else "degraded"
+
+
+def warm(payload: dict[str, Any] | None) -> bool:
+    """The service has finished its first load: its model is loaded, or
+    unloaded while idle and loaded again by the next request (ADR 0033)."""
+    if not payload:
+        return False
+    return payload.get("model_loaded") is True or payload.get("status") in HEALTHY
 
 
 def service_view(
@@ -71,7 +84,7 @@ def service_view(
         "health": payload,
         "engine": engine,
         "model": model,
-        "warm": bool(payload and payload.get("model_loaded")),
+        "warm": warm(payload),
         "uptime_s": float(uptime) if isinstance(uptime, int | float) else None,
         "restarts": state.restarts if state else 0,
     }
@@ -93,9 +106,7 @@ class WatchdogSupervisor:
         self.started = time.monotonic()
 
     def _observe_now(self, spec: ServiceSpec) -> Observation:
-        loaded, pid = launchd_view(spec.label, self.runner)  # first, as in watchdog.observe
-        obs = poll_health(spec.health_url, timeout_s=STATUS_TIMEOUT_S, api_key=spec.api_key)
-        return Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
+        return look(spec, STATUS_TIMEOUT_S, self.runner)
 
     def status(self) -> dict[str, Any]:
         with self.dog.lock:

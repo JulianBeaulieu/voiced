@@ -75,8 +75,8 @@ async def test_change_with_the_key(tts_client: AsyncClient) -> None:
     body = r.json()
     assert body["restart_required"] == ["tts"]
     assert body["changed"] == ["tts.voice", "tts.speed"]
-    assert body["tts"] == {"engine": "fake", "model": body["tts"]["model"], "voice": "bf_emma",
-                           "speed": 1.5}  # fmt: skip
+    assert body["tts"] == {"enabled": True, "engine": "fake", "model": body["tts"]["model"],
+                           "voice": "bf_emma", "speed": 1.5, "idle_unload_s": 0}  # fmt: skip
     assert tomllib.loads(path.read_text())["tts"]["default_voice"] == "bf_emma"
 
 

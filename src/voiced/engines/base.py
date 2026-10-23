@@ -24,7 +24,8 @@ never calls two inference methods on the same engine at once, with one
 exception an engine opts into: an STT engine whose ``max_streams`` is above 1
 may have up to that many stream sessions open at once (never alongside a
 ``transcribe``), and must interleave their work itself. ``load()`` is called
-exactly once, before any other method.
+before any other method, and again after each ``unload()``; ``unload()`` is
+only called while no other method is running (ADR 0033).
 
 Cancellation: the server cancels the awaiting task when a client disconnects.
 Engines must release any per-request state on ``CancelledError`` (a ``finally``
@@ -214,6 +215,22 @@ class _EngineMeta(ABC):
             raise TypeError(f"{cls.__name__} must declare class attributes: {', '.join(missing)}")
         if model_id:
             self.model_id = model_id
+
+    async def unload(self) -> None:
+        """Release the model and every byte it holds; ``load()`` comes next.
+
+        Called when the service has been idle for ``idle_unload_s``, never
+        while another method of the engine runs. Drop every reference to
+        model state (weights, caches, voice tensors, sessions), then return
+        what the framework keeps for reuse to the system: for MLX,
+        ``voiced.engines.memory.unload_on()`` does both on the engine's
+        model thread.
+
+        The default raises :class:`NotImplementedError`: a service whose
+        engine keeps it never unloads, and says so in its log. It is not
+        abstract so that engines written before it still load.
+        """
+        raise NotImplementedError
 
 
 class STTEngine(_EngineMeta):

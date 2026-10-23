@@ -103,10 +103,20 @@ class FakeSTTEngine(STTEngine):
         self.latency_s = latency_s
         self.loaded = False
         self.calls = 0
+        self.loads = self.unloads = 0
+        self.unload_gate: asyncio.Event | None = None
+        """Set to make ``unload()`` wait until the event is set."""
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
         self.loaded = True
+        self.loads += 1
+
+    async def unload(self) -> None:
+        if self.unload_gate is not None:
+            await self.unload_gate.wait()
+        self.loaded = False
+        self.unloads += 1
 
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript:
         self._check()
@@ -152,10 +162,20 @@ class FakeTTSEngine(TTSEngine):
         self.latency_s = latency_s
         self.loaded = False
         self.calls = 0
+        self.loads = self.unloads = 0
+        self.unload_gate: asyncio.Event | None = None
+        """Set to make ``unload()`` wait until the event is set."""
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
         self.loaded = True
+        self.loads += 1
+
+    async def unload(self) -> None:
+        if self.unload_gate is not None:
+            await self.unload_gate.wait()
+        self.loaded = False
+        self.unloads += 1
 
     async def voices(self) -> list[Voice]:
         self._check()

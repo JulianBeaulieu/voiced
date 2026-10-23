@@ -158,3 +158,76 @@ def test_serve_runs_the_services_offline(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(cli, "bind_service_ports", bind)
     assert cli.cmd_serve(Settings(), "tts") == PORT_IN_USE_EXIT
     assert seen == ["1"]
+
+
+@pytest.mark.parametrize("service", ["stt", "tts"])
+def test_a_service_switched_off_parks_without_ports_until_sigterm(
+    service: str, tmp_path: Path
+) -> None:
+    """``[<service>] enabled = false``: no engine, no port, the pid in the
+    marker, and a clean exit on SIGTERM that removes it (ADR 0033)."""
+    import signal
+
+    from voiced.launchd import parked
+    from voiced.layout import off_marker
+
+    http_port, wyoming_port = _free_port(), _free_port()
+    state = tmp_path / "state"
+    section = service.upper()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VOICED_")}
+    env |= {
+        "VOICED_CONFIG": os.path.join(tmp_path, "missing.toml"),
+        "VOICED_SERVER__LOG_DIR": os.path.join(tmp_path, "logs"),
+        "VOICED_INSTALL__VENV_DIR": str(state),
+        f"VOICED_{section}__ENABLED": "false",
+        f"VOICED_{section}__ENGINE": "no-such-engine",  # never built
+        f"VOICED_{section}__HTTP_PORT": str(http_port),
+        f"VOICED_{section}__WYOMING_PORT": str(wyoming_port),
+    }
+    marker = off_marker(state, service)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "voiced.cli", "serve", service],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while parked.parked_pid(marker) != proc.pid:
+            assert proc.poll() is None, proc.communicate()
+            assert time.monotonic() < deadline, "no marker"
+            time.sleep(0.05)
+        assert parked.is_parked(marker, proc.pid)
+        for port in (http_port, wyoming_port):
+            with socket.socket() as s:
+                assert s.connect_ex(("127.0.0.1", port)) != 0, f"port {port} answers"
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
+    assert not marker.exists()
+    log = (tmp_path / "logs" / f"{service}.log").read_text()
+    assert f"off ([{service}] enabled = false)" in log
+
+
+def test_a_serving_process_clears_an_old_marker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from voiced import cli
+    from voiced.config import Settings
+    from voiced.layout import off_marker
+
+    settings = Settings()
+    settings.install.venv_dir = tmp_path
+    marker = off_marker(tmp_path, "tts")
+    marker.write_text("12345\n")
+
+    def bind(settings: Settings, service: str) -> socket.socket:
+        raise cli.PortInUse("HTTP", "127.0.0.1", 1)
+
+    monkeypatch.setattr(cli, "bind_service_ports", bind)
+    assert cli.cmd_serve(settings, "tts") == PORT_IN_USE_EXIT
+    assert not marker.exists()

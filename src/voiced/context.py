@@ -19,6 +19,7 @@ from voiced.health import HealthResponse, HealthState
 from voiced.metrics import Metrics
 from voiced.models import ModelNotDownloaded
 from voiced.queue import Admission, InferenceQueue
+from voiced.residency import Residency
 from voiced.text import primary_subtag
 
 log = logging.getLogger(__name__)
@@ -35,9 +36,16 @@ class ServiceContext:
     uploads: Admission = field(init=False)
     """Uploads being decoded before they queue for the slot (HTTP STT); as
     many at once as the queue holds."""
+    residency: Residency = field(init=False)
+    """Every load and unload of the engine (ADR 0033)."""
+    engine_voices: list[Voice] = field(default_factory=list)
+    """A TTS engine's voices, kept from its first load so they are listed
+    while the model is unloaded (``voices()`` is stable after a load)."""
 
     def __post_init__(self) -> None:
         self.uploads = Admission(self.queue.capacity)
+        idle_unload_s = self.settings.service(self.service).idle_unload_s
+        self.residency = Residency(self.engine, self.health, self.queue, idle_unload_s)
 
     @property
     def stt_engine(self) -> STTEngine:
@@ -68,9 +76,11 @@ class ServiceContext:
         return out
 
     async def voices(self) -> list[Voice]:
-        """The TTS engine's voices whose language matches :attr:`languages`."""
+        """The TTS engine's voices whose language matches :attr:`languages`;
+        as of its first load, so they are listed while the model is unloaded."""
         bases = {primary_subtag(t) for t in self.languages}
-        return [v for v in await self.tts_engine.voices() if primary_subtag(v.language) in bases]
+        voices = self.engine_voices or await self.tts_engine.voices()
+        return [v for v in voices if primary_subtag(v.language) in bases]
 
     def check_language(self, language: str | None) -> str | None:
         """Resolve a client's language hint to the engine's own code.
@@ -131,8 +141,10 @@ class ServiceContext:
         return fallback
 
     def check_loaded(self) -> None:
-        """Raise :class:`EngineNotLoaded` until ``load()`` has finished, and
-        :class:`ModelNotDownloaded` if it found the model missing.
+        """Raise :class:`EngineNotLoaded` until the first ``load()`` has
+        finished, and :class:`ModelNotDownloaded` if a load found the model
+        missing. A model unloaded while idle passes: ``inference()`` loads it
+        again (ADR 0033).
 
         Every transport calls this before taking work. ``classify`` maps both
         to ``busy``, so clients are told to retry, not that they erred; HTTP
@@ -144,7 +156,7 @@ class ServiceContext:
             # A new exception each time: raising the stored one would grow
             # its traceback with every request.
             raise ModelNotDownloaded(missing.model_id, missing.revision, missing.missing)
-        if not self.health.model_loaded:
+        if not self.health.started:
             raise EngineNotLoaded("model is still loading")
 
     def public_health(self) -> HealthResponse:

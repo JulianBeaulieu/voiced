@@ -32,10 +32,14 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse
 
 from voiced.api.context import APIError, Ctx
-from voiced.config import Settings, config_path, load_settings
+from voiced.config import ServiceName, Settings, config_path, load_settings
 from voiced.context import ServiceContext
+from voiced.control import state_dir
 from voiced.control.protocol import MODEL_NOT_DOWNLOADED
 from voiced.engines.catalogue import engines_list
+from voiced.launchd import parked
+from voiced.launchd.control import run_command
+from voiced.layout import off_marker
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
@@ -47,6 +51,7 @@ from voiced.settings_store import (
     file_stamp,
     settings_view,
 )
+from voiced.watchdog import launchd_view
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +89,17 @@ async def metrics_json(ctx: Ctx) -> dict[str, Any]:
         "api_key_required": bool(ctx.settings.server.api_key),
         "default_voice": ctx.settings.tts.default_voice if ctx.service == "tts" else None,
         "settings_form": await asyncio.to_thread(_form_state, ctx.settings),
+        "services_off": await asyncio.to_thread(_services_off, ctx),
     }
+
+
+def _services_off(ctx: ServiceContext) -> list[str]:
+    """The other service, if it is switched off: the pid in its marker is
+    the pid launchd runs for it (``voiced.launchd.parked``, ADR 0033).
+    Blocking: it runs ``launchctl print``."""
+    other: ServiceName = "tts" if ctx.service == "stt" else "stt"
+    _, pid = launchd_view(ctx.settings.launchd.label(other), run_command)
+    return [other] if parked.is_parked(off_marker(state_dir(ctx.settings), other), pid) else []
 
 
 def _public_metrics(ctx: ServiceContext) -> dict[str, Any]:

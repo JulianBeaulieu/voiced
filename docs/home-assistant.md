@@ -127,6 +127,8 @@ satellite's device page, **Voice assistant**.
 | STT returns nothing or an error | The pipeline language does not match the configured `languages`. Version 1 is English only. |
 | Error `server_busy` in the Home Assistant log | The inference queue was full or the model was loading. `stt.streams` (default 2) satellites are transcribed at once and the next waits; after about 34 s of waiting (its 64 queued chunks, then `server.session_idle_s`) it gets `server_busy`. Raise `queue_depth` if many satellites talk at once. |
 | Voices missing from the picker | Only voices in a configured language are advertised. |
+| The first command after a quiet spell is slow | `idle_unload_s` is set for the service, so it loads its model again first (about 0.4 s for Parakeet, 0.25 s for Kokoro). Set it back to 0 (never) for Home Assistant. |
+| The integration is unavailable and `voiced status` says `off` | The service is switched off (`enabled = false`): it opens no port and is not announced. `voiced settings set stt.enabled=true` (or `tts`), then `voiced restart`. |
 
 Logs: `voiced logs stt` and `voiced logs tts`, or the files under
 `~/Library/Logs/voiced/`. The tts service logs one line per Wyoming

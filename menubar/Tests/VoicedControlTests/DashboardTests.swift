@@ -41,6 +41,30 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(dashboard.rows[1].tone, .good)
     }
 
+    func testIdleAndOffAreRunning() throws {
+        // ADR 0033: an unloaded model is warm, and a service switched off is as it should be.
+        let idle = """
+            {"state": "running", "pid": 12, "health": {"status": "idle", "model_loaded": false},
+             "engine": "kokoro", "warm": true, "uptime_s": 600, "restarts": 0}
+            """
+        let off = #"{"state": "off", "pid": 11, "engine": "parakeet", "warm": false, "uptime_s": 600, "restarts": 0}"#
+        let dashboard = connected(try status(stt: off, tts: idle))
+        XCTAssertEqual(dashboard.health, .running)
+        XCTAssertEqual(dashboard.headline, "Running")
+        XCTAssertEqual(dashboard.rows[0].stateLabel, "Off")
+        XCTAssertEqual(dashboard.rows[0].tone, .inactive)
+        XCTAssertEqual(dashboard.rows[0].detailLine, "Switched off in Settings")
+        XCTAssertEqual(dashboard.rows[1].stateLabel, "Idle, model unloaded")
+        XCTAssertEqual(dashboard.rows[1].tone, .good)
+        let loading = idle.replacingOccurrences(of: #""idle""#, with: #""loading""#)
+        let reloading = connected(try status(stt: runningSTT, tts: loading))
+        XCTAssertEqual(reloading.rows[1].stateLabel, "Loading model")
+        XCTAssertEqual(reloading.health, .running, "a request is being answered")
+        let bothOff = connected(try status(stt: off, tts: off))
+        XCTAssertEqual(bothOff.health, .off)
+        XCTAssertEqual(bothOff.headline, "Both services off")
+    }
+
     func testLoadingModelIsStarting() throws {
         let loading = #"{"state": "running", "pid": 12, "engine": "kokoro", "warm": false, "uptime_s": 3, "restarts": 0}"#
         let dashboard = connected(try status(stt: runningSTT, tts: loading))

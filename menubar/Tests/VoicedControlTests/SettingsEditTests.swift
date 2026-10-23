@@ -24,6 +24,7 @@ final class SettingsEditTests: XCTestCase {
         let edits: [SettingsEdit] = [
             .bind(.lan), .apiKey("k"), .clearAPIKey, .zeroconf(false), .browserSettings(true),
             .sttEngine("fake"), .ttsEngine("soprano"), .ttsVoice("bf_emma"),
+            .enabled(.stt, false), .idleUnload(.tts, seconds: 300),
         ]
         for edit in edits {
             for key in args(edit).keys { XCTAssertNotNil(SettingKey(rawValue: key), key) }
@@ -88,5 +89,42 @@ final class SettingsEditTests: XCTestCase {
         XCTAssertEqual(settings.tts.engine, "kokoro")
         XCTAssertEqual(settings.tts.voice, "af_heart")
         XCTAssertEqual(settings.stt.engine, "fake")
+    }
+
+    // MARK: - Off and idle unload (ADR 0033)
+
+    func testOffAndIdleUnload() {
+        XCTAssertEqual(args(.enabled(.stt, false)), ["stt.enabled": false])
+        XCTAssertEqual(args(.enabled(.tts, true)), [:], "already on")
+        XCTAssertEqual(args(.idleUnload(.tts, seconds: 300)), ["tts.idle_unload_s": 300])
+        XCTAssertEqual(args(.idleUnload(.stt, seconds: 0)), [:], "already never")
+    }
+
+    func testOffAndIdleUnloadDecodeAndDefaultForAnOlderServer() throws {
+        let newer = try decodeJSON(
+            STTSettings.self,
+            #"{"engine": "parakeet", "model": "m", "language": "en", "enabled": false, "idle_unload_s": 900}"#)
+        XCTAssertEqual(newer.enabled, false)
+        XCTAssertEqual(newer.idleUnloadS, 900)
+        var payload = current
+        payload.stt = newer
+        XCTAssertFalse(payload.isEnabled(.stt))
+        XCTAssertEqual(payload.idleUnloadSeconds(.stt), 900)
+        // An older voiced sends neither: on, never unloaded.
+        XCTAssertTrue(current.isEnabled(.tts))
+        XCTAssertEqual(current.idleUnloadSeconds(.tts), 0)
+        let roundTrip = try decodeJSON(
+            STTSettings.self, String(decoding: try JSONEncoder().encode(newer), as: UTF8.self))
+        XCTAssertEqual(roundTrip, newer)
+    }
+
+    func testIdleUnloadChoices() {
+        XCTAssertEqual(IdleUnload.choices(including: 300), [0, 60, 300, 900, 3_600])
+        XCTAssertEqual(IdleUnload.choices(including: 90), [0, 60, 90, 300, 900, 3_600])
+        XCTAssertEqual(IdleUnload.label(0), "Never")
+        XCTAssertEqual(IdleUnload.label(60), "After 1 minute unused")
+        XCTAssertEqual(IdleUnload.label(900), "After 15 minutes unused")
+        XCTAssertEqual(IdleUnload.label(3_600), "After 1 hour unused")
+        XCTAssertEqual(IdleUnload.label(90), "After 90 seconds unused")
     }
 }

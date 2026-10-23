@@ -178,6 +178,7 @@ final class ModelCatalogueTests: XCTestCase {
         XCTAssertTrue(ModelRow.isReady(warm, restarting: false))
         XCTAssertFalse(ModelRow.isReady(warm, restarting: true))
         XCTAssertFalse(ModelRow.isReady(ServiceStatus(state: .running, warm: false), restarting: false))
+        XCTAssertTrue(ModelRow.isReady(ServiceStatus(state: .off), restarting: false), "off is not loading")
         XCTAssertFalse(ModelRow.isReady(ServiceStatus(state: .starting), restarting: false))
         XCTAssertTrue(ModelRow.isReady(nil, restarting: false), "no status yet: nothing to wait for")
     }

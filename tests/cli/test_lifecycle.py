@@ -360,3 +360,88 @@ def test_uninstall_waits_for_an_install(
         assert (state / "install.json").exists()
     thread.join(10)
     assert not state.exists()
+
+
+# A service switched off (ADR 0033) ------------------------------------------
+
+
+def test_start_of_a_service_switched_off_starts_it_and_says_so(settings: Settings) -> None:
+    settings.stt.enabled = False
+    stt, tts = settings.launchd.label("stt"), settings.launchd.label("tts")
+    fake = FakeLaunchctl({stt: True, tts: True})
+    out: list[str] = []
+    assert lc.cmd_start("stt", settings, fake, out.append) == 0
+    assert out == [
+        "stt: off ([stt] enabled = false); turn it on with "
+        "`voiced settings set stt.enabled=true` and `voiced restart stt`",
+        f"stt: kickstarted {stt}",
+    ]
+    # Started as any other service: its process parks, and turning it on
+    # later is a restart, which needs the daemon loaded.
+    assert ["launchctl", "kickstart", f"system/{stt}"] in fake.calls
+
+
+def test_status_says_off_for_the_parked_process(settings: Settings) -> None:
+    from voiced.control import state_dir
+    from voiced.layout import off_marker
+
+    settings.stt.enabled = False
+    fake = FakeLaunchctl({settings.launchd.label(s): True for s in ("stt", "tts", "watchdog")})
+    marker = off_marker(state_dir(settings), "stt")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("42\n")  # the pid launchd runs for stt (RUNNING)
+
+    def poll(url: str) -> Observation:
+        assert not url.startswith(settings.http_url("stt")), "a parked service is not polled"
+        return Observation("idle", "", 10, {"model": "m/tts", "queue_depth": 0})
+
+    rows = lc.collect_status(settings, fake, poll)
+    assert rows[0]["health"] == "off"
+    assert "voiced settings set stt.enabled=true" in rows[0]["health_detail"]
+    assert rows[1]["health"] == "idle"
+    # Turned on in the file, not restarted yet.
+    settings.stt.enabled = True
+    rows = lc.collect_status(settings, fake, poll)
+    assert rows[0]["health"] == "off"
+    assert rows[0]["health_detail"].startswith("off until restarted (`voiced restart stt`)")
+    settings.stt.enabled = False
+
+    out: list[str] = []
+    assert lc.cmd_status(settings, fake, out.append, control=lambda s: None) == 1
+    assert "off ([stt] enabled = false)" in out[0]
+
+
+def test_status_is_fine_with_idle_and_off(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        {"service": "stt", "health": "off", "pid": 1, "launchd": "running"},
+        {"service": "tts", "health": "idle", "pid": 2, "launchd": "running"},
+        {"service": "watchdog", "pid": 3, "launchd": "running"},
+    ]
+    monkeypatch.setattr(lc, "collect_status", lambda *a, **k: rows)
+    out: list[str] = []
+    assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 0
+
+
+def test_no_probe_for_a_service_that_unloads_when_idle(settings: Settings) -> None:
+    """Each probe is a request: it would keep the model loaded (ADR 0033)."""
+    settings.tts.idle_unload_s = 300
+    stt, tts = lc.watchdog_specs(settings)
+    assert stt.probe is not None
+    assert tts.probe is None
+
+
+def test_start_after_stop_bootstraps_a_service_switched_off(
+    settings: Settings, isolated: Path
+) -> None:
+    """``voiced stop all`` then ``voiced start all``: the off service's daemon
+    is loaded again (it parks), so turning it on stays a restart."""
+    settings.stt.enabled = False
+    for name in ("stt", "tts", "watchdog"):
+        (isolated / f"{settings.launchd.label(name)}.plist").write_text("x")
+    out: list[str] = []
+    lc.cmd_start("all", settings, FakeLaunchctl({}), out.append)
+    stt = settings.launchd.label("stt")
+    assert out[0].startswith("stt: off ([stt] enabled = false)")
+    assert f"  sudo launchctl bootstrap system /Library/LaunchDaemons/{stt}.plist" in out

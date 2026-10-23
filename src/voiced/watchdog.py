@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from voiced.health_status import HEALTHY
 from voiced.launchd.control import (
     Runner,
     kickstart_argv,
@@ -37,6 +38,7 @@ from voiced.launchd.control import (
     print_service,
     run_command,
 )
+from voiced.launchd.parked import is_parked, off_detail
 from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
 from voiced.launchd.stdio import log_redirect_error
 from voiced.layout import RunningEnvironment
@@ -46,7 +48,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("voiced.watchdog")
 
-Kind = Literal["ok", "starting", "degraded", "unreachable", "error", "stalled", "missing_model"]
+Kind = Literal[
+    "ok",
+    "idle",
+    "loading",
+    "starting",
+    "degraded",
+    "unreachable",
+    "error",
+    "stalled",
+    "missing_model",
+    "off",
+]
 Action = Literal["none", "restart", "cooldown"]
 
 
@@ -72,7 +85,9 @@ def default_probe(service: str, model: str, voice: str = "af_heart") -> ProbeReq
 class ServiceSpec:
     """One supervised service, as configured when it was last (re)started.
     ``engine`` and ``model`` are informational (the control channel's status
-    when ``/health`` does not answer)."""
+    when ``/health`` does not answer). ``off_marker`` is where the service's
+    process writes its pid when it is switched off and parks
+    (``voiced.launchd.parked``)."""
 
     name: str
     label: str
@@ -81,6 +96,7 @@ class ServiceSpec:
     probe: ProbeRequest | None = None
     engine: str = ""
     model: str = ""
+    off_marker: Path | None = None
 
     @property
     def health_url(self) -> str:
@@ -129,8 +145,22 @@ class ServiceState:
     last_pid: int | None = None
     busy_since: float | None = None
     last_completion: float | None = None
-    not_loaded_reported: bool = False
-    missing_reported: bool = False
+    reported: set[str] = field(default_factory=set)
+    """What is already logged once: ``missing_model`` and ``off`` for the
+    current process (cleared when launchd gives the service a new pid), and
+    ``not_loaded`` until the service answers healthy again."""
+
+    def report_once(self, kind: str) -> bool:
+        """Whether ``kind`` is new for this process (and note it)."""
+        new = kind not in self.reported
+        self.reported.add(kind)
+        return new
+
+    def leave_alone(self) -> None:
+        """A state the watchdog does not act on: no failure, no timers."""
+        self.failures = 0
+        self.degraded_since = None
+        self.busy_since = None
 
     def in_grace(self, now: float, startup_grace_s: float) -> bool:
         """Is an ``unreachable`` poll at ``now`` still the startup window?"""
@@ -161,7 +191,7 @@ def classify_stall(
     service that is wedged and only answers ``/health`` every other poll is
     still caught.
     """
-    if obs.kind != "ok" or obs.payload is None:
+    if obs.kind not in HEALTHY or obs.payload is None:
         return obs
     depth = obs.payload.get("queue_depth")
     completion = obs.payload.get("last_inference_at")
@@ -194,9 +224,16 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
     * A new pid from launchd restarts the grace period: the new process is
       loading its model. That includes the first pid seen, so a service
       started long after the watchdog (``voiced start``) gets its grace too.
-    * Any answer with the model loaded (``ok``, or ``model_loaded`` true in
-      the payload; never ``starting``) ends the grace period.
-    * ``ok`` resets the failure counter and the degraded timer.
+    * ``off`` (launchd's pid is the service's parked process: it is switched
+      off, ADR 0033) is left alone and never counts toward the grace period
+      or a restart. Reported once per process.
+    * Any answer after the first load (``ok``, ``idle``, ``loading``, or
+      ``model_loaded`` true in the payload; never ``starting``) ends the
+      grace period.
+    * ``ok``, ``idle`` (the model unloaded on purpose) and ``loading`` (it
+      loads again for a request) reset the failure counter and the degraded
+      timer. A load that hangs holds the queue, which the stall rule
+      catches.
     * ``unreachable`` within ``startup_grace_s`` of the grace start, before
       the process has answered ``ok``, is the model loading before the
       socket is bound: not a failure.
@@ -219,33 +256,36 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.failures = 0
         state.busy_since = None
         state.last_pid = obs.pid
-        state.missing_reported = False
+        state.reported.clear()
+    if obs.kind == "off":
+        state.leave_alone()
+        state.awaiting_recovery = False
+        quiet = not state.report_once("off")
+        return Decision("none", f"not supervised: {obs.detail}", quiet=quiet)
     loaded = obs.payload is not None and obs.payload.get("model_loaded") is True
-    if obs.kind == "ok" or (loaded and obs.kind != "starting"):
+    if obs.kind in HEALTHY or (loaded and obs.kind != "starting"):
         state.answered = True
     obs = classify_stall(state, obs, policy, now)
 
-    if obs.kind == "ok":
+    if obs.kind in HEALTHY:
         recovered = (
             state.failures > 0 or state.degraded_since is not None or state.awaiting_recovery
         )
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
-        state.not_loaded_reported = False
+        state.reported.discard("not_loaded")
         return Decision("none", "healthy again" if recovered else "healthy", recovered)
 
     if obs.kind == "missing_model":
-        state.failures = 0
-        state.degraded_since = None
-        quiet, state.missing_reported = state.missing_reported, True
+        state.leave_alone()
+        quiet = not state.report_once("missing_model")
         return Decision("none", f"model not downloaded, not restarting: {obs.detail}", quiet=quiet)
 
     if obs.loaded is False:
         state.failures = 0
-        if state.not_loaded_reported:
+        if not state.report_once("not_loaded"):
             return Decision("none", "not loaded in launchd", quiet=True)
-        state.not_loaded_reported = True
         return Decision("none", f"{obs.kind} and not loaded in launchd (stopped?); not restarting")
 
     if obs.kind == "unreachable" and state.in_grace(now, policy.startup_grace_s):
@@ -338,8 +378,8 @@ def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation
     uptime = payload.get("uptime_s")
     uptime_s = float(uptime) if isinstance(uptime, int | float) else None
     status = payload.get("status")
-    if status == "ok" and code == 200:
-        return Observation("ok", "", uptime_s, payload)
+    if status in HEALTHY and code == 200:
+        return Observation(status, "", uptime_s, payload)
     if status == "starting":
         return Observation("starting", "model loading", uptime_s, payload)
     if status == "degraded":
@@ -387,20 +427,30 @@ def launchd_view(label: str, runner: Runner) -> tuple[bool | None, int | None]:
     return True, parse_print_output(label, result).pid
 
 
-def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_command) -> Observation:
-    """Launchd pid, health poll, then the optional probe.
+def look(spec: ServiceSpec, timeout_s: float, runner: Runner = run_command) -> Observation:
+    """Launchd's pid for the service, then its ``/health``.
 
     The pid is read first so the health answer comes from that pid or a
     later one: an ``ok`` from a process that launchd has since replaced must
-    not be credited to the new, still loading, process.
+    not be credited to the new, still loading, process. A pid that is the
+    service's parked process (switched off, ``voiced.launchd.parked``) is
+    ``off`` without a poll: it serves nothing.
+    """
+    loaded, pid = launchd_view(spec.label, runner)
+    if spec.off_marker is not None and is_parked(spec.off_marker, pid):
+        return Observation("off", off_detail(spec.name), loaded=loaded, pid=pid)
+    obs = poll_health(spec.health_url, timeout_s=timeout_s, api_key=spec.api_key)
+    return Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
+
+
+def observe(spec: ServiceSpec, policy: WatchdogConfig, runner: Runner = run_command) -> Observation:
+    """:func:`look`, then the optional probe.
 
     The probe is only sent while the queue is empty: with requests in flight
     a probe timeout would just be queueing, and restarting would kill real
-    work.
+    work. Nor while the model is unloaded (``idle``): it would load it.
     """
-    loaded, pid = launchd_view(spec.label, runner)
-    obs = poll_health(spec.health_url, timeout_s=policy.timeout_s, api_key=spec.api_key)
-    obs = Observation(obs.kind, obs.detail, obs.uptime_s, obs.payload, loaded, pid)
+    obs = look(spec, policy.timeout_s, runner)
     if policy.probe and obs.kind == "ok" and obs.payload and obs.payload.get("queue_depth") == 0:
         stalled = run_probe(spec, timeout_s=policy.probe_timeout_s)
         if stalled is not None:
@@ -626,7 +676,7 @@ class Watchdog:
                 log.warning("%s: not restarting: %s", spec.name, decision.reason)
             elif decision.quiet:
                 log.debug("%s: %s", spec.name, decision.reason)
-            elif obs.kind != "ok" or decision.recovered:
+            elif obs.kind not in HEALTHY or decision.recovered:
                 log.info("%s: %s", spec.name, decision.reason)
             else:
                 log.debug("%s: %s", spec.name, decision.reason)
