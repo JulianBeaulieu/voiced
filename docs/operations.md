@@ -531,11 +531,17 @@ changes the plists, run the root step `voiced install` prints as well.
 
 ### The menu bar app
 
-The app does not update itself. Get the new version with `brew update`
-and `brew upgrade --cask voiced`, or download it from the
+The app updates itself (ADR 0034): it checks when it opens and once a day,
+and **Install and Relaunch** on the card in its menu installs the new
+version and opens it again; **Check for Updates…** checks at once. The
+relaunched app then updates the services to the voiced it carries, in the
+installer window, without asking again. For an install Homebrew or the
+command line manages, it shows the command instead. Turn the checks off in
+Settings > General > Check for updates automatically. `brew update` and
+`brew upgrade --cask voiced`, and a new download from the
 [release page](https://github.com/JulianBeaulieu/voiced/releases/latest)
-and replace the copy in Applications. On its next launch the app sees that
-the services run an older voiced and offers **Update voiced**.
+still work; after either the app offers **Update voiced** on its next
+launch.
 
 Administrator passwords:
 
@@ -544,6 +550,9 @@ Administrator passwords:
   `/Applications` is not writable for your account (a managed Mac).
 - `brew upgrade --cask voiced` or a reinstall: none. The cask leaves the
   services running.
+- **Install and Relaunch**: none, unless the app's folder is not writable
+  for your account; then macOS asks once to replace it. The update of the
+  services that follows asks as **Update voiced** does.
 - **Update voiced**: none, unless `voiced-privileged check` finds that a
   plist differs or a label is not loaded, or the firewall is on and the
   services' Python changed. The plists run `~/.voiced/bin/voiced`, so an

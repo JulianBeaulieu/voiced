@@ -53,11 +53,15 @@ none. The menu bar icon then shows whether the services are up. The app
 also restarts them, opens the logs and changes the common settings; see
 [menubar/README.md](menubar/README.md).
 
-To update, run `brew update`, then `brew upgrade --cask voiced`. The
-services keep running and Homebrew asks for no password; on its next
-launch the app offers **Update voiced**, which asks for one only if the
-services need it ([docs/operations.md](docs/operations.md#the-menu-bar-app)).
-The first upgrade from 0.4.0 or earlier still asks twice, once.
+The app updates itself: it checks for a new version when it opens and once
+a day, and **Install and Relaunch** on the card in its menu installs it,
+opens it again and then brings the services to the same version, asking
+for a password only if the services need it
+([docs/operations.md](docs/operations.md#the-menu-bar-app)). With Homebrew,
+`brew update` and `brew upgrade --cask voiced` work too: the services keep
+running and Homebrew asks for no password; on its next launch the app
+offers **Update voiced**. The first upgrade from 0.4.0 or earlier still
+asks twice, once.
 
 Moving the app to the Trash, or `brew uninstall --cask voiced`, leaves the
 services running: to remove voiced, use Settings > About > Uninstall

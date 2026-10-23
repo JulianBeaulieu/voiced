@@ -297,7 +297,9 @@ tag. Signing needs "Setting it up, once" in
 required, not optional: the `release` environment with a required reviewer,
 and the tag ruleset that lets only the owner create `v*` tags. Without them
 anyone with write access could tag a commit and have it signed with the
-owner's Developer ID.
+owner's Developer ID. The `release` environment also needs the secret
+`SPARKLE_PRIVATE_KEY` (SIGNING.md, "Updates of the app"): without it the
+release has no `appcast.xml`, and installed apps are not offered it.
 
 1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
    the installed package metadata) and run `uv lock`. For a new minor
@@ -319,12 +321,15 @@ owner's Developer ID.
    `release` deployment when the run asks (Actions > the run > Review
    deployments).
 5. Check the draft release it creates: the notes, the wheel, the sdist,
-   `voiced-<version>-macos.zip` and `.dmg`, and `SHA256SUMS`. Assets named
-   `-adhoc` mean the signing secrets were missing; the job summary says so.
+   `voiced-<version>-macos.zip` and `.dmg`, `appcast.xml` and `SHA256SUMS`.
+   Assets named `-adhoc` mean the signing secrets were missing, and no
+   `appcast.xml` means `SPARKLE_PRIVATE_KEY` was; the job summary says so.
    Download the zip and open the app once: Gatekeeper should not complain.
    To rebuild, delete the draft first; the workflow refuses a tag that
    already has a release.
-6. Publish the draft.
+6. Publish the draft. Its `appcast.xml` is then what
+   `releases/latest/download/appcast.xml` serves, and installed apps offer
+   the new version at their next check (a pre-release is never served).
 7. Update the tap from the run's `homebrew` artifact, as
    [packaging/homebrew/README.md](packaging/homebrew/README.md) describes.
 
