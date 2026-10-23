@@ -21,11 +21,8 @@ struct AppUpdateCard: View {
             EmptyView()
         case .checking:
             Progress(text: "Checking for updates", fraction: nil, cancel: nil)
-        case .installing(let update) where updates.canRetryRelaunch:
-            Notice(
-                symbol: "arrow.clockwise.circle.fill", tint: .accentColor,
-                text: "voiced \(update.version) is ready; the app relaunches to finish installing it.",
-                actionTitle: "Relaunch Now", action: updates.relaunchNow)
+        case .relaunchCancelled(let update):
+            Relaunch(update: update, updates: updates)
         case .available(let update):
             Available(update: update, updates: updates)
         case .downloading(let update, let fraction):
@@ -71,6 +68,38 @@ struct AppUpdateCard: View {
                     }
                 }
                 .controlSize(.small)
+                if let blocker {
+                    Text(blocker)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(10)
+            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    /// The update is in place but the app has not quit to relaunch into it.
+    private struct Relaunch: View {
+        let update: AvailableUpdate
+        let updates: AppUpdates
+
+        var body: some View {
+            let blocker = updates.installBlocker()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                    Text("voiced \(update.version) is ready; the app relaunches to finish installing it.")
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Relaunch Now", action: updates.relaunchNow)
+                        .controlSize(.small)
+                        .disabled(blocker != nil)
+                }
                 if let blocker {
                     Text(blocker)
                         .font(.caption)

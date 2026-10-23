@@ -37,8 +37,8 @@ Sparkle, at the version `Package.resolved` pins.
 
 ## The icon
 
-Four states (ADR 0018 and 0034), each a template image, so the menu bar draws it
-for light and dark:
+Four states (ADR 0018 and 0034), each a template image, so the menu bar
+draws it for light and dark:
 
 | State | Image | Meaning |
 |---|---|---|

@@ -348,6 +348,7 @@ jobs:
               {
                   echo "> [!WARNING]"
                   echo "> This build of voiced.app is ad hoc signed, not signed with a Developer ID or notarized."
+                  echo "> It has no appcast.xml: publishing it stops the updates of every installed app until a release that has one."
                   echo
                   cat "$RUNNER_TEMP/notes/notes.md"
               } > "$RUNNER_TEMP/notes.md"

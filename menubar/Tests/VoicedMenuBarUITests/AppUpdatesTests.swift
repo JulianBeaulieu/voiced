@@ -55,7 +55,7 @@ final class AppUpdatesTests: XCTestCase {
 
         updates.installing {}
         XCTAssertEqual(updates.state, .installing(update))
-        XCTAssertEqual(defaults.string(forKey: AppUpdates.relaunchKey), "0.4.0", "the version it relaunches from")
+        XCTAssertEqual(defaults.string(forKey: VoicedUpdateContinuation.relaunchKey), "0.4.0", "the version it relaunches from")
     }
 
     func testLaterDismissesUntilTheNextCheck() {
@@ -96,20 +96,43 @@ final class AppUpdatesTests: XCTestCase {
         updates.install()
         updates.extracting()
         updates.quitCancelled()
-        XCTAssertFalse(updates.canRetryRelaunch, "nothing to retry before the install asks to quit")
+        XCTAssertEqual(updates.state, .installing(update), "nothing to retry before the install asks to quit")
         updates.installing { retries += 1 }
-        XCTAssertFalse(updates.canRetryRelaunch)
         updates.quitCancelled()
-        XCTAssertTrue(updates.canRetryRelaunch)
+        XCTAssertEqual(updates.state, .relaunchCancelled(update))
+        XCTAssertTrue(updates.isBusy, "Update and Repair still wait")
         updates.relaunchNow()
         XCTAssertEqual(retries, 1)
-        XCTAssertFalse(updates.canRetryRelaunch, "until the next cancelled quit")
+        XCTAssertEqual(updates.state, .installing(update), "until the next cancelled quit")
         updates.relaunchNow()
         XCTAssertEqual(retries, 1)
         updates.quitCancelled()
         updates.finished()
-        XCTAssertFalse(updates.canRetryRelaunch)
         XCTAssertEqual(updates.state, .idle)
+    }
+
+    func testAQuitWhileTheInstallerWorksWaitsAndOffersRelaunchNow() {
+        let updates = updates()
+        var installerWorking = false
+        updates.installBlocker = { AppUpdates.blocker(installing: installerWorking, modelsBusy: false) }
+        var retries = 0
+        updates.found(update) { _ in }
+        updates.install()
+        updates.extracting()
+        XCTAssertFalse(updates.holdsQuit(), "no quit for an update asked yet")
+        updates.installing { retries += 1 }
+        XCTAssertFalse(updates.holdsQuit(), "nothing is busy: the app quits")
+
+        // "Update voiced" started while the update downloaded.
+        installerWorking = true
+        XCTAssertTrue(updates.holdsQuit())
+        XCTAssertEqual(updates.state, .relaunchCancelled(update))
+        updates.relaunchNow()
+        XCTAssertEqual(retries, 0, "Relaunch Now waits for the installer too")
+        installerWorking = false
+        updates.relaunchNow()
+        XCTAssertEqual(retries, 1)
+        XCTAssertEqual(updates.state, .installing(update))
     }
 
     func testADownloadThatFailsBeforeItStartsIsReported() {
@@ -175,82 +198,64 @@ final class AppUpdatesTests: XCTestCase {
 
     private let olderVoiced = InstallMatch.differs(installed: "0.4.0", bundled: "0.5.0", source: .app, sameVersion: false)
 
+    /// A continuation as the app makes it, counting the updates it starts.
+    private final class Starts {
+        var count = 0
+        var canStart = true
+    }
+
+    private func continuation(
+        version: String = "0.5.0", from: String? = "0.4.0", defaults: UserDefaults? = nil, starts: Starts
+    ) -> VoicedUpdateContinuation {
+        let defaults = defaults ?? scratchDefaults()
+        if let from { defaults.set(from, forKey: VoicedUpdateContinuation.relaunchKey) }
+        return VoicedUpdateContinuation(
+            appVersion: version, defaults: defaults, canStart: { starts.canStart }, startUpdate: { starts.count += 1 })
+    }
+
     func testTheRelaunchedAppUpdatesVoicedOnceWithoutAsking() {
         let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        let relaunched = updates(version: "0.5.0", defaults: defaults)
-        XCTAssertNil(defaults.string(forKey: AppUpdates.relaunchKey), "read once")
-        XCTAssertFalse(relaunched.continuesWithVoicedUpdate(nil, canStart: true), "not known yet")
-        XCTAssertTrue(relaunched.continuesWithVoicedUpdate(olderVoiced, canStart: true))
-        XCTAssertFalse(relaunched.continuesWithVoicedUpdate(olderVoiced, canStart: true), "once")
-        XCTAssertFalse(updates(version: "0.5.0", defaults: defaults).continuesWithVoicedUpdate(olderVoiced, canStart: true), "nor at the next launch")
+        let starts = Starts()
+        let relaunched = continuation(defaults: defaults, starts: starts)
+        XCTAssertNil(defaults.string(forKey: VoicedUpdateContinuation.relaunchKey), "read once")
+        XCTAssertFalse(relaunched.run(nil), "not known yet")
+        XCTAssertTrue(relaunched.run(olderVoiced))
+        XCTAssertFalse(relaunched.run(olderVoiced), "once")
+        XCTAssertEqual(starts.count, 1)
+        XCTAssertFalse(continuation(from: nil, defaults: defaults, starts: starts).run(olderVoiced), "nor at the next launch")
     }
 
     func testTheFirstKnownComparisonDecides() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        let relaunched = updates(version: "0.5.0", defaults: defaults)
-        XCTAssertFalse(relaunched.continuesWithVoicedUpdate(.matches, canStart: true))
-        XCTAssertFalse(relaunched.continuesWithVoicedUpdate(olderVoiced, canStart: true), "a later mismatch asks, as on any launch")
+        let starts = Starts()
+        let relaunched = continuation(starts: starts)
+        XCTAssertFalse(relaunched.run(.matches))
+        XCTAssertFalse(relaunched.run(olderVoiced), "a later mismatch asks, as on any launch")
+        XCTAssertEqual(starts.count, 0)
     }
 
     func testAnInstallAnotherToolManagesIsLeftToIt() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
+        let starts = Starts()
         let homebrew = InstallMatch.differs(installed: "0.4.0", bundled: "0.5.0", source: .homebrew, sameVersion: false)
-        XCTAssertFalse(updates(version: "0.5.0", defaults: defaults).continuesWithVoicedUpdate(homebrew, canStart: true))
+        XCTAssertFalse(continuation(starts: starts).run(homebrew))
+        XCTAssertEqual(starts.count, 0)
     }
 
     func testAnUpdateThatDidNotHappenContinuesNothing() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        XCTAssertFalse(updates(version: "0.4.0", defaults: defaults).continuesWithVoicedUpdate(olderVoiced, canStart: true))
-        XCTAssertFalse(updates(version: "0.5.0").continuesWithVoicedUpdate(olderVoiced, canStart: true), "an ordinary launch asks")
+        let starts = Starts()
+        XCTAssertFalse(continuation(version: "0.4.0", starts: starts).run(olderVoiced))
+        XCTAssertFalse(continuation(from: nil, starts: starts).run(olderVoiced), "an ordinary launch asks")
+        XCTAssertEqual(starts.count, 0)
     }
 
     func testABusyMomentKeepsTheDecisionForLater() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        let relaunched = updates(version: "0.5.0", defaults: defaults)
-        XCTAssertFalse(relaunched.continuesWithVoicedUpdate(olderVoiced, canStart: false))
-        XCTAssertTrue(relaunched.continuesWithVoicedUpdate(olderVoiced, canStart: true))
-    }
-
-    // MARK: - The continuation
-
-    private final class FakeStarter: VoicedUpdateStarter {
-        var isWorking = false
-        var updates = 0
-        func update() { updates += 1 }
-    }
-
-    func testTheContinuationStartsUpdateVoicedOnceWhenNothingIsBusy() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        let updates = updates(version: "0.5.0", defaults: defaults)
-        let installer = FakeStarter()
-        var free = false
-        let continuation = VoicedUpdateContinuation(updates: updates, installer: installer, canStart: { free })
-
-        XCTAssertFalse(continuation.run(olderVoiced), "a model download or translocation waits")
-        installer.isWorking = true
-        free = true
-        XCTAssertFalse(continuation.run(olderVoiced), "the installer is busy")
-        installer.isWorking = false
-        XCTAssertFalse(continuation.run(nil), "nothing known yet")
-        XCTAssertEqual(installer.updates, 0)
-        XCTAssertTrue(continuation.run(olderVoiced))
-        XCTAssertEqual(installer.updates, 1)
-        XCTAssertFalse(continuation.run(olderVoiced), "once")
-        XCTAssertEqual(installer.updates, 1)
-    }
-
-    func testWithoutAnInstallerTheContinuationKeepsWaiting() {
-        let defaults = scratchDefaults()
-        defaults.set("0.4.0", forKey: AppUpdates.relaunchKey)
-        let updates = updates(version: "0.5.0", defaults: defaults)
-        XCTAssertFalse(VoicedUpdateContinuation(updates: updates, installer: nil, canStart: { true }).run(olderVoiced))
-        XCTAssertTrue(updates.continuesWithVoicedUpdate(olderVoiced, canStart: true), "not consumed")
+        let starts = Starts()
+        starts.canStart = false
+        let relaunched = continuation(starts: starts)
+        XCTAssertFalse(relaunched.run(olderVoiced), "the installer, a model download or translocation waits")
+        XCTAssertFalse(relaunched.run(.matches), "nor is a comparison taken while it waits")
+        starts.canStart = true
+        XCTAssertTrue(relaunched.run(olderVoiced))
+        XCTAssertEqual(starts.count, 1)
     }
 
     // MARK: - In the views
@@ -273,6 +278,7 @@ final class AppUpdatesTests: XCTestCase {
             { updates.install(); updates.downloadStarted {}; updates.downloadExpects(10); updates.downloadReceived(5) },
             { updates.extracting() },
             { updates.installing {}; updates.quitCancelled() },
+            { updates.installBlocker = { "Waits until voiced has finished installing." } },
             { updates.failed("No network.") },
         ]
         for step in states {

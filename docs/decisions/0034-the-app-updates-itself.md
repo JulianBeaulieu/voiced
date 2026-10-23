@@ -33,9 +33,10 @@ release, not when a tag is pushed, and a pre-release is never offered.
 first), `sparkle:shortVersionString` (the PEP 440 version), the release page
 as the item's `link`, and an enclosure that is the release's versioned,
 notarized zip (`voiced-<version>-macos.zip`), named and sized from the file
-that was signed, with its EdDSA signature. The description is a link to the release page rather than HTML
-made from the CHANGELOG: the app shows a "Release Notes" link and never the
-description, so a Markdown converter would be code for no reader.
+that was signed, with its EdDSA signature. The description is a link to the
+release page rather than HTML made from the CHANGELOG: the app shows a
+"Release Notes" link and never the description, so a Markdown converter
+would be code for no reader.
 
 Installed apps read only the newest published release's asset, so every
 release must carry one: a release without it leaves every installed app
@@ -120,9 +121,11 @@ doing, and never as an error. The standard driver with automatic downloads
 (`SUAutomaticallyUpdate`), the gentle-reminder delegate and
 `updaterWillRelaunchApplication` was the alternative weighed: it downloads in
 the background and installs in one click too, but its prompt is Sparkle's
-window, and the popover could only point at it. It forwards
-every callback to `AppUpdates`, an observable model behind the
-`AppUpdater` protocol, which the views read and the tests drive with a fake:
+window, and the popover could only point at it.
+
+The custom driver forwards every callback to `AppUpdates`, an observable
+model behind the `AppUpdater` protocol, which the views read and the tests
+drive with a fake:
 
 - A found update is a card at the top of the menu bar window: "voiced X is
   available." with **Install and Relaunch**, **Later** and a link to the
@@ -133,15 +136,20 @@ every callback to `AppUpdates`, an observable model behind the
 - Install and Relaunch waits while voiced is installing or updating, or a
   model downloads, and the card says why: installing quits the app, and
   quitting stops the installer and the download (`applicationWillTerminate`).
-- If the quit is still cancelled (a model download started meanwhile and the
-  user keeps it), the card offers **Relaunch Now**, which asks Sparkle to quit
-  the app again; until then the update installs when the app quits.
+- The quit for the install waits too when voiced started installing or a
+  model started downloading after the click (`holdsQuit` in
+  `applicationShouldTerminate`), and so does a quit the user cancels. The
+  card then offers **Relaunch Now**, enabled once nothing is busy, which asks
+  Sparkle to quit the app again; until then the update installs whenever the
+  app quits. Update voiced and Repair wait while an update of the app is
+  under way, since its relaunch would stop them.
 - **Check for Updates…** in the menu runs a check that also answers "voiced
   X is the newest version."; Settings > General has **Check for updates
   automatically**.
 - An update is news, not a problem: the service rows do not change and the
-  icon's dot is neither the error badge nor its tint. A failed install (a bad signature, no network) is an orange notice
-  with the error until dismissed.
+  icon's dot is neither the error badge nor its tint. A failed install (a
+  bad signature, no network) is an orange notice with the error until
+  dismissed.
 
 ### After the relaunch
 
@@ -152,8 +160,8 @@ the same flow and the same administrator prompt, if any, as the button. The
 user already asked for the new version; a second question would only
 delay it. The old app records the version it relaunches from
 (`appUpdateRelaunchedFrom` in its defaults) as Sparkle starts the install;
-the new app reads and clears it at launch. `VoicedUpdateContinuation` then
-decides at the first comparison known while nothing is in the way (the
+`VoicedUpdateContinuation`, which owns the key, reads and clears it at
+launch, and decides at the first comparison known while nothing is in the way (the
 installer idle, no model download or delete, the app not translocated);
 until then the decision waits. Only an install the app manages
 (`source = app`) that differs is updated, once. The same version means the

@@ -33,11 +33,11 @@ uses [Semantic Versioning](https://semver.org/).
   at once, and Settings > General > Check for updates automatically turns the
   checks off. An update found is not shown as a problem: the icon gets a small
   dot, not the error badge, and Install and Relaunch waits while voiced is
-  installing or a model downloads. This release is the first with the updater and the first to publish
-  the feed: an older app is updated to it once more by hand or with
-  Homebrew, and the first update the app installs itself is to the release
-  after it. The Homebrew cask now says `auto_updates`, and `brew upgrade
-  --cask voiced` still works.
+  installing or a model downloads. This release is the first with the updater
+  and the first to publish the feed: an older app is updated to it once more
+  by hand or with Homebrew, and the first update the app installs itself is to
+  the release after it. The Homebrew cask now says `auto_updates`, and `brew
+  upgrade --cask voiced` still works.
 
 ### Changed
 

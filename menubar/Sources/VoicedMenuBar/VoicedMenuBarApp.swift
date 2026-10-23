@@ -12,6 +12,7 @@ struct VoicedMenuBarApp: App {
     @State private var launch: LaunchChecks
     @State private var whatsNew: WhatsNew
     @State private var updates: AppUpdates?
+    @State private var continuation: VoicedUpdateContinuation
 
     init() {
         let model = AppModel()
@@ -33,12 +34,16 @@ struct VoicedMenuBarApp: App {
         _launch = State(initialValue: launch)
         _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.version))
         let updates = SparkleUpdater.start()
-        // Installing quits the app, which would stop the installer or a model download.
-        updates?.installBlocker = {
-            AppUpdates.blocker(installing: Install.installer?.isWorking ?? false, modelsBusy: models.isBusy)
-        }
+        // Installing an update quits the app, which would stop the installer or a model
+        // download; the same answer holds the continuation below.
+        let busy: @MainActor () -> String? = { AppUpdates.blocker(installing: Install.installer?.isWorking ?? false, modelsBusy: models.isBusy) }
+        updates?.installBlocker = busy
         Install.updates = updates
         _updates = State(initialValue: updates)
+        _continuation = State(
+            initialValue: VoicedUpdateContinuation(
+                canStart: { Install.installer != nil && launch.allowsInstall && busy() == nil },
+                startUpdate: { Install.installer?.update() }))
     }
 
     var body: some Scene {
@@ -54,7 +59,7 @@ struct VoicedMenuBarApp: App {
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
                 .background(InstallerOpener(installer: Install.installer, launch: launch))
-                .background(VoicedUpdateOpener(launch: launch, models: models, updates: updates))
+                .background(VoicedUpdateOpener(launch: launch, models: models, continuation: continuation))
         }
         .menuBarExtraStyle(.window)
 
@@ -133,7 +138,7 @@ private struct InstallerOpener: View {
 private struct VoicedUpdateOpener: View {
     let launch: LaunchChecks
     let models: ModelManager
-    let updates: AppUpdates?
+    let continuation: VoicedUpdateContinuation
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -144,9 +149,6 @@ private struct VoicedUpdateOpener: View {
     }
 
     private func run() {
-        guard let updates else { return }
-        let continuation = VoicedUpdateContinuation(
-            updates: updates, installer: Install.installer, canStart: { launch.allowsInstall && !models.isBusy })
         guard continuation.run(launch.installMatch) else { return }
         NSApplication.shared.activate()
         openWindow(id: InstallerView.windowID)
@@ -174,9 +176,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
     }
 
-    /// Quitting while a model downloads asks first; the next download resumes the files.
+    /// Quitting while a model downloads asks first; the next download resumes the files. A
+    /// quit for an app update waits while voiced installs or a model downloads, and the card
+    /// offers Relaunch Now for when they are done.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         MainActor.assumeIsolated {
+            if Install.updates?.holdsQuit() == true { return .terminateCancel }
             guard Install.models?.isDownloading == true else { return .terminateNow }
             let alert = NSAlert()
             alert.messageText = "Quit while a model downloads?"

@@ -118,8 +118,9 @@ def appcast(
     """The Sparkle feed for one release: the item Sparkle compares and installs.
 
     Sparkle compares ``sparkle:version`` with the running app's ``CFBundleVersion``
-    and shows ``sparkle:shortVersionString``; both, and the minimum macOS, come
-    from the Info.plist of the app in ``archive``. The enclosure is ``archive``'s
+    and shows ``sparkle:shortVersionString``. The bundle version and the minimum
+    macOS come from the Info.plist of ``app``, the bundle ``archive`` was made
+    from. The enclosure is ``archive``'s
     name in the release and its size, so the signature cannot be attached to
     another file. The app links to the release page (the item's ``link``) rather
     than show notes, so the description is a link to it too.

@@ -190,5 +190,6 @@ that one release make the appcast's enclosure the release's notarized
 writes the zip, so that release's `appcast.xml` is edited by hand: the
 enclosure's `url`, `length` and `sparkle:edSignature` for the DMG, then
 uploaded over the draft's asset (`gh release upload v<version> appcast.xml
---clobber`) before publishing. Releases after it go back to the zip. Never change the Developer ID and the EdDSA key in the
-same release: Sparkle needs one of them to stay the same.
+--clobber`) before publishing. Releases after it go back to the zip. Never
+change the Developer ID and the EdDSA key in the same release: Sparkle needs
+one of them to stay the same.

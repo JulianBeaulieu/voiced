@@ -499,8 +499,9 @@ public struct SettingsView: View {
                     }
                 }
                 if let installer, managed {
-                    // Update and Repair wait for a model download or delete (ADR 0022).
-                    let working = installer.isWorking || models.isBusy
+                    // Update and Repair wait for a model download or delete (ADR 0022), and for an
+                    // update of the app, whose relaunch would stop them (ADR 0034).
+                    let working = installer.isWorking || models.isBusy || updates?.isBusy == true
                     if case .differs = launch?.installMatch {
                         Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
                     }
