@@ -383,16 +383,18 @@ every 10 s, and a `settings` event follows any change to the config file.
 | `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `off` (switched off: the process is parked), `unknown`), `pid`, `health` (the `/health` body, whose `status` says `idle` while the model is unloaded and `loading` while it loads again), `engine`, `model`, `warm` (the first load is done; true while `idle` too), `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
 | `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed`, `stt.enabled`, `tts.enabled`, `stt.idle_unload_s`, `tts.idle_unload_s` | the new settings plus `changed`, `restart_required` and `warnings` |
-| `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's, which the app shows for the model in use), `unavailable_reason` (why the engine cannot run on this Mac, such as Moonshine's "needs macOS 15 or later" below macOS 15; null when it can), voices, `voice_labels` and `voice_languages`, without loading any |
+| `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's, which the app shows for the model in use), `unavailable_reason` (why the engine cannot run on this Mac, such as Moonshine's "needs macOS 15 or later" below macOS 15; null when it can), voices, `voice_labels`, `voice_languages` and `voice_names` (each voice's personal name, for engines whose voices have one), without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
 | `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
 | `open` | `what`: `status_page`, `logs_dir` or `config_file` | `target`, a URL or path for the client to open |
+| `tts.speak` | `text` (up to 60 characters) and `voice` | `format` (`wav`) and `audio`, a base64 WAV file: the line spoken by the running tts service at its default speed, for hearing a voice before choosing it. Answered in its own task, so the connection's other requests do not wait for it; cancelled, and the synthesis stopped, when the client closes the connection. Waits up to 30 s (a model unloaded while idle loads first). Audio over 10 s, a voice the service does not serve, or a 4xx from it is `bad_request`; no answer or a 5xx is `service_unavailable` |
 
 `settings.set` writes the config file atomically and changes only the
 values it sets, so comments and layout stay. It never restarts anything:
 `restart_required` says which services need `voiced restart` for the change
 to apply (`tts.*` the tts service, `stt.*` the stt service, `bind`,
-`api_key` and `zeroconf` both; `browser_settings` neither). Changing
+`api_key` and `zeroconf` both; `browser_settings` and `tts.speed`, which
+are read from the file as they are used, neither). Changing
 `bind` to `lan` also starts the zeroconf announcement of the Wyoming
 listeners after that restart, if `zeroconf` is on
 ([ADR 0011](decisions/0011-wyoming.md)). Switching `stt.engine` or

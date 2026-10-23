@@ -223,6 +223,12 @@ in [docs/architecture.md](docs/architecture.md#adding-an-engine). Engines
 bundled with voiced follow the same path; the only difference is that their
 entry points are declared in this repository's `pyproject.toml`.
 
+A text to speech engine whose voices are named after people (Kokoro's
+"Heart", Pocket TTS's "Javert") sets the class attribute
+`personal_voice_names = True`, so the app's preview says "Hi, I'm Heart.";
+without it, which suits voices named for what they sound like, the preview
+says "Hi, this is my voice." (`voice_names` in `engines.list`, ADR 0013).
+
 Then run the benchmark and add the rows. Each row names the commit of `main`
 the branch starts from, with `+` when `src/`, `scripts/`, `pyproject.toml` or
 `uv.lock` differ from it, as they do on an engine's branch

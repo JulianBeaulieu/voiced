@@ -974,6 +974,7 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
     directory is not ours) is logged; the watchdog runs without it.
     """
     from voiced.control.server import ControlServer
+    from voiced.control.speech import Speech
     from voiced.control.supervisor import WatchdogSupervisor
 
     stop = asyncio.Event()
@@ -982,7 +983,10 @@ async def _run_watchdog(dog: Watchdog, settings: Settings) -> int:
         loop.add_signal_handler(signum, stop.set)
     entry = entry_point(state_dir(settings))
     ops = Operations(
-        WatchdogSupervisor(dog), config_path(), engines=lambda: engines_in_subprocess(entry=entry)
+        WatchdogSupervisor(dog),
+        config_path(),
+        engines=lambda: engines_in_subprocess(entry=entry),
+        speak=Speech(lambda: dog.spec("tts")),
     )
     server = ControlServer(
         socket_path(settings),

@@ -24,7 +24,9 @@ registry name capitalised, and a voice with a gender is labelled
 ``Name (Language, gender)`` (Kokoro's ``af_heart`` is "Heart (American
 English, female)"), any other voice by its name. ``voice_languages`` gives
 each voice's BCP-47 tag, so a settings UI can group voices without parsing
-labels.
+labels. ``voice_names`` gives the personal name of each voice that has one
+(an engine sets ``personal_voice_names = True``), so the app's preview can
+say "Hi, I'm Heart." and not "Hi, I'm Middle-aged."
 
 ``python -m voiced.engines.catalogue`` prints :func:`engines_list` as JSON.
 The watchdog runs it that way, in a child process with a timeout, so engine
@@ -68,6 +70,19 @@ def voice_label(voice: Voice) -> str:
         return voice.name
     language = LANGUAGE_NAMES.get(voice.language, voice.language)
     return f"{voice.name} ({language}, {voice.gender})"
+
+
+def voice_names(cls: type[TTSEngine], voices: list[Voice]) -> dict[str, str]:
+    """Each voice's personal name ("Heart"), for a line that names it. Only
+    an engine that says ``personal_voice_names = True`` has them; other
+    engines' voice names describe the voice ("Middle-aged", "Conversational
+    A"), and a "Default" voice names no one."""
+    if getattr(cls, "personal_voice_names", False) is not True:
+        return {}
+    # By name, not by engine: "Default" is the name every engine gives the
+    # voice it uses when none is chosen (Soprano, Chatterbox, Phonon), so a
+    # third-party engine's is left out too.
+    return {v.id: v.name for v in voices if v.name and v.name.lower() != "default"}
 
 
 def catalogue_voices(cls: type[TTSEngine]) -> list[Voice]:
@@ -118,6 +133,7 @@ def engines_list() -> dict[str, Any]:
         entry["voices"] = [v.id for v in voices]
         entry["voice_labels"] = {v.id: voice_label(v) for v in voices}
         entry["voice_languages"] = {v.id: v.language for v in voices}
+        entry["voice_names"] = voice_names(tts_cls, voices)
         tts.append(entry)
     return {"stt": stt, "tts": tts}
 

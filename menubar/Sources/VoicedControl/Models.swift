@@ -356,12 +356,15 @@ public struct TTSEngineInfo: Codable, Sendable, Equatable {
     public var voiceLabels: [String: String]
     /// Each voice's BCP-47 tag, such as "en-GB", for grouping; may be missing or partial.
     public var voiceLanguages: [String: String]
+    /// The personal name of each voice that has one, such as "Heart"; a voice whose name only
+    /// describes it ("Middle-aged") is not here.
+    public var voiceNames: [String: String]
     public var languages: [String]
 
     public init(
         name: String, label: String? = nil, models: [String], voices: [String],
         voiceLabels: [String: String] = [:], voiceLanguages: [String: String] = [:],
-        languages: [String] = []
+        voiceNames: [String: String] = [:], languages: [String] = []
     ) {
         self.name = name
         self.label = label
@@ -369,6 +372,7 @@ public struct TTSEngineInfo: Codable, Sendable, Equatable {
         self.voices = voices
         self.voiceLabels = voiceLabels
         self.voiceLanguages = voiceLanguages
+        self.voiceNames = voiceNames
         self.languages = languages
     }
 
@@ -376,6 +380,7 @@ public struct TTSEngineInfo: Codable, Sendable, Equatable {
         case name, label, models, voices, languages
         case voiceLabels = "voice_labels"
         case voiceLanguages = "voice_languages"
+        case voiceNames = "voice_names"
     }
 
     public init(from decoder: Decoder) throws {
@@ -386,6 +391,7 @@ public struct TTSEngineInfo: Codable, Sendable, Equatable {
         voices = try c.decodeIfPresent([String].self, forKey: .voices) ?? []
         voiceLabels = (try? c.decodeIfPresent([String: String].self, forKey: .voiceLabels)) ?? [:]
         voiceLanguages = (try? c.decodeIfPresent([String: String].self, forKey: .voiceLanguages)) ?? [:]
+        voiceNames = (try? c.decodeIfPresent([String: String].self, forKey: .voiceNames)) ?? [:]
         languages = (try? c.decodeIfPresent([String].self, forKey: .languages)) ?? []
     }
 

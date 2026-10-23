@@ -140,7 +140,8 @@ engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"
 languages = ["en"]
-# Default playback speed multiplier.
+# Default speed multiplier for requests that name none, 0.25 to 4. Read for
+# each request, so a change applies without a restart.
 speed = 1.0
 queue_depth = 8
 # Longest text accepted by one /v1/audio/speech request, in characters.

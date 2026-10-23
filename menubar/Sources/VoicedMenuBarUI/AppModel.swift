@@ -277,6 +277,18 @@ public final class AppModel {
         }
     }
 
+    /// One short line in `voice` from the running text to speech service, as a WAV file. Each
+    /// preview has a connection of its own: cancelling the task closes it, and the server then
+    /// drops the request to the service, which stops synthesizing. The app's connection is
+    /// never closed by a stopped preview.
+    public func speak(_ text: String, voice: String) async throws -> Data {
+        guard self.client != nil else { throw ControlError.notConnected }
+        let client = ControlClient(socketPath: socketPath)
+        defer { client.close() }
+        try await client.connect()
+        return try await client.speak(text, voice: voice)
+    }
+
     public func open(_ target: OpenTarget) async {
         guard let client else { return }
         do {

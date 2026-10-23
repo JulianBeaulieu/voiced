@@ -272,6 +272,7 @@ def espeak_data_path(candidate: EspeakCandidate) -> str | None:
 
 class KokoroEngine(SentenceTTSEngine):
     name = "kokoro"
+    personal_voice_names = True  # voices are named after people (engines.list voice_names)
     model_id = default_model("kokoro").id
     languages = ["en-US", "en-GB"]
     license = default_model("kokoro").license

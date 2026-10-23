@@ -40,6 +40,8 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case missingModel = "missing-model"
     /// Speech to text switched off, text to speech idle with its model unloaded (ADR 0033).
     case sttOff = "stt-off"
+    /// Text to speech switched off: a voice cannot be heard (ADR 0033).
+    case ttsOff = "tts-off"
 
     public var helloProtocol: Int { self == .newerProtocol ? 2 : 1 }
 
@@ -55,6 +57,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .cycle: "cycles through the states every few seconds"
         case .missingModel: "text to speech up, its model not downloaded"
         case .sttOff: "speech to text off, text to speech idle with its model unloaded"
+        case .ttsOff: "text to speech off"
         }
     }
 
@@ -77,6 +80,11 @@ public enum FakeScenario: String, CaseIterable, Sendable {
                 state: .off, pid: 4242, engine: state[.stt].engine, model: state[.stt].model,
                 uptime: 11_520)
             state[.tts].health = ["status": "idle", "model_loaded": false]
+        case .ttsOff:
+            state.settings.tts.enabled = false
+            state[.tts] = ServiceStatus(
+                state: .off, pid: 4243, engine: state[.tts].engine, model: state[.tts].model,
+                uptime: 11_518)
         case .starting:
             state[.tts] = ServiceStatus(
                 state: .starting, pid: 4243, engine: "kokoro",
@@ -166,7 +174,9 @@ extension FakeState {
                 tts: [
                     TTSEngineInfo(
                         name: "kokoro", label: "Kokoro", models: ["mlx-community/Kokoro-82M-bf16"],
-                        voices: kokoroVoices, voiceLabels: kokoroLabels(kokoroVoices), languages: ["en"]),
+                        voices: kokoroVoices, voiceLabels: kokoroLabels(kokoroVoices),
+                        voiceNames: Dictionary(uniqueKeysWithValues: kokoroVoices.map { ($0, kokoroName($0)) }),
+                        languages: ["en"]),
                     TTSEngineInfo(
                         name: "soprano", label: "Soprano", models: ["mlx-community/Soprano-80M-bf16"],
                         voices: ["default"], voiceLabels: ["default": "Default"], languages: ["en"]),
@@ -180,6 +190,7 @@ extension FakeState {
                         voiceLanguages: [
                             "default": "en", "Easton": "en-US", "Maeve": "en-GB", "The Snow Queen": "en",
                         ],
+                        voiceNames: ["Easton": "Easton", "Maeve": "Maeve", "The Snow Queen": "The Snow Queen"],
                         languages: ["en-US", "en-GB"]),
                     // No labels, as from an engine (or a server) that does not send them.
                     TTSEngineInfo(name: "fake", models: ["fake"], voices: ["fake"]),
@@ -196,6 +207,11 @@ private let kokoroVoices = [
     "af_heart", "af_bella", "af_nicole", "af_sky", "am_adam", "am_michael",
     "bf_emma", "bf_isabella", "bm_george", "bm_lewis",
 ]
+
+/// "Heart" for "af_heart", as the real server names Kokoro's voices.
+private func kokoroName(_ id: String) -> String {
+    id.split(separator: "_", maxSplits: 1).last.map { $0.capitalized } ?? id
+}
 
 /// Labels in the shape the real server derives from Kokoro's voice id convention.
 private func kokoroLabels(_ ids: [String]) -> [String: String] {

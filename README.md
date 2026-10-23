@@ -214,6 +214,21 @@ VOICED_CONFIG=/path/to/other.toml # use a different config file
 `voiced config` prints the effective configuration as JSON. Unknown keys are
 errors, so a typo stops the service with a message instead of being ignored.
 
+### Voice and speed
+
+`[tts] default_voice` and `speed` are what a request that names no voice or
+speed gets, Home Assistant's included. In the app, Settings > Text to Speech
+has the voice, with a play button that speaks a short line in it ("Hi, I'm
+Heart.", in the voice's language) at the current speed, and the speed, from
+0.5x to 2x. A new speed applies at once; a new voice when the service
+restarts. From the command line:
+
+```sh
+voiced settings set tts.speed=1.2           # no restart needed
+voiced settings set tts.voice=bf_emma
+voiced restart tts
+```
+
 ### Memory: unload when idle, or switch a service off
 
 Each service keeps its model loaded, about 1.5 GB for Parakeet and 0.5 to

@@ -28,6 +28,7 @@ from voiced.control.protocol import (
     BAD_REQUEST,
     MAX_LINE_BYTES,
     OpError,
+    Request,
     encode,
     error,
     event,
@@ -50,6 +51,10 @@ dropped rather than slowing the others or growing the watchdog."""
 READ_PAUSE_BYTES = 1024 * 1024
 """While more than this waits for a client, its next request is not read,
 so a client that asks without reading cannot queue unbounded replies."""
+CONCURRENT_OPS = frozenset({"tts.speak"})
+"""Answered in their own task, so a wait for audio never holds up the
+client's other requests (answers carry their request's id; their order is
+not promised). Cancelled when the client goes away."""
 
 # <sys/un.h> on macOS: SOL_LOCAL and LOCAL_PEERCRED; struct xucred is
 # {u_int cr_version; uid_t cr_uid; short cr_ngroups; gid_t cr_groups[16]}.
@@ -129,6 +134,13 @@ class _Client:
     """Set while at most :data:`READ_PAUSE_BYTES` wait: its requests are read."""
     sender: asyncio.Task[None] | None = None
     closed: bool = False
+    answering: set[asyncio.Task[None]] = field(default_factory=set)
+    """Its requests in ``CONCURRENT_OPS`` still being answered."""
+
+
+def _cancel(tasks: set[asyncio.Task[None]]) -> None:
+    for task in list(tasks):
+        task.cancel()
 
 
 def _fingerprint(status: dict[str, Any]) -> Any:
@@ -207,7 +219,9 @@ class ControlServer:
         await self.ops.wait_restarts()
         if self._server is not None:
             self._server.close()
+        answering = [task for c in self.clients for task in c.answering]
         await asyncio.gather(*(self._finish(c) for c in list(self.clients)))
+        await asyncio.gather(*answering, return_exceptions=True)  # cancelled by _finish
         for task in list(self._tasks):
             task.cancel()
         if self._tasks:
@@ -269,14 +283,21 @@ class ControlServer:
                 return
             if not line.strip():
                 continue
-            await self._answer(client, line)
+            try:
+                request = parse_request(line)
+            except OpError as exc:
+                self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
+                continue
+            if request.op not in CONCURRENT_OPS:
+                await self._answer(client, request)
+            elif not client.closed:  # dropped meanwhile: nobody to answer
+                task = asyncio.create_task(
+                    self._answer(client, request), name="voiced-control-answer"
+                )
+                client.answering.add(task)
+                task.add_done_callback(client.answering.discard)
 
-    async def _answer(self, client: _Client, line: bytes) -> None:
-        try:
-            request = parse_request(line)
-        except OpError as exc:
-            self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
-            return
+    async def _answer(self, client: _Client, request: Request) -> None:
         try:
             result = await self.ops.dispatch(request.op, request.args)
         except OpError as exc:
@@ -322,6 +343,7 @@ class ControlServer:
             return
         client.closed = True
         self.clients.discard(client)
+        _cancel(client.answering)
         client.writer.transport.abort()
         client.room.set()  # its reader stops waiting and sees it closed
         while not client.queue.empty():  # free what it never took
@@ -336,6 +358,9 @@ class ControlServer:
         if client.closed:
             return
         self.clients.discard(client)
+        # A client that went away no longer wants the audio: cancelling closes
+        # the request to the tts service, which stops synthesizing.
+        _cancel(client.answering)
         client.queue.put_nowait(None)
         if client.sender is not None:
             await asyncio.wait({client.sender}, timeout=WRITE_TIMEOUT_S)

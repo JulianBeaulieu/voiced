@@ -61,6 +61,8 @@ public struct SettingsView: View {
     let installer: Installer?
     /// The model rows of the Speech to Text and Text to Speech panes.
     let models: ModelManager
+    /// The play button beside the Voice picker.
+    let preview: VoicePreview
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -71,9 +73,10 @@ public struct SettingsView: View {
 
     public init(
         model: AppModel, models: ModelManager, loginItem: LoginItem, launch: LaunchChecks? = nil,
-        installer: Installer? = nil, pane: SettingsPane? = nil
+        installer: Installer? = nil, pane: SettingsPane? = nil, preview: VoicePreview
     ) {
         self.model = model
+        self.preview = preview
         self.loginItem = loginItem
         self.launch = launch
         self.installer = installer
@@ -354,21 +357,67 @@ public struct SettingsView: View {
     @ViewBuilder
     private func textToSpeech(_ settings: SettingsPayload) -> some View {
         let engine = model.engines?.ttsEngine(named: settings.tts.engine)
+        let voice = settings.tts.voice
+        let unavailable = VoicePreview.unavailableReason(model.status?[.tts])
         Section {
-            Picker("Voice", selection: binding(settings.tts.voice) { .ttsVoice($0) }) {
-                ForEach(options(engine?.voices, current: settings.tts.voice), id: \.self) { voice in
-                    Text(engine?.voiceName(voice) ?? voice).tag(voice)
+            HStack {
+                Picker("Voice", selection: binding(voice) { .ttsVoice($0) }) {
+                    ForEach(options(engine?.voices, current: voice), id: \.self) { voice in
+                        Text(engine?.voiceName(voice) ?? voice).tag(voice)
+                    }
+                }
+                previewButton(voice, line: PreviewLine.text(for: voice, of: engine), unavailable: unavailable)
+            }
+            previewNote(voice, unavailable: unavailable)
+            // A value set by hand outside the range is shown as it is; a step brings it in.
+            LabeledContent("Speed") {
+                HStack(spacing: 8) {
+                    Text(Self.speedText(settings.tts.speed)).monospacedDigit()
+                    Stepper("Speed", value: binding(settings.tts.speed) { .ttsSpeed($0) }, in: Self.speeds, step: 0.1)
+                        .labelsHidden()
                 }
             }
-            LabeledContent("Speed", value: Self.speedText(settings.tts.speed))
         } header: {
             Text("Text to speech")
         } footer: {
-            Text("The voice is the default for requests that do not name one; the list is the engine in use's. Use switches to a model, downloading it first if needed, and restarts the service.")
+            Text("The voice and the speed are used by requests that do not name their own; the voices are the engine in use's, and the play button speaks a line in one at that speed. A new speed applies at once. Use switches to a model, downloading it first if needed, and restarts the service.")
                 .footnote()
         }
+        .onChange(of: voice) { preview.stop() }
+        .onDisappear { preview.stop() }
         serviceSection(.tts, settings)
         ModelSections(models: models, app: model, kind: .tts, settings: settings)
+    }
+
+    /// Play, or stop while the line is fetched (a spinner) or plays.
+    private func previewButton(_ voice: String, line: String, unavailable: String?) -> some View {
+        let active = preview.isActive(voice)
+        return Button {
+            preview.toggle(voice, line: line)
+        } label: {
+            ZStack {
+                if case .loading = preview.state, active {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: active ? "stop.fill" : "play.fill")
+                }
+            }
+            .frame(width: 16, height: 16)
+        }
+        .buttonStyle(.borderless)
+        .disabled(unavailable != nil && !active)
+        .help(active ? "Stop" : unavailable ?? "Hear \"\(line)\"")
+        .accessibilityLabel(active ? "Stop the voice preview" : "Hear this voice")
+    }
+
+    /// What went wrong, or why the button is off, in one line under the picker.
+    @ViewBuilder
+    private func previewNote(_ voice: String, unavailable: String?) -> some View {
+        if case .failed(let failed, let message) = preview.state, failed == voice {
+            Text(message).font(.callout).foregroundStyle(.red)
+        } else if let unavailable {
+            Text(unavailable).footnote()
+        }
     }
 
     // MARK: - About
@@ -549,6 +598,9 @@ public struct SettingsView: View {
     nonisolated static func languageName(_ code: String) -> String {
         Locale.current.localizedString(forIdentifier: code) ?? code
     }
+
+    /// The default speed's stepper: 0.5× to 2× by 0.1 (the server takes up to 4×).
+    nonisolated static let speeds: ClosedRange<Double> = 0.5...2.0
 
     /// "1×", "1.25×".
     nonisolated static func speedText(_ speed: Double) -> String {

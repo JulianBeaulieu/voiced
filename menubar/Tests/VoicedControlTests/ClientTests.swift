@@ -135,6 +135,43 @@ final class ClientTests: XCTestCase {
         let voice = try await client.setSettings(["tts.voice": "bf_emma"])
         XCTAssertEqual(voice.warnings, ["env_override:tts.voice"])
         XCTAssertEqual(voice.restartRequired, [.tts])
+        // The service reads its default speed for each request.
+        let speed = try await client.setSettings(["tts.speed": 1.2])
+        XCTAssertEqual(speed.settings.tts.speed, 1.2)
+        XCTAssertEqual(speed.restartRequired, [])
+    }
+
+    func testSpeakAnswersAWAVFile() async throws {
+        let server = try startServer { $0.speakDelay = 0 }
+        defer { server.stop() }
+        let client = try await connectedClient(server)
+        defer { client.close() }
+
+        let wav = try await client.speak("Hi, I'm Heart.", voice: "af_heart")
+        XCTAssertNotNil(wav.range(of: Data("WAVE".utf8)))
+        XCTAssertEqual(String(decoding: wav.prefix(4), as: UTF8.self), "RIFF")
+        XCTAssertGreaterThan(wav.count, 44)
+        XCTAssertEqual(server.requests.last?.args, ["text": "Hi, I'm Heart.", "voice": "af_heart"])
+        do {
+            _ = try await client.speak("Hi.", voice: "nobody")
+            XCTFail("expected bad_request")
+        } catch ControlError.remote(let error) {
+            XCTAssertEqual(error.code, "bad_request")
+        }
+    }
+
+    func testSpeakIsRefusedWhileTextToSpeechIsOff() async throws {
+        let server = try startServer(.ttsOff) { $0.speakDelay = 0 }
+        defer { server.stop() }
+        let client = try await connectedClient(server)
+        defer { client.close() }
+
+        do {
+            _ = try await client.speak("Hi.", voice: "af_heart")
+            XCTFail("expected service_unavailable")
+        } catch ControlError.remote(let error) {
+            XCTAssertEqual(error.code, "service_unavailable")
+        }
     }
 
     /// `service.restart` answers as the control channel on main sends them.

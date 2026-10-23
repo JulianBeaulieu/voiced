@@ -24,11 +24,16 @@ final class SettingsEditTests: XCTestCase {
         let edits: [SettingsEdit] = [
             .bind(.lan), .apiKey("k"), .clearAPIKey, .zeroconf(false), .browserSettings(true),
             .sttEngine("fake"), .ttsEngine("soprano"), .ttsVoice("bf_emma"),
-            .enabled(.stt, false), .idleUnload(.tts, seconds: 300),
+            .enabled(.stt, false), .idleUnload(.tts, seconds: 300), .ttsSpeed(1.2),
         ]
         for edit in edits {
             for key in args(edit).keys { XCTAssertNotNil(SettingKey(rawValue: key), key) }
         }
+    }
+
+    func testSpeedIsSentRoundedToHundredths() {
+        XCTAssertEqual(args(.ttsSpeed(1.1 + 0.1)), ["tts.speed": 1.2])
+        XCTAssertEqual(args(.ttsSpeed(1.0000001)), [:], "the same speed once rounded")
     }
 
     func testUnchangedValuesSendNothing() {

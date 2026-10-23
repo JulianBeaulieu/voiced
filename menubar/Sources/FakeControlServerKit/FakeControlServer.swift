@@ -43,6 +43,8 @@ public final class FakeControlServer: @unchecked Sendable {
         /// `settings.set` refuses a model that is not downloaded and a restarted service
         /// without its model reports `missing_model`, as the real ones do (ADR 0022).
         public var modelsFile: URL?
+        /// How long `tts.speak` takes to answer, as a model loading again would.
+        public var speakDelay: TimeInterval = 0.2
 
         public init() {}
     }
@@ -108,6 +110,9 @@ public final class FakeControlServer: @unchecked Sendable {
 
     /// How many connections were accepted since start.
     public var acceptedConnections: Int { queue.sync { accepted } }
+
+    /// Connections open now; one closes when its client hangs up.
+    public var openConnections: Int { queue.sync { clients.count } }
 
     public var currentState: FakeState { queue.sync { state } }
 
@@ -357,6 +362,18 @@ public final class FakeControlServer: @unchecked Sendable {
         case "service.restart": answer = restart(args)
         case "logs.tail": answer = tail(args)
         case "open": answer = open(args)
+        case "tts.speak":
+            // Answered later, as the real one waits for the audio; the client may be gone by then.
+            let answer = speak(args)
+            let (fd, asker) = (client.fd, ObjectIdentifier(client))
+            queue.asyncAfter(deadline: .now() + options.speakDelay) { [weak self] in
+                guard let self, let client = self.clients[fd], ObjectIdentifier(client) == asker else { return }
+                switch answer {
+                case .success(let result): self.send(["id": id, "ok": true, "result": result], to: client)
+                case .failure(let error): self.send(self.failure(id, error), to: client)
+                }
+            }
+            return
         default: answer = .failure(RemoteError(code: "unknown_op", message: "Unknown op \(op)."))
         }
         switch answer {
@@ -466,9 +483,10 @@ public final class FakeControlServer: @unchecked Sendable {
         for key in keys {
             switch key {
             case .sttEngine, .sttModel, .sttEnabled, .sttIdleUnload: restart.insert("stt")
-            case .ttsEngine, .ttsModel, .ttsVoice, .ttsSpeed, .ttsEnabled, .ttsIdleUnload: restart.insert("tts")
+            case .ttsEngine, .ttsModel, .ttsVoice, .ttsEnabled, .ttsIdleUnload: restart.insert("tts")
             case .bind, .apiKey, .zeroconf: restart.formUnion(["stt", "tts"])
             case .browserSettings: break  // read live by the status page
+            case .ttsSpeed: break  // read live by the tts service, for each request
             }
         }
         guard case .object(var result) = json(state.settings) else { return .success(.null) }
@@ -543,6 +561,50 @@ public final class FakeControlServer: @unchecked Sendable {
     /// A catalogued model that the fake cache does not hold.
     private func isMissing(_ model: String) -> Bool {
         options.modelsFile.flatMap { FakeModels(file: $0).read()?.isMissing(model) } ?? false
+    }
+
+    /// Like the real `tts.speak`: refused while text to speech is not running, else a WAV
+    /// file whose length follows the text, a quiet tone in place of speech.
+    private func speak(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {
+        guard let text = args["text"]?.stringValue, !text.isEmpty, text.unicodeScalars.count <= 60,
+            let voice = args["voice"]?.stringValue
+        else {
+            return .failure(RemoteError(code: "bad_request", message: "text and voice are required."))
+        }
+        guard [.running, .degraded].contains(state[.tts].state) else {
+            return .failure(RemoteError(code: "service_unavailable", message: "the tts service is not answering"))
+        }
+        let tts = state.engines.ttsEngine(named: state.settings.tts.engine)
+        guard tts?.voices.contains(voice) ?? true else {
+            return .failure(RemoteError(
+                code: "bad_request", message: "the running tts service does not serve the voice '\(voice)'"))
+        }
+        let seconds = Double(text.count) / 15 / state.settings.tts.speed
+        return .success(["format": "wav", "audio": .string(Self.tone(seconds: seconds).base64EncodedString())])
+    }
+
+    /// A mono int16 WAV file at 24 kHz holding a quiet 440 Hz tone.
+    static func tone(seconds: Double) -> Data {
+        let rate = 24_000
+        let frames = Int(seconds * Double(rate))
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        data.append(contentsOf: Array("RIFF".utf8))
+        append(UInt32(36 + frames * 2))
+        data.append(contentsOf: Array("WAVEfmt ".utf8))
+        append(UInt32(16))
+        append(UInt16(1))  // PCM
+        append(UInt16(1))  // mono
+        append(UInt32(rate))
+        append(UInt32(rate * 2))
+        append(UInt16(2))
+        append(UInt16(16))
+        data.append(contentsOf: Array("data".utf8))
+        append(UInt32(frames * 2))
+        for frame in 0..<frames {
+            append(Int16(sin(Double(frame) * 2 * .pi * 440 / Double(rate)) * 2_000))
+        }
+        return data
     }
 
     private func tail(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {

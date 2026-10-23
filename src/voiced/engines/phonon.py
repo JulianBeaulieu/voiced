@@ -115,6 +115,7 @@ PHONON_VOICES: list[Voice] = [
 
 class PhononEngine(SentenceTTSEngine):
     name = "phonon"
+    personal_voice_names = True  # voices are named after people (engines.list voice_names)
     model_id = default_model("phonon").id
     languages = ["en-US", "en-GB"]
     license = default_model("phonon").license

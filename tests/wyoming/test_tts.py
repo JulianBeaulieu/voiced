@@ -22,7 +22,7 @@ from wyoming.tts import (
 )
 
 from voiced import __version__
-from voiced.config import Settings
+from voiced.config import Settings, config_path
 from voiced.engines.base import PCMChunk, Voice
 from voiced.inference import ClientTimeout
 from voiced.testing import FakeTTSEngine
@@ -106,6 +106,27 @@ async def test_default_and_named_voice_selection(
         await c.write_event(Synthesize(text="Hi.", voice=SynthesizeVoice(name="bf_emma")).event())
         await read_until(c, "audio-stop")
     assert seen == ["af_heart", "bf_emma"]
+
+
+async def test_speed_is_read_from_the_config_file_for_each_request(
+    tts_app: FastAPI, tts_listener: WyomingListener
+) -> None:
+    engine: FakeTTSEngine = tts_app.state.ctx.engine
+    speeds: list[float] = []
+    original = engine.synthesize
+
+    def spy(text: str, voice: str, speed: float = 1.0) -> AsyncIterator[PCMChunk]:
+        speeds.append(speed)
+        return original(text, voice, speed)
+
+    engine.synthesize = spy  # type: ignore[method-assign]
+    async with client(tts_listener) as c:
+        await c.write_event(Synthesize(text="Hi.").event())
+        await read_until(c, "audio-stop")
+        config_path().write_text("[tts]\nspeed = 1.3\n")  # no restart
+        await c.write_event(Synthesize(text="Hi.").event())
+        await read_until(c, "audio-stop")
+    assert speeds == [1.0, 1.3]
 
 
 async def test_text_is_normalized_for_the_voice_language(

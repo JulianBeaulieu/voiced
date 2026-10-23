@@ -2,9 +2,10 @@
 
 ``POST /v1/audio/speech`` takes the OpenAI JSON body ``{model, input, voice,
 speed, response_format}``. ``voice`` defaults to ``tts.default_voice`` and
-``speed`` to ``tts.speed``; ``model`` is ignored unless it names another
-installed engine's model. ``input`` longer than ``tts.max_input_chars`` is
-rejected with 413.
+``speed`` to ``tts.speed``, read from the config file for each request so a
+change applies without a restart; ``model`` is ignored unless it names
+another installed engine's model. ``input`` longer than
+``tts.max_input_chars`` is rejected with 413.
 
 Every format streams. ``pcm`` is raw int16 little-endian mono at 24 kHz.
 ``wav`` is the same PCM behind a 44-byte header whose size fields are
@@ -132,7 +133,7 @@ async def speech(
         ffmpeg.require_ffmpeg(f"{fmt} output")
 
     voice = await ctx.check_voice(body.voice, listed_by="/v1/audio/voices")
-    speed = body.speed if body.speed is not None else settings.speed
+    speed = body.speed if body.speed is not None else ctx.default_speed()
     text = normalize(body.input, language=voice.language)
 
     # Prime the body so QueueFull and a pre-audio EngineError surface as

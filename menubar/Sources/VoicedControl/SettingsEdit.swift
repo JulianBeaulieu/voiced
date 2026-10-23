@@ -14,6 +14,9 @@ public enum SettingsEdit: Sendable, Equatable {
     case sttEngine(String, model: String? = nil)
     case ttsEngine(String, model: String? = nil)
     case ttsVoice(String)
+    /// The default speed. Rounded to hundredths here, the one place, so a stepper's 1.1 + 0.1
+    /// sends 1.2, not 1.2000000000000002.
+    case ttsSpeed(Double)
     /// On or off (ADR 0033).
     case enabled(ServiceKind, Bool)
     /// Seconds unused before the model is unloaded; 0 is never.
@@ -37,6 +40,9 @@ public enum SettingsEdit: Sendable, Equatable {
             if on != current.browserSettings { args[.browserSettings] = .bool(on) }
         case .ttsVoice(let voice):
             if voice != current.tts.voice { args[.ttsVoice] = .string(voice) }
+        case .ttsSpeed(let speed):
+            let rounded = (speed * 100).rounded() / 100
+            if rounded != current.tts.speed { args[.ttsSpeed] = .number(rounded) }
         case .enabled(let kind, let on):
             if on != current.isEnabled(kind) { args[.enabled(kind)] = .bool(on) }
         case .idleUnload(let kind, let seconds):

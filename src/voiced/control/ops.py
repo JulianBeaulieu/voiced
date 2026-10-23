@@ -4,19 +4,21 @@
 :class:`~voiced.control.protocol.OpError`. The settings rules live in
 ``voiced.settings_store``; this module only dispatches and maps their errors
 to protocol codes. Process control (status and restarts) goes through a
-:class:`Supervisor`, which the watchdog provides and tests fake.
+:class:`Supervisor`, which the watchdog provides and tests fake; ``tts.speak``
+goes through ``speak`` (``voiced.control.speech``), likewise.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -32,6 +34,7 @@ from voiced.control.protocol import (
     UNKNOWN_OP,
     OpError,
 )
+from voiced.control.speech import MAX_TEXT_CHARS, SpeechRefused, SpeechUnavailable, no_speech
 from voiced.layout import environment_python
 from voiced.settings_store import (
     SETTABLE,
@@ -153,6 +156,15 @@ def _int_arg(args: Mapping[str, Any], name: str, default: int) -> int:
     return value
 
 
+def _text_arg(args: Mapping[str, Any], name: str, limit: int) -> str:
+    value = args.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise OpError(BAD_REQUEST, f'"{name}" must be a non-empty string')
+    if len(value) > limit:
+        raise OpError(BAD_REQUEST, f'"{name}" must be at most {limit} characters')
+    return value
+
+
 def _choice(args: Mapping[str, Any], name: str, choices: tuple[str, ...]) -> str:
     value = args.get(name)
     if value not in choices:
@@ -164,6 +176,8 @@ def _choice(args: Mapping[str, Any], name: str, choices: tuple[str, ...]) -> str
 class Operations:
     """The operations of the control protocol.
 
+    ``speak`` answers ``tts.speak`` with a WAV file
+    (:class:`voiced.control.speech.Speech`).
     ``load`` reads the effective settings (file plus environment) each time,
     so a change made by hand to the config file shows up without a restart.
     ``engines`` supplies the engine catalogue; it is cached for
@@ -177,8 +191,10 @@ class Operations:
         load: Callable[[Path], Settings] = load_settings,
         engines: Callable[[], dict[str, Any]] = engines_in_subprocess,
         clock: Callable[[], float] = time.monotonic,
+        speak: Callable[[str, str], Awaitable[bytes]] = no_speech,
     ) -> None:
         self.supervisor = supervisor
+        self.speak = speak
         self.config_file = config_file
         self.load = load
         self._engines_source = engines
@@ -195,6 +211,7 @@ class Operations:
             "engines.list": self.op_engines_list,
             "service.restart": self.op_service_restart,
             "logs.tail": self.op_logs_tail,
+            "tts.speak": self.op_tts_speak,
             "open": self.op_open,
         }
 
@@ -327,6 +344,20 @@ class Operations:
         if what == "logs_dir":
             return {"target": str(settings.server.log_dir)}
         return {"target": str(self.config_file)}
+
+    async def op_tts_speak(self, args: dict[str, Any]) -> dict[str, Any]:
+        """One short line in a voice, from the running tts service at its
+        default speed, so a client can hear the voice before choosing it.
+        The server answers it in its own task (``CONCURRENT_OPS``)."""
+        text = _text_arg(args, "text", MAX_TEXT_CHARS)
+        voice = _text_arg(args, "voice", MAX_TEXT_CHARS)
+        try:
+            audio = await self.speak(text, voice)
+        except SpeechUnavailable as exc:
+            raise OpError(SERVICE_UNAVAILABLE, str(exc)) from None
+        except SpeechRefused as exc:
+            raise OpError(BAD_REQUEST, str(exc)) from None
+        return {"format": "wav", "audio": base64.b64encode(audio).decode("ascii")}
 
     def config_stamp(self) -> FileStamp | None:
         return file_stamp(self.config_file)

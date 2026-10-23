@@ -389,6 +389,10 @@ def test_settings_through_socket(served: Served, cfg: Path) -> None:
     assert lc.cmd_settings(args, served.settings, out.append) == 0
     assert tomllib.loads(cfg.read_text())["tts"]["speed"] == 1.4
     assert "tts.speed" in out[0] and "1.4" in out[0]
+    assert len(out) == 1, "the service reads the speed for each request: no restart"
+    out.clear()
+    args = settings_args("set", "tts.voice=bf_emma")
+    assert lc.cmd_settings(args, served.settings, out.append) == 0
     assert out[1] == "Restart to apply: voiced restart tts"
     out.clear()
     args = settings_args("set", "tts.voice=nobody")

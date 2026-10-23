@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from voiced.api.status_page import FORM_NEEDS_KEY, form_refusal
 from voiced.config import Settings, config_path
 from voiced.engines.soprano import SopranoEngine
+from voiced.settings_store import LiveSettings
 from voiced.testing import lifespan_client
 
 
@@ -199,10 +200,8 @@ async def test_page_has_the_form(tts_client: AsyncClient) -> None:
 
 
 def test_live_settings_are_reread_only_when_the_file_changes(settings: Settings) -> None:
-    from voiced.api.status_page import _LiveSettings
-
     write_config(browser_settings=True)
-    live = _LiveSettings()
+    live = LiveSettings()
     first = live.get()
     assert first is not None and first.server.browser_settings
     assert live.get() is first  # unchanged file: not parsed again
@@ -211,3 +210,17 @@ def test_live_settings_are_reread_only_when_the_file_changes(settings: Settings)
     assert second is not None and not second.server.browser_settings
     config_path().write_text("[server\n")
     assert live.get() is None  # logged, shown as "form off"
+    assert live.last is second  # what a service falls back to meanwhile
+
+
+def test_an_unreadable_file_is_parsed_and_logged_once_per_change(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    config_path().write_text("[server\n")
+    live = LiveSettings()
+    for _ in range(3):  # a service asks on every request
+        assert live.get() is None
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+    config_path().write_text("[tts\n")  # a different broken file: logged again
+    assert live.get() is None
+    assert len(caplog.records) == 2

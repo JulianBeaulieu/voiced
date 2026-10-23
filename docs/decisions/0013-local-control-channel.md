@@ -188,8 +188,9 @@ derived from which keys actually changed value:
 |---|---|
 | `[server]` keys: `bind`, `api_key`, `zeroconf` | `stt`, `tts` |
 | `stt.*` | `stt` |
-| `tts.*` | `tts` |
+| `tts.*` | `tts`, except `tts.speed` |
 | `browser_settings` | none: the status page reads it from the file |
+| `tts.speed` | none: the tts service reads it from the file for each request (amendment 2026-10-23) |
 
 A value equal to the current one changes nothing and needs no restart.
 Warnings: `lan_without_api_key` when `bind` or `api_key` was part of the
@@ -279,7 +280,8 @@ Additions in this version beyond the original contract, all compatible:
 result, `path` in `logs.tail`, `languages` on TTS engines in
 `engines.list`, `label` on every engine and `voice_labels` on TTS engines,
 an optional `service` for `open status_page`, `field` in `invalid_setting`
-errors and the `env_override:<key>` warning. Outside the protocol, the
+errors, the `env_override:<key>` warning, and the `tts.speak` operation with
+`voice_names` in `engines.list` (amendment 2026-10-23). Outside the protocol, the
 Soprano voice's display name changed from "Soprano" to "Default" (it is the
 label the UI shows; its id stays `default`, and `GET /v1/voices` on a
 Soprano service shows the new name too), and the language display names
@@ -337,3 +339,58 @@ closed `state` set and stays at protocol 1, as `missing_model` did (ADR
 "Unknown", which is wrong but harmless, and only someone who switched a
 service off sees it; bumping the protocol would make every older app
 refuse to connect at all. See [ADR 0033](0033-model-residency.md).
+
+## Amendment (2026-10-23)
+
+Hearing a voice before choosing it, and the default speed read live. The
+protocol stays at 1: `tts.speak` is a new operation and `voice_names` a new
+`engines.list` field, both additive; `restart_required` keeps its members,
+only which keys produce them changes (`tts.speed` no longer does).
+
+**`tts.speak`.** The menu bar app plays a short line in a voice before the
+user chooses it. It asks the watchdog: `tts.speak` with `text` (up to 60
+characters) and `voice`, answered with a base64 WAV file.
+`voiced.control.speech` sends `POST /v1/audio/speech` to the running tts
+service with the API key that service was started with, as the probe does,
+after checking with `GET /v1/audio/voices` that the service serves the
+voice: a voice it does not serve would be spoken in the default voice (ADR
+0022), and a preview of that misleads. The audio comes back as raw PCM and
+is wrapped in a WAV file with its real length, which every player reads,
+unlike the service's streamed WAV. Audio over 10 s is refused, so the
+answer (640 KB in base64 at most) fits the 1 MiB line a client reads. The
+whole exchange has one 30 s deadline, long enough for a model unloaded
+while idle to load again.
+
+Talking to the HTTP API from the app was the alternative and is still
+rejected (ADR 0014): it needs the API key, which `settings.get` never hands
+out, and the app would open a network connection for the first time.
+
+The server answers `tts.speak` in its own task (`CONCURRENT_OPS`), so a
+wait for audio never holds up the client's other requests; answers carry
+their request's id and their order is not promised. When the client goes
+away, its unanswered `tts.speak` is cancelled. The requests to the service
+are plain HTTP/1.0 on asyncio streams, not urllib in a thread, so the
+cancel closes the socket and the service stops synthesizing at its next
+step (ADR 0005's hang-up). The app opens a connection of its own for each
+preview and closes it to stop one; its main connection is never involved.
+The watchdog imports nothing new: asyncio, `wave` and `urllib.parse` from
+the standard library.
+
+`engines.list` gains `voice_names`: the personal name of each voice that
+has one, from engines that set `personal_voice_names = True` (Kokoro,
+Phonon, Pocket TTS). OmniVoice's and Marvis's voice names describe the
+voice ("Middle-aged", "Conversational FR"), so the app's line for them is
+"this is my voice", not a name.
+
+**`tts.speed` is read live.** Speed is a per-request default, so the tts
+service reads it from the config file for each request that names none
+(`voiced.settings_store.LiveSettings`, the reader the status page already
+used for `browser_settings`; the file is parsed again only when it
+changes). A change to it no longer requires a restart: `restart_required`
+leaves it out, for the socket, the CLI and the status page form alike.
+Restarting the service to change a multiplier cost a model reload and cut
+off any speech in progress, and the app would have offered a restart after
+every step. While the file cannot be read (logged once per change), the
+last good reading applies, else the speed the service started with.
+`tts.voice` stays read at start: which voices are served, and the fallback
+for an unknown one, depend on it.

@@ -212,7 +212,7 @@ class TTSEventHandler(VoicedEventHandler):
             # be closed early (aclose) when the client disconnects.
             gen = cast(
                 "AsyncGenerator[PCMChunk, None]",
-                self.ctx.tts_engine.synthesize(text, voice, self.ctx.settings.tts.speed),
+                self.ctx.tts_engine.synthesize(text, voice, self.ctx.default_speed()),
             )
             async with aclosing(gen):
                 async for chunk in gen:
