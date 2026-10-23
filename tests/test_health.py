@@ -73,7 +73,7 @@ def test_status_table() -> None:
     h.record_error(RuntimeError("load failed"))
     assert h.status == "degraded", "an error outranks idle"
     h.mark_loaded()
-    assert h.status == "ok" and h.residency == "loaded"
+    assert h.status == "ok" and h.model_state == "loaded"
     h.mark_missing(ModelNotDownloaded("m", "r", ("m",)))
     assert h.status == "missing_model"
     assert READY_STATUSES == {"ok", "degraded", "idle", "loading"}

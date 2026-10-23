@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from voiced.health_status import HEALTHY
 from voiced.launchd.control import (
     Runner,
     kickstart_argv,
@@ -59,9 +60,6 @@ Kind = Literal[
     "missing_model",
     "off",
 ]
-HEALTHY: frozenset[str] = frozenset({"ok", "idle", "loading"})
-"""Answers that reset every counter: ``idle`` (the model unloaded on purpose)
-and ``loading`` (loading it again for a request) are healthy (ADR 0033)."""
 Action = Literal["none", "restart", "cooldown"]
 
 
@@ -147,10 +145,10 @@ class ServiceState:
     last_pid: int | None = None
     busy_since: float | None = None
     last_completion: float | None = None
-    not_loaded_reported: bool = False
     reported: set[str] = field(default_factory=set)
-    """Kinds already logged once for the current process (``missing_model``,
-    ``off``); cleared when launchd gives the service a new pid."""
+    """What is already logged once: ``missing_model`` and ``off`` for the
+    current process (cleared when launchd gives the service a new pid), and
+    ``not_loaded`` until the service answers healthy again."""
 
     def report_once(self, kind: str) -> bool:
         """Whether ``kind`` is new for this process (and note it)."""
@@ -276,7 +274,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.failures = 0
         state.degraded_since = None
         state.awaiting_recovery = False
-        state.not_loaded_reported = False
+        state.reported.discard("not_loaded")
         return Decision("none", "healthy again" if recovered else "healthy", recovered)
 
     if obs.kind == "missing_model":
@@ -286,9 +284,8 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
 
     if obs.loaded is False:
         state.failures = 0
-        if state.not_loaded_reported:
+        if not state.report_once("not_loaded"):
             return Decision("none", "not loaded in launchd", quiet=True)
-        state.not_loaded_reported = True
         return Decision("none", f"{obs.kind} and not loaded in launchd (stopped?); not restarting")
 
     if obs.kind == "unreachable" and state.in_grace(now, policy.startup_grace_s):

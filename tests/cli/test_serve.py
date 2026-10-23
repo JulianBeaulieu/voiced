@@ -169,6 +169,7 @@ def test_a_service_switched_off_parks_without_ports_until_sigterm(
     import signal
 
     from voiced.launchd import parked
+    from voiced.layout import off_marker
 
     http_port, wyoming_port = _free_port(), _free_port()
     state = tmp_path / "state"
@@ -183,7 +184,7 @@ def test_a_service_switched_off_parks_without_ports_until_sigterm(
         f"VOICED_{section}__HTTP_PORT": str(http_port),
         f"VOICED_{section}__WYOMING_PORT": str(wyoming_port),
     }
-    marker = parked.marker(state, service)
+    marker = off_marker(state, service)
     proc = subprocess.Popen(
         [sys.executable, "-m", "voiced.cli", "serve", service],
         env=env,
@@ -217,11 +218,11 @@ def test_a_serving_process_clears_an_old_marker(
 ) -> None:
     from voiced import cli
     from voiced.config import Settings
-    from voiced.launchd import parked
+    from voiced.layout import off_marker
 
     settings = Settings()
     settings.install.venv_dir = tmp_path
-    marker = parked.marker(tmp_path, "tts")
+    marker = off_marker(tmp_path, "tts")
     marker.write_text("12345\n")
 
     def bind(settings: Settings, service: str) -> socket.socket:

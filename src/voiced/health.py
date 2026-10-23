@@ -8,17 +8,17 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from voiced.health_status import HEALTHY, HealthStatus
 from voiced.models import ModelNotDownloaded
-from voiced.watchdog import HEALTHY
 
-HealthStatus = Literal["starting", "ok", "degraded", "missing_model", "idle", "loading"]
+__all__ = ["HEALTHY", "READY_STATUSES", "HealthResponse", "HealthState", "HealthStatus"]
 
-READY_STATUSES = HEALTHY | {"degraded"}
+READY_STATUSES: frozenset[HealthStatus] = HEALTHY | frozenset({"degraded"})
 """Statuses in which the service takes requests (``/health`` answers 200):
 the watchdog's healthy ones (``idle`` and ``loading`` too: the request waits
 for the model to load) and ``degraded``."""
 
-Residency = Literal["starting", "loaded", "unloaded", "loading"]
+ModelState = Literal["starting", "loaded", "unloaded", "loading"]
 """Where the model is: loading for the first time, in memory, unloaded on
 purpose while idle, or loading again for a request (ADR 0033)."""
 
@@ -58,7 +58,7 @@ class HealthState:
       loads it,
     * ``ok`` otherwise.
 
-    ``residency`` changes only through the ``mark_*`` methods;
+    ``model_state`` changes only through the ``mark_*`` methods;
     ``model_loaded`` (the model is in memory now) and ``started`` (the first
     load has finished) are read from it.
     """
@@ -69,7 +69,7 @@ class HealthState:
     version: str
     queue_capacity: int
     started_at: float = field(default_factory=time.monotonic)
-    residency: Residency = "starting"
+    model_state: ModelState = "starting"
     last_inference_at: float | None = None
     last_inference_ms: float | None = None
     last_error: str | None = None
@@ -81,23 +81,23 @@ class HealthState:
 
     @property
     def model_loaded(self) -> bool:
-        return self.residency == "loaded"
+        return self.model_state == "loaded"
 
     @property
     def started(self) -> bool:
         """The first load has finished: requests are taken from then on."""
-        return self.residency != "starting"
+        return self.model_state != "starting"
 
     def mark_loaded(self) -> None:
-        self.residency = "loaded"
+        self.model_state = "loaded"
         self.last_error = self.last_error_type = None
 
     def mark_unloaded(self) -> None:
-        self.residency = "unloaded"
+        self.model_state = "unloaded"
 
     def mark_reloading(self) -> None:
         """A request waits while the unloaded model loads again."""
-        self.residency = "loading"
+        self.model_state = "loading"
 
     def mark_missing(self, missing: ModelNotDownloaded) -> None:
         self.missing = missing
@@ -116,11 +116,11 @@ class HealthState:
     def status(self) -> HealthStatus:
         if self.missing is not None:
             return "missing_model"
-        if self.residency in ("starting", "loading"):
-            return self.residency
+        if self.model_state in ("starting", "loading"):
+            return self.model_state
         if self.last_error is not None:
             return "degraded"
-        return "idle" if self.residency == "unloaded" else "ok"
+        return "idle" if self.model_state == "unloaded" else "ok"
 
     def snapshot(self, queue_depth: int) -> HealthResponse:
         """Serialize for ``/health``. Read-only: ``queue_depth`` comes from the queue."""

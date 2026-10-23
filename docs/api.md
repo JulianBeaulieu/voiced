@@ -523,7 +523,7 @@ curl -s http://127.0.0.1:8880/health
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
 | `last_error` | Exception name and message of the last failed inference, cleared by the next success. With `server.api_key` set only the exception name is shown, since the message can echo what a client sent; the full text is in the service log. |
 
-<!-- TODO(release): name the version that brings idle and loading in the /health status row -->
+<!-- TODO(release): name the version that brings idle and loading in the /health status row and services_off in /metrics.json -->
 
 The schema is frozen because the watchdog and the status page depend on it.
 
@@ -536,7 +536,8 @@ stt). It is one self-contained HTML file and fetches nothing from the
 internet. If an API key is set, type it into the page to use the test box.
 
 With `[server] browser_settings = true` the page also shows a settings form
-(engine, model, voice, speed, `bind`, API key, zeroconf). It is off by
+(engine, model, voice, speed, whether each service runs and when its model
+unloads, `bind`, API key, zeroconf). It is off by
 default. When on, it always needs the API key as a bearer token: with no
 key set it is refused (403), on loopback too, because a web page you open
 can reach a loopback port (DNS rebinding). It reads from
@@ -558,6 +559,7 @@ not downloaded is refused with 409 `model_not_downloaded`.
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
 | `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |
+| `services_off` | The other service, when it is switched off and its process is parked (the pid in its marker is the one launchd runs for it); `[]` otherwise. New in the next release (ADR 0033). |
 
 Metrics live in memory and reset when the service restarts.
 

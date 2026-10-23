@@ -143,11 +143,12 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_serve(settings: Settings, service: ServiceName) -> int:
     from voiced.control import state_dir
     from voiced.launchd import parked
+    from voiced.layout import off_marker
 
-    off_marker = parked.marker(state_dir(settings), service)
+    marker = off_marker(state_dir(settings), service)
     if not settings.service(service).enabled:
-        return cmd_park(settings, service, off_marker)
-    parked.clear(off_marker)
+        return cmd_park(settings, service, marker)
+    parked.clear(marker)
 
     import uvicorn
 

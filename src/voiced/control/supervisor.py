@@ -18,9 +18,9 @@ from typing import Any, Literal
 
 from voiced.config import ServiceName
 from voiced.control.ops import NotInstalled, ServiceUnavailable
+from voiced.health_status import HEALTHY
 from voiced.launchd.control import Runner, plist_path, run_command
 from voiced.watchdog import (
-    HEALTHY,
     Observation,
     ServiceSpec,
     ServiceState,

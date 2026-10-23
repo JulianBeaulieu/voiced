@@ -715,9 +715,9 @@ def test_off_is_never_restarted_or_counted_and_reported_once_per_process() -> No
 def test_observe_takes_the_parked_pid_for_off_without_polling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from voiced.launchd import parked as parking
+    from voiced.layout import off_marker
 
-    marker = parking.marker(tmp_path, "stt")
+    marker = off_marker(tmp_path, "stt")
     marker.write_text("9\n")
     monkeypatch.setattr(wd, "launchd_view", lambda label, runner: (True, 9))
     monkeypatch.setattr(wd, "poll_health", lambda *a, **k: pytest.fail("not polled"))
@@ -730,9 +730,9 @@ def test_observe_takes_the_parked_pid_for_off_without_polling(
 def test_a_stale_marker_is_not_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The marker of a parked process that was killed names a pid launchd no
     longer runs: the service is polled as usual."""
-    from voiced.launchd import parked as parking
+    from voiced.layout import off_marker
 
-    marker = parking.marker(tmp_path, "stt")
+    marker = off_marker(tmp_path, "stt")
     marker.write_text("8\n")
     monkeypatch.setattr(wd, "launchd_view", lambda label, runner: (True, 9))
     monkeypatch.setattr(wd, "poll_health", lambda *a, **k: answer("ok", pid=9))

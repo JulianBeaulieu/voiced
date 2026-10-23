@@ -61,8 +61,21 @@ class Residency:
         self.queue = queue
         self.idle_unload_s = idle_unload_s
         self._clock = clock
+        self._unloads = idle_unload_s > 0 and can_unload(engine)
+        """Whether this service ever unloads: a timeout is set and the engine
+        implements ``unload()``."""
+        if idle_unload_s > 0 and not self._unloads:
+            log.warning(
+                "%s: engine %s cannot unload its model; %s.idle_unload_s has no effect",
+                health.service,
+                engine.name,
+                health.service,
+            )
         self._lock = asyncio.Lock()
         self._loaded = asyncio.Event()
+        """Set exactly while ``health.model_state`` is ``loaded``: set beside
+        ``mark_loaded`` and cleared beside ``mark_unloaded``. The idle timer
+        waits on it."""
         self._last_used = clock()
         self._reload: asyncio.Task[None] | None = None
         self._timer: asyncio.Task[None] | None = None
@@ -85,19 +98,10 @@ class Residency:
         self.health.mark_loaded()
         self._loaded.set()
         self._last_used = self._clock()
-        if self.idle_unload_s > 0 and self._timer is None:
-            if can_unload(self.engine):
-                self._timer = asyncio.create_task(
-                    self._unload_when_idle(), name=f"voiced-{self.health.service}-idle-unload"
-                )
-            else:
-                log.warning(
-                    "%s: engine %s cannot unload its model; %s.idle_unload_s has no effect",
-                    self.health.service,
-                    self.engine.name,
-                    self.health.service,
-                )
-                self.idle_unload_s = 0
+        if self._unloads and self._timer is None:
+            self._timer = asyncio.create_task(
+                self._unload_when_idle(), name=f"voiced-{self.health.service}-idle-unload"
+            )
 
     async def ensure_loaded(self) -> None:
         """Return once the model is loaded, loading it again if it was

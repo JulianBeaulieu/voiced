@@ -383,11 +383,11 @@ def test_start_of_a_service_switched_off_starts_it_and_says_so(settings: Setting
 
 def test_status_says_off_for_the_parked_process(settings: Settings) -> None:
     from voiced.control import state_dir
-    from voiced.launchd import parked
+    from voiced.layout import off_marker
 
     settings.stt.enabled = False
     fake = FakeLaunchctl({settings.launchd.label(s): True for s in ("stt", "tts", "watchdog")})
-    marker = parked.marker(state_dir(settings), "stt")
+    marker = off_marker(state_dir(settings), "stt")
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("42\n")  # the pid launchd runs for stt (RUNNING)
 
@@ -430,3 +430,18 @@ def test_no_probe_for_a_service_that_unloads_when_idle(settings: Settings) -> No
     stt, tts = lc.watchdog_specs(settings)
     assert stt.probe is not None
     assert tts.probe is None
+
+
+def test_start_after_stop_bootstraps_a_service_switched_off(
+    settings: Settings, isolated: Path
+) -> None:
+    """``voiced stop all`` then ``voiced start all``: the off service's daemon
+    is loaded again (it parks), so turning it on stays a restart."""
+    settings.stt.enabled = False
+    for name in ("stt", "tts", "watchdog"):
+        (isolated / f"{settings.launchd.label(name)}.plist").write_text("x")
+    out: list[str] = []
+    lc.cmd_start("all", settings, FakeLaunchctl({}), out.append)
+    stt = settings.launchd.label("stt")
+    assert out[0].startswith("stt: off ([stt] enabled = false)")
+    assert f"  sudo launchctl bootstrap system /Library/LaunchDaemons/{stt}.plist" in out

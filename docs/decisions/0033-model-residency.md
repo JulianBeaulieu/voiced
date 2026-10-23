@@ -51,7 +51,7 @@ and loaded again (`tests/test_unload_models.py`, the model tier):
 | nemotron | 0.04 | 1.42 | 0.15 | 1.43 |
 | qwen3-asr | 0.05 | 2.46 | 0.31 | 2.48 |
 | whisper | 0.04 | 1.01 | 0.18 | 1.01 |
-| moonshine (ONNX, CPU) | 0.05 | 0.30 | 0.13 | 0.12 |
+| moonshine (ONNX, CPU) | 0.04 | 0.29 | 0.13 | 0.12 |
 | kokoro | 0.04 | 0.72 | 0.12 | 0.72 |
 | soprano | 0.04 | 0.39 | 0.16 | 0.39 |
 | pocket | 0.04 | 0.66 | 0.15 | 0.66 |
@@ -66,9 +66,10 @@ again" is lower than its first load because the footprint counts only
 memory the process wrote: its resident set is 0.70 GB after the first
 load and 0.71 GB after the reload, and in the reload ONNX Runtime reads
 the model through clean pages mapped from the file, which the footprint
-leaves out. The unload itself returns its 0.16 GB either way. For the MLX engines an
-unload returns 85 to 90 percent of what loading added (Soprano, whose
-model is small next to those libraries, 66 percent).
+leaves out. The unload itself returns 0.16 GB of its 0.29 GB either way
+(two runs gave the same numbers). For the MLX engines an unload returns 85
+to 90 percent of what loading added (Soprano, whose model is small next
+to those libraries, 66 percent).
 
 ### The engine contract
 
@@ -181,29 +182,31 @@ administrator's password every time is the wrong trade. Instead
   off loads its daemon as for any service (so turning it on stays a restart
   without root) and says how to turn it on. `voiced status` says
   "off until restarted" when the file already turns it on. The other
-  service's status page says it is off. `voiced doctor` does not check an
-  off service's model, and `voiced uninstall` removes a marker a killed
-  parked process left.
+  service's status page says it is off, by the same test: its marker's pid
+  is the pid `launchctl print` reports for the label. `voiced doctor`
+  does not check an off service's model, and `voiced uninstall` removes a
+  marker a killed parked process left.
 - `voiced stop stt` still boots the daemon out, for whoever wants the
   29 MB process gone too, until the next boot or `voiced start`.
 
 ### The settings
 
-`[stt]` and `[tts]` each gain `enabled` (default true) and `idle_unload_s`
-(whole seconds, default 0: never, at most a week). Both are settable over the control
-channel (`stt.enabled`, `stt.idle_unload_s`, `tts.enabled`,
-`tts.idle_unload_s`), so `voiced settings` and the status page's form have
-them too, and both need the service restarted. The app's Speech to Text
-and Text to Speech panes get a switch to run the service and a choice of
-when to unload: never, or after 1, 5, 15 or 60 minutes unused (a value
-set in the file is shown as it is). Either change restarts that service.
+`[stt]` and `[tts]` each gain `enabled` (default true) and
+`idle_unload_s` (whole seconds, default 0: never, at most a week). Both
+are settable over the control channel (`stt.enabled`,
+`stt.idle_unload_s`, `tts.enabled`, `tts.idle_unload_s`), so `voiced
+settings` and the status page's form have them too, and both need the
+service restarted. The app's Speech to Text and Text to Speech panes get a
+switch to run the service and a choice of when to unload: never, or
+after 1, 5, 15 or 60 minutes unused (a value set in the file is shown as
+it is). Either change restarts that service.
 
 The defaults change nothing: both services on, models always loaded. Home
 Assistant users are the reason. A voice assistant's first request after a
 quiet hour would pay the reload, 0.25 to 0.4 s, on top of the STT
-finalize target (ADR 0008) and the 200 ms first audio target (README), and
-a Mac that
-runs voiced for Home Assistant usually has the memory to spare.
+finalize target (ADR 0008) and the 200 ms first audio target (README),
+and a Mac that runs voiced for Home Assistant usually has the memory to
+spare.
 
 ## Alternatives considered
 
@@ -237,5 +240,10 @@ runs voiced for Home Assistant usually has the memory to spare.
   it; until then nothing changes for it except one log line.
 - A service that is off still has a loaded LaunchDaemon and a process.
   Monitoring that counts processes sees it; `voiced status` says `off`.
+- A stop (SIGTERM) that arrives while a model loads again waits for that
+  load, which cannot be interrupted: under a second for the shipped
+  engines with the files in the page cache, well inside launchd's 20 s
+  exit timeout, but longer for a large model read from disk. The first
+  load at start exits at once instead, as before; the reload does not.
 - The watchdog reads one small file per service per poll.
 - `voiced install` still downloads the models of a service that is off.

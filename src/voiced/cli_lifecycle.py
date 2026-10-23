@@ -44,6 +44,7 @@ from voiced.control.client import (
 from voiced.control.logs import tail_lines
 from voiced.control.ops import NoSupervisor, Operations, engines_in_subprocess
 from voiced.control.protocol import OpError
+from voiced.health_status import HEALTHY
 from voiced.launchd import parked
 from voiced.launchd.control import (
     Runner,
@@ -63,11 +64,11 @@ from voiced.layout import (
     entry_point,
     install_lock,
     installed_manifest,
+    off_marker,
 )
 from voiced.settings_store import BOOLEAN_SETTINGS, INTEGER_SETTINGS, SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
-    HEALTHY,
     Observation,
     ServiceSpec,
     Watchdog,
@@ -584,8 +585,7 @@ def collect_status(
         }
         for http_service in HTTP_SERVICES:
             if http_service == service:
-                off_marker = parked.marker(state_dir(settings), http_service)
-                if parked.is_parked(off_marker, ls.pid):
+                if parked.is_parked(off_marker(state_dir(settings), http_service), ls.pid):
                     row["health"] = "off"
                     row["health_detail"] = parked.off_detail(
                         http_service, enabled_now=settings.service(http_service).enabled
@@ -927,30 +927,23 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
 def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
     """A service with ``idle_unload_s`` set gets no probe: each probe is a
     request, and would keep its model loaded (ADR 0033)."""
-    return [
-        ServiceSpec(
-            name="stt",
-            label=settings.launchd.label("stt"),
-            base_url=settings.http_url("stt"),
-            api_key=settings.server.api_key,
-            probe=None if settings.stt.idle_unload_s else default_probe("stt", settings.stt.model),
-            engine=settings.stt.engine,
-            model=settings.stt.model,
-            off_marker=parked.marker(state_dir(settings), "stt"),
-        ),
-        ServiceSpec(
-            name="tts",
-            label=settings.launchd.label("tts"),
-            base_url=settings.http_url("tts"),
-            api_key=settings.server.api_key,
-            probe=None
-            if settings.tts.idle_unload_s
-            else default_probe("tts", settings.tts.model, settings.tts.default_voice),
-            engine=settings.tts.engine,
-            model=settings.tts.model,
-            off_marker=parked.marker(state_dir(settings), "tts"),
-        ),
-    ]
+    specs = []
+    for name in HTTP_SERVICES:
+        section = settings.service(name)
+        probe = default_probe(name, section.model, settings.tts.default_voice)
+        specs.append(
+            ServiceSpec(
+                name=name,
+                label=settings.launchd.label(name),
+                base_url=settings.http_url(name),
+                api_key=settings.server.api_key,
+                probe=None if section.idle_unload_s else probe,
+                engine=section.engine,
+                model=section.model,
+                off_marker=off_marker(state_dir(settings), name),
+            )
+        )
+    return specs
 
 
 def spec_from_file(spec: ServiceSpec) -> ServiceSpec:

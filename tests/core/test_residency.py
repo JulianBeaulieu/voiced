@@ -20,6 +20,7 @@ from voiced.config import Settings
 from voiced.context import ServiceContext
 from voiced.engines.base import EngineNotLoaded, STTEngine
 from voiced.models import ModelNotDownloaded
+from voiced.residency import Residency
 from voiced.stt import build_stt_app
 from voiced.testing import FakeSTTEngine, FakeTTSEngine, lifespan_client
 from voiced.tts import build_tts_app
@@ -40,7 +41,7 @@ def idle(app: FastAPI, idle_s: float = IDLE_S) -> ServiceContext:
     """The app's context, unloading after ``idle_s`` (set before the lifespan
     starts the first load, which starts the timer)."""
     ctx: ServiceContext = app.state.ctx
-    ctx.residency.idle_unload_s = idle_s
+    ctx.residency = Residency(ctx.engine, ctx.health, ctx.queue, idle_s)
     return ctx
 
 

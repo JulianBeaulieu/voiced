@@ -135,17 +135,25 @@ async def test_health_withholds_the_error_message_when_a_key_is_set(
 
 
 async def test_metrics_say_when_the_other_service_is_off(
-    tts_client: AsyncClient, settings: Settings
+    tts_client: AsyncClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0033: the TTS page says speech to text is off while its process parks."""
-    import os
+    """ADR 0033: the TTS page says speech to text is off while launchd runs
+    its parked process: the pid in the marker is launchd's pid for it."""
+    from voiced.api import status_page
+    from voiced.layout import off_marker
 
-    from voiced.launchd import parked
+    labels: list[str] = []
 
+    def launchd(label: str, runner: object) -> tuple[bool, int]:
+        labels.append(label)
+        return True, 4242
+
+    monkeypatch.setattr(status_page, "launchd_view", launchd)
     assert (await tts_client.get("/metrics.json")).json()["services_off"] == []
-    marker = parked.marker(settings.install.venv_dir, "stt")
+    assert labels == [settings.launchd.label("stt")]
+    marker = off_marker(settings.install.venv_dir, "stt")
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(f"{os.getpid()}\n")  # a live pid stands in for the parked process
+    marker.write_text("4242\n")
     assert (await tts_client.get("/metrics.json")).json()["services_off"] == ["stt"]
-    marker.write_text("999999\n")  # gone
+    marker.write_text("4241\n")  # a parked process killed; launchd runs another
     assert (await tts_client.get("/metrics.json")).json()["services_off"] == []
