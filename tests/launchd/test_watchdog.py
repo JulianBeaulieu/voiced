@@ -651,3 +651,106 @@ def test_logging_file_only_when_configured(tmp_path: Path) -> None:
     assert isinstance(handlers[0], logging.handlers.RotatingFileHandler)
     wd.configure_watchdog_logging("info", None)
     assert isinstance(logging.getLogger().handlers[0], logging.StreamHandler)
+
+
+# Idle unload and a service switched off (ADR 0033) ---------------------------
+
+
+def answer(kind: str, depth: int = 0, pid: int = 500, **payload: Any) -> Observation:
+    body = {"status": kind, "queue_depth": depth, "model_loaded": kind == "ok", **payload}
+    return Observation(kind, "", 10, body, loaded=True, pid=pid)  # type: ignore[arg-type]
+
+
+def parked(pid: int = 500) -> Observation:
+    return Observation("off", "off", loaded=True, pid=pid)
+
+
+@pytest.mark.parametrize("kind", ["idle", "loading"])
+def test_idle_and_loading_are_healthy(kind: str) -> None:
+    state = fresh()
+    decide(state, down(), T0, POLICY)
+    decide(state, down(), T0 + 1, POLICY)
+    d = decide(state, answer(kind), T0 + 2, POLICY)
+    assert d == Decision("none", "healthy again", True)
+    assert state.failures == 0
+    assert state.answered, "an idle answer ends the startup grace"
+
+
+def test_idle_clears_the_degraded_timer() -> None:
+    state = fresh()
+    decide(state, Observation("degraded", "boom", 10, {}, loaded=True, pid=500), T0, POLICY)
+    assert state.degraded_since == T0
+    decide(state, answer("idle"), T0 + 1, POLICY)
+    assert state.degraded_since is None
+
+
+def test_a_load_that_hangs_holds_the_queue_and_stalls() -> None:
+    """A request waits on a load that never finishes: the stall rule
+    restarts it, as it would a wedged inference."""
+    state = fresh()
+    assert decide(state, answer("loading", depth=1), T0, POLICY).action == "none"
+    late = T0 + POLICY.stall_after_s + 1
+    actions = [decide(state, answer("loading", depth=1), late + i, POLICY) for i in range(3)]
+    assert [d.action for d in actions] == ["none", "none", "restart"]
+    assert "stalled" in actions[-1].reason
+
+
+def test_off_is_never_restarted_or_counted_and_reported_once_per_process() -> None:
+    state = ServiceState(grace_started_at=T0, last_pid=None)
+    first = decide(state, parked(), T0, POLICY)
+    assert first.action == "none" and not first.quiet
+    for i in range(1, 30):
+        d = decide(state, parked(), T0 + i * POLICY.startup_grace_s, POLICY)
+        assert d.action == "none" and d.quiet
+    assert state.failures == 0
+    assert not state.answered, "a parked process never ends a startup grace"
+    # Restarted into serving (switched on): a new pid, its grace starts now.
+    later = T0 + 10_000
+    assert decide(state, down(pid=501), later, POLICY).action == "none"
+    assert state.grace_started_at == later
+    # Switched off again: reported again.
+    assert not decide(state, parked(pid=502), later + 1, POLICY).quiet
+
+
+def test_observe_takes_the_parked_pid_for_off_without_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voiced.launchd import parked as parking
+
+    marker = parking.marker(tmp_path, "stt")
+    marker.write_text("9\n")
+    monkeypatch.setattr(wd, "launchd_view", lambda label, runner: (True, 9))
+    monkeypatch.setattr(wd, "poll_health", lambda *a, **k: pytest.fail("not polled"))
+    spec = ServiceSpec(name="stt", label="x", base_url="http://unused", off_marker=marker)
+    obs = wd.observe(spec, POLICY)
+    assert obs.kind == "off" and obs.pid == 9
+    assert "voiced settings set stt.enabled=true" in obs.detail
+
+
+def test_a_stale_marker_is_not_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The marker of a parked process that was killed names a pid launchd no
+    longer runs: the service is polled as usual."""
+    from voiced.launchd import parked as parking
+
+    marker = parking.marker(tmp_path, "stt")
+    marker.write_text("8\n")
+    monkeypatch.setattr(wd, "launchd_view", lambda label, runner: (True, 9))
+    monkeypatch.setattr(wd, "poll_health", lambda *a, **k: answer("ok", pid=9))
+    spec = ServiceSpec(name="stt", label="x", base_url="http://unused", off_marker=marker)
+    assert wd.observe(spec, POLICY).kind == "ok"
+
+
+@pytest.mark.parametrize("kind", ["idle", "loading"])
+def test_poll_health_idle_and_loading(server: str, kind: str) -> None:
+    _Handler.responses = {"/health": (200, _health(kind))}
+    assert poll_health(f"{server}/health", timeout_s=1).kind == kind
+
+
+def test_no_probe_while_idle(server: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe would load the model the service just unloaded."""
+    _Handler.responses = {"/health": (200, _health("idle"))}
+    spec = ServiceSpec(name="tts", label="x", base_url=server, probe=wd.default_probe("tts", "m"))
+    monkeypatch.setattr(wd, "run_probe", lambda s, timeout_s: pytest.fail("no probe"))
+    launchctl = lambda argv: CommandResult(0, "system/x = {\n\tstate = running\n\tpid = 9\n}")  # noqa: E731
+    probing = POLICY.model_copy(update={"probe": True})
+    assert wd.observe(spec, probing, launchctl).kind == "idle"

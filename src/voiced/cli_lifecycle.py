@@ -44,6 +44,7 @@ from voiced.control.client import (
 from voiced.control.logs import tail_lines
 from voiced.control.ops import NoSupervisor, Operations, engines_in_subprocess
 from voiced.control.protocol import OpError
+from voiced.launchd import parked
 from voiced.launchd.control import (
     Runner,
     StreamingRunner,
@@ -63,7 +64,7 @@ from voiced.layout import (
     install_lock,
     installed_manifest,
 )
-from voiced.settings_store import SETTABLE
+from voiced.settings_store import BOOLEAN_SETTINGS, INTEGER_SETTINGS, SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
@@ -344,6 +345,10 @@ def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> i
     pending: list[str] = []
     failures = 0
     for name in _services(service):
+        if name in HTTP_SERVICES and not settings.service(name).enabled:
+            # Not started: it would only park (voiced.launchd.parked, ADR 0033).
+            echo(f"{name}: {parked.off_detail(name)}")
+            continue
         label = settings.launchd.label(name)
         if print_service(label, runner).loaded:
             result = runner(kickstart_argv(label))
@@ -578,6 +583,12 @@ def collect_status(
         }
         for http_service in HTTP_SERVICES:
             if http_service == service:
+                off_marker = parked.marker(state_dir(settings), http_service)
+                if parked.is_parked(off_marker, ls.pid):
+                    row["health"] = "off"
+                    row["health_detail"] = parked.off_detail(http_service)
+                    row["health_payload"] = None
+                    continue
                 obs = poll(f"{settings.http_url(http_service)}/health")
                 row["health"] = obs.kind
                 row["health_detail"] = _health_detail(obs)
@@ -596,6 +607,11 @@ def _uptime(seconds: float | None) -> str:
     if seconds < 5400:
         return f"{seconds / 60:.0f}m"
     return f"{seconds / 3600:.1f}h"
+
+
+FINE = ("ok", "idle", "loading", "off")
+"""Health that ``voiced status`` reports as fine: serving, a model unloaded
+while idle or loading again, or switched off on purpose (ADR 0033)."""
 
 
 def cmd_status(
@@ -645,7 +661,7 @@ def cmd_status(
             echo(f"control socket: not answering at {path} (watchdog not running)")
         if not any(r.get("installed") for r in rows):
             echo(_not_installed_hint(settings))
-    healthy = all(r.get("health", "ok") == "ok" and r["pid"] for r in rows)
+    healthy = all(r.get("health", "ok") in FINE and r["pid"] for r in rows)
     return 0 if healthy else 1
 
 
@@ -672,7 +688,7 @@ def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> t
         raise ValueError(f"{pair!r}: expected KEY=VALUE")
     if key not in SETTABLE:
         raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
-    if key in ("zeroconf", "browser_settings"):
+    if key in BOOLEAN_SETTINGS:
         if raw.lower() in _TRUE:
             return key, True
         if raw.lower() in _FALSE:
@@ -683,6 +699,11 @@ def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> t
             return key, float(raw)
         except ValueError:
             raise ValueError(f"{key}: expected a number, got {raw!r}") from None
+    if key in INTEGER_SETTINGS:
+        try:
+            return key, int(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
     if key == "api_key" and raw == "-":
         return key, stdin().rstrip("\r\n")
     return key, raw
@@ -910,6 +931,7 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
             probe=default_probe("stt", settings.stt.model),
             engine=settings.stt.engine,
             model=settings.stt.model,
+            off_marker=parked.marker(state_dir(settings), "stt"),
         ),
         ServiceSpec(
             name="tts",
@@ -919,6 +941,7 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
             probe=default_probe("tts", settings.tts.model, settings.tts.default_voice),
             engine=settings.tts.engine,
             model=settings.tts.model,
+            off_marker=parked.marker(state_dir(settings), "tts"),
         ),
     ]
 

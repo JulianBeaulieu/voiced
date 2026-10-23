@@ -30,8 +30,10 @@ import voiced
 from voiced.config import (
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENV_HF_HOME,
+    HTTP_SERVICES,
     SERVICES,
     DaemonName,
+    ServiceName,
     Settings,
     config_path,
 )
@@ -44,6 +46,7 @@ from voiced.launchd.control import (
     run_command,
     run_streaming,
 )
+from voiced.launchd.parked import off_detail
 from voiced.launchd.plist import log_paths, render_plist
 from voiced.launchd.ports import foreign_listeners
 from voiced.launchd.progress import Progress
@@ -329,6 +332,8 @@ class InstallPlan:
     # services bind them on, for the ports step.
     ports: dict[str, int] = field(default_factory=dict)
     bind: str = "127.0.0.1"
+    # Services switched off in the config: their daemons start and park.
+    off: tuple[ServiceName, ...] = ()
 
     # Paths -------------------------------------------------------------
 
@@ -639,6 +644,7 @@ def plan_install(
         engine_env=settings.engine_environment(),
         ports=settings.ports(),
         bind=settings.server.bind,
+        off=tuple(s for s in HTTP_SERVICES if not settings.service(s).enabled),
     )
 
 
@@ -998,6 +1004,10 @@ def run_install(
             f"The environment changed from {old}: running daemons switch to the new one "
             "within one watchdog interval, or now with `voiced restart all`."
         )
+    for service in plan.off:
+        # The daemon stays loaded (unloading it would need root at every
+        # switch); its process parks (voiced.launchd.parked, ADR 0033).
+        say(f"{service}: {off_detail(service)}. Its daemon starts and serves nothing.")
 
 
 # Uninstall ------------------------------------------------------------------

@@ -168,7 +168,8 @@ async def inference(
     (``stt.streams``, ADR 0020); anything else holds it alone. Raises
     :class:`QueueFull` immediately if the queue is at capacity. With
     ``hang_up``, the block, or the wait for the slot, ends as a disconnect
-    once ``hang_up`` is set (:class:`HangUp`).
+    once ``hang_up`` is set (:class:`HangUp`). A model unloaded while idle
+    is loaded again once the slot is held, before the block runs.
     """
     started = time.perf_counter()
     try:
@@ -176,8 +177,14 @@ async def inference(
             hang_up if hang_up is not None else nullcontext(),
             ctx.queue.slot(shared=operation is Operation.STREAM),
         ):
-            started = time.perf_counter()
-            yield
+            try:
+                # A model unloaded while idle loads again here, before the
+                # timing starts (ADR 0033).
+                await ctx.residency.ensure_loaded()
+                started = time.perf_counter()
+                yield
+            finally:
+                ctx.residency.touch()
     except Exception as exc:
         outcome = classify(exc)
         detail = f"{type(exc).__name__}: {exc}"

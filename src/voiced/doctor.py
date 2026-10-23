@@ -30,6 +30,7 @@ from voiced.config import (
 )
 from voiced.control import NOT_SERVED, socket_path, state_dir
 from voiced.control.client import ControlError, request
+from voiced.control.supervisor import warm
 from voiced.engines.kokoro import (
     ESPEAK_COPIES,
     ESPEAK_REMEDY,
@@ -488,8 +489,9 @@ def check_metal_daemon(
 
     Accepted evidence, strongest first:
 
-    1. A service whose ``/health`` says a real engine (not ``fake``) has its
-       model loaded, where the pid listening on its HTTP port is the pid
+    1. A service whose ``/health`` says a real engine (not ``fake``) has
+       loaded its model (and may have unloaded it since, ``idle``), where
+       the pid listening on its HTTP port is the pid
        launchd reports for the daemon. That rules out a ``voiced serve`` run by
        hand on the same port.
     2. The JSON written by ``voiced doctor --metal-probe``, if it says ``ok``,
@@ -501,7 +503,7 @@ def check_metal_daemon(
     name = "Metal (daemon)"
     for item in evidence:
         payload = item.health.payload or {}
-        if not payload.get("model_loaded") or payload.get("engine") in (None, "fake"):
+        if not warm(payload) or payload.get("engine") in (None, "fake"):
             continue
         if item.launchd_pid is None or not item.listener_pids:
             continue
@@ -624,8 +626,12 @@ def check_models(settings: Settings) -> list[Check]:
 
     hub = models.hub_dir(settings.install.hf_home)
     checks = []
-    for service, model in (("stt", settings.stt.model), ("tts", settings.tts.model)):
+    for service in HTTP_SERVICES:
+        model = settings.service(service).model
         name = f"{service.upper()} model"
+        if not settings.service(service).enabled:
+            checks.append(Check(name, "pass", f"{service} is off; not checked"))
+            continue
         if models.find(model) is None:
             checks.append(Check(name, "pass", f"{model} (not in voiced's catalogue; not checked)"))
             continue

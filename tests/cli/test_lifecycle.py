@@ -360,3 +360,58 @@ def test_uninstall_waits_for_an_install(
         assert (state / "install.json").exists()
     thread.join(10)
     assert not state.exists()
+
+
+# A service switched off (ADR 0033) ------------------------------------------
+
+
+def test_start_of_a_service_switched_off_says_how_to_turn_it_on(settings: Settings) -> None:
+    settings.stt.enabled = False
+    stt, tts = settings.launchd.label("stt"), settings.launchd.label("tts")
+    fake = FakeLaunchctl({stt: True, tts: True})
+    out: list[str] = []
+    assert lc.cmd_start("stt", settings, fake, out.append) == 0
+    assert out == [
+        "stt: off ([stt] enabled = false); turn it on with "
+        "`voiced settings set stt.enabled=true` and `voiced restart stt`"
+    ]
+    assert fake.calls == [], "not kickstarted, not bootstrapped"
+    out.clear()
+    lc.cmd_start("tts", settings, fake, out.append)
+    assert ["launchctl", "kickstart", f"system/{tts}"] in fake.calls
+
+
+def test_status_says_off_for_the_parked_process(settings: Settings) -> None:
+    from voiced.control import state_dir
+    from voiced.launchd import parked
+
+    fake = FakeLaunchctl({settings.launchd.label(s): True for s in ("stt", "tts", "watchdog")})
+    marker = parked.marker(state_dir(settings), "stt")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("42\n")  # the pid launchd runs for stt (RUNNING)
+
+    def poll(url: str) -> Observation:
+        assert not url.startswith(settings.http_url("stt")), "a parked service is not polled"
+        return Observation("idle", "", 10, {"model": "m/tts", "queue_depth": 0})
+
+    rows = lc.collect_status(settings, fake, poll)
+    assert rows[0]["health"] == "off"
+    assert "voiced settings set stt.enabled=true" in rows[0]["health_detail"]
+    assert rows[1]["health"] == "idle"
+
+    out: list[str] = []
+    assert lc.cmd_status(settings, fake, out.append, control=lambda s: None) == 1
+    assert "off ([stt] enabled = false)" in out[0]
+
+
+def test_status_is_fine_with_idle_and_off(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        {"service": "stt", "health": "off", "pid": 1, "launchd": "running"},
+        {"service": "tts", "health": "idle", "pid": 2, "launchd": "running"},
+        {"service": "watchdog", "pid": 3, "launchd": "running"},
+    ]
+    monkeypatch.setattr(lc, "collect_status", lambda *a, **k: rows)
+    out: list[str] = []
+    assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 0

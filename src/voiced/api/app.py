@@ -40,10 +40,10 @@ from voiced.context import ServiceContext
 from voiced.control.protocol import MODEL_NOT_DOWNLOADED
 from voiced.engines import registry
 from voiced.engines.base import EngineError, STTEngine, TTSEngine
-from voiced.health import HealthResponse, HealthState
+from voiced.health import READY_STATUSES, HealthResponse, HealthState
 from voiced.inference import classify
 from voiced.metrics import Outcome
-from voiced.models import ModelNotDownloaded, hub_missing_model
+from voiced.models import ModelNotDownloaded
 from voiced.queue import InferenceQueue, QueueFull
 
 __all__ = ["create_stt_app", "create_tts_app"]
@@ -79,17 +79,13 @@ async def _load(ctx: ServiceContext) -> None:
     started = time.perf_counter()
     log.info("loading %s engine %s (%s)", ctx.service, ctx.engine.name, ctx.engine.model_id)
     try:
-        await ctx.engine.load()
-    except Exception as exc:
-        missing = hub_missing_model(exc, ctx.engine.model_id)
-        if missing is not None:
-            log.error("%s: %s", ctx.service, missing)
-            ctx.health.mark_missing(missing)
-            return
+        await ctx.residency.load()
+    except ModelNotDownloaded:
+        return  # logged, and health says missing_model
+    except Exception:
         log.exception("%s engine failed to load; exiting", ctx.service)
         logging.shutdown()
         exit_process(1)
-    ctx.health.mark_loaded()
     if not ctx.languages:
         log.warning(
             "%s serves no language: engine %s offers %s but %s.languages is %s",
@@ -131,6 +127,7 @@ def _build(ctx: ServiceContext) -> FastAPI:
         app.state.load_task = task
         try:
             yield
+            await ctx.residency.close()
         except Exception as exc:
             # Startup failed after the load began: a Wyoming port clash in the
             # listener's outer lifespan, for one. The load thread cannot be
@@ -218,15 +215,19 @@ def _build(ctx: ServiceContext) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse, tags=["service"])
     async def health(ctx: Ctx) -> JSONResponse:
-        """Service health. 503 while the model is loading or not downloaded,
-        200 otherwise.
+        """Service health. 503 while the model first loads or is not
+        downloaded, 200 otherwise.
 
         ``status`` is ``degraded`` if the last inference failed; the watchdog
         decides what to do with that. ``missing_model``: the configured model
-        is not downloaded, and ``last_error`` names it.
+        is not downloaded, and ``last_error`` names it. ``idle``: the model
+        was unloaded after ``idle_unload_s`` without a request, and
+        ``loading``: it is loading again for one (ADR 0033); both take
+        requests.
         """
         snapshot = ctx.public_health()
-        code = status.HTTP_200_OK if snapshot.model_loaded else status.HTTP_503_SERVICE_UNAVAILABLE
+        ready = snapshot.status in READY_STATUSES
+        code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
         return JSONResponse(status_code=code, content=snapshot.model_dump())
 
     @app.get("/v1/models", tags=["discovery"], dependencies=V1_DEPENDENCIES)

@@ -179,3 +179,23 @@ def test_without_hf_home_downloads_go_where_voiced_looks(
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     apply_engine_environment(load_settings(cfg))
     assert os.environ["HF_HOME"] == str(DEFAULT_HF_HOME)  # what hub_dir(None) is under
+
+
+def test_services_default_to_on_and_always_loaded(settings: Settings) -> None:
+    """Existing installs and Home Assistant users see no change (ADR 0033)."""
+    for section in (settings.stt, settings.tts):
+        assert section.enabled is True
+        assert section.idle_unload_s == 0
+    assert settings.service("stt") is settings.stt
+    assert settings.service("tts") is settings.tts
+
+
+def test_idle_unload_must_not_be_negative(tmp_path: Path) -> None:
+    path = tmp_path / "c.toml"
+    path.write_text("[tts]\nidle_unload_s = -5\n")
+    with pytest.raises(ValidationError):
+        load_settings(path)
+    path.write_text("[stt]\nenabled = false\nidle_unload_s = 300\n")
+    settings = load_settings(path)
+    assert settings.stt.enabled is False
+    assert settings.stt.idle_unload_s == 300

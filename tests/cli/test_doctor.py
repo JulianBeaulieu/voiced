@@ -555,3 +555,9 @@ def test_each_services_model_is_downloaded_or_says_what_fetches_it(
         "gradium/phonon-31m-en, gradium/phonon-voices not downloaded; "
         "run voiced models download gradium/phonon-31m-en"
     )
+
+
+def test_the_model_of_a_service_switched_off_is_not_checked(settings: Settings) -> None:
+    settings.stt.enabled = False
+    stt, _ = doctor.check_models(settings)
+    assert (stt.result, stt.detail) == ("pass", "stt is off; not checked")

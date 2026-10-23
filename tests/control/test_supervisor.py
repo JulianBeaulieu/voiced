@@ -19,6 +19,7 @@ from voiced.config import Settings, WatchdogConfig
 from voiced.control.ops import NotInstalled, Operations, ServiceUnavailable
 from voiced.control.server import ControlServer
 from voiced.control.supervisor import WatchdogSupervisor, service_state
+from voiced.control.supervisor import warm as supervisor_warm
 from voiced.engines.catalogue import engines_list
 from voiced.launchd.control import CommandResult
 from voiced.layout import RunningEnvironment
@@ -44,6 +45,9 @@ HEALTH = {
     ("obs", "grace", "state"),
     [
         (Observation("ok"), False, "running"),
+        (Observation("idle"), False, "running"),
+        (Observation("loading"), False, "running"),
+        (Observation("off", loaded=True), True, "off"),
         (Observation("starting"), False, "starting"),
         (Observation("degraded"), False, "degraded"),
         (Observation("stalled"), False, "degraded"),
@@ -57,6 +61,22 @@ HEALTH = {
 )
 def test_service_state(obs: Observation, grace: bool, state: str) -> None:
     assert service_state(obs, grace) == state
+
+
+@pytest.mark.parametrize(
+    ("payload", "warm"),
+    [
+        (None, False),
+        ({"status": "starting", "model_loaded": False}, False),
+        ({"status": "ok", "model_loaded": True}, True),
+        ({"status": "idle", "model_loaded": False}, True),
+        ({"status": "loading", "model_loaded": False}, True),
+        ({"status": "missing_model", "model_loaded": False}, False),
+    ],
+)
+def test_warm_means_the_first_load_is_done(payload: dict[str, object] | None, warm: bool) -> None:
+    """An idle service is warm: the next request loads its model (ADR 0033)."""
+    assert supervisor_warm(payload) is warm
 
 
 def make(
@@ -134,7 +154,7 @@ def test_hang_after_healthy_shows_degraded_within_grace(settings: Settings) -> N
 def test_status_reads_pid_before_health(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from voiced.control import supervisor
+    from voiced import watchdog
 
     calls: list[str] = []
 
@@ -146,8 +166,8 @@ def test_status_reads_pid_before_health(
         calls.append("health")
         return Observation("ok", payload=HEALTH)
 
-    monkeypatch.setattr(supervisor, "launchd_view", view)
-    monkeypatch.setattr(supervisor, "poll_health", poll)
+    monkeypatch.setattr(watchdog, "launchd_view", view)
+    monkeypatch.setattr(watchdog, "poll_health", poll)
     dog = Watchdog(services=watchdog_specs(settings)[:1], policy=POLICY)
     assert WatchdogSupervisor(dog, installed=lambda label: True).status()["services"]
     assert calls == ["launchd", "health"]

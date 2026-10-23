@@ -56,8 +56,15 @@ SETTABLE: dict[str, tuple[str, str]] = {
     "tts.model": ("tts", "model"),
     "tts.voice": ("tts", "default_voice"),
     "tts.speed": ("tts", "speed"),
+    "stt.enabled": ("stt", "enabled"),
+    "stt.idle_unload_s": ("stt", "idle_unload_s"),
+    "tts.enabled": ("tts", "enabled"),
+    "tts.idle_unload_s": ("tts", "idle_unload_s"),
 }
 """Settable name (as the control protocol spells it) -> (section, file key)."""
+
+BOOLEAN_SETTINGS = ("zeroconf", "browser_settings", "stt.enabled", "tts.enabled")
+INTEGER_SETTINGS = ("stt.idle_unload_s", "tts.idle_unload_s")
 
 # Which services read a section at startup. browser_settings is read from the
 # file by the status page, so changing it needs no restart.
@@ -149,15 +156,19 @@ def settings_view(settings: Settings, config_file: Path) -> dict[str, Any]:
         "api_key_set": bool(server.api_key),
         "zeroconf": server.zeroconf,
         "stt": {
+            "enabled": settings.stt.enabled,
             "engine": settings.stt.engine,
             "model": settings.stt.model,
             "language": settings.stt.languages[0],
+            "idle_unload_s": settings.stt.idle_unload_s,
         },
         "tts": {
+            "enabled": settings.tts.enabled,
             "engine": settings.tts.engine,
             "model": settings.tts.model,
             "voice": settings.tts.default_voice,
             "speed": settings.tts.speed,
+            "idle_unload_s": settings.tts.idle_unload_s,
         },
         "browser_settings": server.browser_settings,
         "ports": {
@@ -203,9 +214,17 @@ def _coerce(name: str, value: object, current: Mapping[str, Any]) -> object:
         if bind_mode(old) == value:
             return old  # keep a specific address of the same kind
         return LOOPBACK_BIND if value == "loopback" else LAN_BIND
-    if name in ("zeroconf", "browser_settings"):
+    if name in BOOLEAN_SETTINGS:
         if not isinstance(value, bool):
             raise InvalidSetting(name, "must be true or false")
+        return value
+    if name in INTEGER_SETTINGS:
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)  # 300.0 from a JSON encoder that writes floats
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise InvalidSetting(name, "must be a whole number of seconds")
+        if value < 0:
+            raise InvalidSetting(name, "must be 0 (never) or more")
         return value
     if name == "tts.speed":
         if isinstance(value, bool) or not isinstance(value, int | float):

@@ -10,7 +10,11 @@ from pydantic import BaseModel
 
 from voiced.models import ModelNotDownloaded
 
-HealthStatus = Literal["starting", "ok", "degraded", "missing_model"]
+HealthStatus = Literal["starting", "ok", "degraded", "missing_model", "idle", "loading"]
+
+READY_STATUSES: frozenset[HealthStatus] = frozenset({"ok", "degraded", "idle", "loading"})
+"""Statuses in which the service takes requests (``/health`` answers 200).
+``idle`` and ``loading`` too: the request waits for the model to load."""
 
 
 class HealthResponse(BaseModel):
@@ -40,9 +44,16 @@ class HealthState:
     * ``missing_model`` if the load found the model not downloaded: the
       process stays up and serves nothing until it is downloaded and the
       service restarted (ADR 0022),
-    * ``starting`` until the engine's ``load()`` has finished,
-    * ``degraded`` if the most recent inference raised,
+    * ``loading`` while the model loads again for a request after an idle
+      unload (ADR 0033),
+    * ``starting`` until the engine's first ``load()`` has finished,
+    * ``degraded`` if the most recent inference (or a load for one) raised,
+    * ``idle`` while the model is unloaded on purpose; the next request
+      loads it,
     * ``ok`` otherwise.
+
+    ``model_loaded`` says whether the model is in memory now: false while
+    ``idle`` and ``loading``.
     """
 
     service: Literal["stt", "tts"]
@@ -60,10 +71,24 @@ class HealthState:
     shown without the message (``ServiceContext.public_health``)."""
     missing: ModelNotDownloaded | None = None
     """What the load found missing, if it did."""
+    unloaded: bool = False
+    """The model was unloaded on purpose (idle); set until it is loaded again."""
+    reloading: bool = False
+    """A request is waiting for the model to load again after an unload."""
 
     def mark_loaded(self) -> None:
         self.model_loaded = True
+        self.unloaded = self.reloading = False
         self.last_error = self.last_error_type = None
+
+    def mark_unloaded(self) -> None:
+        self.model_loaded = False
+        self.unloaded = True
+
+    @property
+    def started(self) -> bool:
+        """The first load has finished: requests are taken from then on."""
+        return self.model_loaded or self.unloaded
 
     def mark_missing(self, missing: ModelNotDownloaded) -> None:
         self.missing = missing
@@ -82,10 +107,14 @@ class HealthState:
     def status(self) -> HealthStatus:
         if self.missing is not None:
             return "missing_model"
-        if not self.model_loaded:
+        if self.reloading:
+            return "loading"
+        if not self.started:
             return "starting"
         if self.last_error is not None:
             return "degraded"
+        if self.unloaded:
+            return "idle"
         return "ok"
 
     def snapshot(self, queue_depth: int) -> HealthResponse:

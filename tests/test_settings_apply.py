@@ -352,3 +352,36 @@ def test_the_model_an_engine_switch_implies_is_checked(cfg: Path) -> None:
 def test_a_model_outside_the_catalogue_and_other_keys_are_not_checked(cfg: Path) -> None:
     apply_settings({"tts.model": "someone/own-model"}, cfg)
     apply_settings({"tts.speed": 1.5}, cfg)  # the configured default is not downloaded either
+
+
+# enabled and idle_unload_s (ADR 0033) ------------------------------------------
+
+
+def test_switching_a_service_off_restarts_it(cfg: Path) -> None:
+    change = apply_settings({"stt.enabled": False, "tts.idle_unload_s": 300}, cfg)
+    assert change.changed == ("stt.enabled", "tts.idle_unload_s")
+    assert change.restart_required == ("stt", "tts")
+    settings = load_settings(cfg)
+    assert settings.stt.enabled is False
+    assert settings.tts.idle_unload_s == 300
+    assert store.settings_view(settings, cfg)["stt"]["enabled"] is False
+    assert store.settings_view(settings, cfg)["tts"]["idle_unload_s"] == 300
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("stt.enabled", "false"),
+        ("tts.enabled", 0),
+        ("stt.idle_unload_s", -1),
+        ("tts.idle_unload_s", 1.5),
+        ("tts.idle_unload_s", True),
+        ("stt.idle_unload_s", "300"),
+    ],
+)
+def test_enabled_and_idle_unload_are_checked(cfg: Path, name: str, value: object) -> None:
+    before = cfg.read_text()
+    with pytest.raises(InvalidSetting) as info:
+        apply_settings({name: value}, cfg)
+    assert info.value.field == name
+    assert cfg.read_text() == before

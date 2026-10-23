@@ -1853,3 +1853,18 @@ def test_listener_pids_reads_lsof() -> None:
     assert seen == [["lsof", "-nP", "-t", "-iTCP:1", "-sTCP:LISTEN"]]
     assert real_listener_pids(2, lsof) == []  # lsof exits 1 when nothing listens
     assert real_listener_pids(3, lambda argv: CommandResult(127)) is None
+
+
+def test_install_says_a_service_switched_off_stays_off(settings: Settings, tmp_path: Path) -> None:
+    """The daemon is installed as always and parks itself (ADR 0033)."""
+    _environment(tmp_path / "env")
+    settings.stt.enabled = False
+    p = _plan(settings, tmp_path)
+    assert p.off == ("stt",)
+    said: list[str] = []
+    _install(p, said)
+    assert (
+        "stt: off ([stt] enabled = false); turn it on with `voiced settings set "
+        "stt.enabled=true` and `voiced restart stt`. Its daemon starts and serves nothing."
+    ) in said
+    assert not any(line.startswith("tts: off") for line in said)
