@@ -497,7 +497,7 @@ final class LaunchTests: XCTestCase {
     // MARK: - The icon
 
     func testTheIconsImagesAreTemplates() {
-        for state in [MenuBarIconState.idle, .busy, .error] {
+        for state in [MenuBarIconState.idle, .update, .busy, .error] {
             let image = MenuBarIconImage.image(for: state)
             XCTAssertTrue(image.isTemplate, "\(state)")
             XCTAssertGreaterThan(image.size.width, 0)

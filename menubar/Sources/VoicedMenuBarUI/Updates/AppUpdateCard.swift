@@ -21,6 +21,11 @@ struct AppUpdateCard: View {
             EmptyView()
         case .checking:
             Progress(text: "Checking for updates", fraction: nil, cancel: nil)
+        case .installing(let update) where updates.canRetryRelaunch:
+            Notice(
+                symbol: "arrow.clockwise.circle.fill", tint: .accentColor,
+                text: "voiced \(update.version) is ready; the app relaunches to finish installing it.",
+                actionTitle: "Relaunch Now", action: updates.relaunchNow)
         case .available(let update):
             Available(update: update, updates: updates)
         case .downloading(let update, let fraction):
@@ -44,23 +49,21 @@ struct AppUpdateCard: View {
         let updates: AppUpdates
 
         var body: some View {
+            let blocker = updates.installBlocker()
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "arrow.down.circle.fill")
                         .foregroundStyle(Color.accentColor)
                         .accessibilityHidden(true)
-                    Text(update.installable
-                        ? "voiced \(update.version) is available."
-                        : "voiced \(update.version) is out; its page says how to get it.")
+                    Text("voiced \(update.version) is available.")
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 HStack(spacing: 8) {
-                    if update.installable {
-                        Button("Install and Relaunch", action: updates.install)
-                            .buttonStyle(.borderedProminent)
-                    }
+                    Button("Install and Relaunch", action: updates.install)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(blocker != nil)
                     Button("Later", action: updates.later)
                     Spacer(minLength: 0)
                     if let page = update.releasePage {
@@ -68,6 +71,12 @@ struct AppUpdateCard: View {
                     }
                 }
                 .controlSize(.small)
+                if let blocker {
+                    Text(blocker)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(10)
             .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

@@ -40,9 +40,10 @@ public enum OverallHealth: Sendable, Equatable {
 /// The menu bar icon (ADR 0018, "In the menu bar"): idle while voiced runs, busy while it
 /// starts, loads a model, connects, installs or downloads a model (ADR 0022), and an error
 /// badge for everything else that needs a look (degraded, stopped, a missing model, not
-/// running, not installed, an incompatible version).
+/// running, not installed, an incompatible version). While idle, a newer app waiting to be
+/// installed (ADR 0034) adds a neutral badge: news, not an error.
 public enum MenuBarIconState: Sendable, Hashable {
-    case idle, busy, error
+    case idle, update, busy, error
 }
 
 /// The icon's state and what VoiceOver says for it.
@@ -50,14 +51,16 @@ public struct MenuBarIconStatus: Sendable, Equatable {
     public var state: MenuBarIconState
     public var accessibilityLabel: String
 
-    public init(dashboard: Dashboard, installing: Bool, downloading: Bool = false) {
+    public init(dashboard: Dashboard, installing: Bool, downloading: Bool = false, updateAvailable: Bool = false) {
         if installing || downloading || dashboard.isBusy {
             state = .busy
+        } else if dashboard.health != .running {
+            state = .error
         } else {
-            state = dashboard.health == .running ? .idle : .error
+            state = updateAvailable ? .update : .idle
         }
         let activity = installing ? "Installing" : downloading ? "Downloading a model" : dashboard.headline
-        accessibilityLabel = "voiced: \(activity)"
+        accessibilityLabel = "voiced: \(activity)" + (updateAvailable ? ", update available" : "")
     }
 }
 

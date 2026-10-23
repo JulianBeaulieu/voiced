@@ -298,8 +298,10 @@ required, not optional: the `release` environment with a required reviewer,
 and the tag ruleset that lets only the owner create `v*` tags. Without them
 anyone with write access could tag a commit and have it signed with the
 owner's Developer ID. The `release` environment also needs the secret
-`SPARKLE_PRIVATE_KEY` (SIGNING.md, "Updates of the app"): without it the
-release has no `appcast.xml`, and installed apps are not offered it.
+`SPARKLE_PRIVATE_KEY` (SIGNING.md, "Updates of the app"): without it a tag
+build fails, since a release without `appcast.xml` would leave every
+installed app without a feed. Changing that key needs a release of its own:
+SIGNING.md, "Rotating the key".
 
 1. Bump `version` in `pyproject.toml` (`voiced.__version__` reads it from
    the installed package metadata) and run `uv lock`. For a new minor
@@ -322,8 +324,8 @@ release has no `appcast.xml`, and installed apps are not offered it.
    deployments).
 5. Check the draft release it creates: the notes, the wheel, the sdist,
    `voiced-<version>-macos.zip` and `.dmg`, `appcast.xml` and `SHA256SUMS`.
-   Assets named `-adhoc` mean the signing secrets were missing, and no
-   `appcast.xml` means `SPARKLE_PRIVATE_KEY` was; the job summary says so.
+   Assets named `-adhoc` mean the signing secrets were missing; the job
+   summary says so.
    Download the zip and open the app once: Gatekeeper should not complain.
    To rebuild, delete the draft first; the workflow refuses a tag that
    already has a release.

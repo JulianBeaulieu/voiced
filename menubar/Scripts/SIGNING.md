@@ -158,9 +158,10 @@ signed with one EdDSA key pair, separate from the Developer ID:
 The release workflow signs `voiced-<version>-macos.zip` with it
 (`sign_update --ed-key-file -`, the key on stdin), checks the signature
 against the app's `SUPublicEDKey` (`verify-update.swift`), and uploads
-`appcast.xml` (`scripts/release.py appcast`) for a pushed tag's signed build
-only. Without the secret the build still completes, with a warning and no
-appcast.
+`appcast.xml` (`scripts/release.py appcast`) for a pushed tag's signed build.
+Without the secret that build fails: installed apps read only the latest
+release's `appcast.xml`. Dry runs sign with a throwaway key made on the
+runner and upload no appcast.
 
 Made once, with Sparkle's tools from the package's checkout
 (`menubar/.build/artifacts/sparkle/Sparkle/bin` after `swift build`):
@@ -170,7 +171,7 @@ generate_keys --account voiced      # prints the public key for bundle.sh
 # The secret, through a private temporary file removed in the same command:
 bash -c 'set -euo pipefail; umask 077; d="$(mktemp -d)"; trap "rm -rf -- \"$d\"" EXIT
     generate_keys --account voiced -x "$d/key" >/dev/null
-    gh secret set SPARKLE_PRIVATE_KEY --env release < "$d/key"'
+    gh secret set SPARKLE_PRIVATE_KEY --env release --repo JulianBeaulieu/voiced < "$d/key"'
 ```
 
 (`generate_keys -x` refuses a path that exists, so it cannot write to a
@@ -185,6 +186,9 @@ from an update whose archive is a Developer ID signed disk image of the same
 team. To rotate: make a new pair (`generate_keys --account voiced-<year>`),
 put its public key in `bundle.sh`, set `SPARKLE_PRIVATE_KEY` to it, and for
 that one release make the appcast's enclosure the release's notarized
-`voiced-<version>-macos.dmg` (signed with the new key). Releases after it
-go back to the zip. Never change the Developer ID and the EdDSA key in the
+`voiced-<version>-macos.dmg` (signed with the new key). `release.py appcast`
+writes the zip, so that release's `appcast.xml` is edited by hand: the
+enclosure's `url`, `length` and `sparkle:edSignature` for the DMG, then
+uploaded over the draft's asset (`gh release upload v<version> appcast.xml
+--clobber`) before publishing. Releases after it go back to the zip. Never change the Developer ID and the EdDSA key in the
 same release: Sparkle needs one of them to stay the same.

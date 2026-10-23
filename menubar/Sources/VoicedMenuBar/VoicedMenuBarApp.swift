@@ -32,7 +32,13 @@ struct VoicedMenuBarApp: App {
         Task { await launch.refresh() }
         _launch = State(initialValue: launch)
         _whatsNew = State(initialValue: WhatsNew(notes: WhatsNew.notes(), version: resources?.manifest.version))
-        _updates = State(initialValue: SparkleUpdater.start())
+        let updates = SparkleUpdater.start()
+        // Installing quits the app, which would stop the installer or a model download.
+        updates?.installBlocker = {
+            AppUpdates.blocker(installing: Install.installer?.isWorking ?? false, modelsBusy: models.isBusy)
+        }
+        Install.updates = updates
+        _updates = State(initialValue: updates)
     }
 
     var body: some Scene {
@@ -44,11 +50,11 @@ struct VoicedMenuBarApp: App {
         } label: {
             MenuBarIcon(
                 dashboard: model.dashboard, installing: Install.installer?.isWorking ?? false,
-                downloading: models.isDownloading)
+                downloading: models.isDownloading, updateAvailable: updates?.isAvailable ?? false)
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
                 .background(InstallerOpener(installer: Install.installer, launch: launch))
-                .background(VoicedUpdateContinuation(launch: launch, updates: updates))
+                .background(VoicedUpdateOpener(launch: launch, models: models, updates: updates))
         }
         .menuBarExtraStyle(.window)
 
@@ -83,6 +89,8 @@ enum Install {
     static let runner = SystemInstallRunner()
     static var installer: Installer?
     static var models: ModelManager?
+    /// The app's own updates, told when a quit for their install is cancelled.
+    static var updates: AppUpdates?
 }
 
 /// Opens "What's new" once the services run this app's pins after running others. It lives
@@ -120,22 +128,28 @@ private struct InstallerOpener: View {
     }
 }
 
-/// After the app relaunched into its own update, updates the installed voiced to the one it
-/// now carries, in the installer window, without asking again (ADR 0034).
-private struct VoicedUpdateContinuation: View {
+/// Runs `VoicedUpdateContinuation` whenever what it waits for changes, and shows the
+/// installer window when it starts "Update voiced" (ADR 0034).
+private struct VoicedUpdateOpener: View {
     let launch: LaunchChecks
+    let models: ModelManager
     let updates: AppUpdates?
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Color.clear.onChange(of: launch.installMatch, initial: true) {
-            guard let updates, updates.continuesWithVoicedUpdate(launch.installMatch), launch.allowsInstall,
-                let installer = Install.installer, !installer.isWorking, Install.models?.isBusy != true
-            else { return }
-            installer.update()
-            NSApplication.shared.activate()
-            openWindow(id: InstallerView.windowID)
-        }
+        Color.clear
+            .onChange(of: launch.installMatch, initial: true) { run() }
+            .onChange(of: Install.installer?.isWorking ?? false) { run() }
+            .onChange(of: models.isBusy) { run() }
+    }
+
+    private func run() {
+        guard let updates else { return }
+        let continuation = VoicedUpdateContinuation(
+            updates: updates, installer: Install.installer, canStart: { launch.allowsInstall && !models.isBusy })
+        guard continuation.run(launch.installMatch) else { return }
+        NSApplication.shared.activate()
+        openWindow(id: InstallerView.windowID)
     }
 }
 
@@ -170,7 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Keep Downloading")
             alert.addButton(withTitle: "Quit")
             NSApplication.shared.activate()
-            return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+            guard alert.runModal() == .alertSecondButtonReturn else {
+                Install.updates?.quitCancelled()
+                return .terminateCancel
+            }
+            return .terminateNow
         }
     }
 

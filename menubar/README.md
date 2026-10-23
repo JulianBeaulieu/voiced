@@ -37,12 +37,13 @@ Sparkle, at the version `Package.resolved` pins.
 
 ## The icon
 
-Three states (ADR 0018), each a template image, so the menu bar draws it
+Four states (ADR 0018 and 0034), each a template image, so the menu bar draws it
 for light and dark:
 
 | State | Image | Meaning |
 |---|---|---|
 | idle | `waveform` | Both services running with their model loaded |
+| update | `waveform` with a small plain dot at the top, drawn by `MenuBarIconImage` | Running, and a newer app is waiting to be installed (ADR 0034) |
 | busy | `waveform` with a dotted badge, drawn by `MenuBarIconImage` | Starting, loading a model, connecting, or installing |
 | error | `waveform.badge.exclamationmark` | Degraded, a service stopped, voiced not running, not installed, or an incompatible version |
 
@@ -355,8 +356,11 @@ checks at once. A newer version is a card at the top of the menu bar
 window: **Install and Relaunch** downloads it, checks its EdDSA signature
 against the key in Info.plist, replaces the app and opens it again, and the
 relaunched app then runs "Update voiced" for an install it manages, showing
-the installer's progress. **Later** hides the card until the next check. A
-found update never changes the icon.
+the installer's progress. **Later** hides the card until the next check.
+While voiced installs or a model downloads, Install and Relaunch waits and
+the card says why, since quitting would stop them; if a quit is cancelled
+anyway, **Relaunch Now** asks again. A found update adds a small dot to the
+icon, never the error badge.
 
 Sparkle shows none of its own windows: `Sources/VoicedMenuBar/SparkleUpdater.swift`,
 the one file that imports it, hands what Sparkle reports to `AppUpdates`

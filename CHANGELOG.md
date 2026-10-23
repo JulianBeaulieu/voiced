@@ -31,8 +31,9 @@ uses [Semantic Versioning](https://semver.org/).
   update the services to the voiced it carries, showing the installer's
   progress, so one click updates both. Check for Updates… in the menu checks
   at once, and Settings > General > Check for updates automatically turns the
-  checks off. An update found is not shown as a problem: the icon stays as it
-  is. This release is the first with the updater and the first to publish
+  checks off. An update found is not shown as a problem: the icon gets a small
+  dot, not the error badge, and Install and Relaunch waits while voiced is
+  installing or a model downloads. This release is the first with the updater and the first to publish
   the feed: an older app is updated to it once more by hand or with
   Homebrew, and the first update the app installs itself is to the release
   after it. The Homebrew cask now says `auto_updates`, and `brew upgrade
@@ -40,6 +41,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- A plain `brew upgrade` now leaves the menu bar app to its own updates (the
+  cask says `auto_updates`); `brew upgrade --cask voiced` still updates it.
 - `brew uninstall --cask voiced` removes the app and leaves the services
   running, as moving the app to the Trash does. To remove them, use
   Uninstall in the app first, or `brew uninstall --zap --cask voiced`.

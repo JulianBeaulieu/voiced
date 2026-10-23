@@ -27,21 +27,30 @@ GitHub redirects `latest/download` to the newest published release that is
 not a draft or a pre-release, so the feed moves when a person publishes a
 release, not when a tag is pushed, and a pre-release is never offered.
 
-`scripts/release.py appcast` writes it: one item with `sparkle:version` (the
-built app's `CFBundleVersion`, read from its Info.plist, which is what
-Sparkle compares), `sparkle:shortVersionString` (the PEP 440 version),
-`sparkle:minimumSystemVersion` (from `menubar/Package.swift`; a test checks
-bundle.sh's `LSMinimumSystemVersion` agrees), the release page as the
-item's `link`, and an enclosure that is the release's versioned,
-notarized zip (`voiced-<version>-macos.zip`) with its length and EdDSA
-signature. The description is a link to the release page rather than HTML
+`scripts/release.py appcast` writes it: one item with `sparkle:version` and
+`sparkle:minimumSystemVersion` (the built app's `CFBundleVersion` and
+`LSMinimumSystemVersion`, read from its Info.plist; Sparkle compares the
+first), `sparkle:shortVersionString` (the PEP 440 version), the release page
+as the item's `link`, and an enclosure that is the release's versioned,
+notarized zip (`voiced-<version>-macos.zip`), named and sized from the file
+that was signed, with its EdDSA signature. The description is a link to the release page rather than HTML
 made from the CHANGELOG: the app shows a "Release Notes" link and never the
 description, so a Markdown converter would be code for no reader.
 
-The release workflow runs it only for a pushed tag whose build is signed
-with the Developer ID. A dry run, an ad hoc build and a run without the key
-(a fork) produce no appcast; without the key the step warns and the build
-goes on. Installed apps then keep reading the latest release that has one.
+Installed apps read only the newest published release's asset, so every
+release must carry one: a release without it leaves every installed app
+without a feed (a 404 for each check) until the next release that has it.
+The release workflow therefore fails a pushed tag's signed build when
+`SPARKLE_PRIVATE_KEY` is missing. Every other build (a dry run, an ad hoc
+build, a fork) signs its zip with a throwaway key made on the runner,
+verifies it and writes the feed outside `dist`, so `sign_update` and the
+generator run on every dry run and nothing is uploaded.
+
+A pre-release maps to the same `CFBundleVersion` as its final release
+(`0.5.0rc1` and `0.5.0` are both `0.5.0`), so an app on a release candidate
+is not offered the final. The feed never serves pre-releases, so this
+concerns only someone who installed one by hand; they install the final the
+same way.
 
 ### The keys
 
@@ -104,22 +113,34 @@ Sparkle's as shipped apart from the signature.
 ### In the app
 
 Sparkle drives a user driver of our own (`SparkleUpdater.swift`, the only
-file that imports Sparkle) instead of its standard windows. It forwards
+file that imports Sparkle) instead of its standard windows. The reason is
+where an update shows: in the app's own popover, beside the services, in
+its own words, never as a separate alert window over whatever the user is
+doing, and never as an error. The standard driver with automatic downloads
+(`SUAutomaticallyUpdate`), the gentle-reminder delegate and
+`updaterWillRelaunchApplication` was the alternative weighed: it downloads in
+the background and installs in one click too, but its prompt is Sparkle's
+window, and the popover could only point at it. It forwards
 every callback to `AppUpdates`, an observable model behind the
 `AppUpdater` protocol, which the views read and the tests drive with a fake:
 
 - A found update is a card at the top of the menu bar window: "voiced X is
   available." with **Install and Relaunch**, **Later** and a link to the
-  release notes. One click downloads (with progress and Cancel), verifies,
-  installs and relaunches: the ready-to-install question Sparkle asks after
-  the download is answered yes, since the click was the decision. Sparkle's
-  standard driver would ask twice (Install Update, then Install and
-  Relaunch).
+  release notes, and a small neutral dot on the icon's top corner until it
+  is installed or put off. One click downloads (with progress and Cancel),
+  verifies, installs and relaunches: the ready-to-install question Sparkle
+  asks after the download is answered yes, since the click was the decision.
+- Install and Relaunch waits while voiced is installing or updating, or a
+  model downloads, and the card says why: installing quits the app, and
+  quitting stops the installer and the download (`applicationWillTerminate`).
+- If the quit is still cancelled (a model download started meanwhile and the
+  user keeps it), the card offers **Relaunch Now**, which asks Sparkle to quit
+  the app again; until then the update installs when the app quits.
 - **Check for Updates…** in the menu runs a check that also answers "voiced
   X is the newest version."; Settings > General has **Check for updates
   automatically**.
-- An update is news, not a problem: the icon and the service rows do not
-  change. A failed install (a bad signature, no network) is an orange notice
+- An update is news, not a problem: the service rows do not change and the
+  icon's dot is neither the error badge nor its tint. A failed install (a bad signature, no network) is an orange notice
   with the error until dismissed.
 
 ### After the relaunch
@@ -131,11 +152,13 @@ the same flow and the same administrator prompt, if any, as the button. The
 user already asked for the new version; a second question would only
 delay it. The old app records the version it relaunches from
 (`appUpdateRelaunchedFrom` in its defaults) as Sparkle starts the install;
-the new app reads and clears it at launch, and decides at the first known
-comparison: only an install the app manages (`source = app`) that differs is
-updated, once. The same version means the install did not happen, and
-anything else (Homebrew's or the command line's install, a translocated app,
-a model download in progress) is left to the usual card.
+the new app reads and clears it at launch. `VoicedUpdateContinuation` then
+decides at the first comparison known while nothing is in the way (the
+installer idle, no model download or delete, the app not translocated);
+until then the decision waits. Only an install the app manages
+(`source = app`) that differs is updated, once. The same version means the
+install did not happen, and Homebrew's or the command line's install is left
+to the usual card.
 
 ### Homebrew
 
@@ -160,6 +183,9 @@ local HTTP server:
   extraction ("The update is improperly signed and could not be
   validated."), shown as the notice; the app kept its version.
 - Sparkle adds 3.0 MB to the bundle, 1.0 MB to the zip.
+- The update of voiced after the relaunch was not part of this run (the
+  copies carried no installer manifest, so they never touched `~/.voiced`);
+  its decision is covered by the tests with a fake installer.
 - Signed with the Developer ID by codesign-app.sh, every nested piece has the
   team identifier, the hardened runtime and no entitlements, and `codesign
   --verify --strict --deep` passes. Notarization of this layout is proven by
@@ -173,17 +199,18 @@ local HTTP server:
   bundle, relaunch): every piece exists in Sparkle, tested on many apps,
   including the cases this would get wrong (a running bundle, an app folder
   the user cannot write, translocation, authorization).
-- **Sparkle's standard user driver**: two clicks and Sparkle's own windows
-  in a menu bar app whose voice is its own popover; the custom driver is a
-  hundred lines of forwarding.
+- **Sparkle's standard user driver**, with automatic downloads, gentle
+  reminders and `updaterWillRelaunchApplication` for the relaunch: Sparkle's
+  own window for the prompt in a menu bar app whose voice is its popover
+  (see "In the app"); the custom driver is a hundred lines of forwarding.
 - **The DMG as the enclosure**: the zip is what the cask already downloads
   and is notarized and stapled; Sparkle unpacks either. A DMG enclosure
   would be needed only to rotate the EdDSA key (below).
 
 ## Consequences
 
-- Every release must be built with `SPARKLE_PRIVATE_KEY` set, or installed
-  apps are not offered it (the job summary and a warning say so). The first
+- Every release must be built with `SPARKLE_PRIVATE_KEY` set; a tag build
+  without it fails. The first
   appcast appears with the next tag, so the first self-update is from that
   release to the one after.
 - Losing the private key means installed apps cannot verify another update.
@@ -194,3 +221,7 @@ local HTTP server:
   every build of the package, including CI's.
 - The app opens a network connection of its own: the feed, at launch and
   daily, unless the switch is off. menubar/README.md says so.
+- Beyond what was asked for: `verify-update.swift` and the dry-run signing
+  with a throwaway key, so a wrong secret or a broken `sign_update` shows up
+  before a release, and the secret in the `release` environment rather than
+  the repository, as the notarization secrets are.

@@ -168,31 +168,44 @@ jobs:
         run: menubar/Scripts/sign.sh --adhoc "$APP" "$DIST" "voiced-$VERSION-macos-adhoc"
 
       - name: Appcast
-        # The app's update feed (ADR 0034): an asset of every release, which the
-        # app reads at releases/latest/download/appcast.xml. Only a pushed tag's
-        # signed build has one, since its enclosure is this release's notarized
-        # zip; a dry run, an ad hoc build or a run without SPARKLE_PRIVATE_KEY (a
-        # fork) has none, and installed apps keep the feed of the latest release
-        # that had one. The key reaches sign_update on stdin, never a file or argv.
-        if: github.event_name == 'push' && steps.signing.outputs.signed == 'true'
+        # The app's update feed (ADR 0034). Installed apps read only
+        # releases/latest/download/appcast.xml, the newest published release's
+        # asset, so every release must carry one: a pushed tag's signed build
+        # without SPARKLE_PRIVATE_KEY fails here rather than publish a release
+        # that leaves every installed app without a feed. Every other build (a
+        # dry run, an ad hoc build) signs its zip with a throwaway key made on
+        # the runner and writes the feed outside dist, so sign_update and the
+        # generator are checked before the first tag and nothing is uploaded.
+        # The key reaches sign_update on stdin, never a file or argv, and is
+        # unset before anything else runs.
         env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-          UV_NO_CONFIG: "1"
+          SPARKLE_PRIVATE_KEY: ${{ github.event_name == 'push' && steps.signing.outputs.signed == 'true' && secrets.SPARKLE_PRIVATE_KEY || '' }}
+          RELEASE: ${{ github.event_name == 'push' && steps.signing.outputs.signed == 'true' }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
-          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
-              echo "::warning::No appcast: SPARKLE_PRIVATE_KEY is not set, so installed apps will not be offered this release"
-              exit 0
+          if [ "$SIGNED" = true ]; then zip="$DIST/voiced-$VERSION-macos.zip"; else zip="$DIST/voiced-$VERSION-macos-adhoc.zip"; fi
+          if [ "$RELEASE" = true ]; then
+              if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+                  echo "::error::SPARKLE_PRIVATE_KEY is not set: this release would have no appcast.xml, and installed apps read only the latest release's"
+                  exit 1
+              fi
+              key="$SPARKLE_PRIVATE_KEY"
+              public="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")"
+              out="$DIST/appcast.xml"
+          else
+              read -r key public < <(printf '%s\n' 'import CryptoKit' 'let key = Curve25519.Signing.PrivateKey()' \
+                  'print(key.rawRepresentation.base64EncodedString(), key.publicKey.rawRepresentation.base64EncodedString())' |
+                  swift -)
+              out="$RUNNER_TEMP/appcast-check.xml"
           fi
-          zip="$DIST/voiced-$VERSION-macos.zip"
+          unset SPARKLE_PRIVATE_KEY
           # Sparkle's tools come with the framework SwiftPM fetched and checked for bundle.sh.
-          sign_update=menubar/.build/artifacts/sparkle/Sparkle/bin/sign_update
-          signature="$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$zip")"
-          swift menubar/Scripts/verify-update.swift "$APP" "$zip" "$signature"
-          "$APP/Contents/Helpers/uv" run --no-project --python "$(tr -d '[:space:]' < menubar/app-python-version)" \
-              scripts/release.py appcast --version "$VERSION" \
-              --bundle-version "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" \
-              --signature "$signature" --length "$(stat -f %z "$zip")" > "$DIST/appcast.xml"
-          cat "$DIST/appcast.xml"
+          signature="$(printf '%s' "$key" | menubar/.build/artifacts/sparkle/Sparkle/bin/sign_update --ed-key-file - -p "$zip")"
+          unset key
+          swift menubar/Scripts/verify-update.swift "$public" "$zip" "$signature"
+          python3 scripts/release.py appcast --version "$VERSION" --app "$APP" --zip "$zip" \
+              --signature "$signature" > "$out"
+          cat "$out"
 
       - name: Remove the keychain
         # sign.sh deletes it on exit; this covers a job cancelled mid-step.
@@ -220,8 +233,6 @@ jobs:
                   echo "voiced.app is signed with the Developer ID, notarized and stapled."
                   if [ -f "$DIST/appcast.xml" ]; then
                       echo "The release carries \`appcast.xml\`: once it is published, installed apps offer this version."
-                  else
-                      echo "No \`appcast.xml\`: installed apps will not offer this version (see the Appcast step)."
                   fi
               else
                   echo "> [!WARNING]"

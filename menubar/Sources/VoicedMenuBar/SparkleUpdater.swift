@@ -37,7 +37,7 @@ final class SparkleUpdater: AppUpdater {
         do {
             try updater.start()
         } catch {
-            Logger(subsystem: "io.github.julianbeaulieu.voiced.menubar", category: "updates")
+            Logger(subsystem: bundle.bundleIdentifier ?? "voiced-menubar", category: "updates")
                 .error("The updater did not start: \(error.localizedDescription, privacy: .public)")
             return nil
         }
@@ -61,16 +61,15 @@ private final class UserDriver: NSObject, SPUUserDriver {
     }
 
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
-        updates?.checkStarted(cancel: cancellation)
+        updates?.checkStarted()
     }
 
     func showUpdateFound(
         with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void
     ) {
-        guard let updates else { return reply(.dismiss) }
-        let update = AvailableUpdate(
-            version: appcastItem.displayVersionString, releasePage: appcastItem.infoURL,
-            installable: !appcastItem.isInformationOnlyUpdate)
+        // The feed never announces a release without an archive (release.py writes none).
+        guard let updates, !appcastItem.isInformationOnlyUpdate else { return reply(.dismiss) }
+        let update = AvailableUpdate(version: appcastItem.displayVersionString, releasePage: appcastItem.infoURL)
         updates.found(update) { reply($0 == .install ? .install : .dismiss) }
     }
 
@@ -107,15 +106,15 @@ private final class UserDriver: NSObject, SPUUserDriver {
 
     func showExtractionReceivedProgress(_ progress: Double) {}
 
+    /// The user chose Install and Relaunch, the only way to a download here, so it goes ahead.
     func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
-        guard let updates else { return reply(.dismiss) }
-        updates.readyToInstall { reply($0 == .install ? .install : .dismiss) }
+        reply(.install)
     }
 
     func showInstallingUpdate(
         withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void
     ) {
-        updates?.installing()
+        updates?.installing(retry: retryTerminatingApplication)
     }
 
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) {

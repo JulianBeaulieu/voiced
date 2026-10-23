@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import plistlib
 import re
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
@@ -130,9 +131,25 @@ SIGNATURE = base64.b64encode(bytes(range(64))).decode()
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 
 
-def test_the_appcast_is_one_item_for_the_signed_zip(release: ModuleType) -> None:
+def built(tmp_path: Path, bundle_version: object = "1.2.0", minimum: object = "14.0") -> Path:
+    """A stand-in voiced.app, with the Info.plist keys the appcast reads."""
+    app = tmp_path / "voiced.app"
+    (app / "Contents").mkdir(parents=True)
+    keys = {"CFBundleVersion": bundle_version, "LSMinimumSystemVersion": minimum}
+    info = {key: value for key, value in keys.items() if value is not None}
+    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps(info))
+    return app
+
+
+def archive(tmp_path: Path, name: str = "voiced-1.2.0rc1-macos.zip", size: int = 4096) -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"z" * size)
+    return path
+
+
+def test_the_appcast_is_one_item_for_the_signed_zip(release: ModuleType, tmp_path: Path) -> None:
     published = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
-    text = release.appcast("1.2.0rc1", "1.2.0", SIGNATURE, 16_384_000, published)
+    text = release.appcast("1.2.0rc1", built(tmp_path), archive(tmp_path), SIGNATURE, published)
     assert text.startswith("<?xml ")
     rss = ET.fromstring(text)
     items = rss.findall("channel/item")
@@ -149,47 +166,55 @@ def test_the_appcast_is_one_item_for_the_signed_zip(release: ModuleType) -> None
     assert enclosure is not None
     assert enclosure.attrib == {
         "url": "https://github.com/JulianBeaulieu/voiced/releases/download/v1.2.0rc1/voiced-1.2.0rc1-macos.zip",
-        "length": "16384000",
+        "length": "4096",
         "type": "application/octet-stream",
         f"{SPARKLE}edSignature": SIGNATURE,
     }
 
 
-def test_the_minimum_macos_is_the_packages_and_the_bundles(
-    release: ModuleType, tmp_path: Path
-) -> None:
-    minimum = release.minimum_macos()
-    bundle = (Path(release.ROOT) / "menubar" / "Scripts" / "bundle.sh").read_text()
-    assert f"<key>LSMinimumSystemVersion</key>\n    <string>{minimum}</string>" in bundle
-    package = tmp_path / "Package.swift"
-    package.write_text("platforms: [.macOS(.v10_15)],\n")
-    assert release.minimum_macos(package) == "10.15"
-    package.write_text("platforms: [.iOS(.v17)],\n")
-    with pytest.raises(ValueError):
-        release.minimum_macos(package)
+def test_the_enclosure_is_the_file_that_was_signed(release: ModuleType, tmp_path: Path) -> None:
+    zip_path = archive(tmp_path, "voiced-1.2.0-macos-adhoc.zip", 10)
+    text = release.appcast("1.2.0", built(tmp_path), zip_path, SIGNATURE)
+    enclosure = ET.fromstring(text).find("channel/item/enclosure")
+    assert enclosure is not None
+    assert enclosure.attrib["url"].endswith("/v1.2.0/voiced-1.2.0-macos-adhoc.zip")
+    assert enclosure.attrib["length"] == "10"
 
 
 @pytest.mark.parametrize(
-    ("bundle_version", "signature", "length"),
+    ("bundle_version", "minimum", "signature", "size"),
     [
-        ("1.2", SIGNATURE, 1),
-        ("1.2.0rc1", SIGNATURE, 1),
-        ("1.2.0", "", 1),
-        ("1.2.0", "not base64!", 1),
-        ("1.2.0", base64.b64encode(bytes(32)).decode(), 1),
-        ("1.2.0", SIGNATURE, 0),
+        ("1.2", "14.0", SIGNATURE, 1),
+        ("1.2.0rc1", "14.0", SIGNATURE, 1),
+        (None, "14.0", SIGNATURE, 1),
+        ("1.2.0", None, SIGNATURE, 1),
+        ("1.2.0", "14.0", "", 1),
+        ("1.2.0", "14.0", "not base64!", 1),
+        ("1.2.0", "14.0", base64.b64encode(bytes(32)).decode(), 1),
+        ("1.2.0", "14.0", SIGNATURE, 0),
     ],
 )
 def test_a_bad_appcast_input_is_refused(
-    release: ModuleType, bundle_version: str, signature: str, length: int
+    release: ModuleType,
+    tmp_path: Path,
+    bundle_version: str | None,
+    minimum: str | None,
+    signature: str,
+    size: int,
 ) -> None:
+    app = built(tmp_path, bundle_version, minimum)
     with pytest.raises(ValueError):
-        release.appcast("1.2.0", bundle_version, signature, length)
+        release.appcast("1.2.0", app, archive(tmp_path, size=size), signature)
 
 
-def test_main_prints_the_appcast(release: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
-    args = ["appcast", "--version", "1.2.0", "--bundle-version", "1.2.0"]
-    assert release.main([*args, "--signature", SIGNATURE, "--length", "10"]) == 0
+def test_main_prints_the_appcast(
+    release: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app, zip_path = built(tmp_path), archive(tmp_path)
+    args = ["appcast", "--version", "1.2.0", "--app", str(app), "--zip", str(zip_path)]
+    assert release.main([*args, "--signature", SIGNATURE]) == 0
     assert ET.fromstring(capsys.readouterr().out).find("channel/item") is not None
-    assert release.main([*args, "--signature", "x", "--length", "10"]) == 1
+    assert release.main([*args, "--signature", "x"]) == 1
     assert "signature" in capsys.readouterr().err
+    missing = ["--zip", str(tmp_path / "missing.zip")]
+    assert release.main([*args[:5], *missing, "--signature", SIGNATURE]) == 1

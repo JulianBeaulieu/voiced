@@ -18,19 +18,15 @@ public struct AvailableUpdate: Sendable, Equatable {
     public var version: String
     /// The release's page, with its notes.
     public var releasePage: URL?
-    /// False for an entry that only announces a release (Sparkle's information-only update):
-    /// it links to the page and offers no install.
-    public var installable: Bool
 
-    public init(version: String, releasePage: URL? = nil, installable: Bool = true) {
+    public init(version: String, releasePage: URL? = nil) {
         self.version = version
         self.releasePage = releasePage
-        self.installable = installable
     }
 }
 
-/// Where an update of the app stands. A found update is news, not a problem: the menu bar
-/// icon and the service rows do not change for it.
+/// Where an update of the app stands. A found update is news, not a problem: the service
+/// rows do not change for it, and the icon gets a neutral badge, never the error one.
 public enum AppUpdateState: Sendable, Equatable {
     case idle
     /// A check the user asked for is running.
@@ -65,6 +61,10 @@ public final class AppUpdates {
     public var automaticallyChecks: Bool {
         didSet { updater.automaticallyChecks = automaticallyChecks }
     }
+    /// Why the update cannot be installed now, or nil when it can. Installing quits the app,
+    /// which would stop an install of voiced or a model download (`applicationWillTerminate`),
+    /// so the app sets this; it is read where the views read it, so they follow it.
+    public var installBlocker: @MainActor () -> String? = { nil }
 
     /// Whether a check, a download or an install is under way.
     public var isBusy: Bool {
@@ -74,12 +74,22 @@ public final class AppUpdates {
         }
     }
 
+    /// A found update waits for the user: the icon's badge.
+    public var isAvailable: Bool {
+        if case .available = state { return true }
+        return false
+    }
+
+    /// The quit for the install was cancelled: Relaunch Now asks again.
+    public private(set) var canRetryRelaunch = false
+
     /// This app's version, as "up to date" names it.
     public let appVersion: String
     private let updater: AppUpdater
     private let defaults: UserDefaults
     private var choose: ((AppUpdateChoice) -> Void)?
     private var cancel: (() -> Void)?
+    private var retryRelaunch: (() -> Void)?
     private var expectedLength: UInt64?
     private var receivedLength: UInt64 = 0
     /// The app was relaunched by its own update and has not yet seen how the installed voiced
@@ -98,12 +108,14 @@ public final class AppUpdates {
         relaunchedIntoUpdate = from != nil && from != appVersion
     }
 
-    /// Whether to update the installed voiced without asking, decided at the first known
-    /// comparison after a launch. True once, and only when the user installed this app's
-    /// update and an install the app manages now runs another voiced than the app carries:
-    /// they already asked for the new version, so "Update voiced" is not asked again.
-    public func continuesWithVoicedUpdate(_ match: InstallMatch?) -> Bool {
-        guard relaunchedIntoUpdate, let match else { return false }
+    /// Whether to update the installed voiced without asking, after the user installed this
+    /// app's update: they already asked for the new version, so "Update voiced" is not asked
+    /// again. True once, and only for an install the app manages that runs another voiced
+    /// than the app carries. Nothing is decided while `canStart` is false (the installer or a
+    /// model download is busy, the app is translocated) or the comparison is unknown; the
+    /// first comparison known while it can start decides.
+    public func continuesWithVoicedUpdate(_ match: InstallMatch?, canStart: Bool) -> Bool {
+        guard relaunchedIntoUpdate, canStart, let match else { return false }
         relaunchedIntoUpdate = false
         guard case .differs(_, _, .app, _) = match else { return false }
         return true
@@ -117,7 +129,7 @@ public final class AppUpdates {
     }
 
     public func install() {
-        guard case .available(let update) = state, update.installable else { return }
+        guard case .available(let update) = state, installBlocker() == nil else { return }
         answer(.install)
         state = .downloading(update, fraction: nil)
     }
@@ -136,6 +148,13 @@ public final class AppUpdates {
         state = .idle
     }
 
+    /// Asks the app to quit again for the install, after an earlier quit was cancelled.
+    public func relaunchNow() {
+        guard canRetryRelaunch, let retryRelaunch else { return }
+        canRetryRelaunch = false
+        retryRelaunch()
+    }
+
     /// Clears "up to date" and an error.
     public func dismiss() {
         switch state {
@@ -146,8 +165,7 @@ public final class AppUpdates {
 
     // MARK: - From the updater
 
-    public func checkStarted(cancel: @escaping () -> Void) {
-        self.cancel = cancel
+    public func checkStarted() {
         state = .checking
     }
 
@@ -158,13 +176,14 @@ public final class AppUpdates {
     }
 
     public func notFound() {
-        cancel = nil
         state = .upToDate
     }
 
     public func failed(_ message: String) {
         choose = nil
         cancel = nil
+        retryRelaunch = nil
+        canRetryRelaunch = false
         state = .failed(message)
     }
 
@@ -192,17 +211,20 @@ public final class AppUpdates {
         if let update { state = .installing(update) }
     }
 
-    /// The update is unpacked and checked. The user already chose Install and Relaunch, the
-    /// only way to a download here, so it goes ahead.
-    public func readyToInstall(choose: @escaping (AppUpdateChoice) -> Void) {
-        choose(.install)
+    /// The app is about to quit so the update can replace it; the next launch continues with
+    /// the installed voiced (`continuesWithVoicedUpdate`). `retry` asks the app to quit again,
+    /// for when this quit is cancelled (`quitCancelled`).
+    public func installing(retry: @escaping () -> Void) {
+        defaults.set(appVersion, forKey: Self.relaunchKey)
+        retryRelaunch = retry
+        if let update { state = .installing(update) }
     }
 
-    /// The app is about to quit so the update can replace it; the next launch continues with
-    /// the installed voiced (`continuesWithVoicedUpdate`).
-    public func installing() {
-        defaults.set(appVersion, forKey: Self.relaunchKey)
-        if let update { state = .installing(update) }
+    /// The app refused to quit (the user kept a model download running): while the update
+    /// waits, Relaunch Now asks again. Called by the app delegate for every cancelled quit.
+    public func quitCancelled() {
+        guard retryRelaunch != nil, case .installing = state else { return }
+        canRetryRelaunch = true
     }
 
     /// The updater ended its session: whatever was in progress is over, and only an answer the
@@ -210,6 +232,8 @@ public final class AppUpdates {
     public func finished() {
         choose = nil
         cancel = nil
+        retryRelaunch = nil
+        canRetryRelaunch = false
         switch state {
         case .upToDate, .failed: break
         default: state = .idle

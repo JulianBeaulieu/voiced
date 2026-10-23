@@ -47,7 +47,7 @@ final class SilentPlayer: PreviewPlayer {
 }
 
 enum AppUpdateStep {
-    case idle, available, downloading, upToDate
+    case idle, available, blocked, downloading, upToDate
 
     /// The app's updates with the fake updater, played to this step as Sparkle would.
     @MainActor
@@ -60,6 +60,9 @@ enum AppUpdateStep {
             break
         case .available:
             updates.found(update) { _ in }
+        case .blocked:
+            updates.installBlocker = { AppUpdates.blocker(installing: false, modelsBusy: true) }
+            updates.found(update) { _ in }
         case .downloading:
             updates.found(update) { _ in }
             updates.install()
@@ -67,7 +70,7 @@ enum AppUpdateStep {
             updates.downloadExpects(16_000_000)
             updates.downloadReceived(6_400_000)
         case .upToDate:
-            updates.checkStarted {}
+            updates.checkStarted()
             updates.notFound()
         }
         return updates
@@ -135,6 +138,7 @@ let shots = [
     Shot(name: "settings-tts-after-use", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.use(.tts, phonon31)]),
     // ADR 0034's updates of the app itself: found, downloading, and a check with nothing new.
     Shot(name: "app-update-available", scenario: .running, appUpdate: .available),
+    Shot(name: "app-update-blocked", scenario: .running, appUpdate: .blocked),
     Shot(name: "app-update-downloading", scenario: .running, appUpdate: .downloading),
     Shot(name: "app-update-up-to-date", scenario: .running, appUpdate: .upToDate),
     Shot(name: "settings-general-updates", scenario: .running, window: .settings, pane: .general, appUpdate: .idle),
@@ -282,7 +286,7 @@ func run() async {
 
     // The three menu bar icons side by side.
     let icons = HStack(spacing: 18) {
-        ForEach([MenuBarIconState.idle, .busy, .error], id: \.self) { state in
+        ForEach([MenuBarIconState.idle, .update, .busy, .error], id: \.self) { state in
             VStack(spacing: 6) {
                 Image(nsImage: MenuBarIconImage.image(for: state))
                 Text(String(describing: state)).font(.caption).foregroundStyle(.secondary).fixedSize()
