@@ -44,11 +44,20 @@ brew install --cask julianbeaulieu/voiced/voiced
 ```
 
 Open voiced.app. It asks for an administrator password once and installs
-the services. The menu bar icon then shows whether both services are up.
-The app also restarts them, opens the logs and changes the common settings;
-see [menubar/README.md](menubar/README.md). Moving
-the app to the Trash leaves the services running: to remove voiced, use
-Settings > About > Uninstall voiced in the app.
+the services; Homebrew itself asks for none. The menu bar icon then shows
+whether both services are up. The app also restarts them, opens the logs
+and changes the common settings; see [menubar/README.md](menubar/README.md).
+
+To update, run `brew update`, then `brew upgrade --cask voiced`. The
+services keep running and Homebrew asks for no password; on its next
+launch the app offers **Update voiced**, which asks for one only if the
+services need it ([docs/operations.md](docs/operations.md#the-menu-bar-app)).
+The first upgrade from 0.4.0 or earlier still asks twice, once.
+
+Moving the app to the Trash, or `brew uninstall --cask voiced`, leaves the
+services running: to remove voiced, use Settings > About > Uninstall
+voiced in the app, or `brew uninstall --zap --cask voiced` to remove the
+services but keep the models and config.
 
 Using Home Assistant? Continue with
 [docs/home-assistant.md](docs/home-assistant.md).
