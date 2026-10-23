@@ -773,19 +773,22 @@ prints, the same script, still work from a terminal.
 The cask adds:
 
 ```ruby
-uninstall quit:      "io.github.julianbeaulieu.voiced.menubar",
-          launchctl: ["io.github.julianbeaulieu.voiced.stt",
-                      "io.github.julianbeaulieu.voiced.tts",
-                      "io.github.julianbeaulieu.voiced.watchdog"],
-          delete:    ["/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist",
-                      "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist",
-                      "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist"]
-zap trash: "~/Library/Application Support/voiced"
+uninstall quit: "io.github.julianbeaulieu.voiced.menubar"
+zap launchctl: ["io.github.julianbeaulieu.voiced.stt",
+                "io.github.julianbeaulieu.voiced.tts",
+                "io.github.julianbeaulieu.voiced.watchdog"],
+    delete:    ["/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist",
+                "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist",
+                "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist"],
+    trash:     "~/Library/Application Support/voiced"
 ```
 
-so `brew uninstall --cask voiced` stops the daemons and `--zap` removes the
-uv cache. Neither touches `~/.voiced`, the config or the models; the cask's
-caveats say so.
+so `brew uninstall --cask voiced` removes the app and leaves the daemons
+running, as the Trash does, and `--zap` stops and removes them and the uv
+cache. Homebrew runs `uninstall` on upgrade and reinstall too, with
+`sudo`; removing the daemons there cost every update a second prompt (ADR
+0017, "Amendment: the cask leaves the daemons to the app"). Neither touches
+`~/.voiced`, the config or the models; the cask's caveats say so.
 
 ### Updating the app itself
 

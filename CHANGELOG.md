@@ -6,6 +6,20 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Updating the menu bar app through Homebrew no longer asks for your
+  password twice. `brew upgrade --cask voiced`, or `brew install --cask`
+  over an older version, ran the cask's uninstall step, which stopped and
+  removed the services with `sudo`, and the app then had to ask again to
+  put them back. The cask now leaves the services running through an
+  upgrade or reinstall: Homebrew asks for nothing, and the app asks only
+  when a release changes the services' launchd files. The first upgrade
+  from 0.4.0 or earlier still asks twice, once more, since Homebrew runs
+  the uninstall step of the version that is installed. `brew uninstall
+  --cask voiced` now leaves the services running too; use Uninstall in the
+  app first, or `brew uninstall --zap --cask voiced`, to remove them.
+
 ## [0.4.0] - 2026-10-23
 
 Two settings per service for a Mac that does more than serve speech: unload

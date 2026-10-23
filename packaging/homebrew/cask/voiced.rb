@@ -24,26 +24,37 @@ cask "voiced" do
 
   app "voiced.app"
 
-  uninstall launchctl: [
-              "io.github.julianbeaulieu.voiced.stt",
-              "io.github.julianbeaulieu.voiced.tts",
-              "io.github.julianbeaulieu.voiced.watchdog",
-            ],
-            quit:      "io.github.julianbeaulieu.voiced.menubar",
-            delete:    [
-              "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist",
-              "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist",
-              "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist",
-            ]
+  # The services are not the cask's: voiced-privileged installs them when the app first
+  # opens (ADR 0018). Homebrew runs `uninstall` on upgrade and reinstall too, with sudo, so
+  # removing them there would cost an update a password and the app another to put them
+  # back; only `--zap` removes them.
+  uninstall quit: "io.github.julianbeaulieu.voiced.menubar"
 
-  zap trash: "~/Library/Application Support/voiced"
+  zap launchctl: [
+        "io.github.julianbeaulieu.voiced.stt",
+        "io.github.julianbeaulieu.voiced.tts",
+        "io.github.julianbeaulieu.voiced.watchdog",
+      ],
+      delete:    [
+        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist",
+        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist",
+        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist",
+      ],
+      trash:     "~/Library/Application Support/voiced"
 
   caveats <<~EOS
     voiced.app installs the voiced services the first time it opens.
 
-    `brew uninstall --cask voiced` stops and removes the services, and `--zap`
-    also removes the app's uv cache. Neither removes ~/.voiced, the config in
-    ~/.config/voiced or the downloaded models: use Uninstall in the app's
-    Settings first to remove those.
+    `brew upgrade --cask voiced` keeps the services running and asks for no
+    password; the app updates them on its next launch, and asks for one only
+    if the release changes the services' plists.
+
+    `brew uninstall --cask voiced` removes the app and leaves the services
+    running from ~/.voiced. To remove them as well, use Uninstall in the
+    app's Settings first, or run `~/.voiced/bin/voiced uninstall` and the
+    sudo step it prints afterwards, or uninstall with
+    `brew uninstall --zap --cask voiced`, which also removes the app's uv
+    cache. Only the first two can remove ~/.voiced, the config in
+    ~/.config/voiced and the downloaded models.
   EOS
 end

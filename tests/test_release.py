@@ -87,6 +87,21 @@ def test_cask_sets_version_and_sha256(release: ModuleType) -> None:
     assert "AD HOC" not in text
 
 
+def test_the_cask_leaves_the_services_alone_on_upgrade(release: ModuleType) -> None:
+    # Homebrew runs `uninstall` on upgrade and reinstall as well, with sudo; only `zap`
+    # waits for `brew uninstall --zap`.
+    text = release.cask("1.2.0", SHA)
+    stanzas = re.findall(r"^  (uninstall|zap) (.*?)\n\n", text, re.MULTILINE | re.DOTALL)
+    assert [name for name, _ in stanzas] == ["uninstall", "zap"]
+    uninstall, zap = (body for _, body in stanzas)
+    assert uninstall == 'quit: "io.github.julianbeaulieu.voiced.menubar"'
+    for service in ("stt", "tts", "watchdog"):
+        label = f"io.github.julianbeaulieu.voiced.{service}"
+        assert f'"{label}"' in zap
+        assert f'"/Library/LaunchDaemons/{label}.plist"' in zap
+    assert 'trash:     "~/Library/Application Support/voiced"' in zap
+
+
 def test_an_adhoc_cask_says_so_and_points_at_the_adhoc_asset(release: ModuleType) -> None:
     text = release.cask("1.2.0", SHA, adhoc=True)
     assert text.startswith("# AD HOC BUILD")

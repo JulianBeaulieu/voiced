@@ -428,3 +428,33 @@ signed, notarized and stapled zip built by CI as
 `menubar/Scripts/SIGNING.md` describes; the cask waits for that signing
 identity and v0.1.0, because Gatekeeper quarantines an unsigned app on
 first open.
+
+## Amendment: the cask leaves the daemons to the app
+
+Up to 0.4.0 the cask's `uninstall` stanza booted out the three labels and
+deleted their plists (`launchctl:` and `delete:`). Homebrew runs a cask's
+`uninstall` stanza not only for `brew uninstall` but also when it upgrades
+or reinstalls the cask, including `brew install --cask` over an older
+version; of its directives only `signal:` is skipped then
+(`Cask::Artifact::AbstractUninstall::UPGRADE_REINSTALL_SKIP_DIRECTIVES`).
+Both directives run with `sudo` for the system domain, `delete:` even when
+the files are gone. So every update asked for a password in the terminal,
+stopped and removed the services, and the app then found them missing and
+asked for an administrator again to put them back: two prompts where ADR
+0018 promises at most one.
+
+The daemons were never the cask's: `voiced-privileged` installs them when
+the app first opens. The cask now keeps only `quit:` in `uninstall`, and
+the `launchctl:` and `delete:` directives move to `zap`, which Homebrew
+runs only for `brew uninstall --zap` (and `brew reinstall --zap`). An
+upgrade or reinstall asks Homebrew for no password and leaves the services
+running; the app's update then asks only when `voiced-privileged check`
+says the plists differ.
+
+The trade-off: a plain `brew uninstall --cask voiced` removes the app and
+leaves the services running from `~/.voiced`, as moving the app to the
+Trash always has. The caveats name the three ways to remove them: the
+app's Uninstall before `brew uninstall`, `~/.voiced/bin/voiced uninstall`
+and its sudo step afterwards, or `brew uninstall --zap --cask voiced`.
+Homebrew uses the stanza of the installed cask, not the new one, so the
+first upgrade from 0.4.0 or earlier still runs the old stanza once.
