@@ -253,6 +253,7 @@ the Wyoming layer and every engine depend on it.
 class STTEngine:
     name: str; model_id: str; languages: list[str]; license: str
     async def load(self) -> None
+    async def unload(self) -> None  # default raises NotImplementedError
     async def transcribe(self, audio: AudioInput, language: str | None = None) -> Transcript
     async def stream(self, language: str | None = None) -> STTStreamSession
 
@@ -265,6 +266,7 @@ class STTStreamSession:
 class TTSEngine:
     name: str; model_id: str; languages: list[str]; license: str
     async def load(self) -> None
+    async def unload(self) -> None  # default raises NotImplementedError
     async def voices(self) -> list[Voice]
     def synthesize(self, text: str, voice: str, speed: float = 1.0) -> AsyncIterator[PCMChunk]
 ```
@@ -277,8 +279,13 @@ Rules every engine follows:
   tied to the thread that created them. The server never
   calls two inference methods on one engine at once, so engines need no
   locking.
-- `load()` is called once, before anything else, and must warm the model.
-  It must not block the event loop, or `/health` stalls during the load.
+- `load()` is called before anything else, and again after each `unload()`,
+  and must warm the model. It must not block the event loop, or `/health`
+  stalls during the load.
+- `unload()` drops every reference to the model and returns its memory
+  (`voiced.engines.memory.unload_on()`); it is called only while no other
+  method runs. An engine that keeps the default is never unloaded
+  ([ADR 0033](decisions/0033-model-residency.md)).
 - Errors the client caused (`UnknownVoice`, `UnsupportedLanguage`, bad
   input) are `EngineError` subclasses and become `400`. Any other exception
   is an engine failure: `500`, `degraded`, and possibly a restart. An engine

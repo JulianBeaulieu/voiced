@@ -171,8 +171,9 @@ Two health statuses and one observation join the table. `idle` (the model
 unloaded after `idle_unload_s` without a request) and `loading` (loading it
 again for a request that waits) are healthy, as `ok`: they reset the
 counters and end the startup grace. A load that hangs holds the queue, so
-the stall rule catches it as it catches a wedged inference. The probe is
-not sent while `idle`, since it would load the model. `off` is a service
+the stall rule catches it as it catches a wedged inference. A service with
+`idle_unload_s` set gets no probe: each probe is a request, which would
+load the model and restart its idle time. `off` is a service
 switched off whose parked process is the pid launchd runs (its pid is in
 `<state dir>/<service>.off`): never polled, never restarted, never a
 failure, no grace, reported once per process. Details in

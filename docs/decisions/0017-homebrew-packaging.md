@@ -45,6 +45,7 @@ menu bar app. `voiced.layout` implements them.
   envs/<id>/      environments built by `voiced install --source` (or the app)
   python/         uv-managed Pythons those environments run on
   control.sock    the watchdog's control socket (ADR 0013)
+  stt.off         the pid of a service switched off and parked (ADR 0033); tts.off too
   install.json    the manifest
 ```
 

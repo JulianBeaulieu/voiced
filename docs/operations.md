@@ -302,7 +302,7 @@ each service with a `timeout_s` limit and applies these rules:
 | Observation | Action |
 |---|---|
 | `ok` | Reset the failure count; end the startup grace period. |
-| `idle` (the model unloaded after `idle_unload_s`) or `loading` (loading it again for a request) | As `ok`. A load that hangs holds the queue, which the stall rule below catches. The probe is not sent while `idle`. |
+| `idle` (the model unloaded after `idle_unload_s`) or `loading` (loading it again for a request) | As `ok`. A load that hangs holds the queue, which the stall rule below catches. A service with `idle_unload_s` set gets no probe, which would keep its model loaded. |
 | `off`: launchd's pid for the service is its parked process (`enabled = false`) | Nothing: never polled, never a failure, no grace; logged once per process. |
 | Connection refused or timed out within `startup_grace_s` of the watchdog starting, of its last restart of the service, or of launchd giving the service a new pid, and before that process has answered with its model loaded | Nothing. The service is starting. |
 | `starting` while the service's own uptime is below `startup_grace_s` | Nothing. The model is loading. |

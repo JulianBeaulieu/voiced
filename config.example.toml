@@ -59,7 +59,9 @@ wyoming_port = 10300
 enabled = true
 # Unload the model after this many seconds without a request, and load it
 # again when the next one arrives: that request waits for the load (about
-# 0.4 s for Parakeet, which frees 1.4 GB). 0 keeps the model loaded, as always before (ADR 0033).
+# 0.4 s for Parakeet, which frees 1.4 GB). 0 keeps the model loaded, as always
+# before; at most 604800 (a week). The watchdog's probe skips a service
+# with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
 # Engine plugin name (see `voiced doctor` for the installed list).
 # parakeet (default), qwen3-asr, moonshine or nemotron; change engine and model
@@ -110,7 +112,9 @@ wyoming_port = 10200
 enabled = true
 # Unload the model after this many seconds without a request, and load it
 # again when the next one arrives: that request waits for the load (about
-# 0.25 s for Kokoro, which frees 0.4 GB). 0 keeps the model loaded, as always before (ADR 0033).
+# 0.25 s for Kokoro, which frees 0.4 GB). 0 keeps the model loaded, as always
+# before; at most 604800 (a week). The watchdog's probe skips a service
+# with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
 # kokoro (default), soprano or phonon. Change engine, model and default_voice
 # together. Phonon runs on the CPU: model "gradium/phonon-31m-en" (Apache-2.0)
@@ -175,7 +179,8 @@ restart_cooldown_s = 120
 # this long is treated as hung and restarted.
 stall_after_s = 60
 # Also send a tiny inference request each poll (only while the queue is empty)
-# and treat a timeout as a hang. Off by default.
+# and treat a timeout as a hang. Off by default. Never sent to a service with
+# idle_unload_s set: it would keep the model loaded.
 probe = false
 # How long the probe request may take before it counts as a hang.
 probe_timeout_s = 20

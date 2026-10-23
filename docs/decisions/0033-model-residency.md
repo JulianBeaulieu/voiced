@@ -61,23 +61,34 @@ and loaded again (`tests/test_unload_models.py`, the model tier):
 | phonon (CPU) | 0.04 | 0.17 | 0.07 | 0.17 |
 
 GB. What stays after an unload, 0.1 to 0.3 GB, is the libraries the load
-imported and MLX's compiled kernels, not the model. For the MLX engines an
+imported and MLX's compiled kernels, not the model. Moonshine's "loaded
+again" is lower than its first load because the footprint counts only
+memory the process wrote: its resident set is 0.70 GB after the first
+load and 0.71 GB after the reload, and in the reload ONNX Runtime reads
+the model through clean pages mapped from the file, which the footprint
+leaves out. The unload itself returns its 0.16 GB either way. For the MLX engines an
 unload returns 85 to 90 percent of what loading added (Soprano, whose
 model is small next to those libraries, 66 percent).
 
 ### The engine contract
 
 `STTEngine` and `TTSEngine` gain `async def unload()`, with a default that
-raises `NotImplementedError`; no existing signature changes. An engine
+raises `NotImplementedError`; no existing signature changes. It is not
+abstract: an abstract method would stop every engine written before it
+from being created at all, where the default only keeps such an engine's
+model loaded. An engine
 drops every reference to its model state (weights, voice tensors, prompts,
 tokenizers) on the thread that ran the model, then calls
 `voiced.engines.memory.release_memory()`: a garbage collection, then
 `mx.clear_cache()`, without which MLX keeps the freed buffers for reuse.
+`voiced.engines.memory.unload_on()` does both on the engine's model
+thread, so an engine only names what it drops.
 `load()` is then called again before any other method. Every shipped
 engine implements it; `SentenceTTSEngine` does it once for the TTS engines,
 which list what they keep beyond `_model` in `_unload_sync()`. A
-third-party engine that does not implement it keeps its model, and the
-service logs once that `idle_unload_s` has no effect. Inference paths are
+third-party engine that does not implement it keeps its model: the service
+sees the base class's method, starts no timer, and logs once that
+`idle_unload_s` has no effect. Inference paths are
 untouched.
 
 ### Who loads and unloads
@@ -98,8 +109,11 @@ owns every load and unload. The first load at start is as before
   HTTP and Wyoming alike, and for a stream that arrives during the load:
   its session opens when the model is there, its audio buffered meanwhile.
   One lock orders loads and unloads, so a request that arrives during an
-  unload waits for it and then loads, and two requests share one load. The
-  load is not counted in the request's latency metrics.
+  unload waits for it and then loads. The reload runs as a task of its own
+  that every waiting request shields: two requests share one load, and a
+  client that hangs up during it cannot cancel it half way, which would
+  leave the model in memory while health says `idle`. The load is not
+  counted in the request's latency metrics.
 - **A load that fails** fails the request that waited for it (a 500, health
   `degraded`) and the next request tries again; the watchdog's degraded
   rule restarts the service if it stays that way. A model deleted while it
@@ -126,7 +140,10 @@ owns every load and unload. The first load at start is as before
 | `loading` with requests queued and no completion for `stall_after_s` | `stalled`, one failure: a load that hangs holds the queue as a wedged inference does |
 | `off` (the pid launchd runs is the service's parked process) | never a restart, never a failure, no grace; reported once per process |
 
-The optional probe is not sent while `idle`: it would load the model. The
+The optional probe (`[watchdog] probe = true`) is a real request, so it
+would load the model and restart its idle time at every poll: a service
+with `idle_unload_s` set gets no probe at all, and the queue rule alone
+catches a wedge there. The
 status page, `voiced status`, the control channel's `status` (state
 `running`, `warm` true, `health.status` saying which) and the app show
 loaded, idle and loading.
@@ -161,15 +178,19 @@ administrator's password every time is the wrong trade. Instead
   daemon as always (the privileged script is unchanged; root still reads
   nothing the user wrote) and say that the service stays off. At boot it
   starts, parks and holds nothing. `voiced start stt` on a service that is
-  off starts nothing and says how to turn it on. `voiced doctor` does not
-  check an off service's model.
+  off loads its daemon as for any service (so turning it on stays a restart
+  without root) and says how to turn it on. `voiced status` says
+  "off until restarted" when the file already turns it on. The other
+  service's status page says it is off. `voiced doctor` does not check an
+  off service's model, and `voiced uninstall` removes a marker a killed
+  parked process left.
 - `voiced stop stt` still boots the daemon out, for whoever wants the
   29 MB process gone too, until the next boot or `voiced start`.
 
 ### The settings
 
 `[stt]` and `[tts]` each gain `enabled` (default true) and `idle_unload_s`
-(whole seconds, default 0: never). Both are settable over the control
+(whole seconds, default 0: never, at most a week). Both are settable over the control
 channel (`stt.enabled`, `stt.idle_unload_s`, `tts.enabled`,
 `tts.idle_unload_s`), so `voiced settings` and the status page's form have
 them too, and both need the service restarted. The app's Speech to Text
@@ -179,8 +200,9 @@ set in the file is shown as it is). Either change restarts that service.
 
 The defaults change nothing: both services on, models always loaded. Home
 Assistant users are the reason. A voice assistant's first request after a
-quiet hour would pay the reload, a third to half a second, on top of the
-STT finalize and TTS first audio targets (ADR 0008, 0009), and a Mac that
+quiet hour would pay the reload, 0.25 to 0.4 s, on top of the STT
+finalize target (ADR 0008) and the 200 ms first audio target (README), and
+a Mac that
 runs voiced for Home Assistant usually has the memory to spare.
 
 ## Alternatives considered
@@ -199,7 +221,7 @@ runs voiced for Home Assistant usually has the memory to spare.
   `ThrottleInterval`; an exit code cannot say "stay down".
 - **Refuse requests while unloaded** (503 with `Retry-After`) and load in
   the background. Clients would need to retry, and Home Assistant does
-  not; waiting a third of a second is better.
+  not; waiting 0.25 to 0.4 s is better.
 - **Unload after every request.** That is `idle_unload_s` at a few seconds;
   the app does not offer it, since every request would pay the load.
 - **Apply `idle_unload_s` without a restart.** The service reads its
