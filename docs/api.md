@@ -510,20 +510,18 @@ curl -s http://127.0.0.1:8880/health
   "last_inference_at": 1760450000.0,
   "last_inference_ms": 92.3,
   "last_error": null,
-  "version": "0.3.0"
+  "version": "0.4.0"
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference (or a load for one) failed on the server side, `idle` while the model is unloaded after `idle_unload_s` without a request, `loading` while it loads again for a request that waits, `ok` otherwise. A request to an `idle` service is answered after the load, not refused. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022), `idle` and `loading` are new in the next release (ADR 0033); clients should treat a status they do not know as not ready, except that a `200` answer takes requests. |
+| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference (or a load for one) failed on the server side, `idle` while the model is unloaded after `idle_unload_s` without a request, `loading` while it loads again for a request that waits, `ok` otherwise. A request to an `idle` service is answered after the load, not refused. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022), `idle` and `loading` are new in 0.4.0 (ADR 0033); clients should treat a status they do not know as not ready, except that a `200` answer takes requests. |
 | `model_loaded` | Whether the model is in memory now: false while `starting`, `idle` and `loading`. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |
 | `last_error` | Exception name and message of the last failed inference, cleared by the next success. With `server.api_key` set only the exception name is shown, since the message can echo what a client sent; the full text is in the service log. |
-
-<!-- TODO(release): name the version that brings idle and loading in the /health status row and services_off in /metrics.json -->
 
 The schema is frozen because the watchdog and the status page depend on it.
 
@@ -559,7 +557,7 @@ not downloaded is refused with 409 `model_not_downloaded`.
 | `api_key_required` | Whether the `/v1` routes need a key |
 | `default_voice` | The tts default voice, `null` on stt |
 | `settings_form` | `enabled` and `refused` (the reason, or `null`) for the settings form, which always needs the API key |
-| `services_off` | The other service, when it is switched off and its process is parked (the pid in its marker is the one launchd runs for it); `[]` otherwise. New in the next release (ADR 0033). |
+| `services_off` | The other service, when it is switched off and its process is parked (the pid in its marker is the one launchd runs for it); `[]` otherwise. New in 0.4.0 (ADR 0033). |
 
 Metrics live in memory and reset when the service restarts.
 

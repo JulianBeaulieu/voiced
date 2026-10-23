@@ -17,7 +17,7 @@ for local speech services.
 
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
-voiced 0.3.0 is the current release. It transcribes with Parakeet TDT 0.6B
+voiced 0.4.0 is the current release. It transcribes with Parakeet TDT 0.6B
 v3 and speaks with Kokoro-82M. Other models are a download away, from the
 menu bar app or `voiced models download`: Qwen3-ASR for files and languages
 beyond Parakeet's, the streaming Nemotron ASR, Moonshine on the CPU, and
@@ -203,8 +203,9 @@ errors, so a typo stops the service with a message instead of being ignored.
 ### Memory: unload when idle, or switch a service off
 
 Each service keeps its model loaded, about 1.5 GB for Parakeet and 0.5 to
-0.7 GB for Kokoro. Two settings per service change that, from the app's
-Speech to Text and Text to Speech panes or the command line:
+0.7 GB for Kokoro. Two settings per service, under `[stt]` and `[tts]`,
+change that, from the app's Speech to Text and Text to Speech settings
+(Service section) or the command line:
 
 ```sh
 voiced settings set tts.idle_unload_s=300   # unload after 5 minutes unused

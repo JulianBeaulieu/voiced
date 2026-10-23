@@ -6,26 +6,37 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.4.0] - 2026-10-23
+
+Two settings per service for a Mac that does more than serve speech: unload
+the model after a quiet spell, or switch the service off. Neither changes
+anything until it is set. The defaults stay Parakeet and Kokoro.
+
 ### Added
 
-- A service can unload its model when it has not been used for a while:
-  `[stt] idle_unload_s` and `[tts] idle_unload_s`, in seconds, or the app's
-  "Unload the model" choice (never, or after 1, 5, 15 or 60 minutes). The
-  memory goes back to the system: Parakeet's service drops from 1.5 GB to
-  0.12 GB, Kokoro's from 0.5 GB to 0.1 GB. The next request waits while the
-  model loads again, about 0.4 s for Parakeet and 0.25 s for Kokoro, and is
-  answered as usual; `/health` says `idle` meanwhile and `loading` during
-  the reload, and the watchdog takes both for healthy. The default, 0,
-  keeps the model loaded, which is what Home Assistant wants. Engines
-  implement a new `unload()`; every shipped engine does.
-- A service can be switched off: `[stt] enabled = false` (or `[tts]`), the
-  app's "Run speech to text" switch, or `voiced settings set
-  stt.enabled=false` and `voiced restart stt`. An off service loads no
-  model, opens no port and is not announced to Home Assistant, after a
-  reboot, `voiced start` and the app's Repair and Update too; `voiced
-  status` and the app say "off" and how to turn it back on. No password is
-  needed: the LaunchDaemon stays, and its process waits, holding about
-  30 MB. For a Mac where another app does the listening.
+- A service can unload its model when it has not been used for a while, and
+  the memory goes back to the system: Parakeet's service drops from 1.5 GB to
+  0.12 GB, Kokoro's from 0.5 GB to 0.1 GB. In the app: Settings > Speech to
+  Text (or Text to Speech) > Service > Unload the model, never or after 1, 5,
+  15 or 60 minutes. In the file, `idle_unload_s` in seconds under `[stt]` or
+  `[tts]` (`voiced settings set tts.idle_unload_s=300`, then `voiced restart
+  tts`). The next request waits while the model loads again, about 0.4 s for
+  Parakeet and 0.25 s for Kokoro, and is answered as usual; `/health` says
+  `idle` meanwhile and `loading` during the reload. The default, 0, keeps the
+  model loaded, which is what Home Assistant wants. A plugin engine needs the
+  new `unload()` for this; without it the service keeps its model and says so
+  in its log. Every shipped engine has it.
+- A service can be switched off, for a Mac where another app does the
+  listening or the speaking. In the app: Settings > Speech to Text (or Text
+  to Speech) > Service > Run speech to text (or Run text to speech). In the
+  file, `enabled = false` under `[stt]` or `[tts]` (`voiced settings set
+  stt.enabled=false`, then `voiced restart stt`); the status page's settings
+  form has both settings too. An off service loads no model, opens no port
+  and is not announced to Home Assistant, also after a reboot, `voiced start`
+  and the app's Repair and Update. `voiced status` and the app say "off" and
+  how to turn it back on; the other service's status page says it is off. No
+  password is needed: the LaunchDaemon stays, and its process waits, holding
+  about 30 MB.
 
 ## [0.3.0] - 2026-10-21
 
@@ -631,6 +642,7 @@ bar app or the terminal. The defaults stay Parakeet and Kokoro.
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.4.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.3.0
 [0.2.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.2.0
 [0.1.1]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.1.1
