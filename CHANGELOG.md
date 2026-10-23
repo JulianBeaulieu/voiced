@@ -6,105 +6,116 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-voiced no longer needs an administrator password. The services run as
-your own LaunchAgents instead of system-wide LaunchDaemons, so installing,
-updating, repairing, stopping and removing voiced never asks for one. The
-first update from 0.4.0 or earlier asks once more, the last time, to
-remove the old services.
+## [0.5.0] - 2026-10-23
+
+voiced no longer asks for an administrator password. The services run as
+your own LaunchAgents, so installing, repairing and removing voiced need
+none, and so does updating it, unless the app's folder is not writable
+for your account; a Mac that ran 0.4.0 or earlier asks once more, the last
+time, to remove the old services. The menu bar app now updates itself:
+this release is installed by hand once more, and the next one arrives in
+the app. macOS may keep the services' Bonjour announcements on the Mac, so
+Home Assistant may not discover voiced by itself: integrations you already
+added keep working, and a new one is added by the Mac's address and port.
+The defaults stay Parakeet and Kokoro.
 
 ### Added
 
-- `voiced install --set KEY=VALUE`, for `stt.enabled`, `stt.engine`,
-  `stt.model` and the same for `tts`: the install downloads the models for
-  these settings and writes them to the config once the models are in, as
-  `voiced settings set` would. The app passes its setup this way.
+- The menu bar app updates itself. It checks for a new version when it
+  opens and once a day; a card in its menu then says which version is out,
+  and Install and Relaunch downloads it, checks its signature, replaces the
+  app and opens it again, without a DMG or Finder. The relaunched app then
+  updates the services to the voiced it carries, showing the installer's
+  progress, so one click updates both. Check for Updates… in the menu checks
+  at once, and Settings > General > Check for updates automatically turns
+  the checks off. An update found is not a problem: the icon gets a small
+  dot, not the error badge, and Install and Relaunch waits while voiced is
+  installing or a model downloads. 0.5.0 is the first release with the
+  updater, so an app of 0.4.0 or earlier is updated to it by hand, from the
+  DMG or with `brew upgrade --cask voiced`; the release after it is the
+  first the app installs itself.
+- The app's first screen is a setup. It asks what to install, speech to
+  text, text to speech or both, each with its model from the catalogue
+  (Parakeet and Kokoro, marked Recommended, are chosen already), and shows
+  what that downloads. A service switched off downloads nothing, its ports
+  are not checked, and it is installed off (`enabled = false`); Settings
+  turns it on later. The app opens the setup by itself when it starts with
+  nothing installed; an install made by `voiced install` or an earlier app
+  is left as it is. From a terminal, `voiced install --set KEY=VALUE` does
+  the same for `stt.enabled`, `stt.engine`, `stt.model` and the same keys
+  for `tts`: the install downloads the models for these settings and writes
+  them to the config once the models are in, as `voiced settings set`
+  would, and `--set stt.enabled=false` installs speech to text off, with
+  nothing downloaded for it.
 - Hear a voice before choosing it. In the app, Settings > Text to Speech has
   a play button beside the Voice picker that speaks one short line in that
   voice, naming it in its language ("Hi, I'm Heart."), at the default speed;
-  a second click stops it. The app asks the watchdog over the control socket
-  (the new `tts.speak` operation), which asks the running service with the
-  API key it holds, so the app opens no network connection for it. The button
-  is off while text to speech is off, stopped or starting.
+  a second click stops it. The button is off while text to speech is off,
+  stopped or starting. The line comes through the local control socket (the
+  new `tts.speak` operation), so the app opens no network connection for it
+  and needs no API key.
 - The default speed is a control in the app: Settings > Text to Speech >
   Speed, 0.5x to 2x in steps of 0.1. The service now reads `tts.speed` from
   the config file for each request, so a new speed applies at once, from the
   app, `voiced settings set tts.speed=1.2` or the status page form, with no
   restart; Home Assistant's requests get it too.
-- The menu bar app updates itself. It checks for a new version when it opens
-  and once a day; a card in its menu then says which version is out, and
-  Install and Relaunch downloads it, checks its signature, replaces the app
-  and opens it again, without a DMG or Finder. The relaunched app goes on to
-  update the services to the voiced it carries, showing the installer's
-  progress, so one click updates both. Check for Updates… in the menu checks
-  at once, and Settings > General > Check for updates automatically turns the
-  checks off. An update found is not shown as a problem: the icon gets a small
-  dot, not the error badge, and Install and Relaunch waits while voiced is
-  installing or a model downloads. This release is the first with the updater
-  and the first to publish the feed: an older app is updated to it once more
-  by hand or with Homebrew, and the first update the app installs itself is to
-  the release after it. The Homebrew cask now says `auto_updates`, and `brew
-  upgrade --cask voiced` still works.
 
 ### Changed
 
-- The services are LaunchAgents: they run while you are logged in, start
-  when you log in and stop when you log out, instead of starting at boot
-  before anyone logs in. With FileVault on nothing changes after a reboot,
-  since unlocking the disk logs in the account that unlocks it; with
-  FileVault off, turn on
-  automatic login for a Mac that must come back unattended. `voiced doctor`
-  says which applies. See
+- The services are LaunchAgents of your user, not system-wide
+  LaunchDaemons, and nothing needs an administrator password. `voiced
+  install` writes them to `~/Library/LaunchAgents` and loads them itself,
+  with no `sudo` line; `voiced stop`, `start`, `uninstall --yes` and `voiced
+  doctor --metal-probe` need no root either. Run them as yourself: with
+  `sudo` they refuse, since they would address root's services instead of
+  yours. An install with its own state directory, config file or `[launchd]
+  label_prefix` gets LaunchAgents of its own. See
   [ADR 0035](docs/decisions/0035-launch-agents.md).
-- Updating from 0.4.0 or earlier: the menu bar app's **Update voiced**
-  builds the new version and downloads its models, then asks for your
-  password once, to "remove the
-  old background services (the last time a password is needed)", and
-  installs the new ones. Cancel, and the services keep running the old way
-  until you accept. From a terminal, `voiced install` prints the one
-  `sudo /bin/sh -c '...'` line that removes them; run it, then
-  `voiced install` again
+- voiced runs while you are logged in: the services start when you log in
+  and stop when you log out, instead of starting at boot before anyone logs
+  in. Locking the screen keeps them running. With FileVault on nothing
+  changes after a reboot, since unlocking the disk logs in the account that
+  unlocks it; with FileVault off, turn on automatic login for a Mac that
+  must come back unattended. `voiced doctor` says which applies.
+- Updating from 0.4.0 or earlier asks for a password once more, the last
+  time, to remove the old services. In the app, **Update voiced** builds the
+  new version and downloads its models, then asks to "remove the old
+  background services (the last time a password is needed)" and installs
+  the new ones; cancel, and the services keep running the old way until you
+  accept. From a terminal, `voiced install` prints the one
+  `sudo /bin/sh -c '...'` line that removes them; run it, then `voiced
+  install` again
   ([docs/operations.md](docs/operations.md#moving-from-launchdaemons)).
-- `voiced install` writes the LaunchAgents to `~/Library/LaunchAgents` and
-  loads them itself; it prints no `sudo` line. `voiced stop`, `start` and
-  `uninstall --yes` need no root either, and `voiced doctor --metal-probe`
-  runs its probe directly. Run them as yourself: with `sudo` they refuse,
-  since they would address root's services instead of yours.
-- An install with its own state directory, config file or
-  `[launchd] label_prefix` gets LaunchAgents of its own.
+  The first `brew upgrade --cask voiced` from 0.4.0 or earlier asks
+  Homebrew's password instead, since Homebrew runs the uninstall step of the
+  version that is installed, which removes the old services; voiced is then
+  down until you open the app, which installs the new ones and asks for
+  nothing. After the first `brew upgrade voiced` of the formula,
+  run `voiced install` once for the line.
+- Home Assistant may not discover voiced by itself. macOS may keep the
+  Bonjour announcements of a LaunchAgent on the Mac, and on macOS 15 it did
+  when measured. Integrations you already added keep working, since they
+  connect by address and port; add a new one by this Mac's address and port
+  ([docs/home-assistant.md](docs/home-assistant.md)). `voiced doctor` checks
+  whether the announcements reach the network (Discovery).
 - voiced no longer adds a firewall exception. With the firewall on and
   voiced on the network, macOS asks at the Mac, when the services start
   listening, whether voiced's Python may accept connections, and again
   after an update that changes that Python; until someone answers Allow,
   devices on the network are blocked. `voiced install` and `voiced doctor`
   say so.
-- The services now run as your LaunchAgents. macOS may keep their Bonjour
-  announcements on the Mac, so Home Assistant may not discover voiced;
-  existing integrations keep working; add new ones by this Mac's address
-  and port; `voiced doctor` checks this (Discovery).
-- A plain `brew upgrade` now leaves the menu bar app to its own updates (the
-  cask says `auto_updates`); `brew upgrade --cask voiced` still updates it.
-- `brew uninstall --cask voiced` removes the app and leaves the services
-  running, as moving the app to the Trash does. To remove them, use
-  Uninstall in the app first, or `brew uninstall --zap --cask voiced`.
-- The app's first screen is now the setup. It asks what to install, speech
-  to text, text to speech or both, each with its model from the catalogue
-  (Parakeet and Kokoro, marked Recommended, are chosen already), and shows
-  what that downloads. A service switched off downloads nothing and is
-  installed off (`enabled = false`); Settings turns it on later. The app
-  opens the setup by itself when it starts with nothing installed; an
-  install made by `voiced install` or an earlier app is left as it is.
-- The install no longer downloads a model for a service that is off, nor
-  checks that service's ports.
-- `brew upgrade --cask voiced`, or `brew install --cask` over an older
-  version, leaves the services running and asks for no password. The first
-  upgrade from 0.4.0 or earlier still asks Homebrew's password once, since
-  Homebrew runs the uninstall step of the version that is installed, which
-  removes the old services; the app then asks for nothing.
+- Homebrew leaves the services alone, from 0.5.0 on. `brew upgrade --cask
+  voiced`, or `brew install --cask` over an older version, leaves them running and asks
+  for no password, and a plain `brew upgrade` leaves the app to its own
+  updates (the cask says `auto_updates`). `brew uninstall --cask voiced`
+  removes the app and leaves the services running, as moving the app to the
+  Trash does; to remove them, use Uninstall in the app first, or `brew
+  uninstall --zap --cask voiced`.
 
 ### Removed
 
 - The privileged script `voiced-privileged.sh` and the root step it ran,
-  in the CLI and the app.
+  in the CLI and the app: nothing in voiced runs as root.
 
 ## [0.4.0] - 2026-10-23
 
@@ -742,6 +753,7 @@ bar app or the terminal. The defaults stay Parakeet and Kokoro.
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.5.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.0
 [0.4.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.3.0
 [0.2.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.2.0

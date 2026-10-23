@@ -10,7 +10,8 @@ the Apple Silicon GPU, so with the default voice the first audio of a reply
 arrives about 100 ms after the request. voiced runs as two services, one for
 each direction, under launchd plus a watchdog: they run as you while you
 are logged in, start again when you log in, and restart themselves after a
-crash or a hang. Nothing needs an administrator password. Home
+crash or a hang. Nothing needs an administrator password, except once
+when moving from 0.4.0 or earlier. Home
 Assistant talks to it over Wyoming, the protocol its Assist pipelines use
 for local speech services.
 
@@ -18,7 +19,7 @@ for local speech services.
 
 The recording's timings are curl fetching a WAV, slower than the streamed benchmark (94 ms median first audio on the same Apple M1 Max, 64 GB; see [Benchmarks](#benchmarks)).
 
-voiced 0.4.0 is the current release. It transcribes with Parakeet TDT 0.6B
+voiced 0.5.0 is the current release. It transcribes with Parakeet TDT 0.6B
 v3 and speaks with Kokoro-82M. Other models are a download away, from the
 menu bar app or `voiced models download`: Qwen3-ASR for files and languages
 beyond Parakeet's, the streaming Nemotron ASR, Moonshine on the CPU, and
@@ -58,14 +59,21 @@ The app updates itself: it checks for a new version when it opens and once
 a day, and **Install and Relaunch** on the card in its menu installs it,
 opens it again and then brings the services to the same version, without a
 password ([docs/operations.md](docs/operations.md#the-menu-bar-app)). With
-Homebrew, `brew update` and `brew upgrade --cask voiced` work too: the
-services keep running and Homebrew asks for no password; on its next launch
-the app offers **Update voiced**, which asks for none either. Updating from
-0.4.0 or earlier asks once more, the last time: those releases installed
-the services as system-wide LaunchDaemons, which only an administrator can
-remove. The app asks to "remove the old background services (the last time
-a password is needed)", and if you cancel, the services keep running the
-old way until you accept.
+Homebrew, `brew update` and `brew upgrade --cask voiced` work too: from
+0.5.0 on the services keep running and Homebrew asks for no password; on
+its next launch the app offers **Update voiced**, which asks for none
+either. 0.5.0 is the first version that updates itself: install it by hand
+once, with Homebrew or the DMG; later versions arrive in the app.
+
+Updating from 0.4.0 or earlier asks for a password once more, the last
+time: those releases installed the services as system-wide LaunchDaemons,
+which only an administrator can remove. With the DMG, the app asks to
+"remove the old background services (the last time a password is
+needed)", and if you cancel, the services keep running the old way until
+you accept. With `brew upgrade --cask voiced`, Homebrew asks instead, since
+it runs the old version's uninstall step, which removes the old services;
+voiced is then down until you open the app, which installs the new
+services without asking.
 
 Moving the app to the Trash, or `brew uninstall --cask voiced`, leaves the
 services running: to remove voiced, use Settings > About > Uninstall
@@ -827,7 +835,8 @@ run it with `voiced doctor --metal-probe`.
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
 | `voiced install`, `status` or `doctor` prints a `sudo /bin/sh -c '/bin/launchctl bootout system/...'` line | voiced 0.4.0 or earlier installed the services as LaunchDaemons, which only an administrator can remove. Run that line once (the last time voiced needs a password), then `voiced install`. |
-| Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
+| `voiced install`, `stop`, `start` or `uninstall` refuses to run under `sudo` | The services are your LaunchAgents, and under `sudo` the command would address root's. Run it as yourself, without `sudo`. |
+| Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, mDNS does not cross your VLAN, or macOS keeps the services' Bonjour announcements on the Mac (`voiced doctor`: Discovery). Add the integrations by the Mac's address and port; see [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | They start when you log in; without FileVault or automatic login the Mac waits at the login window. See [voiced runs while you are logged in](#voiced-runs-while-you-are-logged-in). |
 | Home Assistant cannot reach voiced on the network, with the firewall on | The firewall's question for `python3.12` was answered Deny, or not at all. Allow it in System Settings > Network > Firewall > Options; `voiced doctor` names the file. |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
@@ -876,7 +885,7 @@ Report vulnerabilities privately, not in a public issue.
 | [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
 | [docs/operations.md](docs/operations.md) | Commands, installing from a checkout, launchd and the move from LaunchDaemons, watchdog, control channel, logs, after a reboot, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
-| [menubar/README.md](menubar/README.md) | The macOS menu bar app: building, running it against the fake control server |
+| [menubar/README.md](menubar/README.md) | The macOS menu bar app: the voice and speed controls, models, the installer, its own updates, building it, running it against the fake control server, snapshots for pull requests |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, development setup, tests, conventions |
 | [SECURITY.md](SECURITY.md) | Supported versions, reporting a vulnerability, threat model |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | The Contributor Covenant, and how to report a problem |

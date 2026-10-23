@@ -42,7 +42,7 @@ draws it for light and dark:
 
 | State | Image | Meaning |
 |---|---|---|
-| idle | `waveform` | Both services running with their model loaded |
+| idle | `waveform` | Every service that is on running, its model loaded once |
 | update | `waveform` with a small plain dot at the top, drawn by `MenuBarIconImage` | Running, and a newer app is waiting to be installed (ADR 0034) |
 | busy | `waveform` with a dotted badge, drawn by `MenuBarIconImage` | Starting, loading a model, connecting, or installing |
 | error | `waveform.badge.exclamationmark` | Degraded, a service stopped, voiced not running, not installed, or an incompatible version |
@@ -218,7 +218,35 @@ or "not running" state, depending on whether a voiced watchdog plist is in
 `swift run MenuBarSnapshots <directory>` renders the menu bar window, the
 Settings window, each installer screen, the launch cards, the icons and
 "What's new", in light and dark, to PNG files
-through the same fake server and the fake install runner. Pull requests that change the UI attach these pictures.
+through the same fake server and the fake install runner.
+
+## Snapshots in a pull request
+
+A pull request that changes the UI shows the pictures it changes in its
+description, so a review sees the screens without building the app. They
+do not go on the pull request's branch: render them, put the changed ones,
+light and dark, alone in one commit on a branch of their own,
+`snapshots/pr-<number>`, with no history, push it, and embed each picture
+by that commit's SHA, light and dark side by side. A worktree keeps your
+checkout as it is (`git worktree add --orphan` needs git 2.42 or later):
+
+```sh
+(cd menubar && swift run MenuBarSnapshots /tmp/shots)
+git worktree add --orphan -b snapshots/pr-123 /tmp/pr-123-shots
+cp /tmp/shots/settings-tts-light.png /tmp/shots/settings-tts-dark.png /tmp/pr-123-shots/
+git -C /tmp/pr-123-shots add . && git -C /tmp/pr-123-shots commit -m "docs: snapshots for pull request 123"
+git -C /tmp/pr-123-shots push origin snapshots/pr-123
+git worktree remove /tmp/pr-123-shots
+```
+
+```markdown
+![light](https://raw.githubusercontent.com/JulianBeaulieu/voiced/<sha>/settings-tts-light.png)
+```
+
+From a fork, push the branch to your fork and put your account in place of
+`JulianBeaulieu` in the URL. Linked by SHA, a picture stays the one that
+was reviewed after the branch moves. The branch is never merged, and it is kept after the merge so the
+pictures keep loading.
 
 ## The installer
 
@@ -304,7 +332,7 @@ such as an unpushed checkout, built into a wheel first:
 ```sh
 (cd ~/src/voiced && uv build --wheel)
 menubar/Scripts/bundle.sh --dirty --debug
-defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.2.0-py3-none-any.whl
+defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.5.0-py3-none-any.whl
 defaults delete io.github.julianbeaulieu.voiced.menubar installSource   # back to the bundled wheel
 ```
 

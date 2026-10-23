@@ -95,7 +95,10 @@ uv run pytest
 CI runs two more jobs on every pull request. `menubar` builds and tests
 the Swift menu bar app on `macos-15` (`swift build -c release`,
 `swift test`, `Scripts/bundle.sh`); for a Swift change, run
-`cd menubar && swift test` first. `workflows` lints the workflows with
+`cd menubar && swift test` first; a change to what the app shows puts its
+snapshots in the pull request
+([menubar/README.md](menubar/README.md#snapshots-in-a-pull-request)).
+`workflows` lints the workflows with
 [actionlint](https://github.com/rhysd/actionlint) and
 [zizmor](https://docs.zizmor.sh/) (`actionlint` and `uvx zizmor .github/`
 locally). Every `uses:` is pinned to a full commit SHA with its version as a
@@ -309,8 +312,15 @@ SIGNING.md, "Rotating the key".
 2. In `CHANGELOG.md`, move the Unreleased entries under
    `## [<version>] - <date>` and leave an empty Unreleased section. That
    section is the release notes, and the app's "What's new".
-3. Open a pull request with the changes and merge it.
-4. Tag the merge commit and push the tag:
+3. Read the user-facing documentation as a new user of the release would,
+   and fix what no longer matches what it ships, not only version strings:
+   README.md, docs/ (`docs/decisions/README.md` lists every ADR with its
+   status), menubar/README.md, config.example.toml, SECURITY.md and the
+   formula's and cask's caveats in `packaging/homebrew/`. Resolve every
+   `TODO(release)` comment and every "next release" that the release
+   ships.
+4. Open a pull request with the changes and merge it.
+5. Tag the merge commit and push the tag:
 
    ```sh
    git switch main && git pull
@@ -322,17 +332,17 @@ SIGNING.md, "Rotating the key".
    `pyproject.toml`, or the CHANGELOG has no section for it. Approve the
    `release` deployment when the run asks (Actions > the run > Review
    deployments).
-5. Check the draft release it creates: the notes, the wheel, the sdist,
+6. Check the draft release it creates: the notes, the wheel, the sdist,
    `voiced-<version>-macos.zip` and `.dmg`, `appcast.xml` and `SHA256SUMS`.
    Assets named `-adhoc` mean the signing secrets were missing; the job
    summary says so.
    Download the zip and open the app once: Gatekeeper should not complain.
    To rebuild, delete the draft first; the workflow refuses a tag that
    already has a release.
-6. Publish the draft. Its `appcast.xml` is then what
+7. Publish the draft. Its `appcast.xml` is then what
    `releases/latest/download/appcast.xml` serves, and installed apps offer
    the new version at their next check (a pre-release is never served).
-7. Update the tap from the run's `homebrew` artifact, as
+8. Update the tap from the run's `homebrew` artifact, as
    [packaging/homebrew/README.md](packaging/homebrew/README.md) describes.
 
 To try the workflow without releasing, start it by hand (Actions > release >

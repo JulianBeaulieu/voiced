@@ -7,7 +7,8 @@ release before you report; the fix will land there too.
 
 | Version | Supported |
 |---|---|
-| 0.4.x | yes |
+| 0.5.x | yes |
+| 0.4.x | no |
 | 0.3.x | no |
 | 0.2.x | no |
 | 0.1.x | no |
@@ -40,7 +41,8 @@ In scope:
   remove the LaunchAgents as your user, and the one root step left: the
   fixed command that removes the LaunchDaemons of 0.4.0 or earlier.
 - The launchd pieces: the plists, the services and the watchdog.
-- The menu bar app, its installer, and the watchdog's control socket
+- The menu bar app, its installer, its updates (the feed and the check of
+  each update's signature), and the watchdog's control socket
   (`~/.voiced/control.sock`).
 
 Out of scope: the models, espeak-ng, ffmpeg and the other third-party
