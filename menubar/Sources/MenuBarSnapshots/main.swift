@@ -331,6 +331,12 @@ func respondToInstall(_ runner: FakeInstallRunner, _ response: FakeInstallRunner
 
 let installerShots = [
     InstallerShot(name: "installer-welcome"),
+    InstallerShot(
+        name: "installer-welcome-one-service",
+        steps: { installer in
+            installer.setup.stt.model = RecordedProgress.whisper
+            installer.setup.tts.isOn = false
+        }),
     InstallerShot(name: "installer-welcome-no-room", capacity: 1_500_000_000),
     InstallerShot(
         name: "installer-welcome-continue",

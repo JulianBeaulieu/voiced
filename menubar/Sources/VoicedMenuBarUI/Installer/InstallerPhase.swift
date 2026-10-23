@@ -75,7 +75,6 @@ public struct InstallFailure: Error, Sendable, Equatable {
 
 /// What the welcome screen says about room and what is already there.
 public struct WelcomeInfo: Sendable, Equatable {
-    public var downloadBytes: Int64
     public var requiredBytes: Int64
     public var availableBytes: Int64?
     /// An earlier install was interrupted: the button says "Continue".

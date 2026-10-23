@@ -117,6 +117,8 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     /// What `stt.model` and `tts.model` hold and what `download` and `delete` take.
     public var id: String
     public var repo: String
+    /// The commit the lock pins; nil from a voiced that does not say.
+    public var revision: String?
     public var license: String
     /// The model card.
     public var url: String?
@@ -139,13 +141,14 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var recommended: Bool
 
     public init(
-        id: String, repo: String? = nil, license: String, url: String? = nil, gated: Bool = false,
+        id: String, repo: String? = nil, revision: String? = nil, license: String, url: String? = nil, gated: Bool = false,
         downloadBytes: Int64, onDiskBytes: Int64 = 0, downloaded: Bool, previous: [Revision] = [],
         refs: [String] = [], quality: Int? = nil, speed: Int? = nil, note: String = "",
         recommended: Bool = false
     ) {
         self.id = id
         self.repo = repo ?? id
+        self.revision = revision
         self.license = license
         self.url = url ?? "https://huggingface.co/\(repo ?? id)"
         self.gated = gated
@@ -161,7 +164,7 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, repo, license, url, gated, downloaded, previous, refs, quality, speed, note, recommended
+        case id, repo, revision, license, url, gated, downloaded, previous, refs, quality, speed, note, recommended
         case downloadBytes = "download_bytes"
         case onDiskBytes = "on_disk_bytes"
     }
@@ -170,6 +173,7 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? id
+        revision = try c.decodeIfPresent(String.self, forKey: .revision)
         license = try c.decodeIfPresent(String.self, forKey: .license) ?? ""
         url = try c.decodeIfPresent(String.self, forKey: .url)
         gated = try c.decodeIfPresent(Bool.self, forKey: .gated) ?? false
@@ -314,6 +318,12 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     /// Nil for a plugin engine the catalogue does not know.
     public var model: CatalogueModel?
     public var state: ModelRowState
+
+    public init(engine: ModelEngine, model: CatalogueModel?, state: ModelRowState) {
+        self.engine = engine
+        self.model = model
+        self.state = state
+    }
 
     public var id: String { model.map { "\(engine.id)/\($0.id)" } ?? engine.id }
     public var title: String { model?.name ?? engine.label }

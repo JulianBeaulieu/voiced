@@ -131,6 +131,7 @@ public struct InstallerWindow: View {
 
 // MARK: - Screens
 
+/// The welcome screen is the setup: what to install, what goes where, and the one Install.
 private struct WelcomeScreen: View {
     let installer: Installer
 
@@ -141,6 +142,11 @@ private struct WelcomeScreen: View {
             sentence: "voiced turns speech into text and text into speech on this Mac, for Home Assistant and other devices."
         ) {
             VStack(alignment: .leading, spacing: 10) {
+                ServiceSetup(installer: installer, kind: .stt)
+                ServiceSetup(installer: installer, kind: .tts)
+                Text("Models can be changed and added later in Settings, which also has the models that need a Hugging Face token.")
+                    .footnote()
+                Divider().padding(.vertical, 2)
                 Place(symbol: "folder", text: "Python and the voiced environment go in ~/.voiced.")
                 Place(symbol: "waveform.circle", text: "The speech models go in the Hugging Face cache.")
                 Place(
@@ -150,7 +156,7 @@ private struct WelcomeScreen: View {
                     symbol: "trash",
                     text: "Moving this app to the Trash leaves the services running; use Uninstall in Settings > About first.")
                 Divider().padding(.vertical, 2)
-                Text("Downloads about \(ByteText.size(welcome.downloadBytes)) and needs \(ByteText.size(welcome.requiredBytes)) free while it installs.")
+                Text("Downloads about \(ByteText.size(installer.downloadBytes)) and needs \(ByteText.size(welcome.requiredBytes)) free while it installs.")
                     .fixedSize(horizontal: false, vertical: true)
                 if let available = welcome.availableBytes {
                     Text(
@@ -161,12 +167,57 @@ private struct WelcomeScreen: View {
                     .foregroundStyle(welcome.hasRoom ? Color.secondary : Color.red)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                Text("macOS asks once for an administrator password at the end.")
+                    .foregroundStyle(.secondary)
             }
         } buttons: {
+            if installer.setup.isEmpty {
+                Text("Turn on at least one service.").foregroundStyle(.secondary)
+            }
             Button(welcome.resuming ? "Continue" : "Install", action: installer.install)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!welcome.hasRoom)
+                .disabled(!welcome.hasRoom || installer.setup.isEmpty)
         }
+    }
+}
+
+/// One service on the setup screen: its switch, then its model, or what off means.
+private struct ServiceSetup: View {
+    @Bindable var installer: Installer
+    let kind: ServiceKind
+
+    var body: some View {
+        let options = SetupChoice.options(in: installer.catalogue, for: kind)
+        let choice = installer.setup[kind]
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(kind.title, isOn: $installer.setup[kind].isOn)
+                .toggleStyle(.switch)
+                .font(.body.weight(.medium))
+            if !choice.isOn {
+                Text("Off: nothing is downloaded for it, and its service loads no model and opens no port. Turn it on later in Settings > \(kind == .stt ? "Speech to Text" : "Text to Speech").")
+                    .footnote()
+            } else if !options.isEmpty {
+                Picker("Model", selection: $installer.setup[kind].model) {
+                    ForEach(installer.catalogue.engines(of: kind)) { engine in
+                        let rows = options.filter { $0.engine.id == engine.id }
+                        if !rows.isEmpty {
+                            Section(engine.label) {
+                                ForEach(rows) { row in
+                                    Text(row.isRecommended ? "\(row.title) (Recommended)" : row.title)
+                                        .tag(row.model?.id)
+                                }
+                            }
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                if let row = options.first(where: { $0.model?.id == choice.model }) {
+                    ModelSummary(row: row, detail: row.sizeLine ?? "")
+                }
+            }
+        }
+        .padding(.leading, 2)
     }
 }
 

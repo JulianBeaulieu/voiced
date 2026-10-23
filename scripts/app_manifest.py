@@ -4,8 +4,9 @@
 
 menubar/Scripts/bundle.sh runs it. The manifest names the voiced version, the
 CPython patch version (``menubar/app-python-version``), the wheel and the
-lock with their sha256, the download size of the locked wheels, and the
-pinned models from M, what the wheel's ``python -I -m voiced.models`` printed.
+lock with their sha256, the download size of the locked wheels, and from M,
+what the wheel's ``python -I -m voiced.models`` printed, the pinned default
+models and the catalogue the app's first-run setup chooses from.
 
 The download size is summed from uv.lock: for each lock entry installed on the
 app's target Mac (``lock_target``), the file uv would pick there, the most
@@ -93,6 +94,23 @@ def models(path: Path) -> list[dict[str, Any]]:
     return [{"repo": m["repo"], "revision": m["revision"], "bytes": m["bytes"]} for m in found]
 
 
+def catalogue(path: Path) -> dict[str, Any]:
+    """The catalogue as M has it, after checking each service has one
+    recommended model to preselect."""
+    found: dict[str, Any] = json.loads(path.read_text())["catalogue"]
+    for kind in ("stt", "tts"):
+        recommended = [
+            model["id"]
+            for engine in found["engines"]
+            if engine["kind"] == kind
+            for model in engine["models"]
+            if model["recommended"]
+        ]
+        if len(recommended) != 1:
+            raise SystemExit(f"{path}: {kind} needs one recommended model, not {recommended}")
+    return found
+
+
 def manifest(wheel: Path, lock: Path, uv_lock: Path, pins: Path) -> dict[str, Any]:
     python = python_version()
     name, version = parse_wheel_filename(wheel.name)[:2]
@@ -105,6 +123,7 @@ def manifest(wheel: Path, lock: Path, uv_lock: Path, pins: Path) -> dict[str, An
         "wheel": {"name": wheel.name, "sha256": sha256(wheel)},
         "wheels_bytes": wheels_bytes(lock, uv_lock, python),
         "models": models(pins),
+        "catalogue": catalogue(pins),
     }
 
 

@@ -43,6 +43,7 @@ struct VoicedMenuBarApp: App {
                 downloading: models.isDownloading)
                 .background(SettingsOpener { delegate.openSettings = $0 })
                 .background(WhatsNewOpener(launch: launch, whatsNew: whatsNew))
+                .background(InstallerOpener(installer: Install.installer, launch: launch))
         }
         .menuBarExtraStyle(.window)
 
@@ -94,6 +95,22 @@ private struct WhatsNewOpener: View {
                 NSApplication.shared.activate()
                 openWindow(id: WhatsNew.windowID)
             }
+    }
+}
+
+/// Opens the installer when the app launches with nothing installed, so the first open is the
+/// setup (ADR 0018, "The setup"). A translocated app asks to be moved first, in its card.
+private struct InstallerOpener: View {
+    let installer: Installer?
+    let launch: LaunchChecks
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear.onAppear {
+            guard let installer, installer.opensAtLaunch, launch.allowsInstall else { return }
+            NSApplication.shared.activate()
+            openWindow(id: InstallerView.windowID)
+        }
     }
 }
 

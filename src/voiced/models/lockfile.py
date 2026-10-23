@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from voiced.models.catalogue import CATALOGUE, Model, engine_label
 from voiced.models.lookup import default_models, required
 
 LOCK_FILE = Path(__file__).with_name("models.lock.json")
@@ -148,12 +149,53 @@ def resolve(model_id: str) -> Source:
     return Source(entry.repo if entry is not None else model_id, entry)
 
 
+def model_view(model: Model, *, recommended: bool) -> dict[str, Any]:
+    """What ``voiced models list --json`` says of a catalogued model that
+    the cache does not change: its catalogue entry and its pin."""
+    entry = lock()[model.id]
+    return {
+        "id": model.id,
+        "repo": model.repo,
+        "license": model.license,
+        "url": model.url,
+        "gated": model.gated,
+        "revision": entry.revision,
+        "download_bytes": entry.bytes,
+        "quality": model.quality,
+        "speed": model.speed,
+        "note": model.note,
+        "recommended": recommended,
+    }
+
+
+def catalogue_view() -> dict[str, Any]:
+    """Every catalogued engine and model as ``voiced models list --json``
+    shows them, without what only an installed voiced knows (the cache, the
+    installed engines): the menu bar app's first-run setup offers these
+    before anything is installed (ADR 0018, "The setup")."""
+    defaults = {m.id for m in default_models()}
+    return {
+        "engines": [
+            {
+                "name": engine.name,
+                "label": engine_label(engine.name),
+                "kind": engine.kind,
+                "models": [model_view(m, recommended=m.id in defaults) for m in engine.models],
+                "shared": [model_view(m, recommended=False) for m in engine.shared],
+            }
+            for engine in CATALOGUE
+        ]
+    }
+
+
 def manifest() -> dict[str, Any]:
-    """The default engines' models, which ``voiced install`` downloads."""
+    """The default engines' models, which a new install downloads, and the
+    catalogue the app's setup chooses from."""
     ids = [m for default in default_models() for m in required(default.id)]
     return {
         "models": [
             {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
             for e in (lock()[m] for m in ids)
-        ]
+        ],
+        "catalogue": catalogue_view(),
     }

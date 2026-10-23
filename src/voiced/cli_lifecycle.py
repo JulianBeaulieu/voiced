@@ -122,6 +122,15 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         action="store_true",
         help="progress as JSON lines on stdout (ADR 0018); human output goes to stderr",
     )
+    install.add_argument(
+        "--set",
+        dest="pairs",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="write a setting to the config before the models are downloaded, as "
+        "`voiced settings set` does (the app's first-run choices); repeatable",
+    )
 
     start = sub.add_parser("start", help="start the daemons")
     start.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
@@ -291,14 +300,19 @@ def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
 def _install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
 ) -> InstallPlan:
-    from voiced.launchd.install import plan_install, plan_summary, run_install
+    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
+    try:
+        changes = dict(parse_setting(pair) for pair in args.pairs)
+    except ValueError as exc:
+        raise InstallError(f"--set {exc}") from None
     plan = plan_install(
         settings,
         state_dir=args.state_dir,
         python=args.python,
         source=args.source,
         origin=args.origin,
+        changes=changes,
     )
     # Piped (the app, a log), the build's and our own lines stay in order.
     with contextlib.suppress(AttributeError, ValueError):

@@ -28,7 +28,13 @@ import pytest
 from tests import hf_cache_support as hf
 from tests.scripts_support import load
 from voiced.cli import main
-from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, LOG_DIR_IN_HOME, SERVICES, Settings
+from voiced.config import (
+    DEFAULT_LAUNCHD_LABEL_PREFIX,
+    LOG_DIR_IN_HOME,
+    SERVICES,
+    Settings,
+    load_settings,
+)
 from voiced.launchd import install as install_module
 from voiced.launchd import ports as ports_module
 from voiced.launchd.control import CommandResult, run_streaming
@@ -1025,6 +1031,69 @@ def test_run_install_tightens_an_existing_readable_config(
     assert any("would tighten" in line for line in said)
     run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
     assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
+
+
+def test_install_writes_the_chosen_settings_before_the_models(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The app's first-run choices (``--set``) reach the config through the
+    settings writer before the models step, which then reads them; the
+    chosen model need not be downloaded yet. A service switched off is off
+    for the plan too: its ports are not checked."""
+    _environment(tmp_path / "env")
+    changes = {
+        "stt.enabled": True,
+        "stt.engine": "whisper",
+        "stt.model": "mlx-community/whisper-large-v3-turbo-asr-8bit",
+        "tts.enabled": False,
+    }
+    p = _plan(settings, tmp_path, changes=changes)
+    assert p.off == ("tts",)
+    assert set(p.ports) == {"[stt] http_port", "[stt] wyoming_port"}
+    steps = [s.id for s in install_module.install_steps(p, None)]
+    assert steps[:3] == ["config", "settings", "claim"]
+    assert steps.index("settings") < steps.index("models")
+
+    said: list[str] = []
+    run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=said.append)
+    assert not p.config_file.exists(), "dry run changes nothing"
+    assert any(line.startswith("would set stt.enabled=True, stt.engine=whisper") for line in said)
+
+    seen: list[Settings] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        if "voiced.models" in argv:  # what the models step reads
+            seen.append(load_settings(p.config_file))
+        return CommandResult(0)
+
+    run_install(p, runner=runner, query=_check_ok, say=said.append)
+    (written,) = seen
+    assert (written.stt.engine, written.stt.model) == ("whisper", changes["stt.model"])
+    assert written.stt.enabled and not written.tts.enabled
+    assert "# " in p.config_file.read_text(), "written into the example, comments kept"
+    assert any("tts: " in line and "serves nothing" in line for line in said)
+
+
+def test_install_refuses_a_setting_before_writing_it(settings: Settings, tmp_path: Path) -> None:
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path, changes={"stt.engine": "nope"})
+    with pytest.raises(InstallError, match=re.escape("stt.engine: 'nope' is not installed")):
+        run_install(p, runner=lambda argv: CommandResult(0), query=_check_ok, say=[].append)
+    assert "nope" not in p.config_file.read_text()
+    assert read_manifest(p.state_dir) is None, "stopped before claiming the state dir"
+
+
+def test_cli_install_takes_settings_as_settings_set_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
+    argv = ["install", "--dry-run", "--state-dir", str(tmp_path / "state")]
+    assert main([*argv, "--set", "tts.enabled=false", "--set", "stt.enabled=yes"]) == 0
+    assert "would set tts.enabled=False, stt.enabled=True in" in capsys.readouterr().out
+    assert main([*argv, "--set", "stt.enabled=maybe"]) == 1
+    assert "--set stt.enabled: expected true or false" in capsys.readouterr().out
+    assert not (tmp_path / "missing.toml").exists()
 
 
 def test_cli_dry_run_prints_everything_and_writes_nothing(

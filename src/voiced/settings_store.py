@@ -359,6 +359,7 @@ def apply_settings(
     path: Path | None = None,
     *,
     engines: Callable[[], Engines] | None = None,
+    require_downloaded: bool = True,
 ) -> SettingsChange:
     """Write ``changes`` (settable name -> value) to the config file.
 
@@ -366,8 +367,10 @@ def apply_settings(
     unknown sections and comments are left alone. ``engines`` supplies the
     ``engines.list`` catalogue for engine and voice changes; it is only
     called when one of those is being changed, and without it they are not
-    checked. A change of engine or model is always checked against the
-    model lock and the cache (:func:`check_downloaded`). Returns the
+    checked. A change of engine or model is checked against the model
+    lock and the cache (:func:`check_downloaded`) unless
+    ``require_downloaded`` is false, which only ``voiced install`` passes:
+    its models step downloads them right after. Returns the
     effective settings afterwards (environment overrides included), the
     services that must restart for the change to apply, and warnings for the
     operator.
@@ -390,7 +393,7 @@ def apply_settings(
         wanted[name] = _coerce(name, value, table if isinstance(table, Mapping) else {})
     if engines is not None and _ENGINE_KEYS & set(wanted):
         complete_engine_change(wanted, old_sections, engines())
-    if _MODEL_KEYS & set(wanted):
+    if require_downloaded and _MODEL_KEYS & set(wanted):
         check_downloaded(wanted, old_sections, load_settings(path).install.hf_home)
 
     new_data: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}

@@ -502,7 +502,8 @@ The app's existing states (ADR 0014) gain an installer in front of them.
 "Not installed" opens the installer instead of the guide link. Each screen
 says what it does in one sentence. There is no model picker on first run:
 each engine gets its pinned default, and the model is chosen later in the
-Speech to Text and Text to Speech panes.
+Speech to Text and Text to Speech panes. (Changed: the welcome screen is now
+a setup with a model per service; see "Amendment: the setup".)
 
 0. **Before anything.** If the app is translocated
    (`SecTranslocateIsTranslocatedURL`, an app opened from Downloads
@@ -1049,3 +1050,66 @@ from the lock. The models step still runs `python -m voiced.models download
 progress protocol's `error` event carries a `code` (`failed` for the
 installer's own errors). The `download` event's `model` is the model's id in the
 catalogue, which is its repository for every model so far.
+
+## Amendment: the setup (2026-10-23)
+
+Until now a first install downloaded both default models, and opening the
+app showed only the menu, where Install voiced opened the installer. Some
+people want only one service (another app does the
+listening), or a smaller model, and should not wait for 2.9 GB they will not
+use.
+
+**The welcome screen is the setup.** On one screen: Speech to text and Text
+to speech, each on or off, each with a model picker over the catalogue (ADR
+0022) with the recommended model preselected; under the picker the chosen
+model as a row of the Models pane shows it (`ModelRow` and the same summary
+view: licence, Recommended, Quality and Speed, what it is for, size). Gated
+models are left out, since they need a Hugging Face login first; Settings
+has them. Under a switch that is off: nothing is downloaded for it, its
+service loads no model and opens no port, and Settings turns it on later.
+Below that, what goes where, the download size of this choice (the locked
+wheels plus each chosen model and its engine's shared models), free disk
+space, and one line saying an administrator password is asked once at the
+end. Both services off disables Install. The approval step after `voiced
+install` is unchanged; the move of the services to LaunchAgents, which
+removes the prompt, is a separate change.
+
+**Opening the app.** The app opens the installer by itself when it starts
+with nothing installed (no plists in `/Library/LaunchDaemons`, not
+translocated), so the first open is the setup; an install the CLI, Homebrew
+or an older app made is left to the menu, as before. Update, Roll back,
+Repair and Uninstall keep their flows and never show the setup.
+
+**What is written when.** The choice reaches the config through `voiced
+install --set KEY=VALUE`, the settings writer `voiced settings set` and the
+control socket use (`settings_store.apply_settings`, with the engines the
+new environment has), as an install step `settings` after `config` (which
+creates the file from the example if needed) and before `claim`, `ports`
+and `models`. The app passes `stt.enabled`, and for a service that is on
+its `engine` and `model`, the same for `tts`. Only this one check is
+skipped: that the model is already downloaded, since the models step comes
+next. A refused value stops the install before anything else is written.
+The models step reads the config, so it downloads exactly the chosen models
+and nothing for a service that is off (this changes ADR 0033's last
+consequence), and the ports step checks only the ports of services that are
+on. The first install's choice is written whatever the config said before
+(a config kept from an earlier uninstall included): the screen shows what
+will run. Update, Repair and Roll back pass no `--set`.
+
+**Where the setup's list comes from.** No voiced is installed when it is
+shown, so `voiced models list --json` cannot run. `python -I -m
+voiced.models` (standard library only) now also prints `catalogue`: every
+catalogued engine and model with the fields of the list that do not depend
+on the cache or the installed engines (`voiced.models.lockfile.model_view`,
+which the list uses too, so the two cannot drift; a test compares them).
+`scripts/app_manifest.py` copies it into `install-manifest.json` after
+checking each service has exactly one recommended model, and the app
+decodes it with the Models pane's own `ModelList`. Engine-level languages
+and whether an engine can run on this Mac need the engines themselves, so
+the setup shows a model's languages as the pane does, in its note; a model
+whose engine cannot run here (Moonshine below macOS 15) fails at the models
+step with the engine's own message and Try Again, as before.
+
+A model chosen in setup that fails to download leaves the flow in the
+models step's failure with Try Again, and the manual fallback names the
+chosen models at their pinned revisions.

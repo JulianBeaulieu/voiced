@@ -752,6 +752,21 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     assert fetched == []
 
 
+def test_the_models_step_downloads_nothing_for_a_service_that_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A service switched off loads no model (ADR 0033), so the install does
+    not fetch one for it: the app's setup installs speech to text alone."""
+    fetched: list[str] = []
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.commands.fetch", lambda model, write: fetched.append(model))
+    config = tmp_path / "config.toml"
+    config.write_text('[stt]\nengine = "fake"\n[tts]\nenabled = false\nmodel = "org/tts"\n')
+    commands.download(config, None)
+    assert fetched == []
+    assert "tts: off; nothing to download" in capsys.readouterr().out
+
+
 # Against the hub (model tier) ----------------------------------------------------
 
 

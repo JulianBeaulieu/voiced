@@ -34,7 +34,8 @@ listed in [CHANGELOG.md](CHANGELOG.md).
 
 You need an Apple Silicon Mac with macOS 14 or newer. The first install
 downloads about 4.5 GB, mostly the two default models, and takes several
-minutes. Any other model is downloaded only when you choose it
+minutes; less with one service or smaller models. Any other model is
+downloaded only when you choose it
 ([Models and licenses](#models-and-licenses)).
 
 Most people want the menu bar app, from [Homebrew](https://brew.sh):
@@ -43,10 +44,14 @@ Most people want the menu bar app, from [Homebrew](https://brew.sh):
 brew install --cask julianbeaulieu/voiced/voiced
 ```
 
-Open voiced.app. It asks for an administrator password once and installs
-the services; Homebrew itself asks for none. The menu bar icon then shows
-whether both services are up. The app also restarts them, opens the logs
-and changes the common settings; see [menubar/README.md](menubar/README.md).
+Open voiced.app. Its first screen asks what to install: speech to text, text
+to speech or both, each with its model, the recommended ones already chosen,
+and shows what that downloads. A service you switch off downloads nothing;
+you can turn it on later in Settings. Install then does the rest and asks
+for an administrator password once, at the end; Homebrew itself asks for
+none. The menu bar icon then shows whether the services are up. The app
+also restarts them, opens the logs and changes the common settings; see
+[menubar/README.md](menubar/README.md).
 
 To update, run `brew update`, then `brew upgrade --cask voiced`. The
 services keep running and Homebrew asks for no password; on its next

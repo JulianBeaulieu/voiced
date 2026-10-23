@@ -1,9 +1,11 @@
 import CryptoKit
 import Foundation
+import VoicedControl
 
 /// What the app pins for an install (ADR 0018): the voiced version, the Python patch version,
-/// the lock and the wheel it ships with their hashes, and the models with their revisions and
-/// sizes. bundle.sh writes it with `scripts/app_manifest.py`.
+/// the lock and the wheel it ships with their hashes, the default models with their revisions
+/// and sizes, and the catalogue the first-run setup chooses from. bundle.sh writes it with
+/// `scripts/app_manifest.py`.
 public struct InstallManifest: Codable, Sendable, Equatable {
     public struct Wheel: Codable, Sendable, Equatable {
         public var name: String
@@ -34,10 +36,16 @@ public struct InstallManifest: Codable, Sendable, Equatable {
     public var wheel: Wheel
     /// The total download size of the locked wheels.
     public var wheelsBytes: Int64
+    /// The models a new install runs when nothing else is chosen.
     public var models: [Model]
+    /// Every catalogued engine and model, as `voiced models list --json` shows them without
+    /// the cache (`python -m voiced.models`): what the setup offers before voiced is
+    /// installed. Empty from a manifest that has none.
+    public var catalogue: ModelList
 
     public init(
-        version: String, python: String, lockSHA256: String, wheel: Wheel, wheelsBytes: Int64, models: [Model]
+        version: String, python: String, lockSHA256: String, wheel: Wheel, wheelsBytes: Int64, models: [Model],
+        catalogue: ModelList = ModelList(cache: "", totalBytes: 0, engines: [])
     ) {
         self.version = version
         self.python = python
@@ -45,21 +53,35 @@ public struct InstallManifest: Codable, Sendable, Equatable {
         self.wheel = wheel
         self.wheelsBytes = wheelsBytes
         self.models = models
+        self.catalogue = catalogue
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, python, wheel, models
+        case version, python, wheel, models, catalogue
         case lockSHA256 = "lock_sha256"
         case wheelsBytes = "wheels_bytes"
     }
 
-    public var downloadBytes: Int64 { wheelsBytes + models.reduce(0) { $0 + $1.bytes } }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        python = try c.decode(String.self, forKey: .python)
+        lockSHA256 = try c.decode(String.self, forKey: .lockSHA256)
+        wheel = try c.decode(Wheel.self, forKey: .wheel)
+        wheelsBytes = try c.decode(Int64.self, forKey: .wheelsBytes)
+        models = try c.decode([Model].self, forKey: .models)
+        catalogue = try c.decodeIfPresent(ModelList.self, forKey: .catalogue) ?? ModelList(cache: "", totalBytes: 0, engines: [])
+    }
 
-    /// The manual fallback a failed download names (ADR 0018, "Download goes wrong").
-    var manualDownload: String {
-        let pinned = models.map { "\($0.repo) at revision \($0.revision)" }.joined(separator: " and ")
+    /// The manual fallback a failed download names (ADR 0018, "Download goes wrong"): each
+    /// model the install fetches, at its pinned revision.
+    static func manualDownload(_ pins: [(repo: String, revision: String)]) -> String {
+        let pinned = pins.map { "\($0.repo) at revision \($0.revision)" }.joined(separator: " and ")
         return "To download the models by hand, fetch \(pinned) into the Hugging Face cache, then try again."
     }
+
+    /// The fallback for the default models.
+    var manualDownload: String { Self.manualDownload(models.map { ($0.repo, $0.revision) }) }
 }
 
 /// The files the app carries for an install: the bundled uv, the lock, the wheel and the

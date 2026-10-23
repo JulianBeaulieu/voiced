@@ -43,6 +43,11 @@ class Model:
         return f"https://huggingface.co/{self.repo}"
 
 
+def engine_label(name: str) -> str:
+    """An engine's display name: its registry name, capitalised."""
+    return name[:1].upper() + name[1:]
+
+
 @dataclass(frozen=True)
 class Engine:
     """``name`` is the entry point name ``engine =`` uses in the config;

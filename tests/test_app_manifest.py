@@ -58,10 +58,23 @@ colorama==0.4.6 ; sys_platform == 'win32' \\
     --hash=sha256:09
 """
 
+CATALOGUE = {
+    "engines": [
+        {
+            "name": name,
+            "label": name.capitalize(),
+            "kind": kind,
+            "models": [{"id": f"{name}-model", "recommended": True}],
+            "shared": [],
+        }
+        for name, kind in (("parakeet", "stt"), ("kokoro", "tts"))
+    ]
+}
 PINS = {
     "models": [
         {"repo": "mlx-community/parakeet-tdt-0.6b-v3", "revision": "e" * 40, "bytes": 2508532829},
-    ]
+    ],
+    "catalogue": CATALOGUE,
 }
 
 
@@ -99,7 +112,21 @@ def test_the_manifest(app_manifest: ModuleType, files: dict[str, Path]) -> None:
         # wheel, docopt's sdist; nothing for the 3.11 numpy or Windows' colorama.
         "wheels_bytes": 300 + 40 + 5,
         "models": PINS["models"],
+        "catalogue": CATALOGUE,
     }
+
+
+@pytest.mark.parametrize("recommended", [[], ["a", "b"]])
+def test_each_service_needs_one_recommended_model(
+    app_manifest: ModuleType, files: dict[str, Path], recommended: list[str]
+) -> None:
+    """The setup preselects it; none, or two, would leave the choice unclear."""
+    engine = {"name": "x", "kind": "tts", "shared": []}
+    engine["models"] = [{"id": m, "recommended": True} for m in recommended]
+    stt = CATALOGUE["engines"][0]
+    files["pins"].write_text(json.dumps({**PINS, "catalogue": {"engines": [stt, engine]}}))
+    with pytest.raises(SystemExit, match="tts needs one recommended model"):
+        app_manifest.manifest(files["wheel"], files["lock"], files["uv_lock"], files["pins"])
 
 
 def test_the_real_lock_has_a_file_for_every_entry(app_manifest: ModuleType) -> None:
@@ -211,6 +238,7 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
     pins = tmp_path / "model-pins.json"
     pins.write_text(out.stdout)
     assert app_manifest.models(pins) == lockfile.manifest()["models"]
+    assert app_manifest.catalogue(pins) == lockfile.catalogue_view()
     assert [(m["repo"], m["revision"], m["bytes"]) for m in app_manifest.models(pins)] == [
         (p.repo, p.revision, p.bytes)
         for p in (models.lock()[models.default_model(e).repo] for e in ("parakeet", "kokoro"))

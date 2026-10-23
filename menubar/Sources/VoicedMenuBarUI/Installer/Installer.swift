@@ -20,6 +20,9 @@ public final class Installer {
     /// What the current or last run is doing.
     public private(set) var task: InstallerTask = .install
     public private(set) var welcome: WelcomeInfo
+    /// The setup's choice, which the welcome screen edits; the first install writes it to
+    /// the config.
+    public var setup: SetupChoice
     /// A warning from the privileged step (the firewall), shown until the end.
     public private(set) var warning: String?
     /// A Home Assistant change the watchdog refused.
@@ -40,9 +43,8 @@ public final class Installer {
         self.configuration = configuration
         stages = InstallStages(configuration: configuration, runner: runner)
         self.model = model
-        welcome = WelcomeInfo(
-            downloadBytes: configuration.resources.manifest.downloadBytes, requiredBytes: Self.requiredBytes,
-            availableBytes: nil, resuming: false)
+        welcome = WelcomeInfo(requiredBytes: Self.requiredBytes, availableBytes: nil, resuming: false)
+        setup = .recommended(in: configuration.resources.manifest.catalogue)
         phase = .welcome
         if let owner = otherAccountsInstall() {
             phase = .refused("voiced is already installed for \(owner) on this Mac.")
@@ -57,6 +59,20 @@ public final class Installer {
         guard managesInstall, let installed = record?.version, installed != bundled else { return nil }
         return "Repair installs voiced \(bundled), the version this app carries, in place of \(installed)."
     }
+
+    /// What the setup offers.
+    public var catalogue: ModelList { configuration.resources.manifest.catalogue }
+
+    /// What the first install downloads for the setup's choice: the locked wheels and the
+    /// chosen models.
+    public var downloadBytes: Int64 {
+        configuration.resources.manifest.wheelsBytes + setup.downloads(in: catalogue).reduce(0) { $0 + $1.downloadBytes }
+    }
+
+    /// Opening the app shows the setup by itself when nothing is installed yet: no plists,
+    /// and no other account's. An install the command line or an older app made is left to
+    /// the menu, as before.
+    public var opensAtLaunch: Bool { phase == .welcome && !isInstalled }
 
     /// What the pinned models take in the Hugging Face cache, for the uninstall's box.
     public var modelBytes: Int64 { configuration.resources.manifest.models.reduce(0) { $0 + $1.bytes } }
@@ -119,7 +135,7 @@ public final class Installer {
 
     /// "Install" or "Continue" on the welcome screen.
     public func install() {
-        guard phase == .welcome else { return }
+        guard phase == .welcome, !setup.isEmpty else { return }
         refreshWelcome()
         guard welcome.hasRoom else { return }
         begin { [self] in await firstInstall() }
@@ -340,11 +356,18 @@ public final class Installer {
     }
 
     /// `voiced install` in `environment`, then the first install's approval, or for the
-    /// Lifecycle the check that asks for it only when needed.
+    /// Lifecycle the check that asks for it only when needed. The first install
+    /// writes the setup's choice to the config; the Lifecycle keeps the config as it is.
     private func installAndContinue(in environment: URL) async {
         phase = .installing(InstallProgress())
-        guard value(await stages.runInstall(in: environment, progress: { self.phase = .installing($0) })) != nil
-        else { return }
+        let settings = task == .install ? setup.settings(in: catalogue) : []
+        let fallback =
+            task == .install
+            ? InstallManifest.manualDownload(setup.downloads(in: catalogue).map { ($0.repo, $0.revision ?? "main") })
+            : configuration.resources.manifest.manualDownload
+        let installed = await stages.runInstall(
+            in: environment, settings: settings, fallback: fallback, progress: { self.phase = .installing($0) })
+        guard value(installed) != nil else { return }
         if task == .install {
             await showApproval()
         } else {

@@ -63,13 +63,15 @@ installer needs (ADR 0018, "What the app ships and pins"):
 | `Contents/Helpers/uv` | uv at the version and sha256 pinned in `bundle.sh` |
 | `Contents/Resources/voiced-*.whl` | The voiced wheel, built from this checkout with that uv |
 | `Contents/Resources/requirements.lock` | The lock the wheel carries |
-| `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), and each default model's repository, revision and size; written by `scripts/app_manifest.py` |
+| `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), each default model's repository, revision and size, and the model catalogue the setup offers; written by `scripts/app_manifest.py` |
 | `Contents/Resources/uv-LICENSE` | uv's licence text, fetched at the same tag and checked |
 | `Contents/Resources/NOTICE` | The repository's third-party notice (`scripts/notice.py` writes it from the lock) |
 | `Contents/Resources/WhatsNew.md` | This version's section of `CHANGELOG.md`, else the Unreleased one |
 
-The model pins are what the wheel's `python -I -m voiced.models` prints
-(the default engines' models in `voiced/models.lock.json`). Everything fetched is pinned by
+The model pins and the catalogue are what the wheel's `python -I -m
+voiced.models` prints (the default engines' models in
+`voiced/models.lock.json`, and every catalogued engine and model as
+`voiced models list --json` shows them, without the cache). Everything fetched is pinned by
 hash: uv and its licence in `bundle.sh`, and the build backend and
 `packaging` (which `app_manifest.py` uses to read the lock's markers and wheel
 tags) by `src/voiced/build-requirements.lock`. The first run needs the
@@ -187,10 +189,14 @@ through the same fake server and the fake install runner. Pull requests that cha
 
 ## The installer
 
-ADR 0018 has the design. The installer is a window with one screen per step:
-the welcome (what goes where, the download size, free disk space), building
+ADR 0018 has the design. The installer is a window with one screen per step,
+and the app opens it by itself when it starts with nothing installed:
+the welcome, which is the setup (each service on or off with its model, the
+recommended ones chosen; what goes where, the download size of that choice,
+free disk space), building
 the environment with the bundled uv, `voiced install --origin app
---json-progress` with its steps and download progress, one administrator
+--json-progress` with the setup's choice as `--set` settings, its steps and
+download progress, one administrator
 prompt that runs the privileged script, waiting for the watchdog's `hello`,
 Connect Home Assistant, and Done. Each step that fails shows its cause and
 the last lines of output, with Try Again.

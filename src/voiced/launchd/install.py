@@ -21,7 +21,7 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -336,6 +336,9 @@ class InstallPlan:
     bind: str = "127.0.0.1"
     # Services switched off in the config: their daemons start and park.
     off: tuple[ServiceName, ...] = ()
+    # Settings to write to the config before the models step (``--set``,
+    # the app's first-run choices), as ``voiced settings set`` takes them.
+    changes: Mapping[str, object] = field(default_factory=dict)
 
     # Paths -------------------------------------------------------------
 
@@ -608,6 +611,7 @@ def plan_install(
     uv: str | Literal["auto"] | None = "auto",
     prefix: str | Path | None = None,
     origin: Origin | None = None,
+    changes: Mapping[str, object] | None = None,
 ) -> InstallPlan:
     """Resolve CLI flags, config and defaults into an :class:`InstallPlan`.
 
@@ -615,8 +619,11 @@ def plan_install(
     (``prefix``, default ``sys.prefix``); with it, a new one under
     ``<state_dir>/envs``. ``origin`` is who made the environment, for the
     manifest: by default ``homebrew`` for a keg and ``cli`` otherwise; the
-    app passes ``app``.
+    app passes ``app``. ``changes`` are settings the install writes to the
+    config (``--set``); a service they switch off is off for the plan too,
+    so its ports are not checked.
     """
+    changes = dict(changes or {})
     config_file = config_file or config_path()
     state = (state_dir or settings.install.venv_dir).expanduser().absolute()
     if source is None:
@@ -630,6 +637,9 @@ def plan_install(
             # writes anything, and refuses it.
             manifest = None
         environment, found = new_environment_dir(state, manifest=manifest), "cli"
+    off = tuple(
+        s for s in HTTP_SERVICES if not changes.get(f"{s}.enabled", settings.service(s).enabled)
+    )
     return InstallPlan(
         user=installing_user(),
         home=home or Path.home(),
@@ -644,9 +654,15 @@ def plan_install(
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
         engine_env=settings.engine_environment(),
-        ports=settings.ports(),
+        # A service that is off opens no port (ADR 0033); keys read "[stt] http_port".
+        ports={
+            key: port
+            for key, port in settings.ports().items()
+            if not key.startswith(tuple(f"[{s}]" for s in off))
+        },
         bind=settings.server.bind,
-        off=tuple(s for s in HTTP_SERVICES if not settings.service(s).enabled),
+        off=off,
+        changes=changes,
     )
 
 
@@ -703,6 +719,21 @@ def write_default_config(config_file: Path) -> bool:
 
 class InstallError(RuntimeError):
     pass
+
+
+def write_settings(plan: InstallPlan) -> None:
+    """Write ``plan.changes`` to the config, as ``voiced settings set``
+    does, checked against the engines this environment has. The models are
+    not checked: the models step downloads them next."""
+    from voiced.engines.catalogue import engines_list
+    from voiced.settings_store import InvalidSetting, apply_settings
+
+    try:
+        apply_settings(
+            plan.changes, plan.config_file, engines=engines_list, require_downloaded=False
+        )
+    except InvalidSetting as exc:
+        raise InstallError(f"{exc}. Nothing was changed in {plan.config_file}") from None
 
 
 def current_manifest(plan: InstallPlan) -> Manifest | None:
@@ -828,6 +859,13 @@ def install_steps(
                     lambda: os.chmod(config, mode & 0o700 | 0o600),
                 )
             )
+
+    if plan.changes:
+        shown = ", ".join(
+            f"{key}={'(hidden)' if key == 'api_key' else value}"
+            for key, value in plan.changes.items()
+        )
+        steps.append(Step("settings", f"set {shown} in {config}", lambda: write_settings(plan)))
 
     def claim_dir() -> None:
         plan.log_dir.mkdir(parents=True, exist_ok=True)

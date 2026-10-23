@@ -18,7 +18,8 @@ from voiced.models.pinning import pin
 
 
 def download(config: Path, write: Write | None) -> None:
-    """The models step: each configured model, then each engine loaded once.
+    """The models step: each configured model, then each engine loaded once;
+    nothing for a service that is off (ADR 0033), which loads no model.
     The engine is built first, so a model it refuses fails before anything
     is fetched. A catalogued engine's model is fetched (:func:`fetch`) at
     its pin with its shared models, any other model of a catalogued engine
@@ -36,6 +37,9 @@ def download(config: Path, write: Write | None) -> None:
         ("tts", settings.tts.engine, settings.tts.model),
     )
     for kind, engine_name, model in jobs:
+        if not settings.service(kind).enabled:
+            print(f"{kind}: off; nothing to download", flush=True)
+            continue
         revision = pinned_revision(model)
         at = f" revision={revision}" if revision is not None else ""
         print(f"{kind}: engine={engine_name} model={model}{at}", flush=True)

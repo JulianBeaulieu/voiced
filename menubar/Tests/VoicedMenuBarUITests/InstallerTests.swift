@@ -99,7 +99,7 @@ final class InstallerTests: XCTestCase {
         let installer = makeInstaller()
         XCTAssertEqual(installer.phase, .welcome)
         XCTAssertFalse(installer.welcome.resuming)
-        XCTAssertEqual(installer.welcome.downloadBytes, 3_068_800_000)
+        XCTAssertEqual(installer.downloadBytes, 3_068_800_000)
         XCTAssertEqual(installer.welcome.availableBytes, 100_000_000_000)
 
         installer.install()
@@ -127,7 +127,14 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(environmentNames(), [id])
         let voiced = try XCTUnwrap(runner.commands(named: "voiced").first)
         XCTAssertEqual(voiced.executable, home.appendingPathComponent(".voiced/envs/\(id)/bin/voiced").path)
-        XCTAssertEqual(voiced.arguments, ["install", "--origin", "app", "--json-progress"])
+        // The setup's choice, the recommended models, written before the models step.
+        XCTAssertEqual(
+            voiced.arguments,
+            [
+                "install", "--origin", "app", "--json-progress",
+                "--set", "stt.enabled=true", "--set", "stt.engine=parakeet", "--set", "stt.model=\(RecordedProgress.parakeet)",
+                "--set", "tts.enabled=true", "--set", "tts.engine=kokoro", "--set", "tts.model=\(RecordedProgress.kokoro)",
+            ])
         // The install lock is released for voiced install, which takes it itself.
         guard case .acquired(let lock) = InstallLock.tryAcquire(home.appendingPathComponent(".voiced")) else {
             return XCTFail("the install lock is still held")
@@ -199,6 +206,91 @@ final class InstallerTests: XCTestCase {
     func testAnOrphanedInstallIsNotARefusal() throws {
         try installedPlist(for: "voiced-deleted-account")
         XCTAssertEqual(makeInstaller().phase, .welcome)
+    }
+
+    // MARK: - The setup
+
+    /// The `--set` arguments of the `voiced install` the installer ran.
+    private func installSettings() -> [String] {
+        let arguments = runner.commands(named: "voiced").first?.arguments ?? []
+        return zip(arguments, arguments.dropFirst()).filter { $0.0 == "--set" }.map(\.1)
+    }
+
+    func testTheSetupPreselectsTheRecommendedModelsAndOffersNoGatedOne() {
+        let installer = makeInstaller()
+        XCTAssertEqual(
+            installer.setup,
+            SetupChoice(
+                stt: ServiceChoice(isOn: true, model: RecordedProgress.parakeet),
+                tts: ServiceChoice(isOn: true, model: RecordedProgress.kokoro)))
+        XCTAssertEqual(
+            SetupChoice.options(in: installer.catalogue, for: .stt).compactMap(\.model?.id),
+            [RecordedProgress.parakeet, RecordedProgress.whisper])
+        // The gated Phonon needs a token first; Settings offers it once voiced is installed.
+        XCTAssertEqual(
+            SetupChoice.options(in: installer.catalogue, for: .tts).compactMap(\.model?.id),
+            [RecordedProgress.kokoro, RecordedProgress.phonon])
+    }
+
+    func testAnotherModelAndAServiceOffAreWhatTheInstallWritesAndDownloads() async throws {
+        let installer = makeInstaller()
+        installer.setup.stt.model = RecordedProgress.whisper
+        installer.setup.tts.isOn = false
+        // The wheels and Whisper; nothing for text to speech.
+        XCTAssertEqual(installer.downloadBytes, 205_000_000 + 885_000_000)
+        installer.install()
+        await reachApproval(installer)
+        XCTAssertEqual(
+            installSettings(),
+            ["stt.enabled=true", "stt.engine=whisper", "stt.model=\(RecordedProgress.whisper)", "tts.enabled=false"])
+    }
+
+    func testAnEnginesSharedFilesAreCountedOnce() {
+        let installer = makeInstaller()
+        installer.setup.tts.model = RecordedProgress.phonon
+        XCTAssertEqual(
+            installer.setup.downloads(in: installer.catalogue).map(\.id),
+            [RecordedProgress.parakeet, RecordedProgress.phonon, "gradium/phonon-voices"])
+        XCTAssertEqual(installer.downloadBytes, 205_000_000 + 2_508_500_000 + 65_000_000 + 9_500_000)
+        XCTAssertEqual(
+            installer.setup.settings(in: installer.catalogue).suffix(3),
+            ["tts.enabled=true", "tts.engine=phonon", "tts.model=\(RecordedProgress.phonon)"])
+    }
+
+    func testBothServicesOffInstallsNothing() {
+        let installer = makeInstaller()
+        installer.setup.stt.isOn = false
+        installer.setup.tts.isOn = false
+        XCTAssertTrue(installer.setup.isEmpty)
+        XCTAssertEqual(installer.downloadBytes, 205_000_000)
+        installer.install()
+        XCTAssertEqual(installer.phase, .welcome)
+        XCTAssertTrue(runner.commands.isEmpty)
+    }
+
+    func testAFailedDownloadNamesTheChosenModelsForTheManualFallback() async throws {
+        let installer = installerWithProgress(
+            .progress(RecordedProgress.downloading + [RecordedProgress.error("models", "Connection reset.")], status: 1))
+        installer.setup.stt.model = RecordedProgress.whisper
+        installer.install()
+        let failure = await failure(installer)
+        XCTAssertEqual(
+            failure?.fallback,
+            "To download the models by hand, fetch \(RecordedProgress.whisper) at revision 8e9f0a1 and "
+                + "\(RecordedProgress.kokoro) at revision 4d5e6f7 into the Hugging Face cache, then try again.")
+        // Try again keeps the choice.
+        installer.retry()
+        await reach(installer) { if case .failed = $0 { self.runner.commands(named: "voiced").count == 2 } else { false } }
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments).last, runner.commands(named: "voiced").first?.arguments)
+    }
+
+    func testTheSetupOpensAtLaunchOnlyWhenNothingIsInstalled() throws {
+        XCTAssertTrue(makeInstaller().opensAtLaunch)
+        // The command line or an older app installed the services: the menu shows them.
+        try installedPlist(for: NSUserName())
+        XCTAssertFalse(makeInstaller().opensAtLaunch)
+        try installedPlist(for: "root")
+        XCTAssertFalse(makeInstaller().opensAtLaunch)
     }
 
     // MARK: - App quit mid-install
