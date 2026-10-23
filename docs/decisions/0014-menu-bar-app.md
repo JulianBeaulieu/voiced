@@ -120,3 +120,10 @@ and only the first two suggest `voiced start watchdog`.
   `controlSocketPath` default.
 - On a crowded menu bar macOS may hide the icon; relaunching the app does
   not reveal it. Settings stay reachable with ⌘, once the app is active.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents. The app reads `~/Library/LaunchAgents` to
+tell "not installed" from "not running", and runs no privileged script: the
+only administrator prompt left removes the LaunchDaemons of an earlier
+release, once.

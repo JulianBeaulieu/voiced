@@ -173,7 +173,7 @@ def test_espeak_required_follows_tts_engine(
         return doctor.Check("espeak-ng", "pass")
 
     monkeypatch.setattr(doctor, "check_espeak", fake)
-    monkeypatch.setattr(doctor, "daemon_evidence", lambda s, r: [])
+    monkeypatch.setattr(doctor, "agent_evidence", lambda s, r: [])
     runner = make_runner({})
     settings.tts.engine = "kokoro"
     doctor.run_all(settings, runner)
@@ -385,40 +385,134 @@ def test_check_ports_uses_all_four(settings: Settings) -> None:
     ]
 
 
-def test_filevault() -> None:
+def test_restart_after_a_reboot() -> None:
+    """The agents start when the user logs in: FileVault's unlock at boot is
+    that login, otherwise automatic login is (ADR 0035)."""
     on = make_runner({"fdesetup status": CommandResult(0, "FileVault is On.\n")})
-    check = doctor.check_filevault(on)
-    assert check.result == "warn" and "unlock" in check.detail
-    off = make_runner({"fdesetup status": CommandResult(0, "FileVault is Off.\n")})
-    assert doctor.check_filevault(off).result == "pass"
+    check = doctor.check_restart(on, "someone")
+    assert check.result == "pass" and "when someone unlocks the disk" in check.detail
+    off = {"fdesetup status": CommandResult(0, "FileVault is Off.\n")}
+    auto = make_runner({**off, "defaults read": CommandResult(0, "someone\n")})
+    check = doctor.check_restart(auto, "someone")
+    assert check.result == "pass" and "automatic login" in check.detail
+    other = make_runner({**off, "defaults read": CommandResult(0, "else\n")})
+    check = doctor.check_restart(other, "someone")
+    assert check.result == "warn" and "once you log in" in check.detail
+    assert doctor.check_restart(make_runner({**off}), "someone").result == "warn"
 
 
-def test_daemon_states(settings: Settings) -> None:
+def test_agent_states(settings: Settings) -> None:
     label = settings.launchd.label("stt")
     loaded = make_runner(
-        {"launchctl print": CommandResult(0, "system/x = {\n\tstate = running\n\tpid = 5\n}")}
+        {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
     )
     not_loaded = make_runner({"launchctl print": CommandResult(113, "", "Could not find")})
-    assert doctor.check_daemon("stt", label, loaded, lambda p: True) == doctor.Check(
-        "Daemon stt", "pass", "running, pid 5"
+    assert doctor.check_agent("stt", label, loaded, lambda p: True) == doctor.Check(
+        "Agent stt", "pass", "running, pid 5"
     )
-    assert doctor.check_daemon("stt", label, not_loaded, lambda p: True).result == "fail"
-    assert doctor.check_daemon("stt", label, not_loaded, lambda p: False).result == "warn"
+    check = doctor.check_agent("stt", label, not_loaded, lambda p: True)
+    assert check.result == "fail" and "voiced start stt" in check.detail
+    assert doctor.check_agent("stt", label, not_loaded, lambda p: False).result == "warn"
     crashed = make_runner(
         {
             "launchctl print": CommandResult(
-                0, "system/x = {\n\tstate = waiting\n\tlast exit code = 1\n}"
+                0, "gui/501/x = {\n\tstate = waiting\n\tlast exit code = 1\n}"
             )
         }
     )
-    check = doctor.check_daemon("stt", label, crashed, lambda p: True)
+    check = doctor.check_agent("stt", label, crashed, lambda p: True)
     assert check.result == "warn" and "last exit 1" in check.detail
-    assert "not running" in check.detail and "sudo step" in check.detail
-    assert [c.name for c in doctor.check_daemons(settings, not_loaded, lambda p: False)] == [
-        "Daemon stt",
-        "Daemon tts",
-        "Daemon watchdog",
+    assert "not running" in check.detail and "`voiced start stt` reload it" in check.detail
+    assert [c.name for c in doctor.check_agents(settings, not_loaded, lambda p: False)] == [
+        "Agent stt",
+        "Agent tts",
+        "Agent watchdog",
     ]
+
+
+def test_old_launchdaemons_fail_with_their_removal(settings: Settings, no_launchd: Path) -> None:
+    """By plist, under the default prefix whatever the config says (the old
+    root step installed no other), and by `launchctl print system/<label>`
+    for one whose plist is gone while it stays loaded."""
+    import plistlib
+
+    settings.launchd.label_prefix = "org.example.voicedtest"
+    nothing = make_runner({})
+    assert doctor.check_legacy_daemons(settings, nothing, "someone") == doctor.Check(
+        "Old LaunchDaemons", "pass", "none"
+    )
+    watchdog = "io.github.julianbeaulieu.voiced.watchdog"
+    (no_launchd / f"{watchdog}.plist").write_bytes(plistlib.dumps({"UserName": "someone"}))
+    check = doctor.check_legacy_daemons(settings, nothing, "someone")
+    assert check.result == "fail"
+    assert check.detail.startswith(f"{watchdog}: voiced still runs as LaunchDaemons")
+    assert f"/bin/launchctl bootout system/{watchdog}" in check.detail
+    assert check.detail.endswith("`; then run `voiced install`")
+    (no_launchd / f"{watchdog}.plist").unlink()
+    stt = "io.github.julianbeaulieu.voiced.stt"
+    loaded = make_runner({f"launchctl print system/{stt}": CommandResult(0, "system/x = {}")})
+    check = doctor.check_legacy_daemons(settings, loaded, "someone")
+    assert check.result == "fail" and check.detail.startswith(f"{stt}:")
+
+
+def test_firewall_on_the_network() -> None:
+    """Checked only with bind = lan. voiced adds no exception: macOS asks when
+    a service starts listening, and again after the Python changes."""
+    fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    on = make_runner(
+        {f"{fw} --getglobalstate": CommandResult(0, "Firewall is enabled. (State = 1)\n")}
+    )
+    off = make_runner(
+        {f"{fw} --getglobalstate": CommandResult(0, "Firewall is disabled. (State = 0)")}
+    )
+    assert doctor.check_firewall(on, False) is None
+    assert doctor.check_firewall(off, True) == doctor.Check("Firewall", "pass", "off")
+    check = doctor.check_firewall(on, True)
+    assert check is not None and check.result == "warn"
+    assert "asks again after an update that changes that Python" in check.detail
+    assert "System Settings > Network > Firewall > Options" in check.detail
+
+
+def test_discovery_needs_the_network_not_only_this_mac(settings: Settings) -> None:
+    """Bonjour from a LaunchAgent reached only loopback when measured (ADR
+    0035): seen there only, Home Assistant cannot discover voiced."""
+    assert doctor.check_discovery(settings, lambda: {}) is None  # loopback bind
+    settings.server.bind = "0.0.0.0"
+    both = {"voiced-stt": {1, 14}, "voiced-tts": {14}}
+    assert doctor.check_discovery(settings, lambda: both) == doctor.Check(
+        "Discovery", "pass", "voiced-stt, voiced-tts advertised on the network"
+    )
+    check = doctor.check_discovery(settings, lambda: {"voiced-stt": {1}, "voiced-tts": {1}})
+    assert check is not None and check.result == "warn"
+    assert "Local Network" in check.detail and "address and port" in check.detail
+    settings.tts.enabled = False
+    assert doctor.check_discovery(settings, lambda: {"voiced-stt": {14}}).result == "pass"  # type: ignore[union-attr]
+    check = doctor.check_discovery(settings, lambda: None)
+    assert check is not None and check.result == "warn"
+    settings.server.zeroconf = False
+    assert doctor.check_discovery(settings, lambda: {}) is None
+
+
+def test_browse_reads_dns_sd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dns-sd's columns: the interface index is the fourth."""
+    text = (
+        "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n"
+        "17:44:38.263  Add        3   1 local.               _wyoming._tcp.       voiced-stt\n"
+        "17:44:38.263  Add        2  14 local.               _wyoming._tcp.       voiced-stt\n"
+        "17:44:39.000  Rmv        0  14 local.               _wyoming._tcp.       old one\n"
+    )
+    import os as os_module
+
+    reads = [text.encode()]
+    monkeypatch.setattr("pty.fork", lambda: (4242, 99))
+    monkeypatch.setattr("select.select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(
+        os_module, "read", lambda fd, n: reads.pop() if reads else (_ for _ in ()).throw(OSError())
+    )
+    monkeypatch.setattr(os_module, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(os_module, "waitpid", lambda pid, flags: (pid, 0))
+    monkeypatch.setattr(os_module, "close", lambda fd: None)
+    assert doctor.browse_wyoming(1.0) == {"voiced-stt": {1, 14}}
 
 
 def test_metal_shell() -> None:
@@ -441,27 +535,27 @@ def _no_file(path: Path) -> str | None:
     return None
 
 
-def test_metal_daemon_from_running_service_requires_matching_pid() -> None:
-    good = [doctor.DaemonEvidence("tts", _loaded(), launchd_pid=42, listener_pids=[42])]
-    check = doctor.check_metal_daemon(Path("/none"), good, _no_file)
+def test_metal_agent_from_running_service_requires_matching_pid() -> None:
+    good = [doctor.AgentEvidence("tts", _loaded(), launchd_pid=42, listener_pids=[42])]
+    check = doctor.check_metal_agent(Path("/none"), good, _no_file)
     assert check.result == "pass" and "kokoro" in check.detail and "pid 42" in check.detail
 
     rejected = [
-        # a `voiced serve` started by hand owns the port, not the daemon
-        doctor.DaemonEvidence("tts", _loaded(), launchd_pid=42, listener_pids=[777]),
-        # daemon not running at all
-        doctor.DaemonEvidence("tts", _loaded(), launchd_pid=None, listener_pids=[777]),
+        # a `voiced serve` started by hand owns the port, not the agent
+        doctor.AgentEvidence("tts", _loaded(), launchd_pid=42, listener_pids=[777]),
+        # agent not running at all
+        doctor.AgentEvidence("tts", _loaded(), launchd_pid=None, listener_pids=[777]),
         # lsof unavailable: cannot prove who listens
-        doctor.DaemonEvidence("tts", _loaded(), launchd_pid=42, listener_pids=None),
+        doctor.AgentEvidence("tts", _loaded(), launchd_pid=42, listener_pids=None),
         # fake engine never proves Metal
-        doctor.DaemonEvidence("tts", _loaded("fake"), launchd_pid=42, listener_pids=[42]),
+        doctor.AgentEvidence("tts", _loaded("fake"), launchd_pid=42, listener_pids=[42]),
         # model not loaded yet
-        doctor.DaemonEvidence(
+        doctor.AgentEvidence(
             "tts", Observation("starting", "", 1, {"model_loaded": False}), 42, [42]
         ),
     ]
     for item in rejected:
-        assert doctor.check_metal_daemon(Path("/none"), [item], _no_file).result == "warn", item
+        assert doctor.check_metal_agent(Path("/none"), [item], _no_file).result == "warn", item
 
 
 def _probe(**overrides: object) -> str:
@@ -469,24 +563,28 @@ def _probe(**overrides: object) -> str:
         "ok": True,
         "default_device": "Device(gpu, 0)",
         "matmul_ms": 12.0,
-        "context": {"launchd_managername": "System", "ppid": 1, "macos": "15.7.4"},
+        "context": {"launchd_managername": "Aqua", "ppid": 1, "macos": "15.7.4"},
     }
     data.update(overrides)
     return json.dumps(data)
 
 
-def test_metal_daemon_from_probe_file_validates_context() -> None:
+def test_metal_agent_from_probe_file_validates_context() -> None:
     def run(text: str, macos: str | None = "15.7.4") -> doctor.Check:
-        return doctor.check_metal_daemon(Path("/p.json"), [], lambda p: text, macos)
+        return doctor.check_metal_agent(Path("/p.json"), [], lambda p: text, macos)
 
     good = run(_probe())
     assert good.result == "pass" and "12.0 ms" in good.detail
 
     shell = run(_probe(context={"launchd_managername": "Background", "ppid": 500}))
-    assert shell.result == "warn" and "not produced by a LaunchDaemon" in shell.detail
+    assert shell.result == "warn" and "not produced by a LaunchAgent" in shell.detail
 
-    not_pid1 = run(_probe(context={"launchd_managername": "System", "ppid": 300}))
+    not_pid1 = run(_probe(context={"launchd_managername": "Aqua", "ppid": 300}))
     assert not_pid1.result == "warn"
+
+    # A LaunchDaemon's, from before ADR 0035: not how the services run now.
+    daemon = run(_probe(context={"launchd_managername": "System", "ppid": 1, "macos": "15.7.4"}))
+    assert daemon.result == "warn"
 
     other_os = run(_probe(), macos="26.0.1")
     assert other_os.result == "warn" and "re-run" in other_os.detail
@@ -495,7 +593,7 @@ def test_metal_daemon_from_probe_file_validates_context() -> None:
     assert failed.result == "fail" and "no device" in failed.detail
 
     assert run("{").result == "warn"
-    assert doctor.check_metal_daemon(Path("/p.json"), [], _no_file).result == "warn"
+    assert doctor.check_metal_agent(Path("/p.json"), [], _no_file).result == "warn"
 
 
 def test_render_and_worst() -> None:

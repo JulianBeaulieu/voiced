@@ -8,14 +8,19 @@ implementations.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
+import pty
+import pwd
 import re
+import select
 import shlex
 import shutil
 import stat
 import sys
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,10 +45,23 @@ from voiced.engines.kokoro import (
     espeak_data_path,
 )
 from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
-from voiced.launchd.control import Runner, plist_path, print_service, run_command
+from voiced.launchd.control import (
+    Runner,
+    legacy_daemons,
+    legacy_message,
+    plist_path,
+    print_service,
+    run_command,
+)
 from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
-from voiced.launchd.ports import listener_pids, process_of, runs_entry
+from voiced.launchd.ports import (
+    FIREWALL_NOTE,
+    firewall_enabled,
+    listener_pids,
+    process_of,
+    runs_entry,
+)
 from voiced.layout import (
     ManifestError,
     NotVoiceds,
@@ -56,8 +74,10 @@ from voiced.layout import (
     same_path,
     sha256_file,
 )
+from voiced.settings_store import bind_mode
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
+from voiced.wyoming import WYOMING_STT_SERVICE, WYOMING_TTS_SERVICE
 
 Result = Literal["pass", "warn", "fail"]
 Which = Callable[[str], str | None]
@@ -133,12 +153,12 @@ def check_python(version: tuple[int, int, int] | None = None) -> Check:
 
 
 def check_service_python(entry: Path, runner: Runner = run_command) -> Check:
-    """The interpreter the daemons run (that of the environment ``entry``,
+    """The interpreter the services run (that of the environment ``entry``,
     the state directory's ``bin/voiced``, points at), which is not
     necessarily the one running ``doctor``."""
     if entry.is_symlink() and not entry.exists():
         # `brew uninstall voiced`, or an environment deleted by hand: launchd
-        # stops respawning the daemons (KeepAlive PathState, ADR 0017).
+        # stops respawning the services (KeepAlive PathState, ADR 0017).
         return Check(
             "Service Python",
             "fail",
@@ -360,11 +380,11 @@ def check_port(
 ) -> Check:
     """Who listens on ``port``? Uses ``lsof``; absence of lsof is reported, not fatal.
 
-    A listener is voiced's daemon when argv[1] is the entry point: the plist
+    A listener is voiced's service when argv[1] is the entry point: the plist
     runs ``<entry> serve ...``, a console script, so the kernel runs it as
     ``<interpreter> <entry> serve ...``. The interpreter varies (for
     Homebrew's framework Python the executable is inside ``Python.app``,
-    wherever the venv is). A daemon of voiced's that runs from another
+    wherever the venv is). A service of voiced's that runs from another
     environment than ``entry`` links (one not restarted after a switch) is
     a warning.
     """
@@ -404,22 +424,129 @@ def check_ports(settings: Settings, runner: Runner) -> list[Check]:
 # Disk and launchd ---------------------------------------------------------
 
 
-def check_filevault(runner: Runner) -> Check:
-    out = runner(["fdesetup", "status"]).stdout.strip()
-    if "FileVault is On" in out:
+def check_restart(runner: Runner, user: str) -> Check:
+    """Whether the services come back by themselves after a reboot: they
+    are LaunchAgents and start when ``user`` logs in (ADR 0035). FileVault's
+    unlock at boot is that login; without it, only automatic login is."""
+    name = "After a reboot"
+    filevault = runner(["fdesetup", "status"]).stdout.strip()
+    if "FileVault is On" in filevault:
         return Check(
-            "FileVault",
-            "warn",
-            "on: after a reboot the daemons start only once someone unlocks the disk "
-            "at the login screen (no GUI login needed after that)",
+            name,
+            "pass",
+            f"FileVault is on: voiced starts when {user} unlocks the disk at boot (unlocking "
+            "as another account logs that account in instead)",
         )
-    if "FileVault is Off" in out:
-        return Check("FileVault", "pass", "off; unattended reboots work")
-    return Check("FileVault", "warn", out or "could not read fdesetup status")
+    auto = runner(
+        ["defaults", "read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]
+    )
+    if auto.ok and auto.stdout.strip() == user:
+        return Check(name, "pass", f"automatic login as {user} starts voiced")
+    return Check(
+        name,
+        "warn",
+        "voiced starts only once you log in; for unattended reboots turn on automatic "
+        "login (System Settings > Users & Groups) or FileVault",
+    )
 
 
-def check_daemon(service: str, label: str, runner: Runner, exists: Exists = Path.is_file) -> Check:
-    name = f"Daemon {service}"
+def check_firewall(runner: Runner, lan: bool) -> Check | None:
+    """With voiced on the network (``lan``), whether the application
+    firewall will ask about the services' Python. None while voiced listens
+    on this Mac only. voiced adds no exception (ADR 0035)."""
+    if not lan:
+        return None
+    if not firewall_enabled(runner):
+        return Check("Firewall", "pass", "off")
+    return Check("Firewall", "warn", f"on: {FIREWALL_NOTE}")
+
+
+LOOPBACK_INTERFACE = 1  # lo0, as dns-sd numbers interfaces
+
+
+def browse_wyoming(seconds: float = 3.0) -> dict[str, set[int]] | None:
+    """The ``_wyoming._tcp`` instances mDNSResponder sees, by name, with the
+    interfaces it saw each on; None when ``dns-sd`` cannot run. dns-sd
+    writes to a terminal only, so it gets a pty, and never exits by itself."""
+    try:
+        pid, fd = pty.fork()
+    except OSError:
+        return None
+    if pid == 0:  # the child
+        try:
+            os.execv("/usr/bin/dns-sd", ["dns-sd", "-B", "_wyoming._tcp", "local."])
+        finally:
+            os._exit(127)
+    out = b""
+    deadline = time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 15)
+        os.waitpid(pid, 0)
+        os.close(fd)
+    seen: dict[str, set[int]] = {}
+    for line in out.decode(errors="replace").splitlines():
+        fields = line.split()
+        # 17:44:38.263  Add  3  14 local.  _wyoming._tcp.  voiced-stt
+        if len(fields) >= 7 and fields[1] == "Add" and fields[3].isdigit():
+            seen.setdefault(" ".join(fields[6:]), set()).add(int(fields[3]))
+    return seen
+
+
+def check_discovery(
+    settings: Settings, browse: Callable[[], dict[str, set[int]] | None] = browse_wyoming
+) -> Check | None:
+    """Whether Home Assistant can discover voiced: its Wyoming listeners
+    advertised on the network, not only on this Mac. From a LaunchAgent,
+    macOS's Local Network privacy can stop python-zeroconf's multicast on
+    the network interfaces (``[Errno 65] No route to host`` in the service
+    log) while loopback works (ADR 0035). None unless voiced is on the
+    network with ``zeroconf`` on."""
+    if bind_mode(settings.server.bind) != "lan" or not settings.server.zeroconf:
+        return None
+    name = "Discovery"
+    wanted = {
+        WYOMING_STT_SERVICE: settings.stt.enabled,
+        WYOMING_TTS_SERVICE: settings.tts.enabled,
+    }
+    wanted_names = [n for n, on in wanted.items() if on]
+    if not wanted_names:
+        return None
+    seen = browse()
+    if seen is None:
+        return Check(
+            name, "warn", "dns-sd could not run; cannot tell whether Home Assistant sees voiced"
+        )
+    remote = [n for n in wanted_names if seen.get(n, set()) - {LOOPBACK_INTERFACE}]
+    if len(remote) == len(wanted_names):
+        return Check(name, "pass", f"{', '.join(remote)} advertised on the network")
+    missing = [n for n in wanted_names if n not in remote]
+    if not any(n in seen for n in missing):
+        return Check(
+            name,
+            "warn",
+            f"{', '.join(missing)} not seen at all: is the service running? (`voiced status`)",
+        )
+    return Check(
+        name,
+        "warn",
+        f"{', '.join(missing)} not advertised on the network (macOS's Local Network privacy "
+        "may block Bonjour from the services); Home Assistant may not discover voiced: add "
+        "the Wyoming integrations by this Mac's address and port instead "
+        "(docs/home-assistant.md)",
+    )
+
+
+def check_agent(service: str, label: str, runner: Runner, exists: Exists = Path.is_file) -> Check:
+    name = f"Agent {service}"
     installed = exists(plist_path(label))
     status = print_service(label, runner)
     if installed and status.loaded:
@@ -429,26 +556,39 @@ def check_daemon(service: str, label: str, runner: Runner, exists: Exists = Path
         if not status.running:
             # KeepAlive should have started it. After bin/voiced dangled and
             # came back, launchd can leave a job at "spawn scheduled" for
-            # good; booting it out and in again (the sudo step) recovers it.
+            # good; booting it out and in again recovers it.
             return Check(
                 name,
                 "warn",
-                f"{detail}: loaded but not running; re-run the sudo step "
-                "`voiced install` printed, which reloads it",
+                f"{detail}: loaded but not running; `voiced stop {service}` and "
+                f"`voiced start {service}` reload it",
             )
         return Check(name, "pass", detail)
     if installed:
-        return Check(name, "fail", f"{plist_path(label)} exists but is not loaded")
+        return Check(
+            name, "fail", f"{plist_path(label)} exists but is not loaded; `voiced start {service}`"
+        )
     if status.loaded:
-        return Check(name, "warn", "loaded from somewhere other than /Library/LaunchDaemons")
-    return Check(name, "warn", "not installed; run voiced install and the sudo command it prints")
+        return Check(name, "warn", "loaded from somewhere other than ~/Library/LaunchAgents")
+    return Check(name, "warn", "not installed; run voiced install")
 
 
-def check_daemons(settings: Settings, runner: Runner, exists: Exists = Path.is_file) -> list[Check]:
+def check_agents(settings: Settings, runner: Runner, exists: Exists = Path.is_file) -> list[Check]:
     return [
-        check_daemon(service, settings.launchd.label(service), runner, exists)
+        check_agent(service, settings.launchd.label(service), runner, exists)
         for service in SERVICES
     ]
+
+
+def check_legacy_daemons(settings: Settings, runner: Runner, user: str) -> Check:
+    """LaunchDaemons of 0.4.0 or earlier (ADR 0035): they hold the ports the
+    agents need, and only root removes them."""
+    name = "Old LaunchDaemons"
+    found = legacy_daemons(settings.launchd.service_labels(), runner)
+    if not found:
+        return Check(name, "pass", "none")
+    message = legacy_message(found, user, one_line=True)
+    return Check(name, "fail", f"{', '.join(d.label for d in found)}: {message}")
 
 
 # Metal --------------------------------------------------------------------
@@ -470,7 +610,7 @@ def check_metal_shell(runner: Runner, python: Path | None) -> Check:
 
 
 @dataclass(frozen=True)
-class DaemonEvidence:
+class AgentEvidence:
     """What a running service tells us, with proof it is the launchd-managed one."""
 
     service: str
@@ -479,28 +619,28 @@ class DaemonEvidence:
     listener_pids: list[int] | None  # from lsof on the HTTP port
 
 
-def check_metal_daemon(
+def check_metal_agent(
     probe_file: Path,
-    evidence: Iterable[DaemonEvidence],
+    evidence: Iterable[AgentEvidence],
     read_text: Callable[[Path], str | None] | None = None,
     running_macos: str | None = None,
 ) -> Check:
-    """Did MLX work from a LaunchDaemon on this machine?
+    """Did MLX work from a LaunchAgent, as the services run, on this machine?
 
     Accepted evidence, strongest first:
 
     1. A service whose ``/health`` says a real engine (not ``fake``) has
        loaded its model (and may have unloaded it since, ``idle``), where
        the pid listening on its HTTP port is the pid
-       launchd reports for the daemon. That rules out a ``voiced serve`` run by
+       launchd reports for the agent. That rules out a ``voiced serve`` run by
        hand on the same port.
     2. The JSON written by ``voiced doctor --metal-probe``, if it says ``ok``,
-       was produced under launchd's system manager with pid 1 as parent, and
-       on the macOS version running now.
+       was produced by a LaunchAgent (launchd's ``Aqua`` manager, pid 1 as
+       parent), and on the macOS version running now.
 
     Anything else is "unknown", never a pass.
     """
-    name = "Metal (daemon)"
+    name = "Metal (launchd)"
     for item in evidence:
         payload = item.health.payload or {}
         if not warm(payload) or payload.get("engine") in (None, "fake"):
@@ -511,25 +651,23 @@ def check_metal_daemon(
             return Check(
                 name,
                 "pass",
-                f"{item.service} daemon (pid {item.launchd_pid}) has {payload['engine']} loaded",
+                f"{item.service} agent (pid {item.launchd_pid}) has {payload['engine']} loaded",
             )
     reader = read_text or _read_text
     text = reader(probe_file)
     if text is None:
-        return Check(
-            name, "warn", "unknown; run `voiced doctor --metal-probe` and the printed sudo script"
-        )
+        return Check(name, "warn", "unknown; run `voiced doctor --metal-probe`")
     try:
         data = json.loads(text)
     except ValueError:
         return Check(name, "warn", f"{probe_file} is not valid JSON")
     ctx = data.get("context") or {}
     manager = ctx.get("launchd_managername")
-    if manager != "System" or ctx.get("ppid") != 1:
+    if manager != "Aqua" or ctx.get("ppid") != 1:
         return Check(
             name,
             "warn",
-            f"{probe_file} was not produced by a LaunchDaemon "
+            f"{probe_file} was not produced by a LaunchAgent; re-run `voiced doctor --metal-probe` "
             f"(managername={manager!r}, ppid={ctx.get('ppid')!r})",
         )
     if running_macos and ctx.get("macos") != running_macos:
@@ -560,14 +698,14 @@ def check_control_socket(
     watchdog_pid: int | None = None,
 ) -> Check:
     """The watchdog's control socket exists, is private, and answers.
-    ``watchdog_pid`` is the watchdog daemon's pid from launchd, if running."""
+    ``watchdog_pid`` is the watchdog's pid from launchd, if running."""
     name = "Control socket"
     try:
         info = path.lstat()
     except FileNotFoundError:
         if watchdog_pid is not None:
             return Check(name, "fail", f"{NOT_SERVED} (pid {watchdog_pid}, no {path})")
-        return Check(name, "warn", f"{path} does not exist; the watchdog daemon serves it")
+        return Check(name, "warn", f"{path} does not exist; the watchdog serves it")
     except OSError as exc:
         return Check(name, "fail", f"{path}: {exc}")
     if not stat.S_ISSOCK(info.st_mode):
@@ -609,12 +747,12 @@ def fetch_health(
     return out
 
 
-def daemon_evidence(settings: Settings, runner: Runner) -> list[DaemonEvidence]:
-    items: list[DaemonEvidence] = []
+def agent_evidence(settings: Settings, runner: Runner) -> list[AgentEvidence]:
+    items: list[AgentEvidence] = []
     for service, obs in fetch_health(settings):
         status = print_service(settings.launchd.label(service), runner)
         pids = listener_pids(settings.http_port(service), runner)
-        items.append(DaemonEvidence(service, obs, status.pid, pids))
+        items.append(AgentEvidence(service, obs, status.pid, pids))
     return items
 
 
@@ -648,7 +786,8 @@ def check_models(settings: Settings) -> list[Check]:
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
     entry = entry_point(state_dir(settings))
     venv_python = environment_python(entry) if entry.exists() else None
-    return [
+    user = pwd.getpwuid(os.getuid()).pw_name
+    checks = [
         check_apple_silicon(runner),
         check_macos_version(runner),
         check_python(),
@@ -660,19 +799,23 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         *check_models(settings),
         check_memory(runner),
         *check_ports(settings, runner),
-        check_filevault(runner),
-        *check_daemons(settings, runner),
+        check_restart(runner, user),
+        check_legacy_daemons(settings, runner, user),
+        *check_agents(settings, runner),
         check_control_socket(
             socket_path(settings),
             watchdog_pid=print_service(settings.launchd.label("watchdog"), runner).pid,
         ),
         check_metal_shell(runner, venv_python),
-        check_metal_daemon(
+        check_metal_agent(
             settings.server.log_dir / METAL_PROBE_FILE,
-            daemon_evidence(settings, runner),
+            agent_evidence(settings, runner),
             running_macos=macos_version(runner),
         ),
     ]
+    firewall = check_firewall(runner, bind_mode(settings.server.bind) == "lan")
+    discovery = check_discovery(settings)
+    return [*checks, *(c for c in (firewall, discovery) if c is not None)]
 
 
 def worst(checks: Sequence[Check]) -> Result:

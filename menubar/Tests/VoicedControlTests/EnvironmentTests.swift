@@ -30,35 +30,58 @@ final class EnvironmentTests: XCTestCase {
             "/tmp/x.sock")
     }
 
-    func testInstallProbeFindsThisUsersWatchdogWhateverTheLabel() throws {
-        let empty = try launchDaemonsDirectory()
-        XCTAssertFalse(InstallProbe(launchDaemonsDirectory: empty, userName: "alex").isInstalled())
+    func testInstallProbeFindsTheWatchdogAgentWhateverTheLabel() throws {
+        let none = try launchDaemonsDirectory()
+        let empty = try launchAgentsDirectory()
+        XCTAssertFalse(InstallProbe(launchAgentsDirectory: empty, launchDaemonsDirectory: none).isInstalled())
+        let standard = try launchAgentsDirectory(watchdog: true)
+        XCTAssertTrue(InstallProbe(launchAgentsDirectory: standard, launchDaemonsDirectory: none).isInstalled())
+        let custom = try launchAgentsDirectory(watchdog: true, label: "computer.speech")
+        XCTAssertTrue(InstallProbe(launchAgentsDirectory: custom, launchDaemonsDirectory: none).isInstalled())
+    }
 
-        let standard = try launchDaemonsDirectory(watchdogUser: "alex")
-        XCTAssertTrue(InstallProbe(launchDaemonsDirectory: standard, userName: "alex").isInstalled())
-        XCTAssertFalse(
-            InstallProbe(launchDaemonsDirectory: standard, userName: "sam").isInstalled(),
-            "another user's voiced is not this user's install")
+    /// An install from before ADR 0035: this user's watchdog LaunchDaemon counts as installed,
+    /// and as one to migrate; another account's is neither.
+    func testInstallProbeFindsThisUsersOldWatchdogDaemon() throws {
+        let agents = try launchAgentsDirectory()
+        let daemons = try launchDaemonsDirectory(watchdogUser: "alex")
+        let alex = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons, userName: "alex")
+        XCTAssertTrue(alex.isInstalled())
+        XCTAssertTrue(alex.hasLegacyDaemons())
+        let sam = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons, userName: "sam")
+        XCTAssertFalse(sam.isInstalled(), "another user's voiced is not this user's install")
+        XCTAssertFalse(sam.hasLegacyDaemons())
+        XCTAssertEqual(sam.legacyDaemonUsers(), ["alex"])
+    }
 
-        let custom = try launchDaemonsDirectory(watchdogUser: "alex", label: "computer.speech")
-        XCTAssertTrue(InstallProbe(launchDaemonsDirectory: custom, userName: "alex").isInstalled())
+    /// The three default labels, as `voiced.launchd.control.LEGACY_LABELS`: any of them left
+    /// is an old install, not only the watchdog; another prefix never had daemons.
+    func testInstallProbeChecksEveryDefaultLabel() throws {
+        let agents = try launchAgentsDirectory()
+        let daemons = try launchDaemonsDirectory()
+        try writePlist(["UserName": "alex"], to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.tts.plist"))
+        try writePlist(["UserName": "sam"], to: daemons.appendingPathComponent("org.example.voiced.stt.plist"))
+        let alex = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons, userName: "alex")
+        XCTAssertTrue(alex.hasLegacyDaemons())
+        XCTAssertEqual(alex.legacyDaemonUsers(), ["alex"])
     }
 
     func testInstallProbeIgnoresOtherWatchdogs() throws {
-        let directory = try launchDaemonsDirectory()
+        let directory = try launchAgentsDirectory()
         try writePlist(
-            ["ProgramArguments": ["/usr/local/bin/other", "--watch"], "UserName": "alex"],
+            ["ProgramArguments": ["/usr/local/bin/other", "--watch"]],
             to: directory.appendingPathComponent("com.other.watchdog.plist"))
-        // Another vendor's watchdog run as this user, ending in "watchdog" too.
+        // Another vendor's watchdog, ending in "watchdog" too.
         try writePlist(
-            ["ProgramArguments": ["/opt/vendor/bin/agent", "watchdog"], "UserName": "alex"],
+            ["ProgramArguments": ["/opt/vendor/bin/agent", "watchdog"]],
             to: directory.appendingPathComponent("com.vendor.watchdog.plist"))
         try writePlist(
-            ["ProgramArguments": ["/opt/voiced", "--verbose", "watchdog"], "UserName": "alex"],
+            ["ProgramArguments": ["/opt/voiced", "--verbose", "watchdog"]],
             to: directory.appendingPathComponent("com.extra.watchdog.plist"))
         FileManager.default.createFile(
             atPath: directory.appendingPathComponent("broken.watchdog.plist").path, contents: Data("x".utf8))
-        XCTAssertFalse(InstallProbe(launchDaemonsDirectory: directory, userName: "alex").isInstalled())
+        XCTAssertFalse(
+            InstallProbe(launchAgentsDirectory: directory, launchDaemonsDirectory: try launchDaemonsDirectory()).isInstalled())
     }
 
     func testErrorTextIsForPeople() {

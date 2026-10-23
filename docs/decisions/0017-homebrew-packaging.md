@@ -461,3 +461,19 @@ Uninstall before `brew uninstall`, `brew uninstall --zap --cask voiced`,
 or afterwards the `voiced uninstall` steps in docs/operations.md.
 Homebrew uses the stanza of the installed cask, not the new one, so the
 first upgrade from 0.4.0 or earlier still runs the old stanza once.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents, so no install path has a root step:
+`voiced install` from the keg's environment writes and loads them, and
+the caveats lose the `sudo` line. The cask's `zap` no longer uses
+`launchctl:`: Homebrew's `launchctl:` looks for each label in the user's
+domain and then, whenever the account may use sudo, in the system domain
+with sudo (`Cask::Artifact::AbstractUninstall#uninstall_launchctl`), which
+asks an administrator for a password even with nothing there. `zap` runs
+`launchctl bootout gui/<uid>` with the three agent plists as the user
+(`script:`, the uid and home read by the shell when it runs, since an API
+cask is evaluated where its JSON is generated) and `trash:`es the plists. After `brew upgrade
+voiced` from 0.4.0 or earlier, `voiced install` stops with the one line
+that removes the old daemons; until that runs, they run the new code and
+its watchdog does not restart them.

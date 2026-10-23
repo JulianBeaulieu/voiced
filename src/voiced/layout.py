@@ -321,7 +321,7 @@ def same_path(a: Path, b: Path) -> bool:
 
 def link_entry_point(state_dir: Path, environment: Path) -> None:
     """Point ``bin/voiced`` at ``environment``'s, atomically (a running
-    daemon's next start sees either the old target or the new one). Refuses
+    service's next start sees either the old target or the new one). Refuses
     a target that is the entry point itself (a legacy venv reached through
     another path)."""
     entry = entry_point(state_dir)

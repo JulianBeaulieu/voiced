@@ -23,7 +23,8 @@ job run once and append a line to `$out/probe.out`. ADR 0018 has the results.
 
 ## PrivilegedInstall
 
-The privileged script that started here is now
-`src/voiced/launchd/voiced-privileged.sh`, compiled into the app's
-executable and printed by `voiced install` for `sudo`; its test is
-`Scripts/test-privileged.sh` (see the menu bar README).
+The privileged script that started here became
+`src/voiced/launchd/voiced-privileged.sh`, compiled into the app, and was
+removed when the services became LaunchAgents
+([ADR 0035](../../docs/decisions/0035-launch-agents.md)): nothing of the
+install runs as root any more.

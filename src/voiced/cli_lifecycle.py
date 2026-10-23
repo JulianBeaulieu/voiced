@@ -1,9 +1,10 @@
 """Lifecycle subcommands: install, start, stop, restart, status, settings, logs,
 uninstall, doctor, watchdog.
 
-Parsing and printing live here; file writes and script generation live in
-``voiced.launchd``. Nothing here runs ``sudo``: steps that need root are
-printed as commands or scripts for the user.
+Parsing and printing live here; file writes and launchd details live in
+``voiced.launchd``. The services are LaunchAgents in the user's own domain
+(ADR 0035), so nothing here needs root; the one exception is printed, never
+run: the line that removes LaunchDaemons an earlier release installed.
 """
 
 from __future__ import annotations
@@ -15,12 +16,12 @@ import functools
 import json
 import logging
 import os
-import shlex
+import pwd
 import shutil
 import signal
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -52,10 +53,13 @@ from voiced.launchd.control import (
     bootout_argv,
     bootstrap_argv,
     kickstart_argv,
+    legacy_daemons,
+    legacy_message,
     plist_path,
     print_service,
     run_command,
     run_streaming,
+    wait_unloaded,
 )
 from voiced.launchd.plist import log_paths
 from voiced.layout import (
@@ -96,7 +100,7 @@ SERVICE_CHOICES = (*SERVICES, "all")
 
 def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     install = sub.add_parser(
-        "install", help="link the environment, download models, print the root step"
+        "install", help="link the environment, download models, load the LaunchAgents"
     )
     install.add_argument("--dry-run", action="store_true", help="show the plan, change nothing")
     install.add_argument(
@@ -105,7 +109,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         dest="state_dir",
         type=Path,
         help="state directory (default: [install] venv_dir; set that key too so doctor, "
-        "uninstall and the daemons agree)",
+        "uninstall and the services agree)",
     )
     install.add_argument(
         "--source",
@@ -127,6 +131,12 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         help="progress as JSON lines on stdout (ADR 0018); human output goes to stderr",
     )
     install.add_argument(
+        "--prepare",
+        action="store_true",
+        help="only build and check the environment and download the models, changing nothing "
+        "that runs (the app's first half of a move from LaunchDaemons, ADR 0035)",
+    )
+    install.add_argument(
         "--set",
         dest="pairs",
         action="append",
@@ -137,10 +147,10 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         "gets it once the models are in, as `voiced settings set` writes; repeatable",
     )
 
-    start = sub.add_parser("start", help="start the daemons")
+    start = sub.add_parser("start", help="start the services")
     start.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
 
-    stop = sub.add_parser("stop", help="stop the daemons (prints the sudo command)")
+    stop = sub.add_parser("stop", help="stop the services until the next login or start")
     stop.add_argument("service", nargs="?", choices=SERVICE_CHOICES, default="all")
 
     restart = sub.add_parser(
@@ -175,7 +185,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     logs.add_argument("--stderr", action="store_true", help="also show launchd's stderr capture")
 
     uninstall = sub.add_parser(
-        "uninstall", help="print the root step and remove what voiced installed"
+        "uninstall", help="stop the services and remove what voiced installed"
     )
     uninstall.add_argument(
         "--state-dir",
@@ -200,7 +210,7 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
     doc.add_argument(
         "--metal-probe",
         action="store_true",
-        help="write a script for a one-shot LaunchDaemon that tests Metal, print its sudo line",
+        help="run a one-shot LaunchAgent that tests Metal as the services run",
     )
 
     wd = sub.add_parser("watchdog", help="run the health watchdog in the foreground")
@@ -211,7 +221,7 @@ def run_lifecycle(
     args: argparse.Namespace, settings: Settings, runner: Runner = run_command, echo: Echo = print
 ) -> int:
     handlers: dict[str, Callable[[], int]] = {
-        "install": lambda: cmd_install(args, settings, echo),
+        "install": lambda: cmd_install(args, settings, echo, query=runner),
         "start": lambda: cmd_start(args.service, settings, runner, echo),
         "stop": lambda: cmd_stop(args.service, settings, runner, echo),
         "restart": lambda: cmd_restart(args.service, settings, runner, echo),
@@ -222,7 +232,23 @@ def run_lifecycle(
         "doctor": lambda: cmd_doctor(args, settings, runner, echo),
         "watchdog": lambda: cmd_watchdog(settings, echo, once=args.once),
     }
+    if args.command in AS_THE_USER and args.command != "install" and is_root():
+        # launchctl would address root's own domain, gui/0: `sudo voiced stop`
+        # would find nothing loaded and leave the user's services running.
+        echo(
+            f"Run `voiced {args.command}` as the user the services run as, not with sudo: "
+            "they are that user's LaunchAgents."
+        )
+        return 2
     return handlers[args.command]()
+
+
+AS_THE_USER = frozenset(
+    {"install", "start", "stop", "restart", "status", "settings", "uninstall", "doctor"}
+)
+"""The commands that talk to launchd or to the watchdog about the user's
+agents (``settings`` would write the user's config as root). ``install``
+refuses root itself, inside its progress stream."""
 
 
 def _services(name: str) -> tuple[DaemonName, ...]:
@@ -242,8 +268,10 @@ def cmd_install(
     settings: Settings,
     echo: Echo,
     runner: StreamingRunner = run_streaming,
+    query: Runner = run_command,
 ) -> int:
-    """With ``--json-progress``, stdout carries only the events of
+    """``runner`` runs the long steps, ``query`` the short ones (the engine
+    check, launchctl). With ``--json-progress``, stdout carries only the events of
     :mod:`voiced.launchd.progress`: human output, the steps' own output
     included, goes to stderr, and that output is sent as ``log`` events too.
     SIGTERM ends the install with an ``error``, its child stopped."""
@@ -269,13 +297,19 @@ def cmd_install(
                 if is_root():
                     refusal = (
                         "Run `voiced install` as the user the services should run as, not "
-                        "with sudo. It prints the one step that needs root."
+                        "with sudo: they are that user's LaunchAgents."
                     )
                     echo(refusal)
                     progress.error(refusal)
                     return 2
-                plan = _install(args, settings, echo, run, progress)
-                _show_root_step(plan, echo, dry_run=args.dry_run)
+                plan = _install(args, settings, echo, run, query, progress)
+                echo("")
+                if args.dry_run:
+                    echo("dry run done; nothing was written.")
+                else:
+                    echo(
+                        f"Installed. The services run while you are logged in: {plan.entry} status"
+                    )
                 progress.done()  # last, after the human output
         except InstallError as exc:
             echo(f"install failed: {exc}")
@@ -283,27 +317,13 @@ def cmd_install(
     return 0
 
 
-def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
-    echo("")
-    refusal = plan.root_step_refusal()
-    if refusal is not None:
-        echo(f"User-level install {'planned' if dry_run else 'done'}. No root step: {refusal}")
-        return
-    if dry_run:
-        echo("A real run ends with the root step, the one command that needs root:")
-    else:
-        echo("User-level install done. The LaunchDaemons need root. Run:")
-    echo("")
-    echo(f"  {plan.root_command('install')}")
-    echo("")
-    echo("That is voiced's own root script, the one the menu bar app runs; read it")
-    echo("first if you like. It renders the three plists from your user name alone.")
-    echo(f"To remove them later: {plan.root_command('uninstall')}")
-    echo(f"Then: {plan.entry} status")
-
-
 def _install(
-    args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
+    args: argparse.Namespace,
+    settings: Settings,
+    echo: Echo,
+    runner: Runner,
+    query: Runner,
+    progress: Progress,
 ) -> InstallPlan:
     from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
@@ -341,8 +361,10 @@ def _install(
     run_install(
         plan,
         runner=runner,
+        query=query,
         dry_run=args.dry_run,
         skip_models=args.skip_models,
+        prepare=args.prepare,
         say=echo,
         progress=progress,
     )
@@ -356,67 +378,63 @@ def is_root() -> bool:
     return os.geteuid() == 0
 
 
-def as_root_or_print(
-    argv: Sequence[str], runner: Runner, echo: Echo, pending: list[str], done: str
-) -> bool:
-    """Run a root-only launchctl command if we are root, else queue it for printing."""
-    if not is_root():
-        pending.append(f"sudo {shlex.join(argv)}")
-        return False
-    result = runner(argv)
-    echo(done if result.ok else f"{shlex.join(argv)}: {result.output}")
-    return result.ok
-
-
-def _print_pending(pending: list[str], echo: Echo, why: str) -> None:
-    echo(f"{why} Run:")
-    for line in pending:
-        echo(f"  {line}")
+def legacy_note(settings: Settings, runner: Runner, echo: Echo) -> bool:
+    """Say so, and how to move on, when LaunchDaemons of 0.4.0 or earlier
+    are still there: these commands address the LaunchAgents only
+    (ADR 0035). True when there are some."""
+    found = legacy_daemons(settings.launchd.service_labels(), runner)
+    if found:
+        echo(legacy_message(found, pwd.getpwuid(os.getuid()).pw_name))
+    return bool(found)
 
 
 def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
-    pending: list[str] = []
+    if legacy_note(settings, runner, echo):
+        return 1
     failures = 0
     for name in _services(service):
         if name in HTTP_SERVICES and not settings.service(name).enabled:
             # Started as any other: its process parks (voiced.launchd.parked,
-            # ADR 0033), and turning it on is a restart without root.
+            # ADR 0033), and turning it on is a restart.
             echo(f"{name}: {parked.off_detail(name)}")
         label = settings.launchd.label(name)
+        plist = plist_path(label)
         if print_service(label, runner).loaded:
-            result = runner(kickstart_argv(label))
-            if result.ok:
-                echo(f"{name}: kickstarted {label}")
-            else:
-                failures += 1
-                echo(f"{name}: launchctl kickstart failed: {result.output}")
-        elif plist_path(label).is_file():
-            if not as_root_or_print(
-                bootstrap_argv(label), runner, echo, pending, f"{name}: bootstrapped {label}"
-            ):
-                failures += 1
+            result, done = runner(kickstart_argv(label)), f"kickstarted {label}"
+        elif plist.is_file():
+            result, done = runner(bootstrap_argv(plist)), f"loaded {plist}"
         else:
             failures += 1
-            echo(f"{name}: {plist_path(label)} is not installed; run voiced install")
-    if pending:
-        _print_pending(pending, echo, "Loading a LaunchDaemon needs root.")
+            echo(f"{name}: {plist} is not installed; run voiced install")
+            continue
+        if result.ok:
+            echo(f"{name}: {done}")
+        else:
+            failures += 1
+            echo(f"{name}: launchctl failed: {result.output}")
     return 1 if failures else 0
 
 
 def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
-    pending: list[str] = []
+    """Boot out: KeepAlive would restart a killed process. The agent loads
+    again at the next login or with `voiced start`."""
+    if legacy_note(settings, runner, echo):
+        return 1
     failures = 0
     for name in _services(service):
         label = settings.launchd.label(name)
         if not print_service(label, runner).loaded:
             echo(f"{name}: not loaded")
             continue
-        if not as_root_or_print(bootout_argv(label), runner, echo, pending, f"{name}: stopped"):
+        result = runner(bootout_argv(label))
+        if not result.ok:
             failures += 1
-    if pending:
-        _print_pending(pending, echo, "Stopping a LaunchDaemon needs root.")
-        echo("(KeepAlive would otherwise restart the process; bootout unloads it until")
-        echo(" the next boot or `voiced start`.)")
+            echo(f"{name}: launchctl bootout failed: {result.output}")
+        elif not wait_unloaded(label, runner):
+            failures += 1
+            echo(f"{name}: still unloading; try again in a moment")
+        else:
+            echo(f"{name}: stopped until the next login or `voiced start`")
     return 1 if failures else 0
 
 
@@ -517,11 +535,9 @@ def restart_watchdog(settings: Settings, runner: Runner, echo: Echo) -> bool:
     """SIGTERM the watchdog, wait for it to exit, ``launchctl kickstart`` it
     and wait until the new process answers on the control socket.
 
-    ``kickstart -k`` needs root while the job runs (ADR 0004), but the
-    watchdog runs as this user, so the CLI may signal it. SIGTERM, not
-    SIGKILL: the watchdog then closes the socket after finishing the restarts
-    it accepted. KeepAlive would start it again after ``ThrottleInterval``;
-    the plain kickstart does it at once.
+    SIGTERM, not ``kickstart -k``'s SIGKILL: the watchdog then closes the
+    socket after finishing the restarts it accepted. KeepAlive would start
+    it again after ``ThrottleInterval``; the plain kickstart does it at once.
     """
     label = settings.launchd.label("watchdog")
     status = print_service(label, runner)
@@ -693,19 +709,10 @@ def cmd_status(
             echo(f"control socket: {NOT_SERVED}" + (f" ({problem})" if problem else ""))
         else:
             echo(f"control socket: not answering at {path} (watchdog not running)")
-        if not any(r.get("installed") for r in rows):
-            echo(_not_installed_hint(settings))
+        if not legacy_note(settings, runner, echo) and not any(r.get("installed") for r in rows):
+            echo("The services are not installed. Run `voiced install`.")
     healthy = all(r.get("health", "ok") in FINE and r["pid"] for r in rows)
     return 0 if healthy else 1
-
-
-def _not_installed_hint(settings: Settings) -> str:
-    from voiced.launchd.install import plan_install
-
-    plan = plan_install(settings)
-    if plan.entry.exists() and plan.root_step_refusal() is None:
-        return f"The daemons are not installed. Run: {plan.root_command('install')}"
-    return "The daemons are not installed. Run `voiced install` first."
 
 
 # settings -----------------------------------------------------------------
@@ -819,7 +826,9 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     from voiced.launchd.install import (
+        InstallError,
         plan_install,
+        remove_agents,
         remove_targets,
         revision_line,
         uninstall_targets,
@@ -827,17 +836,8 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
     from voiced.models import size_text
 
     plan = plan_install(settings, state_dir=args.state_dir)
-    refusal = plan.root_step_refusal()
-    if refusal is None:
-        echo(f"Root step (stop and remove the daemons): {plan.root_command('uninstall')}")
-    else:  # daemons under another prefix are removed by hand (docs/operations.md)
-        echo(f"No root step: {refusal}")
-    echo("")
-
-    loaded = [s for s in SERVICES if print_service(settings.launchd.label(s), runner).loaded]
-    if loaded:
-        echo(f"Daemons still loaded: {', '.join(loaded)}. Run the root step first, then")
-        echo("re-run `voiced uninstall --yes` to remove the files.")
+    if legacy_note(settings, runner, echo):
+        echo("Then `voiced uninstall` removes the rest.")
         return 1
 
     def targets() -> UninstallTargets:
@@ -858,11 +858,16 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         for note in models.notes() if models is not None else []:
             echo(note)
         revisions = models.revisions if models is not None else []
-        if not present and not revisions:
+        agents = [
+            f"{plan.agent_path(s)} ({plan.labels[s]}, stopped first)"
+            for s in SERVICES
+            if plan.agent_path(s).is_file() or print_service(plan.labels[s], runner).loaded
+        ]
+        if not agents and not present and not revisions:
             echo("nothing to remove")
             return 0
         echo("Would remove (pass --yes to do it):")
-        for t in present:
+        for t in [*agents, *present]:
             echo(f"  {t}")
         for r in revisions:
             echo(f"  {revision_line(r)}")
@@ -877,8 +882,13 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         else contextlib.nullcontext()
     )
     with held:
+        try:
+            stopped = remove_agents(plan, runner, echo)
+        except InstallError as exc:
+            echo(str(exc))
+            return 1
         found = targets()
-        if remove_targets(found, plan, echo) == 0:
+        if remove_targets(found, plan, echo) == 0 and not stopped:
             echo("nothing to remove")
     if found.manifest is not None and found.manifest.source == "homebrew":
         echo(
@@ -896,18 +906,19 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
     from voiced.launchd.install import plan_install
 
     if args.metal_probe:
+        from voiced.launchd.install import InstallError, run_metal_probe
         from voiced.layout import environment_python
 
         plan = plan_install(settings)
-        probe = plan.metal_probe(environment_python(plan.entry))
-        probe.write()
-        echo(f"wrote {probe.script_path}")
+        python = environment_python(plan.entry)
+        echo(f"running {plan.labels['metalprobe']} once as a LaunchAgent ...")
+        try:
+            echo(run_metal_probe(plan, python, runner).rstrip())
+        except InstallError as exc:
+            echo(f"metal probe failed: {exc}")
+            return 1
         echo("")
-        echo(f"Review, then run:  sudo /bin/bash {shlex.quote(str(probe.script_path))}")
-        echo("")
-        echo(probe.script.rstrip())
-        echo("")
-        echo(f"Then `voiced doctor` reads the result from {probe.result_file}.")
+        echo("`voiced doctor` now reads this result.")
         return 0
 
     checks = doctor.run_all(settings, runner)

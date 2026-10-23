@@ -92,17 +92,20 @@ def test_cask_sets_version_and_sha256(release: ModuleType) -> None:
 
 
 def test_the_cask_leaves_the_services_alone_on_upgrade(release: ModuleType) -> None:
-    # Homebrew runs `uninstall` on upgrade and reinstall as well, with sudo; only `zap`
-    # waits for `brew uninstall --zap`.
+    # Homebrew runs `uninstall` on upgrade and reinstall as well; only `zap` waits for
+    # `brew uninstall --zap`. It removes the LaunchAgents as the user: no `launchctl:`,
+    # which looks in the system domain with sudo too (ADR 0035).
     text = release.cask("1.2.0", SHA)
     stanzas = re.findall(r"^  (uninstall|zap) (.*?)\n\n", text, re.MULTILINE | re.DOTALL)
     assert [name for name, _ in stanzas] == ["uninstall", "zap"]
     uninstall, zap = (body for _, body in stanzas)
     assert uninstall == 'quit: "io.github.julianbeaulieu.voiced.menubar"'
-    for service in ("stt", "tts", "watchdog"):
-        label = f"io.github.julianbeaulieu.voiced.{service}"
-        assert f'"{label}"' in zap
-    assert 'trash:     "~/Library/Application Support/voiced"' in zap
+    assert "launchctl:" not in zap and "sudo" not in zap
+    plists = '"Library/LaunchAgents/io.github.julianbeaulieu.voiced.#{s}.plist"'
+    assert f"agents = %w[stt tts watchdog].map {{ |s| {plists} }}" in text
+    assert '/bin/launchctl bootout \\"gui/$(/usr/bin/id -u)\\"' in zap
+    assert '"\\"$HOME/#{a}\\""' in zap and '"~/#{a}"' in zap
+    assert '["~/Library/Application Support/voiced", *agents.map' in zap
 
 
 def test_an_adhoc_cask_says_so_and_points_at_the_adhoc_asset(release: ModuleType) -> None:

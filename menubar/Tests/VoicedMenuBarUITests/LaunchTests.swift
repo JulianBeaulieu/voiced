@@ -37,6 +37,7 @@ private final class StatusBox: @unchecked Sendable {
 @MainActor
 final class LaunchTests: XCTestCase {
     private var home: URL!
+    private var agents: URL!
     private var daemons: URL!
     private var models: [AppModel] = []
     private var servers: [FakeControlServer] = []
@@ -44,6 +45,7 @@ final class LaunchTests: XCTestCase {
     override func setUp() async throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".voiced"), withIntermediateDirectories: true)
+        agents = try launchAgentsDirectory()
         daemons = try launchDaemonsDirectory()
     }
 
@@ -53,6 +55,7 @@ final class LaunchTests: XCTestCase {
         models.forEach { $0.stop() }
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
+        try? FileManager.default.removeItem(at: agents)
         try? FileManager.default.removeItem(at: daemons)
     }
 
@@ -70,12 +73,12 @@ final class LaunchTests: XCTestCase {
         translocation: (URL) -> URL? = { _ in nil }, installSource: URL? = nil
     ) -> (LaunchChecks, AppModel) {
         let model = AppModel(
-            socketPath: socket, installProbe: InstallProbe(launchDaemonsDirectory: daemons),
+            socketPath: socket, installProbe: InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons),
             backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)), opener: { _ in true })
         models.append(model)
         let launch = LaunchChecks(
             model: model, manifest: manifest, installSource: installSource, paths: paths,
-            backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons, status: status.status),
+            backgroundItems: BackgroundItems(launchAgentsDirectory: agents, status: status.status),
             translocation: translocation, pollInterval: .milliseconds(20))
         return (launch, model)
     }
@@ -86,7 +89,7 @@ final class LaunchTests: XCTestCase {
 
     private func installPlists() throws {
         for label in BackgroundItems.labels {
-            try writePlist(["Label": label], to: daemons.appendingPathComponent("\(label).plist"))
+            try writePlist(["Label": label], to: agents.appendingPathComponent("\(label).plist"))
         }
     }
 
@@ -176,7 +179,7 @@ final class LaunchTests: XCTestCase {
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.1.0"}"#)
         let model = AppModel(socketPath: temporarySocketPath(), opener: { _ in true })
         let launch = LaunchChecks(
-            model: model, manifest: nil, paths: paths, backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons),
+            model: model, manifest: nil, paths: paths, backgroundItems: BackgroundItems(launchAgentsDirectory: agents),
             translocation: { _ in nil })
         XCTAssertNil(launch.installMatch)
         XCTAssertNotNil(launch.installRecord)
@@ -241,8 +244,8 @@ final class LaunchTests: XCTestCase {
     /// Repair is offered while an install the app made is in place but does not answer.
     func testRepairIsOfferedForTheAppsInstallThatDoesNotAnswer() async throws {
         try writePlist(
-            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"], "UserName": NSUserName()],
-            to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"]],
+            to: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         try writeInstallJSON(#"{"source": "app", "environment": "/env", "version": "0.2.0", "lock_sha256": "ab12"}"#)
         let (launch, model) = makeChecks()
         let runner = FakeInstallRunner()
@@ -289,12 +292,12 @@ final class LaunchTests: XCTestCase {
 
     func testOnlyInstalledServicesAreAskedAbout() throws {
         let status = StatusBox(.requiresApproval)
-        XCTAssertEqual(BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).statuses(), [:])
+        XCTAssertEqual(BackgroundItems(launchAgentsDirectory: agents, status: status.status).statuses(), [:])
         XCTAssertTrue(status.asked.isEmpty)
 
-        try writePlist(["Label": "x"], to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.tts.plist"))
+        try writePlist(["Label": "x"], to: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.tts.plist"))
         XCTAssertEqual(
-            BackgroundItems(launchDaemonsDirectory: daemons, status: status.status).statuses(),
+            BackgroundItems(launchAgentsDirectory: agents, status: status.status).statuses(),
             ["io.github.julianbeaulieu.voiced.tts": .requiresApproval])
         XCTAssertEqual(status.asked, ["io.github.julianbeaulieu.voiced.tts.plist"])
     }

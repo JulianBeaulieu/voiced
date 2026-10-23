@@ -70,6 +70,31 @@ def no_port_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ports, "listener_pids", lambda port, runner: [])
 
 
+@pytest.fixture(autouse=True)
+def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Tests never reach this machine's launchd or its plists: ``launchctl``
+    on PATH answers "not found" to everything, ``HOME`` (so
+    ``~/Library/LaunchAgents``) is a scratch directory, and so is the
+    directory earlier releases' LaunchDaemons are looked for in. Returns
+    that directory; tests that need launchd pass a fake runner."""
+    from voiced.launchd import control
+
+    root = tmp_path_factory.mktemp("launchd")
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    launchctl = bin_dir / "launchctl"
+    launchctl.write_text('#!/bin/sh\necho "launchctl is not run in tests" >&2\nexit 113\n')
+    launchctl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    home = root / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    daemons = root / "LaunchDaemons"
+    daemons.mkdir()
+    monkeypatch.setattr(control, "LAUNCH_DAEMONS_DIR", daemons)
+    return daemons
+
+
 def free_port() -> int:
     """An ephemeral TCP port that was free a moment ago."""
     with socket.socket() as s:

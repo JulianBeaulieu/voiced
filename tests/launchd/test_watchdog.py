@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -452,8 +453,8 @@ def test_restart_kills_pid_then_kickstarts(monkeypatch: pytest.MonkeyPatch) -> N
     assert killed == [(777, 9)]
     assert result == RestartResult(True, "sent SIGKILL to pid 777; kickstart ok")
     assert calls == [
-        ["launchctl", "print", "system/a.stt"],
-        ["launchctl", "kickstart", "system/a.stt"],
+        ["launchctl", "print", f"gui/{os.getuid()}/a.stt"],
+        ["launchctl", "kickstart", f"gui/{os.getuid()}/a.stt"],
     ]
 
 

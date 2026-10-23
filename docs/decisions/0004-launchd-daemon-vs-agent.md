@@ -1,6 +1,7 @@
 # 0004: LaunchDaemons, not LaunchAgents
 
-Date: 2026-10-14. Status: accepted.
+Date: 2026-10-14. Status: superseded by 0035 (2026-10-23): the services are
+LaunchAgents that run while their user is logged in, and need no administrator.
 
 ## Context
 

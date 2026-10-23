@@ -21,7 +21,7 @@ from voiced.config import Settings
 from voiced.launchd.control import CommandResult
 from voiced.launchd.progress import DOWNLOAD_PREFIX, Progress
 
-from .test_install import _compare, _environment
+from .test_install import FakeLaunchd, _compare, _environment
 
 
 def _events(text: str) -> list[dict[str, Any]]:
@@ -56,6 +56,7 @@ def test_reporting_names_the_running_step_and_reraises() -> None:
 
 def _normalise(text: str, tmp_path: Path) -> str:
     text = text.replace(str(tmp_path), "<tmp>").replace(json.dumps(__version__), '"<version>"')
+    text = text.replace(str(Path.home()), "<home>")
     return re.sub(r"ports [0-9, ]+ are free", "ports <ports> are free", text)  # free_port()s
 
 
@@ -81,7 +82,7 @@ def test_dry_run_lists_the_steps(
     assert main(_argv(tmp_path, "--dry-run")) == 0
     out, err = capsys.readouterr()
     _compare(_normalise(out, tmp_path), "install-dry-run.jsonl")
-    assert "No root step" in err  # the human output: a scratch state dir
+    assert "dry run done" in err  # the human output
     assert not (tmp_path / "state").exists()
 
 
@@ -100,7 +101,7 @@ def _run(settings: Settings, tmp_path: Path, models: StreamingFake) -> int:
         return models(argv, on_line)
 
     args = build_parser().parse_args(_argv(tmp_path))
-    return cli_lifecycle.cmd_install(args, settings, print, runner=runner)
+    return cli_lifecycle.cmd_install(args, settings, print, runner=runner, query=FakeLaunchd())
 
 
 def test_a_run_reports_every_step_and_ends_with_done(
@@ -115,7 +116,7 @@ def test_a_run_reports_every_step_and_ends_with_done(
     out, err = capsys.readouterr()
     _compare(_normalise(out, tmp_path), "install-run.jsonl")
     assert "stt: engine=fake model=m" in err  # the step's output is on stderr too
-    assert "Run `voiced serve` yourself" in err
+    assert "Installed. The services run while you are logged in" in err
 
 
 def test_a_failed_step_ends_with_its_error(

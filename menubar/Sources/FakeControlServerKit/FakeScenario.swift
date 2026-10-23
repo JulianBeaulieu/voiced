@@ -28,7 +28,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case degraded
     /// Both services stopped; the watchdog is up.
     case stopped
-    /// The watchdog answers (run by hand) but the LaunchDaemons are not installed.
+    /// The watchdog answers (run by hand) but the LaunchAgents are not installed.
     case notInstalled = "not-installed"
     /// Running, bound to the LAN, no API key: the settings warning.
     case lanWithoutKey = "lan-without-key"

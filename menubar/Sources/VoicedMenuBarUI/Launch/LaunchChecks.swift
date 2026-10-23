@@ -45,7 +45,7 @@ public final class LaunchChecks {
     }
 
     /// The services are switched off in System Settings > Login Items, so launchd will not
-    /// start them at boot. That macOS reports a switched-off daemon as `requiresApproval` is
+    /// start them at login. That macOS reports a switched-off agent as `requiresApproval` is
     /// still to be confirmed on a real install (ADR 0018, "Open items"); the Debug pane shows
     /// the raw statuses meanwhile.
     public var backgroundItemsOff: Bool { backgroundItems.values.contains(.requiresApproval) }
@@ -113,12 +113,6 @@ public enum ExternalInstall {
         public var note: String?
     }
 
-    /// `voiced uninstall` prints the root step and lists what it would remove; the services
-    /// have to be gone before anything else is.
-    static let rootStepNote =
-        "It prints the root step, sudo /bin/bash <environment>/.../voiced-privileged.sh uninstall <you>. "
-        + "Run that, then voiced uninstall --yes."
-
     /// The commands that update, repair and uninstall an install made by `source`, in order;
     /// none for the app's own.
     public static func commands(for source: InstallSource) -> [Command] {
@@ -129,7 +123,7 @@ public enum ExternalInstall {
             [
                 Command(purpose: "Update", command: "brew upgrade voiced"),
                 Command(purpose: "Repair", command: "brew reinstall voiced"),
-                Command(purpose: "Uninstall, first", command: "voiced uninstall", note: rootStepNote),
+                Command(purpose: "Uninstall, first", command: "voiced uninstall --yes"),
                 Command(
                     purpose: "Uninstall, then", command: "brew uninstall voiced",
                     note: "Only once the services are removed: before that they keep running on a binary that is gone."),
@@ -137,7 +131,7 @@ public enum ExternalInstall {
         case .cli:
             [
                 Command(purpose: "Update or repair", command: "voiced install --source <checkout>"),
-                Command(purpose: "Uninstall", command: "voiced uninstall", note: rootStepNote),
+                Command(purpose: "Uninstall", command: "voiced uninstall --yes"),
             ]
         }
     }
@@ -147,16 +141,16 @@ public enum ExternalInstall {
 /// Background. The plists name the app in `AssociatedBundleIdentifiers`, so the entries show
 /// as voiced; when the user turns them off, launchd will not run the services.
 public struct BackgroundItems: Sendable {
-    public static let labels = ["stt", "tts", "watchdog"].map { "io.github.julianbeaulieu.voiced.\($0)" }
+    public static let labels = InstallProbe.defaultLabels
 
-    public var launchDaemonsDirectory: URL
+    public var launchAgentsDirectory: URL
     public var status: @Sendable (URL) -> SMAppService.Status
 
     public init(
-        launchDaemonsDirectory: URL = URL(fileURLWithPath: "/Library/LaunchDaemons"),
+        launchAgentsDirectory: URL = InstallProbe.defaultLaunchAgentsDirectory,
         status: @escaping @Sendable (URL) -> SMAppService.Status = { SMAppService.statusForLegacyPlist(at: $0) }
     ) {
-        self.launchDaemonsDirectory = launchDaemonsDirectory
+        self.launchAgentsDirectory = launchAgentsDirectory
         self.status = status
     }
 
@@ -165,7 +159,7 @@ public struct BackgroundItems: Sendable {
     public func statuses() -> [String: SMAppService.Status] {
         var found: [String: SMAppService.Status] = [:]
         for label in Self.labels {
-            let plist = launchDaemonsDirectory.appendingPathComponent("\(label).plist")
+            let plist = launchAgentsDirectory.appendingPathComponent("\(label).plist")
             if FileManager.default.fileExists(atPath: plist.path) { found[label] = status(plist) }
         }
         return found

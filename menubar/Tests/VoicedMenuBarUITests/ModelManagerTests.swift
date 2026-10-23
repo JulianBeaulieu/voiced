@@ -30,9 +30,9 @@ final class ModelManagerTests: XCTestCase {
         let socket = temporarySocketPath()
         let cache = FakeModels(socketPath: socket)
         let server = try startServer(scenario) { $0.modelsFile = cache.file }
-        let daemons = try launchDaemonsDirectory()
+        let agents = try launchAgentsDirectory()
         let app = AppModel(
-            socketPath: server.socketPath, installProbe: InstallProbe(launchDaemonsDirectory: daemons),
+            socketPath: server.socketPath, installProbe: try installProbe(agents: agents),
             backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)), opener: { _ in true })
         app.start()
         let ready = await eventually { app.status != nil && app.settings != nil && app.engines != nil }

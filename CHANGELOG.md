@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+voiced no longer needs an administrator password. The services run as
+your own LaunchAgents instead of system-wide LaunchDaemons, so installing,
+updating, repairing, stopping and removing voiced never asks for one. The
+first update from 0.4.0 or earlier asks once more, the last time, to
+remove the old services.
+
 ### Added
 
 - `voiced install --set KEY=VALUE`, for `stt.enabled`, `stt.engine`,
@@ -41,6 +47,40 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The services are LaunchAgents: they run while you are logged in, start
+  when you log in and stop when you log out, instead of starting at boot
+  before anyone logs in. With FileVault on nothing changes after a reboot,
+  since unlocking the disk logs in the account that unlocks it; with
+  FileVault off, turn on
+  automatic login for a Mac that must come back unattended. `voiced doctor`
+  says which applies. See
+  [ADR 0035](docs/decisions/0035-launch-agents.md).
+- Updating from 0.4.0 or earlier: the menu bar app's **Update voiced**
+  builds the new version and downloads its models, then asks for your
+  password once, to "remove the
+  old background services (the last time a password is needed)", and
+  installs the new ones. Cancel, and the services keep running the old way
+  until you accept. From a terminal, `voiced install` prints the one
+  `sudo /bin/sh -c '...'` line that removes them; run it, then
+  `voiced install` again
+  ([docs/operations.md](docs/operations.md#moving-from-launchdaemons)).
+- `voiced install` writes the LaunchAgents to `~/Library/LaunchAgents` and
+  loads them itself; it prints no `sudo` line. `voiced stop`, `start` and
+  `uninstall --yes` need no root either, and `voiced doctor --metal-probe`
+  runs its probe directly. Run them as yourself: with `sudo` they refuse,
+  since they would address root's services instead of yours.
+- An install with its own state directory, config file or
+  `[launchd] label_prefix` gets LaunchAgents of its own.
+- voiced no longer adds a firewall exception. With the firewall on and
+  voiced on the network, macOS asks at the Mac, when the services start
+  listening, whether voiced's Python may accept connections, and again
+  after an update that changes that Python; until someone answers Allow,
+  devices on the network are blocked. `voiced install` and `voiced doctor`
+  say so.
+- The services now run as your LaunchAgents. macOS may keep their Bonjour
+  announcements on the Mac, so Home Assistant may not discover voiced;
+  existing integrations keep working; add new ones by this Mac's address
+  and port; `voiced doctor` checks this (Discovery).
 - A plain `brew upgrade` now leaves the menu bar app to its own updates (the
   cask says `auto_updates`); `brew upgrade --cask voiced` still updates it.
 - `brew uninstall --cask voiced` removes the app and leaves the services
@@ -55,17 +95,16 @@ uses [Semantic Versioning](https://semver.org/).
   install made by `voiced install` or an earlier app is left as it is.
 - The install no longer downloads a model for a service that is off, nor
   checks that service's ports.
+- `brew upgrade --cask voiced`, or `brew install --cask` over an older
+  version, leaves the services running and asks for no password. The first
+  upgrade from 0.4.0 or earlier still asks Homebrew's password once, since
+  Homebrew runs the uninstall step of the version that is installed, which
+  removes the old services; the app then asks for nothing.
 
-### Fixed
+### Removed
 
-- Updating the menu bar app through Homebrew no longer asks for your
-  password twice. `brew upgrade --cask voiced`, or `brew install --cask`
-  over an older version, ran the cask's uninstall step, which removed the
-  services with `sudo`, and the app then asked again to put them back. An
-  upgrade now leaves the services running: Homebrew asks for nothing, and
-  the app asks only if the services need it. The first upgrade from 0.4.0
-  or earlier still asks twice one last time, since Homebrew runs the
-  uninstall step of the version that is installed.
+- The privileged script `voiced-privileged.sh` and the root step it ran,
+  in the CLI and the app.
 
 ## [0.4.0] - 2026-10-23
 

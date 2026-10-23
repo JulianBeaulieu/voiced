@@ -73,7 +73,7 @@ final class ProgressProtocolTests: XCTestCase {
         XCTAssertEqual(run.finish(status: 0), .done)
         XCTAssertEqual(
             run.progress.steps.map(\.id),
-            ["config", "claim", "check", "ports", "models", "link", "manifest", "prune"])
+            ["config", "claim", "check", "ports", "models", "link", "manifest", "prune", "agents"])
         XCTAssertTrue(run.progress.steps.allSatisfy(\.isDone))
         XCTAssertEqual(run.progress.downloads.map(\.model), [RecordedProgress.parakeet, RecordedProgress.kokoro])
         XCTAssertTrue(run.progress.downloads.allSatisfy(\.isFinished))

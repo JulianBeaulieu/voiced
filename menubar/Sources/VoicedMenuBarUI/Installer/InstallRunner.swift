@@ -7,8 +7,8 @@ public struct InstallCommand: Sendable, Equatable {
     public var arguments: [String]
     /// Added to the app's environment, or, without `inheritsEnvironment`, all of it.
     public var environment: [String: String]
-    /// False for the privileged run: nothing of the app's environment (`SHELLOPTS`, `PS4`,
-    /// `BASH_ENV`, ...) may reach the shells that run as root.
+    /// False for the administrator prompt: nothing of the app's environment (`SHELLOPTS`,
+    /// `PS4`, `BASH_ENV`, ...) may reach the shell that runs as root.
     public var inheritsEnvironment: Bool
 
     public init(
@@ -30,16 +30,9 @@ public enum ProcessOutput: Sendable, Equatable {
     case exit(Int32)
 }
 
-/// The privileged script's modes that need root. Its `check` mode does not, and runs as the
-/// user.
-public enum PrivilegedMode: String, Sendable {
-    case install, uninstall
-}
-
-/// How a run of the privileged script ended, before it is interpreted
-/// (`PrivilegedScript.result`).
+/// How the administrator prompt ended, before it is interpreted (`LegacyDaemons.result`).
 public enum PrivilegedOutcome: Sendable, Equatable {
-    /// The script ran; `output` is its stdout on success and its stderr otherwise, as
+    /// The commands ran; `output` is their stdout on success and their stderr otherwise, as
     /// `do shell script` reports them.
     case finished(status: Int32, output: String)
     /// The administrator prompt was cancelled (-128).
@@ -48,15 +41,16 @@ public enum PrivilegedOutcome: Sendable, Equatable {
     case damaged(String)
 }
 
-/// The installer's only ways out of the process: commands, the privileged run and the
+/// The installer's only ways out of the process: commands, the administrator prompt and the
 /// network. Tests replace it; everything else runs against a temporary home.
 @MainActor
 public protocol InstallRunner: AnyObject {
     /// Runs `command` in a process group of its own. Cancelling the iteration terminates the
     /// group: SIGTERM, then SIGKILL after the grace. Throws only when it cannot be started.
     func run(_ command: InstallCommand) -> AsyncThrowingStream<ProcessOutput, Error>
-    /// Runs the compiled-in privileged script behind one administrator prompt.
-    func runPrivileged(_ mode: PrivilegedMode, user: String) async -> PrivilegedOutcome
+    /// Removes the LaunchDaemons of an earlier release behind one administrator prompt
+    /// (`LegacyDaemons`): the only step that needs root.
+    func removeLegacyDaemons() async -> PrivilegedOutcome
     /// Whether `url` answers at all, for the network check.
     func isReachable(_ url: URL) async -> Bool
 }
@@ -132,7 +126,7 @@ public final class SystemInstallRunner: InstallRunner {
         running.terminateAll()
     }
 
-    public func runPrivileged(_ mode: PrivilegedMode, user: String) async -> PrivilegedOutcome {
+    public func removeLegacyDaemons() async -> PrivilegedOutcome {
         #if !DEBUG
             // It hashes the whole bundle; not on the main actor.
             let bundle = Bundle.main.bundleURL
@@ -144,7 +138,7 @@ public final class SystemInstallRunner: InstallRunner {
         var stderr: [String] = []
         var status: Int32 = -1
         do {
-            for try await output in run(PrivilegedScript.command(mode, user: user)) {
+            for try await output in run(LegacyDaemons.command) {
                 switch output {
                 case .stdout(let line): stdout.append(line)
                 case .stderr(let line): stderr.append(line)
@@ -154,7 +148,7 @@ public final class SystemInstallRunner: InstallRunner {
         } catch {
             return .finished(status: -1, output: "Cannot run osascript: \(error.localizedDescription)")
         }
-        return PrivilegedScript.outcome(status: status, stdout: stdout, stderr: stderr)
+        return LegacyDaemons.outcome(status: status, stdout: stdout, stderr: stderr)
     }
 
     public func isReachable(_ url: URL) async -> Bool {
@@ -223,7 +217,7 @@ private struct Spawned {
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_adddup2(&actions, out[1], 1)
         posix_spawn_file_actions_adddup2(&actions, err[1], 2)
-        // Not the app's working directory, which the privileged run's root shell would start in.
+        // Not the app's working directory, which the prompt's root shell would start in.
         posix_spawn_file_actions_addchdir_np(&actions, "/")
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)

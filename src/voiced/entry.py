@@ -1,6 +1,6 @@
 """The ``voiced`` console script.
 
-Redirects stdout and stderr to the daemon's log files when launchd started
+Redirects stdout and stderr to the service's log files when launchd started
 it (``voiced.launchd.stdio``) before importing the CLI, so a traceback from
 a failing import still lands in ``<service>.stderr.log``.
 """

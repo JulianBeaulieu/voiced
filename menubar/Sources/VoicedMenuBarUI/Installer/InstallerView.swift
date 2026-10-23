@@ -24,14 +24,13 @@ public struct InstallerView: View {
             case .welcome: WelcomeScreen(installer: installer)
             case .environment(let step): EnvironmentScreen(step: step)
             case .installing(let progress): InstallingScreen(progress: progress)
-            case .approval(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: false)
-            case .approving(let firewallOn): ApprovalScreen(installer: installer, firewallOn: firewallOn, waiting: true)
-            case .checking: CheckingScreen()
-            case .starting: StartingScreen(warning: installer.warning)
+            case .migration: MigrationScreen(installer: installer, waiting: false)
+            case .migrating: MigrationScreen(installer: installer, waiting: true)
+            case .starting: StartingScreen()
             case .homeAssistant(let stage): HomeAssistantScreen(installer: installer, stage: stage)
-            case .done: DoneScreen(warning: installer.warning, loginItem: loginItem, close: close)
+            case .done: DoneScreen(loginItem: loginItem, close: close)
             case .finished(let version):
-                FinishedScreen(task: installer.task, version: version, warning: installer.warning, close: close)
+                FinishedScreen(task: installer.task, version: version, close: close)
             case .confirmUninstall: ConfirmUninstallScreen(installer: installer, close: close)
             case .uninstalling(let step): UninstallingScreen(step: step)
             case .uninstalled(let choices): UninstalledScreen(choices: choices, close: close)
@@ -151,7 +150,7 @@ private struct WelcomeScreen: View {
                 Place(symbol: "waveform.circle", text: "The speech models go in the Hugging Face cache.")
                 Place(
                     symbol: "gearshape.2",
-                    text: "Three background services run as you, and start at boot before anyone logs in.")
+                    text: "Three background services run as you, while you are logged in, and start when you log in.")
                 Place(
                     symbol: "trash",
                     text: "Moving this app to the Trash leaves the services running; use Uninstall in Settings > About first.")
@@ -167,7 +166,7 @@ private struct WelcomeScreen: View {
                     .foregroundStyle(welcome.hasRoom ? Color.secondary : Color.red)
                     .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("macOS asks once for an administrator password at the end.")
+                Text("No administrator password is needed: the services run as you.")
                     .foregroundStyle(.secondary)
             }
         } buttons: {
@@ -286,25 +285,25 @@ private struct InstallingScreen: View {
     }
 }
 
-private struct ApprovalScreen: View {
+/// The one administrator prompt left (ADR 0035): the services still run as the LaunchDaemons
+/// of an earlier release, which only root can remove.
+private struct MigrationScreen: View {
     let installer: Installer
-    let firewallOn: Bool
     let waiting: Bool
 
     var body: some View {
         Screen(
-            symbol: "lock.shield", title: "Install background services",
-            sentence: "To start voiced at boot, macOS needs an administrator to install three background services. They run as you, not as root."
+            symbol: "lock.shield", title: "Remove the old background services",
+            sentence: "voiced's services now run as you while you are logged in, with no administrator. macOS asks once more, to remove the old background services (the last time a password is needed)."
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                if firewallOn {
-                    Text("Your firewall is on; voiced will allow its services to accept connections.")
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Until then the services keep running the old way.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 if waiting { Working(text: "Waiting for approval") }
             }
         } buttons: {
-            Button("Install Background Services", action: installer.approve)
+            Button("Remove Old Services", action: installer.removeOldServices)
                 .keyboardShortcut(.defaultAction)
                 .disabled(waiting)
         }
@@ -312,29 +311,14 @@ private struct ApprovalScreen: View {
 }
 
 private struct StartingScreen: View {
-    let warning: String?
-
     var body: some View {
         Screen(
             symbol: "bolt.circle", title: "Starting voiced",
             sentence: "The services are loading their models, which can take a minute the first time."
         ) {
-            VStack(alignment: .leading, spacing: 12) {
-                Working(text: "Waiting for voiced")
-                WarningNotice(warning: warning)
-            }
+            Working(text: "Waiting for voiced")
         } buttons: {
             EmptyView()
-        }
-    }
-}
-
-private struct WarningNotice: View {
-    let warning: String?
-
-    var body: some View {
-        if let warning {
-            Notice(symbol: "exclamationmark.triangle.fill", tint: .orange, text: warning)
         }
     }
 }
@@ -351,13 +335,12 @@ private struct HomeAssistantScreen: View {
                 sentence: "Use voiced with Home Assistant on another device?"
             ) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Yes lets devices on your network reach voiced and announces it so Home Assistant can discover it. No keeps voiced on this Mac only; you can change this later in Settings.")
+                    Text("Yes lets devices on your network reach voiced and announces it over Bonjour. No keeps voiced on this Mac only; you can change this later in Settings.")
                         .fixedSize(horizontal: false, vertical: true)
                     if stage == .applying { Working(text: "Applying") }
                     if let message = installer.errorMessage {
                         Notice(symbol: "xmark.circle.fill", tint: .red, text: message)
                     }
-                    WarningNotice(warning: installer.warning)
                 }
             } buttons: {
                 Button("No, This Mac Only") { installer.connectHomeAssistant(false) }
@@ -369,7 +352,7 @@ private struct HomeAssistantScreen: View {
         case .connected(let info):
             Screen(
                 symbol: "house", title: "Connect Home Assistant",
-                sentence: "Home Assistant finds voiced under Settings > Devices & services > Discovered."
+                sentence: "In Home Assistant, add the Wyoming Protocol integration with this Mac's address and each port below. If voiced is listed under Settings > Devices & services > Discovered, Add there works too."
             ) {
                 ConnectionDetails(installer: installer, info: info)
             } buttons: {
@@ -423,14 +406,13 @@ private struct ConnectionDetails: View {
 }
 
 private struct DoneScreen: View {
-    let warning: String?
     @Bindable var loginItem: LoginItem
     let close: () -> Void
 
     var body: some View {
         Screen(
             symbol: "checkmark.circle", tint: .green, title: "voiced is running",
-            sentence: "voiced appears in Login Items as a background item; leave it on so the services start at boot."
+            sentence: "voiced runs while you are logged in. It appears in Login Items as a background item; leave it on so the services start when you log in."
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 Toggle(
@@ -441,7 +423,6 @@ private struct DoneScreen: View {
                 Text("Only the menu bar icon needs this; the services run without the app.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                WarningNotice(warning: warning)
             }
         } buttons: {
             Button("Done", action: close)
@@ -483,24 +464,10 @@ private struct FailureScreen: View {
     }
 }
 
-private struct CheckingScreen: View {
-    var body: some View {
-        Screen(
-            symbol: "gearshape.2", title: "Checking the background services",
-            sentence: "voiced asks for an administrator only if its background services need to change."
-        ) {
-            Working(text: "Checking")
-        } buttons: {
-            EmptyView()
-        }
-    }
-}
-
 /// An update, rollback or repair that ended with the services answering.
 private struct FinishedScreen: View {
     let task: InstallerTask
     let version: String?
-    let warning: String?
     let close: () -> Void
 
     var body: some View {
@@ -512,7 +479,6 @@ private struct FinishedScreen: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                WarningNotice(warning: warning)
             }
         } buttons: {
             Button("Done", action: close)
@@ -538,7 +504,7 @@ private struct ConfirmUninstallScreen: View {
     var body: some View {
         Screen(
             symbol: "trash", tint: .red, title: "Uninstall voiced",
-            sentence: "This stops and removes voiced's background services, which needs an administrator, and deletes voiced's own files in ~/.voiced."
+            sentence: "This stops and removes voiced's background services and deletes voiced's own files in ~/.voiced."
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Also delete:").font(.callout.weight(.medium))
@@ -594,7 +560,7 @@ private struct UninstalledScreen: View {
                 if !choices.config { Place(symbol: "doc.badge.gearshape", text: "The config file, in ~/.config/voiced.") }
                 Place(
                     symbol: "shield",
-                    text: "If the firewall is on, its entry for voiced's Python, which now names a removed file. Remove it in System Settings > Network > Firewall > Options.")
+                    text: "If you let voiced's Python through the firewall, its entry, which now names a removed file. Remove it in System Settings > Network > Firewall > Options.")
             }
         } buttons: {
             Button("Done", action: close)

@@ -249,3 +249,10 @@ spare.
 - `voiced install` still downloads the models of a service that is off.
   Changed 2026-10-23 (ADR 0018, "Amendment (2026-10-23)"): it no longer
   does, and it does not check that service's ports either.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents, which the user could unload without root.
+Parking stays: on and off remain one restart apart, through the watchdog,
+and the agent stays loaded. The parked check reads the pid from `launchctl
+print gui/<uid>/<label>`.

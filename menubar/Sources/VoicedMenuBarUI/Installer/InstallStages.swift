@@ -427,10 +427,14 @@ struct InstallStages {
 
     /// `voiced install --origin app --json-progress` from `environment`, asked for `request`,
     /// with a stall check while a download is unfinished.
+    /// `prepare`: only up to the models, changing nothing that runs (`voiced install --prepare`),
+    /// before the prompt that removes old LaunchDaemons.
     func runInstall(
-        in environment: URL, _ request: InstallRequest, progress: @escaping (InstallProgress) -> Void
+        in environment: URL, _ request: InstallRequest, prepare: Bool = false,
+        progress: @escaping (InstallProgress) -> Void
     ) async -> Result<Void, InstallFailure> {
-        let command = InstallCommand(environment.appendingPathComponent("bin/voiced").path, request.arguments)
+        let command = InstallCommand(
+            environment.appendingPathComponent("bin/voiced").path, request.arguments + (prepare ? ["--prepare"] : []))
         let state = InstallRun()
         let runner = runner
         let consume = Task {
@@ -503,36 +507,35 @@ struct InstallStages {
         var stalled = false
     }
 
-    // MARK: - Approval
+    // MARK: - Migration
 
-    /// Readable without root; on, the privileged step also allows the services' Python.
-    func isFirewallOn() async -> Bool {
-        let command = InstallCommand("/usr/libexec/ApplicationFirewall/socketfilterfw", ["--getglobalstate"])
-        // Unknown counts as off: the privileged step checks again as root.
-        let ran = try? await collect(command)
-        return ran?.lines.contains { $0.contains("enabled") } ?? false
+    /// LaunchDaemons of 0.4.0 or earlier are still there, as `voiced.launchd.control.legacy_daemons`
+    /// finds them: this user's plists under the default labels, or a default label launchd
+    /// still has loaded in the system domain (`launchctl print` needs no root), plist or not.
+    /// `voiced install` refuses to put the agents beside them, so they go first.
+    func hasLegacyDaemons() async -> Bool {
+        if configuration.installProbe.hasLegacyDaemons() { return true }
+        for label in InstallProbe.defaultLabels {
+            let print = InstallCommand("/bin/launchctl", ["print", "system/\(label)"])
+            if let ran = try? await collect(print), ran.status == 0 { return true }
+        }
+        return false
     }
 
-    func installDaemons() async -> PrivilegedScript.Result {
-        PrivilegedScript.result(of: await runner.runPrivileged(.install, user: configuration.userName))
+    /// Whether the old daemons are gone within `unloadTimeout`, as `wait_unloaded` waits: the
+    /// prompt's commands wait too, but launchd may still be tearing a job down.
+    func legacyDaemonsGone() async -> Bool {
+        let deadline = ContinuousClock.now + configuration.unloadTimeout
+        while await hasLegacyDaemons() {
+            if ContinuousClock.now >= deadline || Task.isCancelled { return false }
+            try? await Task.sleep(for: configuration.pollInterval)
+        }
+        return true
     }
 
-    /// `voiced-privileged check` as the user: true when the installed plists are what install
-    /// would write and every label is loaded, so an update or repair asks for an
-    /// administrator only when they are not.
-    func checkDaemons() async -> Result<Bool, InstallFailure> {
-        let step = "Checking the background services"
-        let ran: Ran
-        do {
-            ran = try await collect(PrivilegedScript.checkCommand(user: configuration.userName))
-        } catch {
-            return .failure(InstallFailure(stage: .approval, step: step, cause: "Cannot run the check: \(error.localizedDescription)"))
-        }
-        switch PrivilegedScript.check(status: ran.status, lines: ran.lines) {
-        case .upToDate: return .success(true)
-        case .differs: return .success(false)
-        case .failed(let cause): return .failure(InstallFailure(stage: .approval, step: step, cause: cause, output: ran.lines))
-        }
+    /// The one administrator prompt left: it boots out and deletes the old daemons.
+    func removeLegacyDaemons() async -> LegacyDaemons.Result {
+        LegacyDaemons.result(of: await runner.removeLegacyDaemons())
     }
 
     // MARK: - Starting
@@ -561,8 +564,8 @@ struct InstallStages {
         }
         if !restartFirst, case .success = await waitForHello(model, until: runs) { return .success(()) }
         if Task.isCancelled { return .success(()) }
-        // Without a watchdog to ask, `restart all` falls back to launchctl, which needs root
-        // here; launchd's KeepAlive restarts the services anyway, so wait regardless.
+        // Without a watchdog to ask, `restart all` falls back to launchctl; launchd's KeepAlive
+        // restarts the services anyway, so wait regardless.
         let restart = InstallCommand(configuration.paths.entryPoint.path, ["restart", "all"])
         let restarted = await execute(restart, stage: .starting, step: "Restarting voiced")
         return await waitForHello(model, until: runs).mapError { failure in
@@ -596,16 +599,16 @@ struct InstallStages {
 
     // MARK: - Uninstall
 
-    func uninstallDaemons() async -> PrivilegedScript.Result {
-        PrivilegedScript.result(of: await runner.runPrivileged(.uninstall, user: configuration.userName))
-    }
-
-    /// Whether any of the three plists is still in `/Library/LaunchDaemons`: an uninstall
-    /// that already removed them does not ask for the administrator again.
-    var daemonsInstalled: Bool {
-        BackgroundItems.labels.contains {
-            FileManager.default.fileExists(
-                atPath: configuration.installProbe.launchDaemonsDirectory.appendingPathComponent("\($0).plist").path)
+    /// Boots out the LaunchAgents and deletes their plists, as `voiced uninstall` does
+    /// (`voiced.launchd.install.remove_agents` is the reference), for when no `voiced` is left
+    /// to run it. As the user: they are in the user's own domain. No wait for the unload: the
+    /// state directory goes next, and nothing is loaded again here.
+    func removeAgents() async {
+        for label in BackgroundItems.labels {
+            let bootout = InstallCommand("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
+            _ = try? await collect(bootout)
+            let plist = configuration.installProbe.launchAgentsDirectory.appendingPathComponent("\(label).plist")
+            if Self.fileType(plist) == S_IFREG { try? FileManager.default.removeItem(at: plist) }
         }
     }
 

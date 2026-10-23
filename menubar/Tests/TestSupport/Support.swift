@@ -7,8 +7,27 @@ public func temporarySocketPath() -> String {
     "/tmp/vt-\(UUID().uuidString.prefix(8)).sock"
 }
 
-/// A stand-in /Library/LaunchDaemons. With `watchdogUser`, it holds a watchdog plist for
-/// that user, shaped like the ones `voiced install` writes.
+/// A stand-in ~/Library/LaunchAgents. With `watchdog`, it holds a watchdog plist shaped like
+/// the one `voiced install` writes.
+public func launchAgentsDirectory(watchdog: Bool = false, label: String = "io.github.julianbeaulieu.voiced") throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    if watchdog {
+        try writePlist(
+            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"]],
+            to: directory.appendingPathComponent("\(label).watchdog.plist"))
+    }
+    return directory
+}
+
+/// A probe of stand-in directories, never this Mac's: the agents, and the LaunchDaemons of an
+/// earlier release (none unless given).
+public func installProbe(agents: URL, daemons: URL? = nil) throws -> InstallProbe {
+    InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: try daemons ?? launchDaemonsDirectory())
+}
+
+/// A stand-in /Library/LaunchDaemons, as releases before ADR 0035 installed it. With
+/// `watchdogUser`, it holds a watchdog plist for that user, shaped like the ones they wrote.
 public func launchDaemonsDirectory(watchdogUser: String? = nil, label: String = "io.github.julianbeaulieu.voiced") throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

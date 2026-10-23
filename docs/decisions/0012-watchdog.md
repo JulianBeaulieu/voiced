@@ -178,3 +178,10 @@ switched off whose parked process is the pid launchd runs (its pid is in
 `<state dir>/<service>.off`): never polled, never restarted, never a
 failure, no grace, reported once per process. Details in
 [ADR 0033](0033-model-residency.md).
+
+## Amendment (ADR 0035)
+
+The watchdog and the services are LaunchAgents in the user's domain,
+`gui/<uid>`. The restart is unchanged, SIGKILL then `launchctl kickstart
+gui/<uid>/<label>`; `kickstart -k` is no longer denied, but one restart
+path is kept.

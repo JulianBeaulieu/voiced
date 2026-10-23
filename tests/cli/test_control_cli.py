@@ -126,7 +126,7 @@ def test_restart_without_socket_uses_launchctl(
     out: list[str] = []
     assert lc.cmd_restart("tts", settings, runner, out.append) == 0
     assert killed == [4242]
-    assert ["launchctl", "kickstart", f"system/{settings.launchd.label('tts')}"] in calls
+    assert ["launchctl", "kickstart", f"gui/{os.getuid()}/{settings.launchd.label('tts')}"] in calls
     assert out[0].startswith("no control socket at")
     assert out[1].startswith("tts: sent SIGKILL to pid 4242")
 
@@ -158,7 +158,7 @@ class FakeWatchdogJob:
             self.pid += 100
 
     def runner(self, argv: Sequence[str]) -> CommandResult:
-        if argv[-1] != f"system/{self.label}":
+        if argv[-1] != f"gui/{os.getuid()}/{self.label}":
             raise AssertionError(f"unexpected launchctl call {argv}")
         if argv[1] == "print":
             return CommandResult(0, f"state = running\n\tpid = {self.pid}\n")

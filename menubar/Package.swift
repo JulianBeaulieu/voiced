@@ -17,13 +17,7 @@ let package = Package(
         // The control protocol: framing, client, payload models, view state. No UI.
         .target(name: "VoicedControl"),
         // SwiftUI views and the observable model that drives them.
-        // The privileged script's bytes are compiled into the executable (ADR 0018), never a
-        // file in the bundle. Installer/voiced-privileged.sh is a symlink to the one in the
-        // voiced package (src/voiced/launchd), which `voiced install` prints for sudo.
-        .target(
-            name: "VoicedMenuBarUI", dependencies: ["VoicedControl"],
-            resources: [.embedInCode("Installer/voiced-privileged.sh")]
-        ),
+        .target(name: "VoicedMenuBarUI", dependencies: ["VoicedControl"]),
         // The app entry point; kept tiny so everything else is testable. Only it links Sparkle:
         // the rest of the app sees the updater through `AppUpdater`.
         .executableTarget(

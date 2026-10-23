@@ -1,28 +1,33 @@
 """``launchctl`` argv builders and thin wrappers.
 
 Standard library only: the watchdog imports this too. Every verb has one
-``*_argv(label)`` builder; the same argv is run through a :data:`Runner`,
-printed for the user with ``shlex.join``, or written into the Metal probe's
-script.
-Reading (``launchctl print``) and plain ``kickstart`` work without root on
-the system domain; ``bootstrap``, ``bootout`` and ``kickstart -k`` of a
-running job do not (ADR 0004).
+``*_argv`` builder; the same argv is run through a :data:`Runner` or printed
+for the user with ``shlex.join``.
+The services are LaunchAgents in the user's own domain, ``gui/<uid>``, with
+their plists in ``~/Library/LaunchAgents`` (ADR 0035): every verb works as
+the user, none needs root. Earlier releases installed LaunchDaemons in
+``/Library/LaunchDaemons``; :func:`legacy_daemons` finds those, and
+:func:`legacy_removal_command` is the one line, run with sudo, that removes
+them.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import plistlib
 import re
+import shlex
 import signal
 import subprocess
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 LAUNCH_DAEMONS_DIR = Path("/Library/LaunchDaemons")
-SYSTEM_DOMAIN = "system"
+"""Where releases before ADR 0035 installed the services; read only, to migrate."""
 
 
 @dataclass(frozen=True)
@@ -111,12 +116,27 @@ def run_streaming(
     return CommandResult(proc.returncode)
 
 
+def domain() -> str:
+    """The user's GUI domain: where the agents load, at login or on bootstrap."""
+    return f"gui/{os.getuid()}"
+
+
+def has_session(runner: Runner = run_command) -> bool:
+    """Whether the user's GUI domain exists: only while they are logged in
+    at the Mac (an SSH login alone has none)."""
+    return runner(["launchctl", "print", domain()]).ok
+
+
 def service_target(label: str) -> str:
-    return f"{SYSTEM_DOMAIN}/{label}"
+    return f"{domain()}/{label}"
 
 
-def plist_path(label: str) -> Path:
-    return LAUNCH_DAEMONS_DIR / f"{label}.plist"
+def launch_agents_dir(home: Path | None = None) -> Path:
+    return (home or Path.home()) / "Library" / "LaunchAgents"
+
+
+def plist_path(label: str, home: Path | None = None) -> Path:
+    return launch_agents_dir(home) / f"{label}.plist"
 
 
 def print_argv(label: str) -> list[str]:
@@ -124,23 +144,99 @@ def print_argv(label: str) -> list[str]:
 
 
 def kickstart_argv(label: str) -> list[str]:
-    """Start a loaded service now (skips ThrottleInterval). Works without root."""
+    """Start a loaded service now (skips ThrottleInterval)."""
     return ["launchctl", "kickstart", service_target(label)]
 
 
-def bootstrap_argv(label: str) -> list[str]:
-    """Load the installed plist. Needs root."""
-    return ["launchctl", "bootstrap", SYSTEM_DOMAIN, str(plist_path(label))]
+def bootstrap_argv(plist: Path) -> list[str]:
+    """Load the agent ``plist`` into the user's domain."""
+    return ["launchctl", "bootstrap", domain(), str(plist)]
 
 
 def bootout_argv(label: str) -> list[str]:
-    """Unload the service. Needs root."""
+    """Unload the service until the next login or bootstrap."""
     return ["launchctl", "bootout", service_target(label)]
+
+
+DEFAULT_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
+"""The prefix every release installed its LaunchDaemons under (ADR 0003):
+the old root step rendered the default labels only."""
+LEGACY_LABELS = tuple(f"{DEFAULT_LABEL_PREFIX}.{s}" for s in ("stt", "tts", "watchdog"))
+
+
+@dataclass(frozen=True)
+class LegacyDaemon:
+    """A LaunchDaemon an earlier release installed: its plist is in
+    ``/Library/LaunchDaemons``, or launchd still has it loaded."""
+
+    label: str
+    user: str | None  # its UserName, whose install it is; None without a plist
+
+
+def legacy_daemons(labels: Sequence[str], runner: Runner) -> list[LegacyDaemon]:
+    """The LaunchDaemons of the default labels and of ``labels``: by plist
+    (world-readable) and by ``launchctl print system/<label>``, which needs
+    no root, so a daemon whose plist was deleted while it stayed loaded is
+    found too."""
+    found = []
+    for label in dict.fromkeys((*LEGACY_LABELS, *labels)):
+        plist = LAUNCH_DAEMONS_DIR / f"{label}.plist"
+        user: object = None
+        if plist.is_file():
+            try:
+                with plist.open("rb") as fh:
+                    user = plistlib.load(fh).get("UserName")
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                pass
+        elif not runner(["launchctl", "print", f"system/{label}"]).ok:
+            continue
+        found.append(LegacyDaemon(label, user if isinstance(user, str) else None))
+    return found
+
+
+def legacy_removal_command(labels: Sequence[str]) -> str:
+    """The one line that boots out and deletes the daemons of ``labels``, then
+    waits until launchd has let go of them: fixed commands by absolute path,
+    no script and nothing the user's account could have written. The menu
+    bar app runs the same commands behind its one administrator prompt
+    (``LegacyDaemons.swift``)."""
+    steps = [f"/bin/launchctl bootout system/{label} 2>/dev/null" for label in labels]
+    plists = [f"/Library/LaunchDaemons/{label}.plist" for label in labels]
+    steps.append(shlex.join(["/bin/rm", "-f", *plists]))
+    # bootout returns while launchd still tears a job down; wait up to 30 s
+    # per label, so that what runs next finds the ports free.
+    steps += [
+        f"n=0; while /bin/launchctl print system/{label} >/dev/null 2>&1 "
+        "&& [ $n -lt 150 ]; do /bin/sleep 0.2; n=$((n+1)); done"
+        for label in labels
+    ]
+    return f"sudo /bin/sh -c {shlex.quote('; '.join(steps))}"
+
+
+def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool = False) -> str:
+    """What every command says while LaunchDaemons of 0.4.0 or earlier are
+    there (ADR 0035): who they belong to, or the one line that removes them
+    and what to run next. ``one_line``: for a table cell (``voiced doctor``)."""
+    others = sorted({d.user for d in found if d.user not in (user, None)})
+    if others:
+        return (
+            f"voiced is installed for {', '.join(others)} on this Mac as LaunchDaemons from "
+            "0.4.0 or earlier; that account has to remove them before voiced can run as yours."
+        )
+    intro = (
+        "voiced still runs as LaunchDaemons from 0.4.0 or earlier, which only an "
+        "administrator can remove. Remove them, the last time voiced needs a password, "
+        "then install the LaunchAgents"
+    )
+    removal = legacy_removal_command([d.label for d in found])
+    if one_line:
+        return f"{intro}: `{removal}`; then run `voiced install`"
+    return f"{intro}:\n\n  {removal}\n  voiced install"
 
 
 @dataclass(frozen=True)
 class ServiceStatus:
-    """What ``launchctl print system/<label>`` says about a service."""
+    """What ``launchctl print gui/<uid>/<label>`` says about a service."""
 
     label: str
     loaded: bool
@@ -185,3 +281,22 @@ def parse_print_output(label: str, result: CommandResult) -> ServiceStatus:
 
 def print_service(label: str, runner: Runner = run_command) -> ServiceStatus:
     return parse_print_output(label, runner(print_argv(label)))
+
+
+BOOTOUT_WAIT_S = 30.0
+"""How long a bootout may take before the job is taken for gone anyway."""
+
+
+def wait_unloaded(
+    label: str, runner: Runner = run_command, sleep: Callable[[float], None] = time.sleep
+) -> bool:
+    """Wait until ``label`` is gone from the domain; False if it is still
+    there after :data:`BOOTOUT_WAIT_S`. ``bootout`` can return while launchd
+    still tears the job down, and a bootstrap or kickstart of it then fails
+    or acts on the old job."""
+    deadline = time.monotonic() + BOOTOUT_WAIT_S
+    while print_service(label, runner).loaded:
+        if time.monotonic() >= deadline:
+            return False
+        sleep(0.2)
+    return True

@@ -145,10 +145,7 @@ class WatchdogSupervisor:
         if spec is None:
             raise NotInstalled(f"{service} is not supervised by this watchdog")
         if not self.installed(spec.label):
-            raise NotInstalled(
-                f"{spec.label} has no launchd plist; "
-                "run `voiced install` and the sudo command it prints"
-            )
+            raise NotInstalled(f"{spec.label} has no LaunchAgent plist; run `voiced install`")
         formula = self.dog.held_by_homebrew()
         if formula is not None:
             # Refused here, before the op answers, not later in the

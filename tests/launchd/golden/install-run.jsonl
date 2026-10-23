@@ -17,4 +17,6 @@
 {"event": "step", "step": "manifest", "state": "done", "shown": "write <tmp>/state/install.json"}
 {"event": "step", "step": "prune", "state": "start", "shown": "remove environments in <tmp>/state/envs other than the new and the previous one"}
 {"event": "step", "step": "prune", "state": "done", "shown": "remove environments in <tmp>/state/envs other than the new and the previous one"}
+{"event": "step", "step": "agents", "state": "start", "shown": "write the LaunchAgents in <home>/Library/LaunchAgents and load the ones that changed"}
+{"event": "step", "step": "agents", "state": "done", "shown": "write the LaunchAgents in <home>/Library/LaunchAgents and load the ones that changed"}
 {"event": "done"}

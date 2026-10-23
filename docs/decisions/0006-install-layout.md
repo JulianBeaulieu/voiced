@@ -158,3 +158,13 @@ repository whose folder the scan cannot read (a download interrupted
 before any snapshot) cannot be deleted through the library, and `hf cache
 rm` uses the same scan: uninstall names it and says to run `voiced install`
 again to finish the download, or to remove the folder.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents: `voiced install` writes their plists to
+`~/Library/LaunchAgents/<label>.plist` (the user's, 0644) and loads them
+into `gui/<uid>` itself, so it prints no root step and stages nothing.
+`voiced uninstall --yes` boots them out and deletes them before the files.
+`voiced doctor --metal-probe` runs the probe as a one-shot agent directly
+and writes no script. The log rule stands: the plists still carry
+`VOICED_STDIO_LOG`, not `StandardOutPath`.

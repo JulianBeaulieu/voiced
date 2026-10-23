@@ -23,6 +23,14 @@ This guide calls it `<mac-ip>`. Give the Mac a fixed address in your router
 so it does not change; mDNS discovery works without one, but a manually
 added integration stores the address.
 
+voiced runs while the user who installed it is logged in, so Home Assistant
+can reach it after a reboot only once that user is logged in again. With
+FileVault on, that user unlocking the disk at boot is that login; with FileVault off,
+turn on automatic login for that user (System Settings > Users & Groups),
+or the Mac waits at the login window and the integrations stay unavailable.
+Logging out stops voiced; locking the screen does not. See
+[After a reboot](operations.md#after-a-reboot).
+
 ## 1. Expose voiced on your network
 
 Read the security note in the
@@ -40,7 +48,7 @@ bind = "0.0.0.0"
 ```
 
 Restart both services so they pick it up; the services read the config when
-they start, so this needs no root:
+they start, so this needs no new install:
 
 ```sh
 voiced restart all
@@ -60,8 +68,10 @@ mDNS (zeroconf) and Home Assistant discovers them on its own:
 2. Two **Wyoming Protocol** cards appear under **Discovered**, one per
    service. Click **Add** on each and confirm.
 
-If nothing is discovered (mDNS does not cross VLANs, or you set
-`zeroconf = false`), add them by hand:
+If nothing is discovered (mDNS does not cross VLANs, you set
+`zeroconf = false`, or macOS's Local Network privacy keeps the services'
+announcements on the Mac, which `voiced doctor` reports as "Discovery"),
+add them by hand:
 
 1. **Settings**, **Devices and services**, **Add integration**.
 2. Search for **Wyoming Protocol** and select it.
@@ -122,8 +132,9 @@ satellite's device page, **Voice assistant**.
 
 | Symptom | Fix |
 |---|---|
-| Not discovered | Confirm `bind = "0.0.0.0"` and that `http://<mac-ip>:8880/health` opens from another machine. Add by host and port if mDNS is blocked between networks. |
-| Integration added, but not ready | The service is still loading its model (`/health` says `starting`), or the Mac is waiting at the FileVault unlock screen after a reboot; see [operations.md](operations.md#filevault). |
+| Not discovered | Confirm `bind = "0.0.0.0"` and that `http://<mac-ip>:8880/health` opens from another machine. Run `voiced doctor`: a "Discovery" warning means the announcements do not leave the Mac. Add by host and port. |
+| Integration added, but not ready | The service is still loading its model (`/health` says `starting`), or after a reboot nobody has logged in yet (the FileVault unlock screen, or the login window without automatic login); see [operations.md](operations.md#after-a-reboot). |
+| Integration cannot connect, and the Mac's firewall is on | macOS asks at the Mac whether `python3.12` may accept incoming connections when the services start, and again after an update that changes that Python; until someone answers Allow, connections are blocked. Allow it in System Settings > Network > Firewall > Options. |
 | STT returns nothing or an error | The pipeline language does not match the configured `languages`. Version 1 is English only. |
 | Error `server_busy` in the Home Assistant log | The inference queue was full or the model was loading. `stt.streams` (default 2) satellites are transcribed at once and the next waits; after about 34 s of waiting (its 64 queued chunks, then `server.session_idle_s`) it gets `server_busy`. Raise `queue_depth` if many satellites talk at once. |
 | Voices missing from the picker | Only voices in a configured language are advertised. |

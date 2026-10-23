@@ -187,7 +187,7 @@ def cmd_park(settings: Settings, service: ServiceName, off_marker: Path) -> int:
 
 OPEN_FILES = 4096
 """Soft limit on open files a service raises itself to. launchd starts
-daemons with 256, which every HTTP and Wyoming connection, the model files
+services with 256, which every HTTP and Wyoming connection, the model files
 and the logs share; uvicorn closes no connection that never sends a request,
 so a client holding a couple of hundred of them could otherwise stop the
 service accepting anything, ``/health`` included."""
