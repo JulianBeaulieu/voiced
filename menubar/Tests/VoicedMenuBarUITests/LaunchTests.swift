@@ -58,7 +58,8 @@ final class LaunchTests: XCTestCase {
 
     private let manifest = InstallManifest(
         version: "0.2.0", python: "3.12.15", lockSHA256: "ab12",
-        wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"), wheelsBytes: 1, models: [])
+        wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"), wheelsBytes: 1,
+        catalogue: ModelList(cache: "", totalBytes: 0, engines: []))
 
     private func record(_ source: InstallSource = .app, version: String? = "0.2.0", lock: String? = "AB12") -> InstallRecord {
         InstallRecord(source: source, environment: "/env", version: version, lockSHA256: lock, python: "3.12.15")
@@ -426,7 +427,7 @@ final class LaunchTests: XCTestCase {
         let pinned = InstallManifest(
             version: "0.2.0", python: "3.12.15", lockSHA256: "ab12",
             wheel: .init(name: "voiced-0.2.0-py3-none-any.whl", sha256: "cd34"),
-            wheelsBytes: 1, models: [.init(repo: "mlx-community/Kokoro-82M-bf16", revision: "a71e", bytes: 1)])
+            wheelsBytes: 1, catalogue: RecordedProgress.catalogue)
         let someone = VoicedPaths(home: URL(fileURLWithPath: "/Users/someone"), bundle: URL(fileURLWithPath: "/Applications/voiced.app"))
         let diagnostics = Diagnostics(
             appVersion: "0.2.0", paths: someone, translocatedFrom: nil, manifest: pinned,
@@ -438,7 +439,7 @@ final class LaunchTests: XCTestCase {
             "Menu bar app\n  Version: 0.2.0\n  Location: /Applications/voiced.app\n"
                 + "  Install source override: /src/voiced-0.2.0-py3-none-any.whl\n  Installer: welcome",
             "  voiced: 0.2.0\n  Wheel: voiced-0.2.0-py3-none-any.whl\n  Wheel sha256: cd34",
-            "  mlx-community/Kokoro-82M-bf16: revision a71e",
+            "  mlx-community/parakeet-tdt-0.6b-v3: revision 0a1b2c3\n  mlx-community/Kokoro-82M-bf16: revision 4d5e6f7",
             "Installed environment\n  Source: app\n  Environment: /env\n  voiced: 0.2.0\n  Lock sha256: AB12",
             "  State: Running",
             "  io.github.julianbeaulieu.voiced.stt: Not installed",

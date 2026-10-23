@@ -125,7 +125,7 @@ extension FakeInstallRunner.Response {
 }
 
 /// What a bundle would carry, in `directory`: a lock and a wheel with the hashes the manifest
-/// pins, and two models.
+/// pins, and a catalogue to choose from.
 public func installResources(in directory: URL) throws -> InstallResources {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let lock = directory.appendingPathComponent("requirements.lock")
@@ -140,11 +140,7 @@ public func installResources(in directory: URL) throws -> InstallResources {
         manifest: InstallManifest(
             version: "0.1.0", python: "3.12.15", lockSHA256: try sha256(lock),
             wheel: .init(name: wheel.lastPathComponent, sha256: try sha256(wheel)),
-            wheelsBytes: 205_000_000,
-            models: [
-                .init(repo: RecordedProgress.parakeet, revision: "0a1b2c3", bytes: 2_508_500_000),
-                .init(repo: RecordedProgress.kokoro, revision: "4d5e6f7", bytes: 355_300_000),
-            ]))
+            wheelsBytes: 205_000_000, catalogue: RecordedProgress.catalogue))
 }
 
 /// Lines of `voiced install --json-progress` as ADR 0018's protocol 1 specifies them, `shown`
@@ -153,6 +149,53 @@ public enum RecordedProgress {
     public static let hello = #"{"event": "hello", "protocol": 1, "version": "0.1.0"}"#
     public static let parakeet = "mlx-community/parakeet-tdt-0.6b-v3"
     public static let kokoro = "mlx-community/Kokoro-82M-bf16"
+    public static let whisper = "mlx-community/whisper-large-v3-turbo-asr-8bit"
+    public static let phonon = "gradium/phonon-31m-en"
+
+    /// What `python -m voiced.models` puts in the manifest, in part: the two recommended
+    /// models, another engine for each service, a gated model and an engine's shared files.
+    public static let catalogue = ModelList(
+        cache: "", totalBytes: 0,
+        engines: [
+            ModelEngine(
+                name: "parakeet", label: "Parakeet", kind: "stt",
+                models: [
+                    CatalogueModel(
+                        id: parakeet, revision: "0a1b2c3", license: "CC-BY-4.0", downloadBytes: 2_508_500_000,
+                        downloaded: false, quality: 4, speed: 5,
+                        note: "The default: accurate and fast, English and 24 European languages", recommended: true)
+                ]),
+            ModelEngine(
+                name: "whisper", label: "Whisper", kind: "stt",
+                models: [
+                    CatalogueModel(
+                        id: whisper, revision: "8e9f0a1", license: "MIT", downloadBytes: 885_000_000, downloaded: false,
+                        quality: 5, speed: 2, note: "100 languages; transcribes ~0.5 s after you stop, no live partials")
+                ]),
+            ModelEngine(
+                name: "kokoro", label: "Kokoro", kind: "tts",
+                models: [
+                    CatalogueModel(
+                        id: kokoro, revision: "4d5e6f7", license: "Apache-2.0", downloadBytes: 355_300_000,
+                        downloaded: false, quality: 4, speed: 5,
+                        note: "The default: natural and fast, 28 American and British English voices", recommended: true)
+                ]),
+            ModelEngine(
+                name: "phonon", label: "Phonon", kind: "tts",
+                models: [
+                    CatalogueModel(
+                        id: phonon, revision: "b2c3d4e", license: "Apache-2.0", downloadBytes: 65_000_000, downloaded: false,
+                        quality: 3, speed: 4, note: "Runs on the CPU, leaving the GPU to speech to text; 38 English voices"),
+                    CatalogueModel(
+                        id: "gradium/phonon-40m-en", revision: "c3d4e5f", license: "CC-BY-NC-4.0", gated: true,
+                        downloadBytes: 75_000_000, downloaded: false),
+                ],
+                shared: [
+                    CatalogueModel(
+                        id: "gradium/phonon-voices", revision: "d4e5f6a", license: "Apache-2.0", downloadBytes: 9_500_000,
+                        downloaded: false)
+                ]),
+        ])
 
     public static func step(_ id: String, _ state: String, _ shown: String) -> String {
         #"{"event": "step", "step": "\#(id)", "state": "\#(state)", "shown": "\#(shown)"}"#

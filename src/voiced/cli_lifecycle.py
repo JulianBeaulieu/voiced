@@ -66,7 +66,11 @@ from voiced.layout import (
     installed_manifest,
     off_marker,
 )
-from voiced.settings_store import BOOLEAN_SETTINGS, INTEGER_SETTINGS, SETTABLE
+from voiced.settings_store import (
+    INSTALL_SETTABLE,
+    SETTABLE,
+    parse_setting,
+)
 from voiced.table import render_table
 from voiced.watchdog import (
     Observation,
@@ -121,6 +125,16 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         "--json-progress",
         action="store_true",
         help="progress as JSON lines on stdout (ADR 0018); human output goes to stderr",
+    )
+    install.add_argument(
+        "--set",
+        dest="pairs",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="run with a setting of stt.enabled, stt.engine, stt.model or the same for tts "
+        "(the app's first-run choices): the models step downloads for it and the config "
+        "gets it once the models are in, as `voiced settings set` writes; repeatable",
     )
 
     start = sub.add_parser("start", help="start the daemons")
@@ -291,14 +305,31 @@ def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
 def _install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
 ) -> InstallPlan:
-    from voiced.launchd.install import plan_install, plan_summary, run_install
+    from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
+    changes: dict[str, object] = {}
+    for pair in args.pairs:
+        # The key first, so no other setting is parsed (api_key=- reads stdin).
+        if (key := pair.partition("=")[0].strip()) not in INSTALL_SETTABLE:
+            raise InstallError(
+                f"--set {key}: install sets only {', '.join(INSTALL_SETTABLE)}; "
+                "use voiced settings set for the rest"
+            )
+        try:
+            changes.update([parse_setting(pair)])
+        except ValueError as exc:
+            raise InstallError(f"--set {exc}") from None
+    for kind in HTTP_SERVICES:
+        # The models step downloads the model named, so a switch names it.
+        if f"{kind}.engine" in changes and f"{kind}.model" not in changes:
+            raise InstallError(f"--set {kind}.engine needs {kind}.model in the same install")
     plan = plan_install(
         settings,
         state_dir=args.state_dir,
         python=args.python,
         source=args.source,
         origin=args.origin,
+        changes=changes,
     )
     # Piped (the app, a log), the build's and our own lines stay in order.
     with contextlib.suppress(AttributeError, ValueError):
@@ -678,38 +709,6 @@ def _not_installed_hint(settings: Settings) -> str:
 
 
 # settings -----------------------------------------------------------------
-
-_TRUE = ("true", "yes", "on", "1")
-_FALSE = ("false", "no", "off", "0")
-
-
-def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
-    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
-    key, sep, raw = pair.partition("=")
-    key = key.strip()
-    if not sep:
-        raise ValueError(f"{pair!r}: expected KEY=VALUE")
-    if key not in SETTABLE:
-        raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
-    if key in BOOLEAN_SETTINGS:
-        if raw.lower() in _TRUE:
-            return key, True
-        if raw.lower() in _FALSE:
-            return key, False
-        raise ValueError(f"{key}: expected true or false, got {raw!r}")
-    if key == "tts.speed":
-        try:
-            return key, float(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
-    if key in INTEGER_SETTINGS:
-        try:
-            return key, int(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
-    if key == "api_key" and raw == "-":
-        return key, stdin().rstrip("\r\n")
-    return key, raw
 
 
 def _flatten(value: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:

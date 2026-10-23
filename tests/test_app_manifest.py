@@ -58,11 +58,26 @@ colorama==0.4.6 ; sys_platform == 'win32' \\
     --hash=sha256:09
 """
 
-PINS = {
-    "models": [
-        {"repo": "mlx-community/parakeet-tdt-0.6b-v3", "revision": "e" * 40, "bytes": 2508532829},
+CATALOGUE = {
+    "engines": [
+        {
+            "name": name,
+            "label": name.capitalize(),
+            "kind": kind,
+            "models": [
+                {
+                    "id": f"{name}-model",
+                    "revision": "e" * 40,
+                    "download_bytes": 2508532829,
+                    "recommended": True,
+                }
+            ],
+            "shared": [],
+        }
+        for name, kind in (("parakeet", "stt"), ("kokoro", "tts"))
     ]
 }
+PINS = {"catalogue": CATALOGUE}
 
 
 @pytest.fixture(scope="module")
@@ -98,7 +113,7 @@ def test_the_manifest(app_manifest: ModuleType, files: dict[str, Path]) -> None:
         # numpy's most specific wheel for macOS 14 arm64 and CPython 3.12, anyio's pure
         # wheel, docopt's sdist; nothing for the 3.11 numpy or Windows' colorama.
         "wheels_bytes": 300 + 40 + 5,
-        "models": PINS["models"],
+        "catalogue": CATALOGUE,
     }
 
 
@@ -157,22 +172,23 @@ def test_a_package_with_no_file_for_the_mac(
 @pytest.mark.parametrize(
     ("model", "message"),
     [
-        ({"repo": "r", "revision": "main", "bytes": 1}, "the revision must be a commit SHA"),
-        ({"repo": "r", "revision": "e" * 40}, "no size"),
-        ({"repo": "r", "revision": "e" * 40, "bytes": 0}, "no size"),
-        ({"repo": "r", "revision": "e" * 40, "bytes": True}, "no size"),
+        ({"id": "r", "revision": "main", "download_bytes": 1}, "the revision must be a commit SHA"),
+        ({"id": "r", "revision": "e" * 40}, "no size"),
+        ({"id": "r", "revision": "e" * 40, "download_bytes": 0}, "no size"),
+        ({"id": "r", "revision": "e" * 40, "download_bytes": True}, "no size"),
     ],
 )
 def test_bad_model_pins(
     app_manifest: ModuleType, files: dict[str, Path], model: dict[str, object], message: str
 ) -> None:
-    files["pins"].write_text(json.dumps({"models": [model]}))
+    engine = {"name": "x", "kind": "stt", "models": [], "shared": [model]}
+    files["pins"].write_text(json.dumps({"catalogue": {"engines": [engine]}}))
     with pytest.raises(SystemExit, match=message):
         app_manifest.manifest(files["wheel"], files["lock"], files["uv_lock"], files["pins"])
 
 
 def test_no_models(app_manifest: ModuleType, files: dict[str, Path]) -> None:
-    files["pins"].write_text('{"models": []}')
+    files["pins"].write_text('{"catalogue": {"engines": []}}')
     with pytest.raises(SystemExit, match="no models"):
         app_manifest.manifest(files["wheel"], files["lock"], files["uv_lock"], files["pins"])
 
@@ -198,7 +214,6 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
 ) -> None:
     """bundle.sh writes the pins with ``python -I -m voiced.models`` from the
     installed wheel; the manifest takes exactly what it prints."""
-    from voiced import models
     from voiced.models import lockfile
 
     out = subprocess.run(
@@ -210,8 +225,4 @@ def test_the_pins_bundle_sh_reads_are_voiced_models(
     )
     pins = tmp_path / "model-pins.json"
     pins.write_text(out.stdout)
-    assert app_manifest.models(pins) == lockfile.manifest()["models"]
-    assert [(m["repo"], m["revision"], m["bytes"]) for m in app_manifest.models(pins)] == [
-        (p.repo, p.revision, p.bytes)
-        for p in (models.lock()[models.default_model(e).repo] for e in ("parakeet", "kokoro"))
-    ]
+    assert app_manifest.catalogue(pins) == lockfile.catalogue_view()

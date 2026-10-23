@@ -131,6 +131,7 @@ public struct InstallerWindow: View {
 
 // MARK: - Screens
 
+/// The welcome screen is the setup: what to install, what goes where, and the one Install.
 private struct WelcomeScreen: View {
     let installer: Installer
 
@@ -141,6 +142,11 @@ private struct WelcomeScreen: View {
             sentence: "voiced turns speech into text and text into speech on this Mac, for Home Assistant and other devices."
         ) {
             VStack(alignment: .leading, spacing: 10) {
+                ServiceSetup(installer: installer, kind: .stt)
+                ServiceSetup(installer: installer, kind: .tts)
+                Text("Settings changes the models later and has those that need a Hugging Face token.")
+                    .footnote()
+                Divider().padding(.vertical, 2)
                 Place(symbol: "folder", text: "Python and the voiced environment go in ~/.voiced.")
                 Place(symbol: "waveform.circle", text: "The speech models go in the Hugging Face cache.")
                 Place(
@@ -150,7 +156,7 @@ private struct WelcomeScreen: View {
                     symbol: "trash",
                     text: "Moving this app to the Trash leaves the services running; use Uninstall in Settings > About first.")
                 Divider().padding(.vertical, 2)
-                Text("Downloads about \(ByteText.size(welcome.downloadBytes)) and needs \(ByteText.size(welcome.requiredBytes)) free while it installs.")
+                Text("Downloads about \(ByteText.size(installer.downloadBytes)) and needs \(ByteText.size(welcome.requiredBytes)) free while it installs.")
                     .fixedSize(horizontal: false, vertical: true)
                 if let available = welcome.availableBytes {
                     Text(
@@ -161,12 +167,59 @@ private struct WelcomeScreen: View {
                     .foregroundStyle(welcome.hasRoom ? Color.secondary : Color.red)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                Text("macOS asks once for an administrator password at the end.")
+                    .foregroundStyle(.secondary)
             }
         } buttons: {
+            if installer.setup.isEmpty {
+                Text("Turn on at least one service.").foregroundStyle(.secondary)
+            }
             Button(welcome.resuming ? "Continue" : "Install", action: installer.install)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!welcome.hasRoom)
+                .disabled(!welcome.hasRoom || installer.setup.isEmpty)
         }
+    }
+}
+
+/// One service on the setup screen: its switch, then its model, or what off means.
+private struct ServiceSetup: View {
+    @Bindable var installer: Installer
+    let kind: ServiceKind
+
+    var body: some View {
+        let engines = SetupChoice.options(in: installer.catalogue, for: kind)
+        let choice = installer.setup[kind]
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(kind.title, isOn: $installer.setup[kind].isOn)
+                .toggleStyle(.switch)
+                .font(.body.weight(.medium))
+            if !choice.isOn {
+                Text("Off: nothing is downloaded for it, and its service loads no model and opens no port. Turn it on later in Settings > \(kind == .stt ? "Speech to Text" : "Text to Speech").")
+                    .footnote()
+            } else if !engines.isEmpty {
+                Picker("Model", selection: $installer.setup[kind].model) {
+                    ForEach(engines) { engine in
+                        Section(engine.label) {
+                            ForEach(engine.models) { model in
+                                Text(Self.item(model)).tag(Optional(model.id))
+                            }
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                if let model = engines.flatMap(\.models).first(where: { $0.id == choice.model }) {
+                    ModelSummary(title: model.name, model: model, detail: "\(Formatting.bytes(model.downloadBytes)) download")
+                }
+            }
+        }
+        .padding(.leading, 2)
+    }
+
+    /// A picker item: the name and the size, so models compare without choosing each.
+    static func item(_ model: CatalogueModel) -> String {
+        let name = "\(model.name), \(Formatting.bytes(model.downloadBytes))"
+        return model.recommended ? "\(name) (Recommended)" : name
     }
 }
 
@@ -336,10 +389,10 @@ private struct ConnectionDetails: View {
             Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 6) {
                 row("This Mac", info.identity.host)
                 if let address = info.identity.address { row("Address", address) }
-                row("Speech to text", "\(info.sttPort)")
-                row("Text to speech", "\(info.ttsPort)")
+                if let port = info.sttPort { row("Speech to text", "\(port)") }
+                if let port = info.ttsPort { row("Text to speech", "\(port)") }
             }
-            Text("The API key protects the HTTP API only. Wyoming has no authentication, so anyone on your network can use ports \(String(info.sttPort)) and \(String(info.ttsPort)).")
+            Text("The API key protects the HTTP API only. Wyoming has no authentication, so anyone on your network can use \(Self.ports(info)).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -353,6 +406,12 @@ private struct ConnectionDetails: View {
                 Notice(symbol: "xmark.circle.fill", tint: .red, text: message)
             }
         }
+    }
+
+    /// "port 10300", or "ports 10300 and 10200": the Wyoming ports open on the network.
+    static func ports(_ info: HomeAssistantInfo) -> String {
+        let open = [info.sttPort, info.ttsPort].compactMap { $0 }.map { String($0) }
+        return (open.count == 1 ? "port " : "ports ") + open.joined(separator: " and ")
     }
 
     private func row(_ label: String, _ value: String) -> some View {
@@ -414,6 +473,9 @@ private struct FailureScreen: View {
         } buttons: {
             if installer.offersRollback, let target = installer.rollbackTarget() {
                 Button(target.version.map { "Roll Back to \($0)" } ?? "Roll Back", action: installer.rollBack)
+            }
+            if installer.offersSetup {
+                Button("Change Choices", action: installer.changeChoices)
             }
             Button("Try Again", action: installer.retry)
                 .keyboardShortcut(.defaultAction)
@@ -481,9 +543,9 @@ private struct ConfirmUninstallScreen: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Also delete:").font(.callout.weight(.medium))
                 Toggle(
-                    "The downloaded speech models (about \(ByteText.size(installer.modelBytes)))",
+                    "The downloaded speech models",
                     isOn: $choices.models)
-                Text("voiced's two models in the Hugging Face cache (~/.cache/huggingface/hub, or the configured hf_home). Another app that uses the same models downloads them again.")
+                Text("voiced's models in the Hugging Face cache (~/.cache/huggingface/hub, or the configured hf_home). Another app that uses the same models downloads them again.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

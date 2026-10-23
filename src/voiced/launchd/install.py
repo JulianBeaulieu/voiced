@@ -21,10 +21,10 @@ import shutil
 import stat
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import voiced
 from voiced.config import (
@@ -336,6 +336,10 @@ class InstallPlan:
     bind: str = "127.0.0.1"
     # Services switched off in the config: their daemons start and park.
     off: tuple[ServiceName, ...] = ()
+    # Settings to write to the config once the models are in (``--set``,
+    # the app's first-run choices), as ``voiced settings set`` takes them.
+    # The plan and the models step already use them.
+    changes: Mapping[str, object] = field(default_factory=dict)
 
     # Paths -------------------------------------------------------------
 
@@ -465,6 +469,8 @@ class InstallPlan:
         ``--json-progress``."""
         argv = [str(self.python_bin), "-P", "-m", "voiced.models", "download"]
         argv += ["--config", str(self.config_file)]
+        for key, value in self.changes.items():  # not written to the config yet
+            argv += ["--set", f"{key}={str(value).lower() if isinstance(value, bool) else value}"]
         return [*argv, "--report"] if report else argv
 
     # One-shot Metal probe -----------------------------------------------
@@ -608,6 +614,7 @@ def plan_install(
     uv: str | Literal["auto"] | None = "auto",
     prefix: str | Path | None = None,
     origin: Origin | None = None,
+    changes: Mapping[str, object] | None = None,
 ) -> InstallPlan:
     """Resolve CLI flags, config and defaults into an :class:`InstallPlan`.
 
@@ -615,9 +622,26 @@ def plan_install(
     (``prefix``, default ``sys.prefix``); with it, a new one under
     ``<state_dir>/envs``. ``origin`` is who made the environment, for the
     manifest: by default ``homebrew`` for a keg and ``cli`` otherwise; the
-    app passes ``app``.
+    app passes ``app``. ``changes`` (``--set``) are staged onto
+    ``settings`` (:func:`stage_settings`): the plan and the models step use
+    them as staged, an engine switch completed with its voice, and the
+    install writes them to the config at the switch. They are checked
+    against this voiced's engines, the new environment's for the app; a
+    ``source`` build's are checked at the switch, by its own Python. A
+    service that is off has its ports left out.
     """
     config_file = config_file or config_path()
+    if changes:
+        from voiced.engines.catalogue import engines_list
+        from voiced.settings_store import ConfigFileError, InvalidSetting, stage_settings
+
+        try:
+            staged = stage_settings(
+                changes, config_file, engines=engines_list if source is None else None
+            )
+        except (InvalidSetting, ConfigFileError) as exc:
+            raise InstallError(f"--set {exc}") from None
+        settings, changes = staged.onto(settings), staged.wanted
     state = (state_dir or settings.install.venv_dir).expanduser().absolute()
     if source is None:
         environment, found = stable_environment(sys.prefix if prefix is None else prefix)
@@ -630,6 +654,7 @@ def plan_install(
             # writes anything, and refuses it.
             manifest = None
         environment, found = new_environment_dir(state, manifest=manifest), "cli"
+    off = tuple(s for s in HTTP_SERVICES if not settings.service(s).enabled)
     return InstallPlan(
         user=installing_user(),
         home=home or Path.home(),
@@ -644,9 +669,11 @@ def plan_install(
         python=python if python is not None else settings.install.python,
         uv=find_uv() if uv == "auto" else uv,
         engine_env=settings.engine_environment(),
-        ports=settings.ports(),
+        # A service that is off opens no port (ADR 0033).
+        ports=settings.ports([s for s in HTTP_SERVICES if s not in off]),
         bind=settings.server.bind,
-        off=tuple(s for s in HTTP_SERVICES if not settings.service(s).enabled),
+        off=off,
+        changes=dict(changes or {}),
     )
 
 
@@ -703,6 +730,26 @@ def write_default_config(config_file: Path) -> bool:
 
 class InstallError(RuntimeError):
     pass
+
+
+def write_settings(plan: InstallPlan, say: Say = print) -> None:
+    """Write ``plan.changes`` to the config at the switch, once the models
+    step has downloaded what they name, as ``voiced settings set`` does:
+    every check included, the engines those of the environment being
+    installed."""
+    from voiced.control.ops import engines_in_subprocess
+    from voiced.settings_store import InvalidSetting, apply_settings
+
+    def engines() -> dict[str, Any]:
+        return engines_in_subprocess(entry=plan.environment / "bin" / "voiced")
+
+    try:
+        change = apply_settings(plan.changes, plan.config_file, engines=engines)
+    except InvalidSetting as exc:
+        raise InstallError(f"{exc}. Nothing was changed in {plan.config_file}") from None
+    for service in change.restart_required:
+        # Daemons already running read the config at start.
+        say(f"{service}: its settings changed; a running service takes them on restart")
 
 
 def current_manifest(plan: InstallPlan) -> Manifest | None:
@@ -880,6 +927,11 @@ def install_steps(
         )
 
     # The switch: everything above can fail without touching what runs now.
+    if plan.changes:
+        shown = ", ".join(f"{key}={value}" for key, value in plan.changes.items())
+        steps.append(
+            Step("settings", f"set {shown} in {config}", lambda: write_settings(plan, say))
+        )
     in_place = same_path(plan.environment, plan.state_dir)  # a legacy venv, adopted
     old = previous.environment if previous is not None else None
     unchanged = old is not None and same_path(old, plan.environment)

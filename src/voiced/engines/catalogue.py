@@ -42,6 +42,7 @@ from typing import Any
 from voiced import models
 from voiced.engines import registry
 from voiced.engines.base import STTEngine, TTSEngine, Voice
+from voiced.models.catalogue import engine_label
 
 LANGUAGE_NAMES: dict[str, str] = {
     "en": "English",
@@ -60,10 +61,6 @@ LANGUAGE_NAMES: dict[str, str] = {
     "de": "German",
 }
 """Display names for BCP-47 tags; an unknown tag is shown as is."""
-
-
-def engine_label(name: str) -> str:
-    return name[:1].upper() + name[1:]
 
 
 def voice_label(voice: Voice) -> str:

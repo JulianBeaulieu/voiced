@@ -62,10 +62,15 @@ def test_the_config_defaults_are_the_default_engines_first_models() -> None:
     assert (defaults.stt.engine, defaults.tts.engine) == ("parakeet", "kokoro")
     assert defaults.stt.model == models.default_model("parakeet").repo
     assert defaults.tts.model == models.default_model("kokoro").repo
-    assert lockfile.manifest()["models"] == [
-        {"repo": e.repo, "revision": e.revision, "bytes": e.bytes}
-        for e in (models.lock()[defaults.stt.model], models.lock()[defaults.tts.model])
+    # The app's setup preselects these: one per service, none behind a token.
+    recommended = [
+        (engine["kind"], m["id"])
+        for engine in lockfile.catalogue_view()["engines"]
+        for m in engine["models"]
+        if m["recommended"]
     ]
+    assert recommended == [("stt", defaults.stt.model), ("tts", defaults.tts.model)]
+    assert not any(models.find(m)[1].gated for _, m in recommended)  # type: ignore[index]
 
 
 def test_the_manifest_is_printed_with_the_standard_library_alone() -> None:
@@ -750,6 +755,21 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     with pytest.raises(ValueError, match="not in voiced's model catalogue"):
         commands.download(config, None)
     assert fetched == []
+
+
+def test_the_models_step_downloads_nothing_for_a_service_that_is_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A service switched off loads no model (ADR 0033), so the install does
+    not fetch one for it: the app's setup installs speech to text alone."""
+    fetched: list[str] = []
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.commands.fetch", lambda model, write: fetched.append(model))
+    config = tmp_path / "config.toml"
+    config.write_text('[stt]\nengine = "fake"\n[tts]\nenabled = false\nmodel = "org/tts"\n')
+    commands.download(config, None)
+    assert fetched == []
+    assert "tts: off; nothing to download" in capsys.readouterr().out
 
 
 # Against the hub (model tier) ----------------------------------------------------

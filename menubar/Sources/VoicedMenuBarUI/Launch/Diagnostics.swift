@@ -42,7 +42,9 @@ public struct Diagnostics: Sendable, Equatable {
                 entry("Wheel sha256", manifest.wheel.sha256),
                 entry("Lock sha256", manifest.lockSHA256),
                 entry("Python", manifest.python),
-            ] + manifest.models.map { entry($0.repo, "revision \($0.revision)") }
+            ] + SetupChoice.recommended(in: manifest.catalogue).downloads(in: manifest.catalogue).map {
+                entry($0.repo, $0.revision.map { "revision \($0)" } ?? "not pinned")
+            }
         }
         let install = record.map { record in
             [

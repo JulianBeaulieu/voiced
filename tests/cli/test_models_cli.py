@@ -93,6 +93,28 @@ def test_list_carries_the_ratings_notes_and_the_recommended_defaults(
     ]
 
 
+def test_the_setup_catalogue_is_the_list_without_the_cache(
+    settings: Settings, model_cache: Path
+) -> None:
+    """The app's first-run setup reads the manifest's catalogue before voiced
+    is installed: every catalogued engine and model, each field of it the
+    same as the list prints, so the same app code reads both."""
+    cache(model_cache, KOKORO)
+    out: list[str] = []
+    cli_models.cmd_list(settings, out.append, as_json=True)
+    view = json.loads(out[0])
+    catalogued = lockfile.catalogue_view()
+    listed = [e for e in view["engines"] if e["name"] in {c.name for c in models.CATALOGUE}]
+    assert [(e["name"], e["label"], e["kind"]) for e in catalogued["engines"]] == [
+        (e["name"], e["label"], e["kind"]) for e in listed
+    ]
+    for setup, engine in zip(catalogued["engines"], listed, strict=True):
+        for key in ("models", "shared"):
+            assert [
+                {k: v for k, v in m.items() if k in setup[key][0]} for m in engine[key]
+            ] == setup[key], engine["name"]
+
+
 def test_the_documented_list_has_the_fields_the_command_prints(
     settings: Settings, model_cache: Path
 ) -> None:
@@ -502,6 +524,7 @@ def test_models_in_one_download_are_deleted_together_unless_one_is_in_use(
     catalogue = (*models.CATALOGUE, engine)
     monkeypatch.setattr(models, "CATALOGUE", catalogue)
     monkeypatch.setattr("voiced.models.lookup.CATALOGUE", catalogue)
+    monkeypatch.setattr("voiced.models.lockfile.CATALOGUE", catalogue)
     for m, name in ((small, "small/w"), (base, "base/w")):
         entry = models.Locked(
             m.id, m.repo, SHA, m.patterns, {name: lockfile.LockedFile(1, "e" * 64)}

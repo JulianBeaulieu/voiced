@@ -6,11 +6,27 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- `voiced install --set KEY=VALUE`, for `stt.enabled`, `stt.engine`,
+  `stt.model` and the same for `tts`: the install downloads the models for
+  these settings and writes them to the config once the models are in, as
+  `voiced settings set` would. The app passes its setup this way.
+
 ### Changed
 
 - `brew uninstall --cask voiced` removes the app and leaves the services
   running, as moving the app to the Trash does. To remove them, use
   Uninstall in the app first, or `brew uninstall --zap --cask voiced`.
+- The app's first screen is now the setup. It asks what to install, speech
+  to text, text to speech or both, each with its model from the catalogue
+  (Parakeet and Kokoro, marked Recommended, are chosen already), and shows
+  what that downloads. A service switched off downloads nothing and is
+  installed off (`enabled = false`); Settings turns it on later. The app
+  opens the setup by itself when it starts with nothing installed; an
+  install made by `voiced install` or an earlier app is left as it is.
+- The install no longer downloads a model for a service that is off, nor
+  checks that service's ports.
 
 ### Fixed
 

@@ -117,6 +117,8 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     /// What `stt.model` and `tts.model` hold and what `download` and `delete` take.
     public var id: String
     public var repo: String
+    /// The commit the lock pins; nil from a voiced that does not say.
+    public var revision: String?
     public var license: String
     /// The model card.
     public var url: String?
@@ -139,13 +141,14 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var recommended: Bool
 
     public init(
-        id: String, repo: String? = nil, license: String, url: String? = nil, gated: Bool = false,
+        id: String, repo: String? = nil, revision: String? = nil, license: String, url: String? = nil, gated: Bool = false,
         downloadBytes: Int64, onDiskBytes: Int64 = 0, downloaded: Bool, previous: [Revision] = [],
         refs: [String] = [], quality: Int? = nil, speed: Int? = nil, note: String = "",
         recommended: Bool = false
     ) {
         self.id = id
         self.repo = repo ?? id
+        self.revision = revision
         self.license = license
         self.url = url ?? "https://huggingface.co/\(repo ?? id)"
         self.gated = gated
@@ -161,7 +164,7 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, repo, license, url, gated, downloaded, previous, refs, quality, speed, note, recommended
+        case id, repo, revision, license, url, gated, downloaded, previous, refs, quality, speed, note, recommended
         case downloadBytes = "download_bytes"
         case onDiskBytes = "on_disk_bytes"
     }
@@ -170,6 +173,7 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         repo = try c.decodeIfPresent(String.self, forKey: .repo) ?? id
+        revision = try c.decodeIfPresent(String.self, forKey: .revision)
         license = try c.decodeIfPresent(String.self, forKey: .license) ?? ""
         url = try c.decodeIfPresent(String.self, forKey: .url)
         gated = try c.decodeIfPresent(Bool.self, forKey: .gated) ?? false
@@ -188,6 +192,16 @@ public struct CatalogueModel: Codable, Sendable, Equatable, Identifiable {
     public var name: String { id.split(separator: "/").last.map(String.init) ?? id }
     public var cardURL: URL? { url.flatMap(URL.init(string:)) }
     public var previousBytes: Int64 { previous.reduce(0) { $0 + $1.bytes } }
+
+    /// Quality and Speed, each only when measured (ADR 0024).
+    public var ratings: [ModelRow.Rating] {
+        [("Quality", quality), ("Speed", speed)].compactMap { label, value in
+            value.flatMap { (1...5).contains($0) ? ModelRow.Rating(label: label, value: $0) : nil }
+        }
+    }
+
+    /// What the model is for; nil when the catalogue says nothing.
+    public var summary: String? { note.isEmpty ? nil : note }
 }
 
 /// What `voiced models delete <model> --yes --json` prints: what it deleted, or, for a
@@ -315,6 +329,12 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     public var model: CatalogueModel?
     public var state: ModelRowState
 
+    public init(engine: ModelEngine, model: CatalogueModel?, state: ModelRowState) {
+        self.engine = engine
+        self.model = model
+        self.state = state
+    }
+
     public var id: String { model.map { "\(engine.id)/\($0.id)" } ?? engine.id }
     public var title: String { model?.name ?? engine.label }
 
@@ -325,19 +345,14 @@ public struct ModelRow: Sendable, Equatable, Identifiable {
     }
 
     /// Quality and Speed, each only when measured (ADR 0024).
-    public var ratings: [Rating] {
-        guard let model else { return [] }
-        return [("Quality", model.quality), ("Speed", model.speed)].compactMap { label, value in
-            value.flatMap { (1...5).contains($0) ? Rating(label: label, value: $0) : nil }
-        }
-    }
+    public var ratings: [Rating] { model?.ratings ?? [] }
 
     /// The bars' help; they link to `benchmarks`.
     public static let ratingsHelp = "Measured on an Apple M1 Max; see docs/benchmarks.md"
     public static let benchmarks = URL(string: "https://github.com/JulianBeaulieu/voiced/blob/main/docs/benchmarks.md")!
 
     /// What the model is for, under the bars.
-    public var summary: String? { model.flatMap { $0.note.isEmpty ? nil : $0.note } }
+    public var summary: String? { model?.summary }
 
     public var isRecommended: Bool { model?.recommended == true }
 

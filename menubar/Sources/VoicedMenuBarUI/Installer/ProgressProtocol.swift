@@ -79,6 +79,7 @@ public struct InstallProgress: Sendable, Equatable {
 
         static let titles = [
             "config": "Writing the configuration",
+            "settings": "Writing your choices to the configuration",
             "claim": "Preparing ~/.voiced",
             "check": "Checking the speech engines",
             "ports": "Checking the ports",

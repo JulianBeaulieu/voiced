@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
@@ -354,24 +355,40 @@ def check_downloaded(
             raise ModelMissing(kind, str(changes.get(f"{kind}.engine", section.engine)), model)
 
 
-def apply_settings(
+@dataclass(frozen=True)
+class StagedSettings:
+    """A change checked and applied in memory, before anything is written:
+    the first half of :func:`apply_settings`."""
+
+    path: Path
+    text: str
+    data: dict[str, Any]
+    new_data: dict[str, Any]
+    # The changes as they will be written: coerced, an engine switch
+    # completed with its model and voice when the engines were given.
+    wanted: dict[str, object]
+    old_sections: dict[str, BaseModel]
+    sections: dict[str, BaseModel]
+
+    def onto(self, settings: Settings) -> Settings:
+        """``settings`` with the sections the change touches as staged."""
+        touched = {SETTABLE[name][0] for name in self.wanted}
+        return settings.model_copy(update={s: self.sections[s] for s in touched})
+
+
+def stage_settings(
     changes: Mapping[str, object],
     path: Path | None = None,
     *,
     engines: Callable[[], Engines] | None = None,
-) -> SettingsChange:
-    """Write ``changes`` (settable name -> value) to the config file.
-
-    Nothing is written unless every change is valid. Keys not in ``changes``,
-    unknown sections and comments are left alone. ``engines`` supplies the
-    ``engines.list`` catalogue for engine and voice changes; it is only
-    called when one of those is being changed, and without it they are not
-    checked. A change of engine or model is always checked against the
-    model lock and the cache (:func:`check_downloaded`). Returns the
-    effective settings afterwards (environment overrides included), the
-    services that must restart for the change to apply, and warnings for the
-    operator.
-    """
+) -> StagedSettings:
+    """Check ``changes`` (settable name -> value) against the config file
+    and apply them in memory; nothing is written and the models are not
+    checked. ``engines`` supplies the ``engines.list`` catalogue for engine
+    and voice changes; it is only called when one of those is being changed,
+    and without it they are not checked. ``voiced install`` plans and
+    downloads from this, then writes it with :func:`apply_settings` once the
+    models are in."""
     path = path if path is not None else config_path()
     unknown = sorted(set(changes) - set(SETTABLE))
     if unknown:
@@ -390,8 +407,6 @@ def apply_settings(
         wanted[name] = _coerce(name, value, table if isinstance(table, Mapping) else {})
     if engines is not None and _ENGINE_KEYS & set(wanted):
         complete_engine_change(wanted, old_sections, engines())
-    if _MODEL_KEYS & set(wanted):
-        check_downloaded(wanted, old_sections, load_settings(path).install.hf_home)
 
     new_data: dict[str, Any] = {k: dict(v) if isinstance(v, dict) else v for k, v in data.items()}
     for name, value in wanted.items():
@@ -401,6 +416,29 @@ def apply_settings(
             raise InvalidSetting(section, "must be a table")
         table[key] = value
     sections = validate_file_data(new_data)
+    return StagedSettings(path, text, data, new_data, wanted, old_sections, sections)
+
+
+def apply_settings(
+    changes: Mapping[str, object],
+    path: Path | None = None,
+    *,
+    engines: Callable[[], Engines] | None = None,
+) -> SettingsChange:
+    """Write ``changes`` (settable name -> value) to the config file:
+    :func:`stage_settings`, then a change of engine or model checked against
+    the model lock and the cache (:func:`check_downloaded`), then the write.
+
+    Nothing is written unless every change is valid. Keys not in ``changes``,
+    unknown sections and comments are left alone. Returns the effective
+    settings afterwards (environment overrides included), the services that
+    must restart for the change to apply, and warnings for the operator.
+    """
+    staged = stage_settings(changes, path, engines=engines)
+    path, text, data, new_data = staged.path, staged.text, staged.data, staged.new_data
+    wanted, old_sections, sections = staged.wanted, staged.old_sections, staged.sections
+    if _MODEL_KEYS & set(wanted):
+        check_downloaded(wanted, old_sections, load_settings(path).install.hf_home)
 
     changed: list[tuple[str, str]] = []
     for name in wanted:
@@ -439,6 +477,44 @@ def apply_settings(
         restart_required=tuple(s for s in HTTP_SERVICES if s in restart),
         warnings=tuple(warnings),
     )
+
+
+INSTALL_SETTABLE = tuple(
+    f"{kind}.{key}" for kind in HTTP_SERVICES for key in ("enabled", "engine", "model")
+)
+"""What ``voiced install --set`` takes: which services run, with which model."""
+
+_TRUE = ("true", "yes", "on", "1")
+_FALSE = ("false", "no", "off", "0")
+
+
+def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
+    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
+    key, sep, raw = pair.partition("=")
+    key = key.strip()
+    if not sep:
+        raise ValueError(f"{pair!r}: expected KEY=VALUE")
+    if key not in SETTABLE:
+        raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
+    if key in BOOLEAN_SETTINGS:
+        if raw.lower() in _TRUE:
+            return key, True
+        if raw.lower() in _FALSE:
+            return key, False
+        raise ValueError(f"{key}: expected true or false, got {raw!r}")
+    if key == "tts.speed":
+        try:
+            return key, float(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
+    if key in INTEGER_SETTINGS:
+        try:
+            return key, int(raw)
+        except ValueError:
+            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
+    if key == "api_key" and raw == "-":
+        return key, stdin().rstrip("\r\n")
+    return key, raw
 
 
 _MISSING = object()

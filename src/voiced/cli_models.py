@@ -31,7 +31,9 @@ from voiced import models
 from voiced.config import Settings
 from voiced.launchd.progress import ErrorCode, Progress
 from voiced.layout import install_lock
-from voiced.models import CachedRevision, Locked, Model, ModelsError, size_text
+from voiced.models import CachedRevision, Locked, ModelsError, size_text
+from voiced.models.catalogue import engine_label
+from voiced.models.lockfile import catalogue_view
 
 Echo = Callable[[str], None]
 
@@ -96,27 +98,14 @@ def in_use(settings: Settings) -> set[str]:
 # list ----------------------------------------------------------------------
 
 
-def _model_view(
-    model: Model,
-    entry: Locked,
-    cached: list[CachedRevision],
-    hub_path: Path,
-    used: set[str],
-    recommended: set[str],
-    *,
-    shared: bool,
+def _cache_view(
+    model: dict[str, Any], cached: list[CachedRevision], hub_path: Path, used: set[str]
 ) -> dict[str, Any]:
-    by_revision = {c.revision: c for c in cached if c.repo == model.repo}
+    """What the cache and the config add to a model of :func:`catalogue_view`."""
+    entry = models.lock()[model["id"]]
+    by_revision = {c.revision: c for c in cached if c.repo == entry.repo}
     pinned = by_revision.get(entry.revision)
     return {
-        "id": model.id,
-        "repo": model.repo,
-        "shared": shared,
-        "license": model.license,
-        "url": model.url,
-        "gated": model.gated,
-        "revision": entry.revision,
-        "download_bytes": entry.bytes,
         "on_disk_bytes": pinned.bytes if pinned is not None else 0,
         "downloaded": not models.missing_files(hub_path, entry),
         "previous": [
@@ -125,43 +114,31 @@ def _model_view(
             if rev in by_revision
         ],
         "refs": list(pinned.refs) if pinned is not None else [],
-        "in_use": model.id in used,
-        "quality": model.quality,
-        "speed": model.speed,
-        "note": model.note,
-        "recommended": model.id in recommended,
+        "in_use": model["id"] in used,
     }
 
 
 def listing(settings: Settings) -> dict[str, Any]:
-    """The ``voiced models list --json`` view."""
-    from voiced.engines.catalogue import engine_label, engines_list
+    """The ``voiced models list --json`` view: :func:`catalogue_view`, with
+    what this environment's engines, the cache and the config add."""
+    from voiced.engines.catalogue import engines_list
 
     hub_path = hub(settings)
     installed = {(kind, e["name"]): e for kind, entries in engines_list().items() for e in entries}
     scan = models.cached_revisions(hub_path, {m.repo for m in models.catalogued()})
     used = in_use(settings)
-    defaults = {m.id for m in models.default_models()}
-    lock = models.lock()
-    engines: list[dict[str, Any]] = []
-    for engine in models.CATALOGUE:
-        found = installed.pop((engine.kind, engine.name), None)
-        view = functools.partial(
-            _model_view, cached=scan.revisions, hub_path=hub_path, used=used, recommended=defaults
-        )
-        engines.append(
-            {
-                "name": engine.name,
-                "label": engine_label(engine.name),
-                "kind": engine.kind,
-                "installed": found is not None,
-                "unavailable_reason": found["unavailable_reason"] if found else None,
-                "languages": found["languages"] if found else [],
-                "voices": found.get("voices", []) if found else [],
-                "models": [view(m, lock[m.id], shared=False) for m in engine.models],
-                "shared": [view(m, lock[m.id], shared=True) for m in engine.shared],
-            }
-        )
+    engines: list[dict[str, Any]] = catalogue_view()["engines"]
+    for engine in engines:
+        found = installed.pop((engine["kind"], engine["name"]), None)
+        engine["installed"] = found is not None
+        engine["unavailable_reason"] = found["unavailable_reason"] if found else None
+        engine["languages"] = found["languages"] if found else []
+        engine["voices"] = found.get("voices", []) if found else []
+        for key in ("models", "shared"):
+            engine[key] = [
+                {**m, "shared": key == "shared", **_cache_view(m, scan.revisions, hub_path, used)}
+                for m in engine[key]
+            ]
     for (kind, name), found in sorted(installed.items()):  # plugins: nothing to manage
         engines.append(
             {
@@ -334,8 +311,6 @@ class Deletion:
 
 
 def plan_delete(model_id: str, settings: Settings, *, previous: bool) -> Deletion:
-    from voiced.engines.catalogue import engine_label
-
     found = models.find(model_id)
     if found is None:
         why = (

@@ -28,7 +28,13 @@ import pytest
 from tests import hf_cache_support as hf
 from tests.scripts_support import load
 from voiced.cli import main
-from voiced.config import DEFAULT_LAUNCHD_LABEL_PREFIX, LOG_DIR_IN_HOME, SERVICES, Settings
+from voiced.config import (
+    DEFAULT_LAUNCHD_LABEL_PREFIX,
+    LOG_DIR_IN_HOME,
+    SERVICES,
+    Settings,
+    load_settings,
+)
 from voiced.launchd import install as install_module
 from voiced.launchd import ports as ports_module
 from voiced.launchd.control import CommandResult, run_streaming
@@ -1025,6 +1031,130 @@ def test_run_install_tightens_an_existing_readable_config(
     assert any("would tighten" in line for line in said)
     run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
     assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
+
+
+WHISPER = "mlx-community/whisper-large-v3-turbo-asr-8bit"
+CHOICE = {"stt.enabled": True, "stt.engine": "whisper", "stt.model": WHISPER, "tts.enabled": False}
+
+
+def _chosen(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> InstallPlan:
+    """The app's first-run choice over a config that runs Parakeet: the
+    plan stages it, the engines checked as this voiced has them."""
+    from voiced.engines.catalogue import engines_list
+
+    monkeypatch.setattr("voiced.control.ops.engines_in_subprocess", lambda **kw: engines_list())
+    _environment(tmp_path / "env")
+    (tmp_path / "config.toml").write_text(
+        '# kept\n[stt]\nengine = "parakeet"\nmodel = "mlx-community/parakeet-tdt-0.6b-v3"\n'
+    )
+    return _plan(settings, tmp_path, changes=CHOICE)
+
+
+def test_the_chosen_settings_are_downloaded_first_and_written_at_the_switch(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, models_downloaded: Path
+) -> None:
+    """The app's first-run choices (``--set``): the plan and the models step
+    use them, and the config gets them only once the models are in, with
+    every check ``voiced settings set`` makes. A service switched off has
+    its ports left out."""
+    p = _chosen(settings, tmp_path, monkeypatch)
+    before = p.config_file.read_text()
+    assert p.off == ("tts",)
+    assert set(p.ports) == {"[stt] http_port", "[stt] wyoming_port"}
+    steps = [s.id for s in install_module.install_steps(p, None)]
+    assert steps.index("models") < steps.index("settings") < steps.index("link")
+
+    seen: list[tuple[list[str], str]] = []
+
+    def runner(argv: Sequence[str]) -> CommandResult:
+        if "voiced.models" in argv:
+            seen.append((list(argv), p.config_file.read_text()))
+        return CommandResult(0)
+
+    said: list[str] = []
+    run_install(p, runner=runner, query=_check_ok, say=said.append)
+    ((download, config_then),) = seen
+    assert config_then == before, "the config is unchanged while the models download"
+    assert download[-8:] == [
+        "--set", "stt.enabled=true", "--set", "stt.engine=whisper",
+        "--set", f"stt.model={WHISPER}", "--set", "tts.enabled=false",
+    ]  # fmt: skip
+    written = load_settings(p.config_file)
+    assert (written.stt.engine, written.stt.model) == ("whisper", WHISPER)
+    assert written.stt.enabled and not written.tts.enabled
+    assert p.config_file.read_text().startswith("# kept\n"), "comments kept"
+    assert any("tts: " in line and "serves nothing" in line for line in said)
+
+
+def test_the_plan_carries_the_engine_switch_as_staged(settings: Settings, tmp_path: Path) -> None:
+    """The plan stages ``--set`` with this voiced's engines: a text to speech
+    switch gains the voice the new engine has, and the models step and the
+    switch get the same completed changes."""
+    _environment(tmp_path / "env")
+    p = _plan(
+        settings, tmp_path, changes={"tts.engine": "phonon", "tts.model": "gradium/phonon-31m-en"}
+    )
+    assert p.changes["tts.voice"] != "af_heart"
+    assert f"tts.voice={p.changes['tts.voice']}" in p.model_download_command()
+
+
+def test_a_failed_download_leaves_the_config_as_it_was(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = _chosen(settings, tmp_path, monkeypatch)
+    before = p.config_file.read_text()
+    with pytest.raises(InstallError, match="model download failed"):
+        run_install(
+            p,
+            runner=lambda argv: CommandResult(1 if "voiced.models" in argv else 0),
+            query=_check_ok,
+            say=[].append,
+        )
+    assert p.config_file.read_text() == before
+
+
+def test_the_models_step_downloads_what_the_staged_settings_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``download --set``: the config is not written yet, so the step reads
+    the choice from its arguments."""
+    from voiced.models import commands
+
+    fetched: list[str] = []
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr("voiced.models.commands.fetch", lambda model, write: fetched.append(model))
+    config = tmp_path / "config.toml"
+    config.write_text('[stt]\nengine = "fake"\n[tts]\nengine = "fake"\n')
+    commands.download(config, None, {"stt.enabled": False, "tts.enabled": False})
+    assert fetched == []
+
+
+def test_cli_install_takes_only_the_service_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--set`` parses as ``voiced settings set`` does, takes only which
+    services run with which model, and refuses an engine this voiced lacks
+    before anything is planned."""
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
+    argv = ["install", "--dry-run", "--state-dir", str(tmp_path / "state")]
+    assert main([*argv, "--set", "tts.enabled=false", "--set", "stt.enabled=yes"]) == 0
+    out = capsys.readouterr().out
+    assert "would set tts.enabled=False, stt.enabled=True in" in out
+    assert "check that ports 8881, 10300 are free" in out
+    assert main([*argv, "--set", "stt.enabled=maybe"]) == 1
+    assert "--set stt.enabled: expected true or false" in capsys.readouterr().out
+    assert main([*argv, "--set", "bind=lan"]) == 1
+    assert "--set bind: install sets only stt.enabled" in capsys.readouterr().out
+    # Refused by its key, before anything is read: api_key=- would read stdin.
+    monkeypatch.setattr("sys.stdin", None)
+    assert main([*argv, "--set", "api_key=-"]) == 1
+    assert "--set api_key: install sets only" in capsys.readouterr().out
+    assert main([*argv, "--set", "stt.engine=whisper"]) == 1
+    assert "--set stt.engine needs stt.model in the same install" in capsys.readouterr().out
+    assert main([*argv, "--set", "stt.engine=nope", "--set", "stt.model=x"]) == 1
+    assert "--set stt.engine: 'nope' is not installed" in capsys.readouterr().out
+    assert not (tmp_path / "missing.toml").exists()
 
 
 def test_cli_dry_run_prints_everything_and_writes_nothing(

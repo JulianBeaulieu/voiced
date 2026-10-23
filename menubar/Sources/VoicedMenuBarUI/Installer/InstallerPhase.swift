@@ -44,8 +44,9 @@ public enum HomeAssistantStage: Sendable, Equatable {
 /// What Home Assistant needs to find voiced, shown with copy buttons.
 public struct HomeAssistantInfo: Sendable, Equatable {
     public var identity: HostIdentity
-    public var sttPort: Int
-    public var ttsPort: Int
+    /// Nil for a service that is off: its port is not open.
+    public var sttPort: Int?
+    public var ttsPort: Int?
     /// A key generated on this screen, shown once.
     public var apiKey: String?
 }
@@ -75,7 +76,6 @@ public struct InstallFailure: Error, Sendable, Equatable {
 
 /// What the welcome screen says about room and what is already there.
 public struct WelcomeInfo: Sendable, Equatable {
-    public var downloadBytes: Int64
     public var requiredBytes: Int64
     public var availableBytes: Int64?
     /// An earlier install was interrupted: the button says "Continue".

@@ -21,11 +21,13 @@ Every catalogued engine loads its model from :func:`snapshot` with
 ``HF_HUB_OFFLINE``), and a missing file is :class:`ModelNotDownloaded`. A
 model the catalogue does not know loads its ``main`` revision, as before.
 
-``python -m voiced.models`` prints the default models as JSON (the app's
-``install-manifest.json`` is written from it); ``python -m voiced.models
-download --config FILE [--report]`` is the models step of ``voiced
-install``, run in the new environment: it fetches each configured model and
-loads each engine once. With ``--report`` it also writes
+``python -m voiced.models`` prints the model catalogue as JSON, the
+default models marked recommended (the app's ``install-manifest.json`` is
+written from it); ``python -m voiced.models download --config FILE
+[--report] [--set KEY=VALUE ...]`` is the models step of ``voiced
+install``, run in the new environment: it fetches each configured model,
+with the settings the install has not written yet, and loads each engine
+once. With ``--report`` it also writes
 :data:`voiced.launchd.progress.DOWNLOAD_PREFIX` lines that the installer
 turns into ``download`` events.
 
