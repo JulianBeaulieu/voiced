@@ -100,14 +100,19 @@ final class SettingsEditTests: XCTestCase {
         XCTAssertEqual(args(.idleUnload(.stt, seconds: 0)), [:], "already never")
     }
 
-    func testResidencyDecodesAndDefaultsForAnOlderServer() throws {
+    func testOffAndIdleUnloadDecodeAndDefaultForAnOlderServer() throws {
         let newer = try decodeJSON(
             STTSettings.self,
             #"{"engine": "parakeet", "model": "m", "language": "en", "enabled": false, "idle_unload_s": 900}"#)
-        XCTAssertEqual(newer.residency, Residency(enabled: false, idleUnloadSeconds: 900))
-        let older = try decodeJSON(
-            TTSSettings.self, #"{"engine": "kokoro", "model": "m", "voice": "af_heart", "speed": 1.0}"#)
-        XCTAssertEqual(older.residency, Residency(enabled: true, idleUnloadSeconds: 0))
+        XCTAssertEqual(newer.enabled, false)
+        XCTAssertEqual(newer.idleUnloadS, 900)
+        var payload = current
+        payload.stt = newer
+        XCTAssertFalse(payload.isEnabled(.stt))
+        XCTAssertEqual(payload.idleUnloadSeconds(.stt), 900)
+        // An older voiced sends neither: on, never unloaded.
+        XCTAssertTrue(current.isEnabled(.tts))
+        XCTAssertEqual(current.idleUnloadSeconds(.tts), 0)
         let roundTrip = try decodeJSON(
             STTSettings.self, String(decoding: try JSONEncoder().encode(newer), as: UTF8.self))
         XCTAssertEqual(roundTrip, newer)

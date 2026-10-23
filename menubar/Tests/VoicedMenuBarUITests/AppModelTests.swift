@@ -278,7 +278,7 @@ final class AppModelTests: XCTestCase {
         let unloadSet = await model.apply(.idleUnload(.tts, seconds: 300))
         XCTAssertTrue(unloadSet)
         XCTAssertEqual(server.requests.last { $0.op == "settings.set" }?.args, ["tts.idle_unload_s": 300])
-        XCTAssertEqual(model.settings?.tts.residency.idleUnloadSeconds, 300)
+        XCTAssertEqual(model.settings?.idleUnloadSeconds(.tts), 300)
 
         let switchedOn = await model.apply(.enabled(.stt, true))
         XCTAssertTrue(switchedOn)
@@ -294,8 +294,8 @@ final class AppModelTests: XCTestCase {
         defer { model.stop() }
         let shown = await eventually { model.status?[.stt]?.state == .off }
         XCTAssertTrue(shown)
-        XCTAssertEqual(model.settings?.stt.residency.enabled, false)
-        XCTAssertEqual(model.settings?.tts.residency.idleUnloadSeconds, 300)
+        XCTAssertEqual(model.settings?.isEnabled(.stt), false)
+        XCTAssertEqual(model.settings?.idleUnloadSeconds(.tts), 300)
         XCTAssertEqual(model.dashboard.rows.map(\.stateLabel), ["Off", "Idle, model unloaded"])
         XCTAssertEqual(model.dashboard.health, .running)
     }

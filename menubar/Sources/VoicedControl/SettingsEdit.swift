@@ -38,9 +38,9 @@ public enum SettingsEdit: Sendable, Equatable {
         case .ttsVoice(let voice):
             if voice != current.tts.voice { args[.ttsVoice] = .string(voice) }
         case .enabled(let kind, let on):
-            if on != current.residency(kind).enabled { args[.enabled(kind)] = .bool(on) }
+            if on != current.isEnabled(kind) { args[.enabled(kind)] = .bool(on) }
         case .idleUnload(let kind, let seconds):
-            if seconds != current.residency(kind).idleUnloadSeconds {
+            if seconds != current.idleUnloadSeconds(kind) {
                 args[.idleUnload(kind)] = .number(Double(seconds))
             }
         case .sttEngine(let name, let chosen):

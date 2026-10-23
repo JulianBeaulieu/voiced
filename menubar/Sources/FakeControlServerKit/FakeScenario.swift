@@ -71,8 +71,8 @@ public enum FakeScenario: String, CaseIterable, Sendable {
                     "last_error": "mlx-community/Kokoro-82M-bf16 is not downloaded; run voiced models download mlx-community/Kokoro-82M-bf16",
                 ], engine: "kokoro", model: "mlx-community/Kokoro-82M-bf16", uptime: 30)
         case .sttOff:
-            state.settings.stt.residency.enabled = false
-            state.settings.tts.residency.idleUnloadSeconds = 300
+            state.settings.stt.enabled = false
+            state.settings.tts.idleUnloadS = 300
             state[.stt] = ServiceStatus(
                 state: .off, pid: 4242, engine: state[.stt].engine, model: state[.stt].model,
                 uptime: 11_520)

@@ -105,61 +105,28 @@ public enum BindMode: String, Codable, Sendable, Equatable, CaseIterable {
     case loopback, lan
 }
 
-/// Whether a service runs and how long its model stays loaded while unused (ADR 0033). An
-/// older voiced sends neither: on, never unloaded.
-public struct Residency: Codable, Sendable, Equatable {
-    public var enabled: Bool
-    /// Seconds without a request before the model is unloaded; 0 is never.
-    public var idleUnloadSeconds: Int
-
-    public init(enabled: Bool = true, idleUnloadSeconds: Int = 0) {
-        self.enabled = enabled
-        self.idleUnloadSeconds = idleUnloadSeconds
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case enabled
-        case idleUnloadSeconds = "idle_unload_s"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        idleUnloadSeconds = try c.decodeIfPresent(Int.self, forKey: .idleUnloadSeconds) ?? 0
-    }
-}
-
 public struct STTSettings: Codable, Sendable, Equatable {
     public var engine: String
     public var model: String
     public var language: String
-    public var residency: Residency
+    /// Run the service (ADR 0033); nil from an older voiced, which means on.
+    public var enabled: Bool?
+    /// Seconds unused before the model unloads; nil from an older voiced, which means never.
+    public var idleUnloadS: Int?
 
-    public init(engine: String, model: String, language: String, residency: Residency = Residency()) {
+    public init(
+        engine: String, model: String, language: String, enabled: Bool? = nil, idleUnloadS: Int? = nil
+    ) {
         self.engine = engine
         self.model = model
         self.language = language
-        self.residency = residency
+        self.enabled = enabled
+        self.idleUnloadS = idleUnloadS
     }
 
     enum CodingKeys: String, CodingKey {
-        case engine, model, language
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        engine = try c.decode(String.self, forKey: .engine)
-        model = try c.decode(String.self, forKey: .model)
-        language = try c.decode(String.self, forKey: .language)
-        residency = try Residency(from: decoder)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(engine, forKey: .engine)
-        try c.encode(model, forKey: .model)
-        try c.encode(language, forKey: .language)
-        try residency.encode(to: encoder)
+        case engine, model, language, enabled
+        case idleUnloadS = "idle_unload_s"
     }
 }
 
@@ -168,38 +135,25 @@ public struct TTSSettings: Codable, Sendable, Equatable {
     public var model: String
     public var voice: String
     public var speed: Double
-    public var residency: Residency
+    /// As in `STTSettings`.
+    public var enabled: Bool?
+    public var idleUnloadS: Int?
 
     public init(
-        engine: String, model: String, voice: String, speed: Double, residency: Residency = Residency()
+        engine: String, model: String, voice: String, speed: Double, enabled: Bool? = nil,
+        idleUnloadS: Int? = nil
     ) {
         self.engine = engine
         self.model = model
         self.voice = voice
         self.speed = speed
-        self.residency = residency
+        self.enabled = enabled
+        self.idleUnloadS = idleUnloadS
     }
 
     enum CodingKeys: String, CodingKey {
-        case engine, model, voice, speed
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        engine = try c.decode(String.self, forKey: .engine)
-        model = try c.decode(String.self, forKey: .model)
-        voice = try c.decode(String.self, forKey: .voice)
-        speed = try c.decode(Double.self, forKey: .speed)
-        residency = try Residency(from: decoder)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(engine, forKey: .engine)
-        try c.encode(model, forKey: .model)
-        try c.encode(voice, forKey: .voice)
-        try c.encode(speed, forKey: .speed)
-        try residency.encode(to: encoder)
+        case engine, model, voice, speed, enabled
+        case idleUnloadS = "idle_unload_s"
     }
 }
 
@@ -284,8 +238,14 @@ public struct SettingsPayload: Codable, Sendable, Equatable {
     /// The condition the contract asks the UI to warn about.
     public var isLANWithoutAPIKey: Bool { bind == .lan && !apiKeySet }
 
-    public func residency(_ kind: ServiceKind) -> Residency {
-        kind == .stt ? stt.residency : tts.residency
+    /// Whether `kind` runs (ADR 0033); on unless the server says otherwise.
+    public func isEnabled(_ kind: ServiceKind) -> Bool {
+        (kind == .stt ? stt.enabled : tts.enabled) ?? true
+    }
+
+    /// Seconds unused before `kind`'s model unloads; 0 is never.
+    public func idleUnloadSeconds(_ kind: ServiceKind) -> Int {
+        (kind == .stt ? stt.idleUnloadS : tts.idleUnloadS) ?? 0
     }
 }
 
