@@ -64,9 +64,9 @@ enabled = true
 # with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
 # Engine plugin name (see `voiced doctor` for the installed list).
-# parakeet (default), qwen3-asr, moonshine or nemotron; change engine and model
-# together. qwen3-asr is for files and its 30 languages: model
-# "mlx-community/Qwen3-ASR-0.6B-8bit" (or the 1.7B), with the languages to
+# parakeet (default), qwen3-asr, moonshine, nemotron or whisper; change
+# engine and model together. qwen3-asr is for files and its 30 languages:
+# model "mlx-community/Qwen3-ASR-0.6B-8bit" (or the 1.7B), with the languages to
 # serve in `languages`; it does not stream, so a live stream is transcribed
 # when it ends (ADR 0027).
 # Moonshine runs on the CPU, English only, on macOS 15 and later: model
@@ -116,9 +116,10 @@ enabled = true
 # before; at most 604800 (a week). The watchdog's probe skips a service
 # with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
-# kokoro (default), soprano or phonon. Change engine, model and default_voice
-# together. Phonon runs on the CPU: model "gradium/phonon-31m-en" (Apache-2.0)
-# with default_voice "default" or a preset such as "Easton"; the
+# kokoro (default), soprano, phonon, pocket, chatterbox, omnivoice or marvis.
+# Change engine, model and default_voice together. Phonon runs on the CPU:
+# model "gradium/phonon-31m-en" (Apache-2.0) with default_voice "default" or
+# a preset such as "Easton"; the
 # "gradium/phonon-40m-en" model is CC-BY-NC-4.0 (non-commercial) and needs a
 # Hugging Face token (ADR 0021). The services never download a model: run
 # `voiced models download <model>` first (`voiced models list` shows them).

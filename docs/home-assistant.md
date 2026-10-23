@@ -62,11 +62,16 @@ service.
 ## 2. Add the Wyoming integrations
 
 With `bind = "0.0.0.0"`, voiced advertises `voiced-stt` and `voiced-tts` over
-mDNS (zeroconf) and Home Assistant discovers them on its own:
+mDNS (zeroconf), and Home Assistant can discover them on its own. Since
+0.5.0 the services are LaunchAgents, and macOS may keep a LaunchAgent's
+announcements on the Mac (on macOS 15 it did when measured), so they may
+not be discovered; then add them by host and port, below. Integrations
+added before keep working: they connect by address and port, not through
+discovery.
 
 1. Open **Settings**, then **Devices and services**.
-2. Two **Wyoming Protocol** cards appear under **Discovered**, one per
-   service. Click **Add** on each and confirm.
+2. If two **Wyoming Protocol** cards appear under **Discovered**, one per
+   service, click **Add** on each and confirm.
 
 If nothing is discovered (mDNS does not cross VLANs, you set
 `zeroconf = false`, or macOS's Local Network privacy keeps the services'
@@ -135,7 +140,7 @@ satellite's device page, **Voice assistant**.
 | Not discovered | Confirm `bind = "0.0.0.0"` and that `http://<mac-ip>:8880/health` opens from another machine. Run `voiced doctor`: a "Discovery" warning means the announcements do not leave the Mac. Add by host and port. |
 | Integration added, but not ready | The service is still loading its model (`/health` says `starting`), or after a reboot nobody has logged in yet (the FileVault unlock screen, or the login window without automatic login); see [operations.md](operations.md#after-a-reboot). |
 | Integration cannot connect, and the Mac's firewall is on | macOS asks at the Mac whether `python3.12` may accept incoming connections when the services start, and again after an update that changes that Python; until someone answers Allow, connections are blocked. Allow it in System Settings > Network > Firewall > Options. |
-| STT returns nothing or an error | The pipeline language does not match the configured `languages`. Version 1 is English only. |
+| STT returns nothing or an error | The pipeline language does not match the configured `languages`. The default engines serve English; other languages need an opt-in engine (see the [README](../README.md#models-and-licenses)). |
 | Error `server_busy` in the Home Assistant log | The inference queue was full or the model was loading. `stt.streams` (default 2) satellites are transcribed at once and the next waits; after about 34 s of waiting (its 64 queued chunks, then `server.session_idle_s`) it gets `server_busy`. Raise `queue_depth` if many satellites talk at once. |
 | Voices missing from the picker | Only voices in a configured language are advertised. |
 | The first command after a quiet spell is slow | `idle_unload_s` is set for the service, so it loads its model again first (about 0.4 s for Parakeet, 0.25 s for Kokoro). Set it back to 0 (never) for Home Assistant. |

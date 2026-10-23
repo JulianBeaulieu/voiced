@@ -51,6 +51,9 @@ cask "voiced" do
 
     `brew upgrade --cask voiced` leaves the services running.
     The app updates them on its next launch.
+    Coming from 0.4.0 or earlier, this upgrade asked for a password
+    to remove the old services: open voiced.app now to install the
+    new ones; until then voiced is down.
 
     `brew uninstall --cask voiced` leaves the services running.
     To remove them:

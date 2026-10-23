@@ -547,7 +547,10 @@ whose plists changed.
 
 ### The menu bar app
 
-The app updates itself (ADR 0034): it checks when it opens and once a day,
+The app updates itself (ADR 0034), from 0.5.0 on: an app of 0.4.0 or
+earlier is updated to 0.5.0 by hand, with Homebrew or from the release
+page, and the versions after it arrive in the app. It checks when it opens
+and once a day,
 and **Install and Relaunch** on the card in its menu installs the new
 version and opens it again; **Check for Updates…** checks at once. The
 relaunched app then updates the services to the voiced it carries, in the
@@ -561,8 +564,8 @@ launch.
 
 No step asks for an administrator password: the first open installs the
 services, **Update voiced**, Repair, Roll back and Uninstall run without
-one, and so do `brew upgrade --cask voiced` and a reinstall, which leave
-the services running. **Install and Relaunch** asks only if the app's
+one, and so do `brew upgrade --cask voiced` and a reinstall from 0.5.0 on,
+which leave the services running. **Install and Relaunch** asks only if the app's
 folder is not writable for your account; then macOS asks once to replace
 it. Homebrew asks only if `/Applications` is not writable for your account
 (a managed Mac).
@@ -575,7 +578,8 @@ needed)", then installs the services as LaunchAgents. Cancel, and the
 services keep running the old way until you accept. If the first
 `brew upgrade --cask voiced` from 0.4.0 or earlier already asked Homebrew's
 password (it runs the old cask's uninstall stanza, which removed the
-daemons), the app asks nothing and installs the agents.
+daemons), the services are down from that upgrade until you open the app,
+which then asks nothing and installs the agents.
 
 `brew uninstall --cask voiced` removes the app only; the services keep
 running from `~/.voiced`. To remove them:
