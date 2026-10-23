@@ -92,6 +92,7 @@ without a voice picks it."""
 
 class PocketEngine(SentenceTTSEngine):
     name = "pocket"
+    personal_voice_names = True  # voices are named after people (engines.list voice_names)
     model_id = default_model("pocket").id
     languages = ["en"]
     license = default_model("pocket").license

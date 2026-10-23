@@ -4,26 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import tomllib
-import wave
 from pathlib import Path
 
 import pytest
 
 from voiced.control import ops as ops_module
 from voiced.control import protocol
-from voiced.control.ops import (
-    CatalogueUnavailable,
-    NotInstalled,
-    Operations,
-    ServiceUnavailable,
-    SpeechRefused,
-    engines_in_subprocess,
-)
+from voiced.control.ops import CatalogueUnavailable, Operations, engines_in_subprocess
 from voiced.control.protocol import OpError
-from voiced.engines.base import TTS_SAMPLE_RATE
+from voiced.control.speech import MAX_TEXT_CHARS, SpeechRefused, SpeechUnavailable
 
 from .conftest import FakeSupervisor
 
@@ -359,14 +350,17 @@ async def test_concurrent_sets_do_not_lose_writes(ops: Operations, config_file: 
     assert data["stt"]["model"] == "a/b" and data["server"]["zeroconf"] is False
 
 
-async def test_tts_speak_answers_a_wav_file(ops: Operations, supervisor: FakeSupervisor) -> None:
+async def test_tts_speak_answers_the_wav_file(ops: Operations) -> None:
+    asked: list[tuple[str, str]] = []
+
+    async def speak(text: str, voice: str) -> bytes:
+        asked.append((text, voice))
+        return b"RIFF...."
+
+    ops.speak = speak
     result = await ops.dispatch("tts.speak", {"text": "Hi, I'm Heart.", "voice": "af_heart"})
-    assert result["format"] == "wav"
-    with wave.open(io.BytesIO(base64.b64decode(result["audio"]))) as file:
-        params = (file.getnchannels(), file.getsampwidth(), file.getframerate())
-        assert params == (1, 2, TTS_SAMPLE_RATE)
-        assert file.getnframes() == 2400  # the real length, not the streamed "unknown"
-    assert supervisor.spoken == [("Hi, I'm Heart.", "af_heart")]
+    assert result == {"format": "wav", "audio": base64.b64encode(b"RIFF....").decode()}
+    assert asked == [("Hi, I'm Heart.", "af_heart")]
 
 
 @pytest.mark.parametrize(
@@ -374,32 +368,35 @@ async def test_tts_speak_answers_a_wav_file(ops: Operations, supervisor: FakeSup
     [
         {"voice": "af_heart"},
         {"text": " ", "voice": "af_heart"},
-        {"text": "x" * 201, "voice": "af_heart"},
+        {"text": "x" * (MAX_TEXT_CHARS + 1), "voice": "af_heart"},
         {"text": "Hi.", "voice": 3},
         {"text": "Hi."},
     ],
 )
-async def test_tts_speak_bad_arguments(
-    ops: Operations, supervisor: FakeSupervisor, args: dict[str, object]
-) -> None:
+async def test_tts_speak_bad_arguments(ops: Operations, args: dict[str, object]) -> None:
     with pytest.raises(OpError) as info:
         await ops.dispatch("tts.speak", args)
     assert info.value.code == protocol.BAD_REQUEST
-    assert supervisor.spoken == []
 
 
 @pytest.mark.parametrize(
     ("error", "code"),
     [
-        (NotInstalled("tts is not supervised"), protocol.NOT_INSTALLED),
-        (ServiceUnavailable("the tts service is not answering"), protocol.SERVICE_UNAVAILABLE),
-        (SpeechRefused("Inference queue is full"), protocol.BAD_REQUEST),
+        (SpeechUnavailable("the watchdog is not running"), protocol.SERVICE_UNAVAILABLE),
+        (SpeechRefused("the line is longer than 10 s"), protocol.BAD_REQUEST),
     ],
 )
-async def test_tts_speak_errors(
-    ops: Operations, supervisor: FakeSupervisor, error: Exception, code: str
-) -> None:
-    supervisor.speech_error = error
+async def test_tts_speak_errors(ops: Operations, error: Exception, code: str) -> None:
+    async def speak(text: str, voice: str) -> bytes:
+        raise error
+
+    ops.speak = speak
     with pytest.raises(OpError) as info:
         await ops.dispatch("tts.speak", {"text": "Hi.", "voice": "af_heart"})
     assert (info.value.code, info.value.message) == (code, str(error))
+
+
+async def test_without_a_watchdog_nothing_is_spoken(ops: Operations) -> None:
+    with pytest.raises(OpError) as info:  # the default: the CLI fallback has no watchdog
+        await ops.dispatch("tts.speak", {"text": "Hi.", "voice": "af_heart"})
+    assert info.value.code == protocol.SERVICE_UNAVAILABLE

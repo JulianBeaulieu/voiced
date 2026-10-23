@@ -15,7 +15,8 @@ public final class ControlClient: @unchecked Sendable {
     /// exactly when people press Restart.
     public static let restartTimeout: Duration = .seconds(30)
     /// `tts.speak` waits while the service loads a model unloaded while idle; the server gives
-    /// up after 30 s, so its error arrives before this.
+    /// up after 30 s, so its error arrives before this. The server answers it in its own task,
+    /// so it never holds up the connection's other requests.
     public static let speakTimeout: Duration = .seconds(35)
 
     public let socketPath: String

@@ -450,3 +450,48 @@ async def test_blocking_client_reads_replies_over_64_kib(
 def test_client_without_server(short_dir: Path) -> None:
     with pytest.raises(ControlUnavailable):
         ControlClient.connect(short_dir / "control.sock", timeout_s=1)
+
+
+class SlowSpeech:
+    """A ``tts.speak`` that waits until released, and notes a cancel."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __call__(self, text: str, voice: str) -> bytes:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        return b"RIFF"
+
+
+async def test_a_waiting_speak_does_not_hold_up_the_clients_other_requests(
+    server: ControlServer,
+) -> None:
+    speech = SlowSpeech()
+    server.ops.speak = speech
+    conn = await Conn.open(server.path)
+    await conn.recv()
+    await conn.send(b'{"id": 1, "op": "tts.speak", "args": {"text": "Hi.", "voice": "a"}}\n')
+    await asyncio.wait_for(speech.started.wait(), 2)
+    await conn.send(b'{"id": 2, "op": "settings.get"}\n')
+    assert (await conn.answer(2))["ok"] is True  # while the audio is still coming
+    speech.release.set()
+    assert (await conn.answer(1))["result"]["audio"] == "UklGRg=="
+    await conn.close()
+
+
+async def test_a_client_that_goes_away_cancels_its_speak(server: ControlServer) -> None:
+    speech = SlowSpeech()
+    server.ops.speak = speech
+    conn = await Conn.open(server.path)
+    await conn.recv()
+    await conn.send(b'{"id": 1, "op": "tts.speak", "args": {"text": "Hi.", "voice": "a"}}\n')
+    await asyncio.wait_for(speech.started.wait(), 2)
+    await conn.close()  # the app's stop: it closes the preview's connection
+    await asyncio.wait_for(speech.cancelled.wait(), 2)

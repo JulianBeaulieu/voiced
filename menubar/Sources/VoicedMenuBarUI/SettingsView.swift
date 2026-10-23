@@ -62,7 +62,7 @@ public struct SettingsView: View {
     /// The model rows of the Speech to Text and Text to Speech panes.
     let models: ModelManager
     /// The play button beside the Voice picker.
-    @State private var preview: VoicePreview
+    let preview: VoicePreview
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -73,10 +73,10 @@ public struct SettingsView: View {
 
     public init(
         model: AppModel, models: ModelManager, loginItem: LoginItem, launch: LaunchChecks? = nil,
-        installer: Installer? = nil, pane: SettingsPane? = nil, preview: VoicePreview? = nil
+        installer: Installer? = nil, pane: SettingsPane? = nil, preview: VoicePreview
     ) {
         self.model = model
-        _preview = State(initialValue: preview ?? VoicePreview(speaker: model))
+        self.preview = preview
         self.loginItem = loginItem
         self.launch = launch
         self.installer = installer
@@ -369,20 +369,18 @@ public struct SettingsView: View {
                 previewButton(voice, line: PreviewLine.text(for: voice, of: engine), unavailable: unavailable)
             }
             previewNote(voice, unavailable: unavailable)
+            // A value set by hand outside the range is shown as it is; a step brings it in.
             LabeledContent("Speed") {
                 HStack(spacing: 8) {
                     Text(Self.speedText(settings.tts.speed)).monospacedDigit()
-                    Stepper(
-                        "Speed", onIncrement: { saveSpeed(settings.tts.speed, up: true) },
-                        onDecrement: { saveSpeed(settings.tts.speed, up: false) }
-                    )
-                    .labelsHidden()
+                    Stepper("Speed", value: binding(settings.tts.speed) { .ttsSpeed($0) }, in: Self.speeds, step: 0.1)
+                        .labelsHidden()
                 }
             }
         } header: {
             Text("Text to speech")
         } footer: {
-            Text("The voice and the speed are the defaults for requests that name neither; the voices are the engine in use's, and the play button speaks a line in one at that speed. A new speed applies at once. Use switches to a model, downloading it first if needed, and restarts the service.")
+            Text("The voice and the speed are used by requests that do not name their own; the voices are the engine in use's, and the play button speaks a line in one at that speed. A new speed applies at once. Use switches to a model, downloading it first if needed, and restarts the service.")
                 .footnote()
         }
         .onChange(of: voice) { preview.stop() }
@@ -420,11 +418,6 @@ public struct SettingsView: View {
         } else if let unavailable {
             Text(unavailable).footnote()
         }
-    }
-
-    private func saveSpeed(_ speed: Double, up: Bool) {
-        guard SpeechSpeed.canStep(speed, up: up) else { return }
-        save(.ttsSpeed(SpeechSpeed.stepped(speed, up: up)))
     }
 
     // MARK: - About
@@ -605,6 +598,9 @@ public struct SettingsView: View {
     nonisolated static func languageName(_ code: String) -> String {
         Locale.current.localizedString(forIdentifier: code) ?? code
     }
+
+    /// The default speed's stepper: 0.5× to 2× by 0.1 (the server takes up to 4×).
+    nonisolated static let speeds: ClosedRange<Double> = 0.5...2.0
 
     /// "1×", "1.25×".
     nonisolated static func speedText(_ speed: Double) -> String {

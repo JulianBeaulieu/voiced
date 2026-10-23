@@ -17,6 +17,8 @@ final class FakeSpeaker: VoiceSpeaker {
 
     var behaviour: Behaviour
     private(set) var asked: [(text: String, voice: String)] = []
+    /// A slow answer that was cancelled: the preview's connection was closed.
+    private(set) var cancelled = 0
 
     init(_ behaviour: Behaviour) {
         self.behaviour = behaviour
@@ -27,7 +29,13 @@ final class FakeSpeaker: VoiceSpeaker {
         switch behaviour {
         case .speaks: break
         case .fails(let error): throw error
-        case .slow(let delay): try await Task.sleep(for: delay)
+        case .slow(let delay):
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                cancelled += 1
+                throw error
+            }
         }
         return Data("RIFF \(voice)".utf8)
     }
@@ -97,7 +105,7 @@ final class VoicePreviewTests: XCTestCase {
         XCTAssertEqual(preview.state, .failed(voice: "af_heart", message: "Not played: The audio could not be played."))
     }
 
-    func testWhileWaitingTheButtonStopsAndTheLateAnswerIsDropped() async {
+    func testWhileWaitingTheButtonStopsAndCancelsTheRequest() async {
         let speaker = FakeSpeaker(.slow(.milliseconds(200)))
         let player = FakePlayer()
         let preview = VoicePreview(speaker: speaker, player: player)
@@ -108,9 +116,10 @@ final class VoicePreviewTests: XCTestCase {
         XCTAssertTrue(preview.isActive("af_heart"), "a second click stops")
         preview.toggle("af_heart", line: "Hi, I'm Heart.")
         XCTAssertEqual(preview.state, .idle)
-        try? await Task.sleep(for: .milliseconds(400))
+        let cancelled = await eventually { speaker.cancelled == 1 }
+        XCTAssertTrue(cancelled, "stop cancels the request, which closes its connection")
         XCTAssertEqual(preview.state, .idle)
-        XCTAssertEqual(player.played, [], "the answer came after the stop")
+        XCTAssertEqual(player.played, [])
     }
 
     func testASecondClickStopsPlayback() async {
@@ -167,6 +176,32 @@ final class VoicePreviewTests: XCTestCase {
         XCTAssertEqual(server.requests.last { $0.op == "tts.speak" }?.args["text"], "Hi, I'm Heart.")
     }
 
+    /// A preview has a connection of its own, so the app's requests go on while it loads, and
+    /// stopping it closes only that one.
+    func testAPreviewDoesNotHoldUpTheAppsConnection() async throws {
+        let server = try startServer { $0.speakDelay = 5 }
+        defer { server.stop() }
+        let model = AppModel(socketPath: server.socketPath)
+        model.start()
+        defer { model.stop() }
+        let ready = await eventually { model.settings != nil }
+        XCTAssertTrue(ready)
+        let connections = server.acceptedConnections
+        let preview = VoicePreview(speaker: model, player: FakePlayer())
+
+        preview.toggle("af_heart", line: "Hi, I'm Heart.")
+        let asked = await eventually { server.requests.contains { $0.op == "tts.speak" } }
+        XCTAssertTrue(asked)
+        XCTAssertEqual(server.acceptedConnections, connections + 1)
+        let started = ContinuousClock.now
+        let saved = await model.apply(.ttsVoice("bf_emma"))
+        XCTAssertTrue(saved)
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        preview.stop()
+        XCTAssertEqual(preview.state, .idle)
+        XCTAssertEqual(model.connection, .connected(version: "0.0.1"), "the app's own connection stays")
+    }
+
     /// A new default speed needs no restart, so nothing is offered above the pane.
     func testSpeedSavesWithoutARestart() async throws {
         let server = try startServer()
@@ -177,10 +212,63 @@ final class VoicePreviewTests: XCTestCase {
         let ready = await eventually { model.settings != nil }
         XCTAssertTrue(ready)
 
-        let saved = await model.apply(.ttsSpeed(SpeechSpeed.stepped(1, up: true)))
+        let saved = await model.apply(.ttsSpeed(1 + 0.1))
         XCTAssertTrue(saved)
         XCTAssertEqual(model.settings?.tts.speed, 1.1)
         XCTAssertEqual(model.restartRequired, [])
         XCTAssertEqual(server.currentState.settings.tts.speed, 1.1)
+    }
+}
+
+final class PreviewLineTests: XCTestCase {
+    func testTheVoiceSaysItsNameInItsLanguage() {
+        let kokoro = FakeState.sample.engines.ttsEngine(named: "kokoro")
+        XCTAssertEqual(PreviewLine.text(for: "af_heart", of: kokoro), "Hi, I'm Heart.")
+        XCTAssertEqual(PreviewLine.text(name: "Léa", language: "fr-FR"), "Bonjour, je m'appelle Léa.")
+        XCTAssertEqual(PreviewLine.text(name: "Hans", language: "de"), "Hallo, ich bin Hans.")
+        XCTAssertEqual(PreviewLine.text(name: "Xiaoxiao", language: "zh_CN"), "你好，我是Xiaoxiao。")
+        XCTAssertEqual(PreviewLine.text(name: "Ming", language: "yue"), "你好，我是Ming。")
+        XCTAssertEqual(PreviewLine.text(name: nil, language: "apc"), "مرحبا، هذا صوتي.")
+    }
+
+    func testEveryLanguageOfTheSampleVoicesHasALine() {
+        for engine in FakeState.sample.engines.tts {
+            for (voice, language) in engine.voiceLanguages {
+                let base = String(language.prefix { $0 != "-" && $0 != "_" }).lowercased()
+                XCTAssertNotNil(PreviewLine.lines[PreviewLine.aliases[base] ?? base], "\(engine.name) \(voice)")
+            }
+        }
+        // The languages of the shipped voices beyond the sample (OmniVoice, Marvis, Kokoro's).
+        for language in ["de", "fr", "es", "zh", "apc", "ja", "hi", "it", "pt"] {
+            XCTAssertNotEqual(PreviewLine.text(name: nil, language: language), "Hi, this is my voice.", language)
+        }
+    }
+
+    func testALanguageWithoutALineSpeaksEnglish() {
+        XCTAssertEqual(PreviewLine.text(name: "Olga", language: "ru-RU"), "Hi, I'm Olga.")
+        XCTAssertEqual(PreviewLine.text(name: "Olga", language: nil), "Hi, I'm Olga.")
+    }
+
+    func testAVoiceWithoutAPersonalNameIsNotCalledByIt() {
+        let engines = FakeState.sample.engines
+        XCTAssertEqual(PreviewLine.text(for: "default", of: engines.ttsEngine(named: "soprano")), "Hi, this is my voice.")
+        XCTAssertEqual(PreviewLine.text(for: "default", of: engines.ttsEngine(named: "phonon")), "Hi, this is my voice.")
+        XCTAssertEqual(PreviewLine.text(for: "fake", of: engines.ttsEngine(named: "fake")), "Hi, this is my voice.")
+        XCTAssertEqual(PreviewLine.text(for: "The Snow Queen", of: engines.ttsEngine(named: "phonon")), "Hi, I'm The Snow Queen.")
+        // OmniVoice and Marvis label voices with descriptions; the server sends no names for them.
+        let omnivoice = TTSEngineInfo(
+            name: "omnivoice", models: [], voices: ["de-DE-male"],
+            voiceLabels: ["de-DE-male": "Middle-aged (German, male)"], voiceLanguages: ["de-DE-male": "de-DE"])
+        XCTAssertEqual(PreviewLine.text(for: "de-DE-male", of: omnivoice), "Hallo, das ist meine Stimme.")
+        let marvis = TTSEngineInfo(
+            name: "marvis", models: [], voices: ["conversational_fr"],
+            voiceLabels: ["conversational_fr": "Conversational FR (French, male)"],
+            voiceLanguages: ["conversational_fr": "fr"])
+        XCTAssertEqual(PreviewLine.text(for: "conversational_fr", of: marvis), "Bonjour, voici ma voix.")
+    }
+
+    func testANameTooLongForTheServersLimitIsLeftOut() {
+        let long = String(repeating: "x", count: PreviewLine.maxLength)
+        XCTAssertEqual(PreviewLine.text(name: long, language: "en"), "Hi, this is my voice.")
     }
 }

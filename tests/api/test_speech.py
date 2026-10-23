@@ -133,7 +133,7 @@ async def test_default_voice_and_speed_from_settings(settings: Settings) -> None
         config_path().write_text("[tts]\nspeed = 0.8  # slower, and longer\n")
         r = await c.post("/v1/audio/speech", json={"input": "Hey."})
         assert r.status_code == 200
-        # An unreadable file falls back to the speed the service started with.
+        # An unreadable file keeps the last good reading.
         config_path().write_text("[tts\n")
         r = await c.post("/v1/audio/speech", json={"input": "Ho."})
         assert r.status_code == 200
@@ -141,7 +141,7 @@ async def test_default_voice_and_speed_from_settings(settings: Settings) -> None
         ("Hi.", "bf_emma", 1.5),
         ("Yo.", "am_adam", 0.5),
         ("Hey.", "bf_emma", 0.8),
-        ("Ho.", "bf_emma", settings.tts.speed),
+        ("Ho.", "bf_emma", 0.8),
     ]
 
 

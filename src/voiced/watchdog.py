@@ -337,7 +337,7 @@ def mark_restarted(state: ServiceState, now: float) -> None:
 # Health polling (stdlib urllib) -------------------------------------------
 
 
-def http_request(
+def _request(
     url: str, *, timeout_s: float, api_key: str = "", data: bytes | None = None, ctype: str = ""
 ) -> tuple[int, bytes]:
     """One HTTP request. Raises ``TimeoutError`` for any kind of timeout,
@@ -364,7 +364,7 @@ def http_request(
 def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation:
     """One ``GET /health``. Never raises."""
     try:
-        code, body = http_request(url, timeout_s=timeout_s, api_key=api_key)
+        code, body = _request(url, timeout_s=timeout_s, api_key=api_key)
     except TimeoutError as exc:
         return Observation("unreachable", str(exc))
     except OSError as exc:
@@ -395,7 +395,7 @@ def run_probe(spec: ServiceSpec, *, timeout_s: float) -> Observation | None:
     if spec.probe is None:
         return None
     try:
-        http_request(
+        _request(
             f"{spec.base_url}{spec.probe.path}",
             timeout_s=timeout_s,
             api_key=spec.api_key,

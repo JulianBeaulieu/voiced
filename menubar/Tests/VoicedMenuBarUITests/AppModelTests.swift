@@ -468,6 +468,7 @@ final class SettingsTextTests: XCTestCase {
         XCTAssertFalse(SettingsView.languageName("en").isEmpty)
         XCTAssertNotEqual(SettingsView.languageName("en"), "en")
         XCTAssertEqual(SettingsView.speedText(1), "1×")
+        XCTAssertEqual(SettingsView.speedText(3), "3×", "a value set by hand outside the stepper's range")
         // The decimal separator follows the user's locale.
         let fractional = SettingsView.speedText(1.25)
         XCTAssertTrue(fractional.hasPrefix("1") && fractional.hasSuffix("25×"), fractional)

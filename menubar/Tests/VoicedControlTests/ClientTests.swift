@@ -148,6 +148,7 @@ final class ClientTests: XCTestCase {
         defer { client.close() }
 
         let wav = try await client.speak("Hi, I'm Heart.", voice: "af_heart")
+        XCTAssertNotNil(wav.range(of: Data("WAVE".utf8)))
         XCTAssertEqual(String(decoding: wav.prefix(4), as: UTF8.self), "RIFF")
         XCTAssertGreaterThan(wav.count, 44)
         XCTAssertEqual(server.requests.last?.args, ["text": "Hi, I'm Heart.", "voice": "af_heart"])

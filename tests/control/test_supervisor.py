@@ -13,20 +13,16 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import uvicorn
 
-from voiced.cli import uvicorn_config
 from voiced.cli_lifecycle import watchdog_specs
 from voiced.config import Settings, WatchdogConfig
-from voiced.control.ops import NotInstalled, Operations, ServiceUnavailable, SpeechRefused
+from voiced.control.ops import NotInstalled, Operations, ServiceUnavailable
 from voiced.control.server import ControlServer
 from voiced.control.supervisor import WatchdogSupervisor, service_state
 from voiced.control.supervisor import warm as supervisor_warm
 from voiced.engines.catalogue import engines_list
 from voiced.launchd.control import CommandResult
 from voiced.layout import RunningEnvironment
-from voiced.testing import FakeTTSEngine
-from voiced.tts import build_tts_app
 from voiced.watchdog import (
     Observation,
     RestartResult,
@@ -547,45 +543,3 @@ async def test_restart_op_answers_with_the_homebrew_refusal(
     assert "Homebrew is installing voiced" in raised.value.message
     await ops.wait_restarts()
     assert restarted == []
-
-
-async def test_speak_asks_the_running_tts_service_with_its_key(settings: Settings) -> None:
-    """A real tts service behind uvicorn, with an API key: the supervisor
-    sends the key it started the service with, refuses a voice the service
-    does not serve, and passes the service's own errors on."""
-    settings.server.bind = "127.0.0.1"
-    settings.server.api_key = "secret"
-    engine = FakeTTSEngine()
-    app = build_tts_app(settings, engine)
-    server = uvicorn.Server(uvicorn_config(app, settings, port=0))
-    serving = asyncio.create_task(server.serve())
-    try:
-        for _ in range(500):
-            if server.started:
-                break
-            await asyncio.sleep(0.01)
-        await asyncio.wait_for(app.state.load_task, 5.0)
-        port = server.servers[0].sockets[0].getsockname()[1]
-        specs = [replace(s, base_url=f"http://127.0.0.1:{port}") for s in watchdog_specs(settings)]
-        sup = WatchdogSupervisor(Watchdog(services=specs, policy=POLICY))
-
-        pcm = await asyncio.to_thread(sup.speak, "Hi, I'm Adam.", "am_adam")
-        assert len(pcm) > 0 and len(pcm) % 2 == 0  # raw int16, no WAV header
-        assert engine.calls == 1
-        with pytest.raises(SpeechRefused, match="does not serve the voice 'nobody'"):
-            await asyncio.to_thread(sup.speak, "Hi.", "nobody")
-        long_text = "x" * (settings.tts.max_input_chars + 1)
-        with pytest.raises(SpeechRefused, match="the limit is"):
-            await asyncio.to_thread(sup.speak, long_text, "am_adam")
-        sup.dog.services = [replace(s, api_key="wrong") for s in specs]
-        with pytest.raises(SpeechRefused, match="API key"):
-            await asyncio.to_thread(sup.speak, "Hi.", "am_adam")
-        assert engine.calls == 1
-    finally:
-        server.should_exit = True
-        await asyncio.wait_for(serving, 5.0)
-    with pytest.raises(ServiceUnavailable, match="not answering"):
-        await asyncio.to_thread(sup.speak, "Hi.", "am_adam")  # stopped, or switched off
-    sup.dog.services = []
-    with pytest.raises(NotInstalled):
-        sup.speak("Hi.", "am_adam")

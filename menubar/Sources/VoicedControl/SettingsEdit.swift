@@ -14,7 +14,8 @@ public enum SettingsEdit: Sendable, Equatable {
     case sttEngine(String, model: String? = nil)
     case ttsEngine(String, model: String? = nil)
     case ttsVoice(String)
-    /// The default speed, rounded to hundredths so a step of 0.1 sends 1.2, not 1.2000000000000002.
+    /// The default speed. Rounded to hundredths here, the one place, so a stepper's 1.1 + 0.1
+    /// sends 1.2, not 1.2000000000000002.
     case ttsSpeed(Double)
     /// On or off (ADR 0033).
     case enabled(ServiceKind, Bool)

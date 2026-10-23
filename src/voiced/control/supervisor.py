@@ -4,14 +4,11 @@ Status comes from a fresh, probe-free observation of each service (``/health``
 and ``launchctl print``) combined with what the watchdog remembers (restart
 count, startup grace, and the engine and model each service was last started
 with). Restarts go through :meth:`Watchdog.restart_now`, the same path the
-watchdog's own decisions take. ``speak`` sends one ``/v1/audio/speech``
-request to the tts service with the API key it was started with, as the
-watchdog's probe does.
+watchdog's own decisions take.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
@@ -20,7 +17,7 @@ from dataclasses import replace
 from typing import Any, Literal
 
 from voiced.config import ServiceName
-from voiced.control.ops import NotInstalled, ServiceUnavailable, SpeechRefused
+from voiced.control.ops import NotInstalled, ServiceUnavailable
 from voiced.health_status import HEALTHY
 from voiced.launchd.control import Runner, plist_path, run_command
 from voiced.watchdog import (
@@ -28,7 +25,6 @@ from voiced.watchdog import (
     ServiceSpec,
     ServiceState,
     Watchdog,
-    http_request,
     launchd_view,
     look,
 )
@@ -36,10 +32,6 @@ from voiced.watchdog import (
 State = Literal["running", "starting", "stopped", "degraded", "missing_model", "off", "unknown"]
 
 STATUS_TIMEOUT_S = 2.0
-SPEAK_TIMEOUT_S = 30.0
-"""Long enough for a model unloaded while idle, or a busy queue, to come
-round; the app's own wait is longer, so it sees this error rather than its
-own timeout."""
 
 
 def service_state(obs: Observation, in_grace: bool) -> State:
@@ -176,45 +168,3 @@ class WatchdogSupervisor:
         if not result.done:
             raise ServiceUnavailable(result.detail)
         return result.detail
-
-    def speak(self, text: str, voice: str) -> bytes:
-        spec = self.dog.spec("tts")
-        if spec is None:
-            raise NotInstalled("tts is not supervised by this watchdog")
-        # The service would speak a voice it does not serve in its default
-        # voice (ADR 0022); a preview of that would mislead, so ask first.
-        served = _json(self._http(spec, "/v1/audio/voices", None, STATUS_TIMEOUT_S))
-        ids = [v.get("id") for v in served.get("data", []) if isinstance(v, dict)]
-        if voice not in ids:
-            raise SpeechRefused(f"the running tts service does not serve the voice {voice!r}")
-        body = {"input": text, "voice": voice, "response_format": "pcm"}
-        return self._http(spec, "/v1/audio/speech", json.dumps(body).encode(), SPEAK_TIMEOUT_S)
-
-    def _http(self, spec: ServiceSpec, path: str, data: bytes | None, timeout_s: float) -> bytes:
-        """The body of a 200 answer; :class:`ServiceUnavailable` when the
-        service does not answer, :class:`SpeechRefused` with its message
-        when it answers with an error."""
-        try:
-            code, body = http_request(
-                f"{spec.base_url}{path}",
-                timeout_s=timeout_s,
-                api_key=spec.api_key,
-                data=data,
-                ctype="application/json",
-            )
-        except OSError as exc:  # TimeoutError and URLError too
-            reason = getattr(exc, "reason", exc)
-            raise ServiceUnavailable(f"the tts service is not answering: {reason}") from None
-        if code != 200:
-            error = _json(body).get("error")
-            message = error.get("message") if isinstance(error, dict) else None
-            raise SpeechRefused(str(message or f"the tts service answered HTTP {code}"))
-        return body
-
-
-def _json(body: bytes) -> dict[str, Any]:
-    try:
-        value = json.loads(body.decode("utf-8", "replace"))
-    except ValueError:
-        return {}
-    return value if isinstance(value, dict) else {}

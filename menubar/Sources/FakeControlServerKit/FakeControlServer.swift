@@ -563,7 +563,7 @@ public final class FakeControlServer: @unchecked Sendable {
     /// Like the real `tts.speak`: refused while text to speech is not running, else a WAV
     /// file whose length follows the text, a quiet tone in place of speech.
     private func speak(_ args: [String: JSONValue]) -> Result<JSONValue, RemoteError> {
-        guard let text = args["text"]?.stringValue, !text.isEmpty, text.count <= 200,
+        guard let text = args["text"]?.stringValue, !text.isEmpty, text.count <= 60,
             let voice = args["voice"]?.stringValue
         else {
             return .failure(RemoteError(code: "bad_request", message: "text and voice are required."))

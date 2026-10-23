@@ -107,16 +107,20 @@ when it names no voice or speed.
   it speaks one line in that voice, naming it in its own language ("Hi, I'm
   Heart.", "Bonjour, je m'appelle ..."; English for a language the app has
   no line for, and "Hi, this is my voice." for a voice without a name), at
-  the default speed. While the line loads (a model unloaded while idle
-  loads first) the button shows a spinner, and while it plays, stop. The
-  app asks the watchdog (`tts.speak`), which asks the running service with
-  the API key it started it with, so the app never needs the key. The
-  button is off, with the reason under the picker, while text to speech is
-  off, stopped, starting or missing its model; a failure is one line there.
+  the default speed. The name is the voice's personal name from
+  `engines.list` (`voice_names`); a voice whose name only describes it,
+  such as OmniVoice's "Middle-aged", gets the line without a name. While
+  the line loads (a model unloaded while idle loads first) the button
+  shows a spinner, and while it plays, stop. The app asks the watchdog
+  (`tts.speak`) on a connection of its own, which stop closes, so the
+  service stops synthesizing and the app's other requests never wait; the
+  watchdog asks the running service with the API key it started it with,
+  so the app never needs the key. The button is off, with the reason under
+  the picker, while text to speech is off, stopped, starting or missing its
+  model; a failure is one line there.
 - **Speed** steps from 0.5x to 2x by 0.1. The service reads it for each
   request, so it applies at once with no restart. A value set by hand
-  outside that range is shown as it is, and the first step moves it to the
-  nearest end.
+  outside that range is shown as it is, and the first step brings it in.
 
 ## Models
 

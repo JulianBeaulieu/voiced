@@ -150,6 +150,7 @@ class FakeTTSEngine(TTSEngine):
 
     name = "fake"
     model_id = "fake/tts"
+    personal_voice_names = True  # voices are named after people (engines.list voice_names)
     languages = ["en"]
     license = "MIT"
 

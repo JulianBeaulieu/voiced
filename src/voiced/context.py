@@ -88,9 +88,10 @@ class ServiceContext:
     def default_speed(self) -> float:
         """``tts.speed`` as the config file has it now, for a request that
         names no speed: it is read per request, so a change applies without a
-        restart (ADR 0013). As started when the file cannot be read."""
-        live = self.live.get()
-        return (live or self.settings).tts.speed
+        restart (ADR 0013). While the file cannot be read, the last good
+        reading, else the speed the service started with."""
+        live = self.live.get() or self.live.last or self.settings
+        return live.tts.speed
 
     def check_language(self, language: str | None) -> str | None:
         """Resolve a client's language hint to the engine's own code.

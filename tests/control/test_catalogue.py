@@ -106,6 +106,19 @@ def test_labels(monkeypatch: pytest.MonkeyPatch) -> None:
     assert voice_label(Voice("x", "X", "xx-XX", "male")) == "X (xx-XX, male)"
 
 
+def test_voice_names_are_personal_names_only() -> None:
+    """The preview says "Hi, I'm Heart.", never "Hi, I'm Middle-aged."."""
+    tts = {e["name"]: e for e in engines_list()["tts"]}
+    assert tts["kokoro"]["voice_names"]["af_heart"] == "Heart"
+    assert set(tts["kokoro"]["voice_names"]) == set(tts["kokoro"]["voices"])
+    assert tts["phonon"]["voice_names"]["Easton"] == "Easton"
+    assert "default" not in tts["phonon"]["voice_names"]  # "Default" names no one
+    assert tts["pocket"]["voice_names"]["javert"] == "Javert"
+    # Descriptions, not names; and single unnamed voices.
+    for engine in ("omnivoice", "marvis", "soprano", "chatterbox"):
+        assert tts[engine]["voice_names"] == {}, engine
+
+
 def test_an_engine_that_cannot_run_here_is_listed_with_the_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

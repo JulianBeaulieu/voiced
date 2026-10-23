@@ -39,6 +39,8 @@ public final class VoicePreview {
     private let player: PreviewPlayer
     /// Counts previews, so the answer to one that was stopped or replaced is dropped.
     private var attempt = 0
+    /// The request in flight; cancelling it closes its connection, and the service stops.
+    private var request: Task<Void, Never>?
 
     public init(speaker: VoiceSpeaker, player: PreviewPlayer = SystemPreviewPlayer()) {
         self.speaker = speaker
@@ -58,14 +60,28 @@ public final class VoicePreview {
         if isActive(voice) {
             stop()
         } else {
-            Task { await play(voice, line: line) }
+            start(voice, line: line)
         }
     }
 
-    public func play(_ voice: String, line: String) async {
+    /// Speaks `line` in `voice`, after stopping whatever came before. The task ends when the
+    /// line plays or fails.
+    @discardableResult
+    public func start(_ voice: String, line: String) -> Task<Void, Never> {
         stop()
         let current = attempt
         state = .loading(voice: voice)
+        let request = Task { await fetchAndPlay(voice, line: line, attempt: current) }
+        self.request = request
+        return request
+    }
+
+    /// `start`, waiting until the line plays or fails.
+    public func play(_ voice: String, line: String) async {
+        await start(voice, line: line).value
+    }
+
+    private func fetchAndPlay(_ voice: String, line: String, attempt current: Int) async {
         do {
             let wav = try await speaker.speak(line, voice: voice)
             guard current == attempt else { return }
@@ -80,10 +96,11 @@ public final class VoicePreview {
         }
     }
 
-    /// Stops what plays and forgets a request in flight. The request itself runs on: cancelling
-    /// it would close the control connection.
+    /// Stops what plays, and cancels a request in flight.
     public func stop() {
         attempt += 1
+        request?.cancel()
+        request = nil
         player.stop()
         state = .idle
     }
@@ -143,4 +160,46 @@ enum PreviewPlayerError: LocalizedError {
     case cannotPlay
 
     var errorDescription: String? { "The audio could not be played." }
+}
+
+/// The line a voice preview speaks: the voice saying its name in its own language, "Hi, I'm
+/// Heart." A voice without a personal name (`voice_names` from the server: "Default", or one
+/// whose name only describes it, such as OmniVoice's "Middle-aged") says "Hi, this is my
+/// voice." A language without a line here speaks English.
+public enum PreviewLine {
+    /// The server's `tts.speak` limit; a name that would make the line longer is left out.
+    static let maxLength = 60
+
+    /// Primary language subtag -> (with a name, where `%@` is the name; without one). The
+    /// languages of the shipped voices, and Kokoro's beyond English.
+    static let lines: [String: (named: String, unnamed: String)] = [
+        "en": ("Hi, I'm %@.", "Hi, this is my voice."),
+        "fr": ("Bonjour, je m'appelle %@.", "Bonjour, voici ma voix."),
+        "de": ("Hallo, ich bin %@.", "Hallo, das ist meine Stimme."),
+        "es": ("Hola, soy %@.", "Hola, esta es mi voz."),
+        "it": ("Ciao, sono %@.", "Ciao, questa è la mia voce."),
+        "pt": ("Olá, eu sou %@.", "Olá, esta é a minha voz."),
+        "ja": ("こんにちは、%@です。", "こんにちは、これが私の声です。"),
+        "zh": ("你好，我是%@。", "你好，这是我的声音。"),
+        "hi": ("नमस्ते, मैं %@ हूँ।", "नमस्ते, यह मेरी आवाज़ है।"),
+        "ar": ("مرحبا، أنا %@.", "مرحبا، هذا صوتي."),
+    ]
+
+    /// Tags that speak another tag's line: Levantine Arabic (OmniVoice's `apc`), Cantonese.
+    static let aliases = ["apc": "ar", "yue": "zh"]
+
+    /// The line for `voice` of `engine`, from its name and language in `engines.list`.
+    public static func text(for voice: String, of engine: TTSEngineInfo?) -> String {
+        text(name: engine?.voiceNames[voice], language: engine?.voiceLanguages[voice])
+    }
+
+    /// The line in `language` (a BCP-47 tag) naming `name`, or the unnamed line without one.
+    static func text(name: String?, language: String?) -> String {
+        let base = language.flatMap { $0.split(whereSeparator: { $0 == "-" || $0 == "_" }).first }
+            .map { $0.lowercased() }
+        let line = base.flatMap { lines[aliases[$0] ?? $0] } ?? lines["en"]!
+        guard let name, !name.isEmpty else { return line.unnamed }
+        let named = line.named.replacingOccurrences(of: "%@", with: name)
+        return named.count <= maxLength ? named : line.unnamed
+    }
 }

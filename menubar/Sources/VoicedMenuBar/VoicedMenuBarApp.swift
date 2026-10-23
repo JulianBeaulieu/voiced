@@ -7,6 +7,7 @@ struct VoicedMenuBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model: AppModel
     @State private var models: ModelManager
+    @State private var preview: VoicePreview
     @State private var loginItem = LoginItem()
     @State private var launch: LaunchChecks
     @State private var whatsNew: WhatsNew
@@ -17,6 +18,7 @@ struct VoicedMenuBarApp: App {
         _model = State(initialValue: model)
         let models = ModelManager(app: model, runner: Install.runner)
         _models = State(initialValue: models)
+        _preview = State(initialValue: VoicePreview(speaker: model))
         Install.models = models
         let resources = InstallResources.inBundle()
         let installSource = DevelopmentOverride.installSource()
@@ -49,7 +51,8 @@ struct VoicedMenuBarApp: App {
 
         Settings {
             SettingsView(
-                model: model, models: models, loginItem: loginItem, launch: launch, installer: Install.installer)
+                model: model, models: models, loginItem: loginItem, launch: launch, installer: Install.installer,
+                preview: preview)
         }
         .windowResizability(.contentSize)
 
