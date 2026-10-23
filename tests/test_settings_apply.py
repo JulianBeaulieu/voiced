@@ -181,9 +181,10 @@ def test_failed_rename_leaves_the_old_file(cfg: Path, monkeypatch: pytest.Monkey
         ({"zeroconf": False}, ("stt", "tts")),
         ({"browser_settings": True}, ()),
         ({"stt.engine": "fake", "stt.model": "m"}, ("stt",)),
-        ({"tts.speed": 1.5}, ("tts",)),
+        ({"tts.speed": 1.5}, ()),  # read per request by the tts service
         ({"tts.voice": "af_heart"}, ()),  # already the value
-        ({"tts.speed": 1.5, "stt.model": "m"}, ("stt", "tts")),
+        ({"tts.speed": 1.5, "stt.model": "m"}, ("stt",)),
+        ({"tts.speed": 1.5, "tts.model": "m"}, ("tts",)),
     ],
 )
 def test_restart_required(cfg: Path, changes: dict[str, object], restart: tuple[str, ...]) -> None:

@@ -33,6 +33,15 @@ struct Shot {
     var launchCards = false
     /// What the model rows do before the picture.
     var modelSteps: [ModelStep] = []
+    /// Press the voice's play button first; the audio goes nowhere.
+    var previewsVoice = false
+}
+
+/// Takes the preview's audio and keeps "playing" until stopped, so the stop button shows.
+@MainActor
+final class SilentPlayer: PreviewPlayer {
+    func play(_ wav: Data, finished: @escaping @MainActor () -> Void) throws {}
+    func stop() {}
 }
 
 enum ModelStep {
@@ -48,6 +57,9 @@ olderInstall.install = .object([
     "source": "app", "environment": "/Users/someone/.voiced/envs/20261001T090000", "version": "0.1.0",
     "lock_sha256": "0b9e2f41", "python": "3.12.15",
 ])
+
+var speakFails = FakeControlServer.Options()
+speakFails.failingOps = ["tts.speak"]
 
 var overriding = FakeControlServer.Options()
 overriding.environmentOverrides = [.ttsVoice]
@@ -69,6 +81,10 @@ let shots = [
     Shot(name: "stt-off", scenario: .sttOff),
     Shot(name: "settings-stt-off", scenario: .sttOff, window: .settings, pane: .speechToText),
     Shot(name: "settings-tts-idle", scenario: .sttOff, window: .settings, pane: .textToSpeech),
+    // Hearing a voice: playing (the button stops it), failed, and unavailable while off.
+    Shot(name: "settings-tts-preview-playing", scenario: .running, window: .settings, pane: .textToSpeech, previewsVoice: true),
+    Shot(name: "settings-tts-preview-failed", scenario: .running, window: .settings, options: speakFails, pane: .textToSpeech, previewsVoice: true),
+    Shot(name: "settings-tts-off", scenario: .ttsOff, window: .settings, pane: .textToSpeech),
     Shot(name: "settings-about", scenario: .running, window: .settings, pane: .about),
     Shot(name: "settings-debug", scenario: .running, window: .settings, options: olderInstall, pane: .debug, launchCards: true),
     Shot(name: "launch-cards", scenario: .running, options: olderInstall, launchCards: true),
@@ -206,8 +222,16 @@ func run() async {
                     model: model, models: models, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
                 await render(view, dark: dark, to: file)
             case .settings:
+                // One for each picture: closing the last picture's window stops its preview.
+                let preview = VoicePreview(speaker: model, player: SilentPlayer())
+                if shot.previewsVoice, let settings = model.settings {
+                    let engine = model.engines?.ttsEngine(named: settings.tts.engine)
+                    await preview.play(settings.tts.voice, line: PreviewLine.text(for: settings.tts.voice, of: engine))
+                }
                 await render(
-                    SettingsView(model: model, models: models, loginItem: LoginItem(), launch: launch, pane: shot.pane),
+                    SettingsView(
+                        model: model, models: models, loginItem: LoginItem(), launch: launch, pane: shot.pane,
+                        preview: preview),
                     dark: dark, to: file)
             }
             print(file.path)

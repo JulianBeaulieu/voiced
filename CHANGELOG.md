@@ -12,6 +12,18 @@ uses [Semantic Versioning](https://semver.org/).
   `stt.model` and the same for `tts`: the install downloads the models for
   these settings and writes them to the config once the models are in, as
   `voiced settings set` would. The app passes its setup this way.
+- Hear a voice before choosing it. In the app, Settings > Text to Speech has
+  a play button beside the Voice picker that speaks one short line in that
+  voice, naming it in its language ("Hi, I'm Heart."), at the default speed;
+  a second click stops it. The app asks the watchdog over the control socket
+  (the new `tts.speak` operation), which asks the running service with the
+  API key it holds, so the app still opens no network connection. The button
+  is off while text to speech is off, stopped or starting.
+- The default speed is a control in the app: Settings > Text to Speech >
+  Speed, 0.5x to 2x in steps of 0.1. The service now reads `tts.speed` from
+  the config file for each request, so a new speed applies at once, from the
+  app, `voiced settings set tts.speed=1.2` or the status page form, with no
+  restart; Home Assistant's requests get it too.
 
 ### Changed
 

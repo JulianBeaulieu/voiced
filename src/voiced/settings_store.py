@@ -16,9 +16,11 @@ shape.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import sys
 import tempfile
+import threading
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -40,6 +42,8 @@ from voiced.config import (
     config_path,
     load_settings,
 )
+
+log = logging.getLogger(__name__)
 
 BindMode = Literal["loopback", "lan"]
 
@@ -79,13 +83,14 @@ INTEGER_SETTINGS = tuple(name for name in SETTABLE if setting_type(name) is int)
 """Settable names whose value is a whole number (from the config models)."""
 
 # Which services read a section at startup. browser_settings is read from the
-# file by the status page, so changing it needs no restart.
+# file by the status page, and tts.speed by the tts service for each request
+# (LiveSettings), so changing them needs no restart.
 _RESTART_BY_SECTION: dict[str, tuple[ServiceName, ...]] = {
     "server": HTTP_SERVICES,
     "stt": ("stt",),
     "tts": ("tts",),
 }
-_READ_LIVE = {("server", "browser_settings")}
+_READ_LIVE = {("server", "browser_settings"), ("tts", "speed")}
 
 WARN_LAN_WITHOUT_KEY = "lan_without_api_key"
 
@@ -141,6 +146,33 @@ def file_stamp(path: Path) -> FileStamp | None:
     except OSError:
         return None
     return (info.st_mtime_ns, info.st_size, info.st_ino)
+
+
+class LiveSettings:
+    """The config file's settings as they are now, for the few values a
+    service reads per request rather than at startup (``_READ_LIVE``). The
+    file is parsed again only when it changes (:func:`file_stamp`), so a
+    caller can ask on every request."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stamp: tuple[Path, FileStamp | None] | None = None
+        self._settings: Settings | None = None
+
+    def get(self) -> Settings | None:
+        """The settings, or None (logged) when the file cannot be read."""
+        path = config_path()
+        stamp = (path, file_stamp(path))
+        with self._lock:
+            if self._settings is not None and stamp == self._stamp:
+                return self._settings
+            try:
+                settings = load_settings(path)
+            except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
+                log.warning("cannot read %s: %s", path, exc)
+                return None
+            self._stamp, self._settings = stamp, settings
+            return settings
 
 
 def is_loopback(bind: str) -> bool:

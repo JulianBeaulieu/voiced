@@ -40,6 +40,8 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case missingModel = "missing-model"
     /// Speech to text switched off, text to speech idle with its model unloaded (ADR 0033).
     case sttOff = "stt-off"
+    /// Text to speech switched off: a voice cannot be heard (ADR 0033).
+    case ttsOff = "tts-off"
 
     public var helloProtocol: Int { self == .newerProtocol ? 2 : 1 }
 
@@ -55,6 +57,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .cycle: "cycles through the states every few seconds"
         case .missingModel: "text to speech up, its model not downloaded"
         case .sttOff: "speech to text off, text to speech idle with its model unloaded"
+        case .ttsOff: "text to speech off"
         }
     }
 
@@ -77,6 +80,11 @@ public enum FakeScenario: String, CaseIterable, Sendable {
                 state: .off, pid: 4242, engine: state[.stt].engine, model: state[.stt].model,
                 uptime: 11_520)
             state[.tts].health = ["status": "idle", "model_loaded": false]
+        case .ttsOff:
+            state.settings.tts.enabled = false
+            state[.tts] = ServiceStatus(
+                state: .off, pid: 4243, engine: state[.tts].engine, model: state[.tts].model,
+                uptime: 11_518)
         case .starting:
             state[.tts] = ServiceStatus(
                 state: .starting, pid: 4243, engine: "kokoro",

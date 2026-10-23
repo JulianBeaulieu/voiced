@@ -24,7 +24,7 @@ from tests.api.conftest import (
 )
 from voiced.api import ffmpeg
 from voiced.cli import uvicorn_config
-from voiced.config import Settings
+from voiced.config import Settings, config_path
 from voiced.engines import registry
 from voiced.engines.base import EngineError, PCMChunk, Voice
 from voiced.testing import FakeTTSEngine, lifespan_client
@@ -112,7 +112,7 @@ async def test_mp3_and_opus_via_ffmpeg(
 
 async def test_default_voice_and_speed_from_settings(settings: Settings) -> None:
     settings.tts.default_voice = "bf_emma"
-    settings.tts.speed = 1.5
+    config_path().write_text("[tts]\nspeed = 1.5\n")
     calls: list[tuple[str, str, float]] = []
 
     class Recording(FakeTTSEngine):
@@ -129,7 +129,20 @@ async def test_default_voice_and_speed_from_settings(settings: Settings) -> None
             "/v1/audio/speech", json={"input": "Yo.", "voice": "am_adam", "speed": 0.5}
         )
         assert r.status_code == 200
-    assert calls == [("Hi.", "bf_emma", 1.5), ("Yo.", "am_adam", 0.5)]
+        # The default speed is read per request: a change needs no restart.
+        config_path().write_text("[tts]\nspeed = 0.8  # slower, and longer\n")
+        r = await c.post("/v1/audio/speech", json={"input": "Hey."})
+        assert r.status_code == 200
+        # An unreadable file falls back to the speed the service started with.
+        config_path().write_text("[tts\n")
+        r = await c.post("/v1/audio/speech", json={"input": "Ho."})
+        assert r.status_code == 200
+    assert calls == [
+        ("Hi.", "bf_emma", 1.5),
+        ("Yo.", "am_adam", 0.5),
+        ("Hey.", "bf_emma", 0.8),
+        ("Ho.", "bf_emma", settings.tts.speed),
+    ]
 
 
 async def test_text_is_normalized_for_the_voice_language(settings: Settings) -> None:

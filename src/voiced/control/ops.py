@@ -3,19 +3,23 @@
 :class:`Operations` turns ``(op, args)`` into a result dict or an
 :class:`~voiced.control.protocol.OpError`. The settings rules live in
 ``voiced.settings_store``; this module only dispatches and maps their errors
-to protocol codes. Process control (status and restarts) goes through a
-:class:`Supervisor`, which the watchdog provides and tests fake.
+to protocol codes. Process control (status and restarts) and speaking a
+line through the tts service go through a :class:`Supervisor`, which the
+watchdog provides and tests fake.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import subprocess
 import sys
 import threading
 import time
+import wave
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -58,6 +62,12 @@ CATALOGUE_TIMEOUT_S = 8.0
 (a fraction of a second); below the CLI client's wait, so the client sees
 this error rather than its own timeout."""
 CATALOGUE_TTL_S = 60.0
+MAX_SPEAK_CHARS = 200
+"""``tts.speak`` is for hearing a voice, not for synthesis; the reply is one
+JSON line, so its audio stays well under the client's line limit."""
+SPEECH_RATE = 24_000
+"""The tts service's raw PCM rate (``voiced.engines.base.TTS_SAMPLE_RATE``,
+which the watchdog does not import)."""
 
 
 class NotInstalled(RuntimeError):
@@ -68,6 +78,11 @@ class ServiceUnavailable(RuntimeError):
     """The service is installed but cannot be restarted now (not loaded)."""
 
 
+class SpeechRefused(RuntimeError):
+    """The tts service answered a ``tts.speak`` with an error, or does not
+    serve the voice."""
+
+
 class CatalogueUnavailable(RuntimeError):
     """The engine catalogue could not be read."""
 
@@ -75,7 +90,7 @@ class CatalogueUnavailable(RuntimeError):
 class Supervisor(Protocol):
     """What the control channel needs from the process supervisor.
 
-    All three methods block (they run commands and HTTP requests) and are
+    All its methods block (they run commands and HTTP requests) and are
     called from background threads.
     """
 
@@ -93,6 +108,14 @@ class Supervisor(Protocol):
         done. May wait for the supervisor's current health poll."""
         ...
 
+    def speak(self, text: str, voice: str) -> bytes:
+        """``text`` in ``voice`` from the running tts service at its default
+        speed, as int16 PCM at :data:`SPEECH_RATE`. Raises
+        :class:`NotInstalled`, :class:`ServiceUnavailable` (no answer) or
+        :class:`SpeechRefused` (an error answer, or a voice it does not
+        serve)."""
+        ...
+
 
 class NoSupervisor:
     """For running the settings operations without a watchdog (the CLI
@@ -105,6 +128,9 @@ class NoSupervisor:
         raise ServiceUnavailable("the watchdog is not running")
 
     def restart(self, service: ServiceName) -> str:
+        raise ServiceUnavailable("the watchdog is not running")
+
+    def speak(self, text: str, voice: str) -> bytes:
         raise ServiceUnavailable("the watchdog is not running")
 
 
@@ -153,6 +179,15 @@ def _int_arg(args: Mapping[str, Any], name: str, default: int) -> int:
     return value
 
 
+def _text_arg(args: Mapping[str, Any], name: str, limit: int) -> str:
+    value = args.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise OpError(BAD_REQUEST, f'"{name}" must be a non-empty string')
+    if len(value) > limit:
+        raise OpError(BAD_REQUEST, f'"{name}" must be at most {limit} characters')
+    return value
+
+
 def _choice(args: Mapping[str, Any], name: str, choices: tuple[str, ...]) -> str:
     value = args.get(name)
     if value not in choices:
@@ -195,6 +230,7 @@ class Operations:
             "engines.list": self.op_engines_list,
             "service.restart": self.op_service_restart,
             "logs.tail": self.op_logs_tail,
+            "tts.speak": self.op_tts_speak,
             "open": self.op_open,
         }
 
@@ -328,5 +364,34 @@ class Operations:
             return {"target": str(settings.server.log_dir)}
         return {"target": str(self.config_file)}
 
+    async def op_tts_speak(self, args: dict[str, Any]) -> dict[str, Any]:
+        """One short line in a voice, from the running tts service, so a
+        client can hear the voice before choosing it. The service's default
+        speed applies. The answer waits for the audio (up to the
+        supervisor's timeout): this client's next request waits with it."""
+        text = _text_arg(args, "text", MAX_SPEAK_CHARS)
+        voice = _text_arg(args, "voice", MAX_SPEAK_CHARS)
+        try:
+            pcm = await asyncio.to_thread(self.supervisor.speak, text, voice)
+        except NotInstalled as exc:
+            raise OpError(NOT_INSTALLED, str(exc)) from None
+        except ServiceUnavailable as exc:
+            raise OpError(SERVICE_UNAVAILABLE, str(exc)) from None
+        except SpeechRefused as exc:
+            raise OpError(BAD_REQUEST, str(exc)) from None
+        return {"format": "wav", "audio": base64.b64encode(wav(pcm)).decode("ascii")}
+
     def config_stamp(self) -> FileStamp | None:
         return file_stamp(self.config_file)
+
+
+def wav(pcm: bytes, rate: int = SPEECH_RATE) -> bytes:
+    """Mono int16 PCM in a WAV file with its real length, which every
+    player reads (the service's streamed WAV has an unknown length)."""
+    out = io.BytesIO()
+    with wave.open(out, "wb") as file:
+        file.setnchannels(1)
+        file.setsampwidth(2)
+        file.setframerate(rate)
+        file.writeframes(pcm)
+    return out.getvalue()

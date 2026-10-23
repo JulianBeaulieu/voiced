@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
-import threading
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -32,7 +31,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse
 
 from voiced.api.context import APIError, Ctx
-from voiced.config import ServiceName, Settings, config_path, load_settings
+from voiced.config import ServiceName, Settings, config_path
 from voiced.context import ServiceContext
 from voiced.control import state_dir
 from voiced.control.protocol import MODEL_NOT_DOWNLOADED
@@ -43,12 +42,11 @@ from voiced.layout import off_marker
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
-    FileStamp,
     InvalidSetting,
+    LiveSettings,
     ModelMissing,
     apply_settings,
     change_view,
-    file_stamp,
     settings_view,
 )
 from voiced.watchdog import launchd_view
@@ -155,31 +153,7 @@ def form_refusal(running: Settings, live: Settings, authorization: str) -> APIEr
     return None
 
 
-class _LiveSettings:
-    """The config file's settings, re-read only when the file changes, so
-    ``/metrics.json`` polls do not parse it every time."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._stamp: tuple[Path, FileStamp | None] | None = None
-        self._settings: Settings | None = None
-
-    def get(self) -> Settings | None:
-        path = config_path()
-        stamp = (path, file_stamp(path))
-        with self._lock:
-            if self._settings is not None and stamp == self._stamp:
-                return self._settings
-            try:
-                settings = load_settings(path)
-            except (OSError, ValueError) as exc:  # TOMLDecodeError, ValidationError
-                log.warning("settings form: cannot read %s: %s", path, exc)
-                return None
-            self._stamp, self._settings = stamp, settings
-            return settings
-
-
-_live = _LiveSettings()
+_live = LiveSettings()
 
 
 def _form_state(running: Settings) -> dict[str, Any]:

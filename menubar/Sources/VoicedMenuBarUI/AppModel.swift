@@ -277,6 +277,12 @@ public final class AppModel {
         }
     }
 
+    /// One short line in `voice` from the running text to speech service, as a WAV file.
+    public func speak(_ text: String, voice: String) async throws -> Data {
+        guard let client else { throw ControlError.notConnected }
+        return try await client.speak(text, voice: voice)
+    }
+
     public func open(_ target: OpenTarget) async {
         guard let client else { return }
         do {

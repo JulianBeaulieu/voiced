@@ -12,6 +12,7 @@ from httpx import AsyncClient
 from voiced.api.status_page import FORM_NEEDS_KEY, form_refusal
 from voiced.config import Settings, config_path
 from voiced.engines.soprano import SopranoEngine
+from voiced.settings_store import LiveSettings
 from voiced.testing import lifespan_client
 
 
@@ -199,10 +200,8 @@ async def test_page_has_the_form(tts_client: AsyncClient) -> None:
 
 
 def test_live_settings_are_reread_only_when_the_file_changes(settings: Settings) -> None:
-    from voiced.api.status_page import _LiveSettings
-
     write_config(browser_settings=True)
-    live = _LiveSettings()
+    live = LiveSettings()
     first = live.get()
     assert first is not None and first.server.browser_settings
     assert live.get() is first  # unchanged file: not parsed again

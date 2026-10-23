@@ -20,6 +20,7 @@ from voiced.metrics import Metrics
 from voiced.models import ModelNotDownloaded
 from voiced.queue import Admission, InferenceQueue
 from voiced.residency import Residency
+from voiced.settings_store import LiveSettings
 from voiced.text import primary_subtag
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ class ServiceContext:
     engine_voices: list[Voice] = field(default_factory=list)
     """A TTS engine's voices, kept from its first load so they are listed
     while the model is unloaded (``voices()`` is stable after a load)."""
+    live: LiveSettings = field(default_factory=LiveSettings)
+    """The config file now, for the settings read per request."""
 
     def __post_init__(self) -> None:
         self.uploads = Admission(self.queue.capacity)
@@ -81,6 +84,13 @@ class ServiceContext:
         bases = {primary_subtag(t) for t in self.languages}
         voices = self.engine_voices or await self.tts_engine.voices()
         return [v for v in voices if primary_subtag(v.language) in bases]
+
+    def default_speed(self) -> float:
+        """``tts.speed`` as the config file has it now, for a request that
+        names no speed: it is read per request, so a change applies without a
+        restart (ADR 0013). As started when the file cannot be read."""
+        live = self.live.get()
+        return (live or self.settings).tts.speed
 
     def check_language(self, language: str | None) -> str | None:
         """Resolve a client's language hint to the engine's own code.

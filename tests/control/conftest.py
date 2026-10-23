@@ -26,6 +26,9 @@ class FakeSupervisor:
         # Cleared, restart() blocks until it is set (a watchdog mid-poll).
         self.restart_gate = threading.Event()
         self.restart_gate.set()
+        # What speak() raises instead of speaking, and what it was asked.
+        self.speech_error: Exception | None = None
+        self.spoken: list[tuple[str, str]] = []
 
     def status(self) -> dict[str, Any]:
         service = {
@@ -54,6 +57,12 @@ class FakeSupervisor:
         self.restart_gate.wait(10)
         self.restarted.append(service)
         return f"restarted {service}"
+
+    def speak(self, text: str, voice: str) -> bytes:
+        self.spoken.append((text, voice))
+        if self.speech_error is not None:
+            raise self.speech_error
+        return b"\x01\x00" * 2400  # 0.1 s at 24 kHz
 
 
 @pytest.fixture

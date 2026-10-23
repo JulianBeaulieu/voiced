@@ -14,6 +14,9 @@ public final class ControlClient: @unchecked Sendable {
     /// `service.restart` may take a while when the service it restarts is hung, which is
     /// exactly when people press Restart.
     public static let restartTimeout: Duration = .seconds(30)
+    /// `tts.speak` waits while the service loads a model unloaded while idle; the server gives
+    /// up after 30 s, so its error arrives before this.
+    public static let speakTimeout: Duration = .seconds(35)
 
     public let socketPath: String
     public let requestTimeout: Duration
@@ -281,6 +284,19 @@ extension ControlClient {
     ) async throws -> [ServiceKind: String] {
         let result = try await request("service.restart", ["service": .string(target.argument)], timeout: timeout)
         return RestartDetail.refused(in: result)
+    }
+
+    /// One short line in `voice`, spoken by the running text to speech service at its default
+    /// speed: a WAV file.
+    public func speak(
+        _ text: String, voice: String, timeout: Duration = ControlClient.speakTimeout
+    ) async throws -> Data {
+        let result = try await request(
+            "tts.speak", ["text": .string(text), "voice": .string(voice)], timeout: timeout)
+        guard let encoded = result["audio"]?.stringValue, let audio = Data(base64Encoded: encoded) else {
+            throw ControlError.protocolViolation("tts.speak returned no audio")
+        }
+        return audio
     }
 
     /// Asks the server where something lives; the caller checks and opens it.

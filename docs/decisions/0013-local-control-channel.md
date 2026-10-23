@@ -337,3 +337,35 @@ closed `state` set and stays at protocol 1, as `missing_model` did (ADR
 "Unknown", which is wrong but harmless, and only someone who switched a
 service off sees it; bumping the protocol would make every older app
 refuse to connect at all. See [ADR 0033](0033-model-residency.md).
+
+## Amendment: hearing a voice, and speed read live
+
+**`tts.speak`.** The menu bar app plays a short line in a voice before the
+user chooses it. It asks the watchdog: `tts.speak` with `text` (up to 200
+characters) and `voice`, answered with a base64 WAV file. The watchdog sends
+`POST /v1/audio/speech` to the running tts service with the API key that
+service was started with, as its probe already does, after checking with
+`GET /v1/audio/voices` that the service serves the voice: a voice it does
+not serve would be spoken in the default voice (ADR 0022), and a preview of
+that misleads. The audio comes back as raw PCM and is wrapped in a WAV file
+with its real length, which every player reads, unlike the service's
+streamed WAV. Talking to the HTTP API from the app was the alternative and
+is still rejected (ADR 0014): it needs the API key, which `settings.get`
+never hands out, and the app would open a network connection for the first
+time. The watchdog imports nothing new (urllib and `wave` from the standard
+library). The answer waits for the audio, up to 30 s, since a model unloaded
+while idle loads first; the requests are answered in order per connection,
+so that client's next request waits with it, as it already does behind a
+slow `engines.list`. Other clients and the events are not held up.
+
+**`tts.speed` is read live.** Speed is a per-request default, so the tts
+service reads it from the config file for each request that names none
+(`voiced.settings_store.LiveSettings`, the reader the status page already
+used for `browser_settings`; the file is parsed again only when it changes).
+A change to it no longer requires a restart: `restart_required` leaves it
+out, for the socket, the CLI and the status page form alike. Restarting the
+service to change a multiplier cost a model reload and cut off any speech
+in progress, and the app would have offered a restart after every step.
+When the file cannot be read, the speed the service started with applies.
+`tts.voice` stays read at start: which voices are served, and the fallback
+for an unknown one, depend on it.

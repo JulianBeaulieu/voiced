@@ -8,8 +8,10 @@ the logs folder and the config file. "Settings…" (⌘,) opens a standard
 Settings window with a sidebar of panes: General (open at login, settings
 from the status page), Network (listen on this Mac or the local network,
 Home Assistant discovery, the API key), Speech to Text and Text to Speech
-(a row per model, grouped by engine, to download, delete or use it, and the
-voice of the engine in use; see [Models](#models)), About (versions, the
+(a row per model, grouped by engine, to download, delete or use it; see
+[Models](#models); Text to Speech also has the default voice, with a play
+button that speaks a short line in it, and the default speed; see
+[Voice and speed](#voice-and-speed)), About (versions, the
 control socket, the config file and logs, the third-party notices) and, once
 "Show Debug pane" in General turns it on, Debug (the app, its pins, the installed environment,
 the installer's state, each service's Login Items status and every path,
@@ -20,7 +22,8 @@ built without what the installer needs; when it cannot reach voiced it says
 why.
 
 It talks only to voiced's local control socket, a Unix socket served by the
-watchdog. It opens no network connection outside the installer: no
+watchdog; even a voice preview comes through it. It opens no network
+connection outside the installer: no
 analytics, no update checks.
 Opening the status page hands the URL voiced reports to your browser.
 
@@ -94,6 +97,26 @@ open menubar/build/voiced.app
 
 Launch at login (`SMAppService`) is offered only when the app runs from a
 bundle; `swift run` starts a bare executable that has nothing to register.
+
+## Voice and speed
+
+The Text to Speech pane's first section sets the defaults a request gets
+when it names no voice or speed.
+
+- **Voice** lists the voices of the engine in use. The play button beside
+  it speaks one line in that voice, naming it in its own language ("Hi, I'm
+  Heart.", "Bonjour, je m'appelle ..."; English for a language the app has
+  no line for, and "Hi, this is my voice." for a voice without a name), at
+  the default speed. While the line loads (a model unloaded while idle
+  loads first) the button shows a spinner, and while it plays, stop. The
+  app asks the watchdog (`tts.speak`), which asks the running service with
+  the API key it started it with, so the app never needs the key. The
+  button is off, with the reason under the picker, while text to speech is
+  off, stopped, starting or missing its model; a failure is one line there.
+- **Speed** steps from 0.5x to 2x by 0.1. The service reads it for each
+  request, so it applies at once with no restart. A value set by hand
+  outside that range is shown as it is, and the first step moves it to the
+  nearest end.
 
 ## Models
 
