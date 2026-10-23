@@ -134,7 +134,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(environmentNames(), [id])
         let voiced = try XCTUnwrap(runner.commands(named: "voiced").first)
         XCTAssertEqual(voiced.executable, home.appendingPathComponent(".voiced/envs/\(id)/bin/voiced").path)
-        // The setup's choice, the recommended models, written before the models step.
+        // The setup's choice, the recommended models: downloaded, then written at the switch.
         XCTAssertEqual(
             voiced.arguments,
             [
@@ -368,6 +368,14 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(installer.opensAtLaunch)
         installer.windowClosed()
         XCTAssertFalse(makeInstaller().opensAtLaunch, "the menu still offers it")
+        // Another version of the app opens it again.
+        UserDefaults(suiteName: defaultsSuite)?.set("0.0.9", forKey: "setupClosedBy")
+        XCTAssertTrue(makeInstaller().opensAtLaunch)
+    }
+
+    func testNoPinnedModelMeansNoManualDownload() {
+        let unpinned = CatalogueModel(id: "org/model", license: "MIT", downloadBytes: 1, downloaded: false)
+        XCTAssertNil(InstallRequest(settings: [], models: [unpinned]).manualDownload)
     }
 
     func testHomeAssistantNamesOnlyTheServicesThatAreOn() async throws {

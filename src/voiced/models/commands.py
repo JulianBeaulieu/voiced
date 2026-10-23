@@ -36,9 +36,9 @@ def download(
 
     settings = load_settings(config)
     if changes:
-        from voiced.settings_store import staged_settings
+        from voiced.settings_store import stage_settings
 
-        settings = staged_settings(settings, changes)
+        settings = stage_settings(changes, config).onto(settings)
     print(f"Hugging Face cache: {cache_dir()}", flush=True)
     jobs: tuple[tuple[Literal["stt", "tts"], str, str], ...] = (
         ("stt", settings.stt.engine, settings.stt.model),
@@ -66,7 +66,7 @@ def download(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m voiced.models",
-        description="Print the default models as JSON, download the configured ones, or pin.",
+        description="Print the model catalogue as JSON, download the configured models, or pin.",
     )
     sub = parser.add_subparsers(dest="command")
     download_parser = sub.add_parser(

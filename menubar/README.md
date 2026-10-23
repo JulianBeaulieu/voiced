@@ -189,7 +189,8 @@ through the same fake server and the fake install runner. Pull requests that cha
 ## The installer
 
 ADR 0018 has the design. The installer is a window with one screen per step,
-and the app opens it by itself when it starts with nothing installed:
+and the app opens it by itself when it starts with nothing installed (unless
+this version of the app saw the setup closed unused, or voiced uninstalled):
 the welcome, which is the setup (each service on or off with its model, the
 recommended ones chosen; what goes where, the download size of that choice,
 free disk space), building

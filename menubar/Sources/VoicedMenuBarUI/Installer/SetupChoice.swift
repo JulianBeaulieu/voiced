@@ -13,10 +13,10 @@ public struct ServiceChoice: Sendable, Equatable {
     }
 }
 
-/// What the first-run setup chose (ADR 0018, "Amendment (2026-10-23)"): which services run, and with
-/// which models. `voiced install` writes it to the config before its models step, which then
-/// downloads these models and no others; a service that is off downloads nothing and is
-/// installed with `enabled = false` (ADR 0033).
+/// What the first-run setup chose (ADR 0018, "Amendment (2026-10-23)"): which services run,
+/// and with which models. `voiced install` downloads these models and no others, nothing for
+/// a service that is off, then writes the choice to the config at the switch, `enabled =
+/// false` for a service that is off (ADR 0033).
 public struct SetupChoice: Sendable, Equatable {
     public var stt: ServiceChoice
     public var tts: ServiceChoice
@@ -101,9 +101,11 @@ struct InstallRequest: Sendable, Equatable {
     }
 
     /// The manual fallback a failed download names (ADR 0018, "Download goes wrong"): each
-    /// model at its pinned revision; one that is not pinned has none to name.
-    var manualDownload: String {
+    /// model at its pinned revision; one that is not pinned has none to name, and with none
+    /// pinned there is nothing to say.
+    var manualDownload: String? {
         let pinned = models.compactMap { model in model.revision.map { "\(model.repo) at revision \($0)" } }
+        guard !pinned.isEmpty else { return nil }
         return "To download the models by hand, fetch \(pinned.joined(separator: " and ")) into the Hugging Face cache, then try again."
     }
 }

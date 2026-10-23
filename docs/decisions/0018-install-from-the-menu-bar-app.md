@@ -1049,7 +1049,8 @@ the model catalogue (`voiced/models/catalogue.py`: repository, licence,
 gated, patterns) and its generated lock (`voiced/models/models.lock.json`:
 revision, files with size and sha256, earlier pins). `python -I -m
 voiced.models` still prints the default models for `install-manifest.json`,
-from the lock. The models step still runs `python -m voiced.models download
+from the lock (changed 2026-10-23: it prints the catalogue, the defaults
+marked recommended; see "Amendment (2026-10-23)"). The models step still runs `python -m voiced.models download
 --config` in the new environment; it now checks the disk first, and the
 progress protocol's `error` event carries a `code` (`failed` for the
 installer's own errors). The `download` event's `model` is the model's id in the
@@ -1066,8 +1067,9 @@ use.
 **The welcome screen is the setup.** On one screen: Speech to text and Text
 to speech, each on or off, each with a model picker over the catalogue (ADR
 0022) with the recommended model preselected; under the picker the chosen
-model as a row of the Models pane shows it (`ModelRow` and the same summary
-view: licence, Recommended, Quality and Speed, what it is for, size). Gated
+model as a row of the Models pane shows it (the same `ModelSummary` view:
+licence, Recommended, Quality and Speed, what it is for, size); each picker
+item names its size. Gated
 models are left out, since they need a Hugging Face token first; Settings
 has them. Under a switch that is off: nothing is downloaded for it, its
 service loads no model and opens no port, and Settings turns it on later.
@@ -1089,25 +1091,30 @@ Repair and Uninstall keep their flows and never show the setup.
 keeps failing) offers "Change Choices" beside Try Again, and closing the
 window there goes back to the setup too; Install then runs again in the
 environment already built. Closing the setup unused, or uninstalling,
-keeps it from opening by itself at the next launch (a user default); the
-menu still offers it.
+keeps that version of the app from opening it by itself at launch (a user
+default holding the version, so a reinstalled newer app opens it again);
+the menu still offers it.
 
 **What is written when.** The app runs `voiced install --origin app
 --json-progress --set KEY=VALUE ...` with `stt.enabled`, and for a service
 that is on its `engine` and `model`, the same for `tts`; `--set` takes these
-six keys only, parsed as `voiced settings set` parses them. Nothing the
+six keys only, its key checked before its value is parsed, as `voiced
+settings set` parses them; an `engine` comes with its `model`. Nothing the
 daemons use changes before the models are in (ADR 0017), and a configured
-model is a downloaded one (ADR 0022), so the config is not written first:
-`voiced install` applies the changes in memory (`staged_settings`, the
-coercion and validation `apply_settings` uses, the engines checked against
-the voiced that runs the install, the new environment's for the app) and
-plans from those settings (a service that is off has its ports left out);
-the models step gets the same `--set` arguments and downloads for them,
-nothing for a service that is off (this changes ADR 0033's last
-consequence). The config itself is written at the switch, as the `settings`
-step after `models` and before `link`, through `apply_settings` with every
-check `voiced settings set` makes, the engines listed by the environment
-being installed. A download that fails leaves the config as it was. The
+model is a downloaded one (ADR 0022), so the config is not written first.
+`apply_settings` is two halves: `stage_settings` checks and applies a
+change in memory (coercion, an engine switch completed with its voice when
+the engines are known, validation of the whole file), and the second half
+checks the models and writes. `plan_install` runs the first half with the
+engines of the voiced that runs the install (the new environment's, for
+the app) and plans from the result (a service that is off has its ports
+left out); the models step gets the completed changes as `--set`
+arguments and downloads for them, nothing for a service that is off (this
+changes ADR 0033's last consequence). The config is written at the switch,
+as the `settings` step after `models` and before `link`, by the whole of
+`apply_settings`, the engines listed by the environment being installed,
+and the step says which running service takes the change on restart. A
+download that fails leaves the config as it was. The
 first install's choice replaces what a config kept from an earlier
 uninstall said: the screen shows what will run. Update, Repair and Roll
 back pass no `--set`.

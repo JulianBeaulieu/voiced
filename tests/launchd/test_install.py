@@ -67,7 +67,6 @@ from voiced.layout import (
     write_manifest,
 )
 from voiced.models import locked, pinned_revisions
-from voiced.settings_store import staged_settings
 
 GOLDEN = Path(__file__).parent / "golden"
 HOME = Path("/Users/someone")
@@ -1039,8 +1038,8 @@ CHOICE = {"stt.enabled": True, "stt.engine": "whisper", "stt.model": WHISPER, "t
 
 
 def _chosen(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> InstallPlan:
-    """The app's first-run choice over a config that runs Parakeet: planned
-    from the staged settings, the engines checked as this voiced has them."""
+    """The app's first-run choice over a config that runs Parakeet: the
+    plan stages it, the engines checked as this voiced has them."""
     from voiced.engines.catalogue import engines_list
 
     monkeypatch.setattr("voiced.control.ops.engines_in_subprocess", lambda **kw: engines_list())
@@ -1048,8 +1047,7 @@ def _chosen(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     (tmp_path / "config.toml").write_text(
         '# kept\n[stt]\nengine = "parakeet"\nmodel = "mlx-community/parakeet-tdt-0.6b-v3"\n'
     )
-    staged = staged_settings(settings, CHOICE, engines=engines_list)
-    return _plan(staged, tmp_path, changes=CHOICE)
+    return _plan(settings, tmp_path, changes=CHOICE)
 
 
 def test_the_chosen_settings_are_downloaded_first_and_written_at_the_switch(
@@ -1086,6 +1084,18 @@ def test_the_chosen_settings_are_downloaded_first_and_written_at_the_switch(
     assert written.stt.enabled and not written.tts.enabled
     assert p.config_file.read_text().startswith("# kept\n"), "comments kept"
     assert any("tts: " in line and "serves nothing" in line for line in said)
+
+
+def test_the_plan_carries_the_engine_switch_as_staged(settings: Settings, tmp_path: Path) -> None:
+    """The plan stages ``--set`` with this voiced's engines: a text to speech
+    switch gains the voice the new engine has, and the models step and the
+    switch get the same completed changes."""
+    _environment(tmp_path / "env")
+    p = _plan(
+        settings, tmp_path, changes={"tts.engine": "phonon", "tts.model": "gradium/phonon-31m-en"}
+    )
+    assert p.changes["tts.voice"] != "af_heart"
+    assert f"tts.voice={p.changes['tts.voice']}" in p.model_download_command()
 
 
 def test_a_failed_download_leaves_the_config_as_it_was(
@@ -1136,7 +1146,13 @@ def test_cli_install_takes_only_the_service_settings(
     assert "--set stt.enabled: expected true or false" in capsys.readouterr().out
     assert main([*argv, "--set", "bind=lan"]) == 1
     assert "--set bind: install sets only stt.enabled" in capsys.readouterr().out
-    assert main([*argv, "--set", "stt.engine=nope"]) == 1
+    # Refused by its key, before anything is read: api_key=- would read stdin.
+    monkeypatch.setattr("sys.stdin", None)
+    assert main([*argv, "--set", "api_key=-"]) == 1
+    assert "--set api_key: install sets only" in capsys.readouterr().out
+    assert main([*argv, "--set", "stt.engine=whisper"]) == 1
+    assert "--set stt.engine needs stt.model in the same install" in capsys.readouterr().out
+    assert main([*argv, "--set", "stt.engine=nope", "--set", "stt.model=x"]) == 1
     assert "--set stt.engine: 'nope' is not installed" in capsys.readouterr().out
     assert not (tmp_path / "missing.toml").exists()
 

@@ -70,15 +70,21 @@ public final class Installer {
     }
 
     /// Opening the app shows the setup by itself when nothing is installed yet (no plists,
-    /// and no other account's) and the setup was not closed unused or voiced uninstalled
-    /// since: then the menu offers it. An install the command line or an older app made is
-    /// left to the menu, as before.
+    /// and no other account's), unless this version of the app saw the setup closed unused
+    /// or voiced uninstalled: then the menu offers it. An install the command line or an
+    /// older app made is left to the menu, as before.
     public var opensAtLaunch: Bool {
-        phase == .welcome && !isInstalled && !configuration.defaults.bool(forKey: Self.setupClosedKey)
+        phase == .welcome && !isInstalled
+            && configuration.defaults.string(forKey: Self.setupClosedKey) != configuration.resources.manifest.version
     }
 
-    /// The user default that keeps the setup from opening at launch.
-    static let setupClosedKey = "setupClosed"
+    /// The user default that keeps the setup from opening at launch: the app version that
+    /// saw it closed, so a new version opens it again.
+    static let setupClosedKey = "setupClosedBy"
+
+    private func rememberSetupClosed() {
+        configuration.defaults.set(configuration.resources.manifest.version, forKey: Self.setupClosedKey)
+    }
 
     /// A first install failed at `voiced install`, perhaps on the model chosen: the failure
     /// offers the setup again beside Try Again.
@@ -224,13 +230,9 @@ public final class Installer {
 
     /// The window was closed: a run that ended starts from the welcome screen next time, so
     /// "Install voiced…" after an uninstall installs, and so does a first install that failed
-    /// at `voiced install`. The setup closed unused, or an uninstall, keeps it from opening by
-    /// itself at the next launch.
+    /// at `voiced install`. The setup itself closed unused does not open by itself again.
     public func windowClosed() {
-        switch phase {
-        case .welcome, .uninstalled: configuration.defaults.set(true, forKey: Self.setupClosedKey)
-        default: break
-        }
+        if phase == .welcome { rememberSetupClosed() }
         if offersSetup { return changeChoices() }
         switch phase {
         case .done, .finished, .uninstalled, .confirmUninstall:
@@ -477,6 +479,8 @@ public final class Installer {
             guard value(await stages.removeStateDirectory()) != nil else { return }
             phase = .uninstalled(UninstallChoices())
         }
+        // Uninstalled on purpose: the next launch does not offer to install again.
+        rememberSetupClosed()
     }
 
     // MARK: - Home Assistant
@@ -509,7 +513,8 @@ public final class Installer {
     private func homeAssistantInfo() -> HomeAssistantInfo {
         let settings = model.settings
         let ports = settings?.ports
-        func on(_ kind: ServiceKind) -> Bool { settings?.isEnabled(kind) ?? true }
+        // Before the settings are read, a first install knows what it chose.
+        func on(_ kind: ServiceKind) -> Bool { settings?.isEnabled(kind) ?? (task != .install || setup[kind].isOn) }
         return HomeAssistantInfo(
             identity: configuration.hostIdentity(), sttPort: on(.stt) ? ports?.sttWyoming ?? 10300 : nil,
             ttsPort: on(.tts) ? ports?.ttsWyoming ?? 10200 : nil, apiKey: nil)

@@ -69,9 +69,7 @@ from voiced.layout import (
 from voiced.settings_store import (
     INSTALL_SETTABLE,
     SETTABLE,
-    InvalidSetting,
     parse_setting,
-    staged_settings,
 )
 from voiced.table import render_table
 from voiced.watchdog import (
@@ -307,26 +305,24 @@ def _show_root_step(plan: InstallPlan, echo: Echo, *, dry_run: bool) -> None:
 def _install(
     args: argparse.Namespace, settings: Settings, echo: Echo, runner: Runner, progress: Progress
 ) -> InstallPlan:
-    from voiced.engines.catalogue import engines_list
     from voiced.launchd.install import InstallError, plan_install, plan_summary, run_install
 
-    try:
-        changes = dict(parse_setting(pair) for pair in args.pairs)
-    except ValueError as exc:
-        raise InstallError(f"--set {exc}") from None
-    if other := sorted(set(changes) - set(INSTALL_SETTABLE)):
-        raise InstallError(
-            f"--set {other[0]}: install sets only {', '.join(INSTALL_SETTABLE)}; "
-            "use voiced settings set for the rest"
-        )
-    try:
-        # Planned and downloaded from these; written once the models are in.
-        # Checked against this voiced's engines, the new environment's for
-        # the app; a --source build's are checked again at the switch.
-        engines = None if args.source is not None else engines_list
-        settings = staged_settings(settings, changes, engines=engines)
-    except InvalidSetting as exc:
-        raise InstallError(f"--set {exc}") from None
+    changes: dict[str, object] = {}
+    for pair in args.pairs:
+        # The key first, so no other setting is parsed (api_key=- reads stdin).
+        if (key := pair.partition("=")[0].strip()) not in INSTALL_SETTABLE:
+            raise InstallError(
+                f"--set {key}: install sets only {', '.join(INSTALL_SETTABLE)}; "
+                "use voiced settings set for the rest"
+            )
+        try:
+            changes.update([parse_setting(pair)])
+        except ValueError as exc:
+            raise InstallError(f"--set {exc}") from None
+    for kind in HTTP_SERVICES:
+        # The models step downloads the model named, so a switch names it.
+        if f"{kind}.engine" in changes and f"{kind}.model" not in changes:
+            raise InstallError(f"--set {kind}.engine needs {kind}.model in the same install")
     plan = plan_install(
         settings,
         state_dir=args.state_dir,

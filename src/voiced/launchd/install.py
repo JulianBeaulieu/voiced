@@ -622,12 +622,26 @@ def plan_install(
     (``prefix``, default ``sys.prefix``); with it, a new one under
     ``<state_dir>/envs``. ``origin`` is who made the environment, for the
     manifest: by default ``homebrew`` for a keg and ``cli`` otherwise; the
-    app passes ``app``. ``settings`` are the effective ones: with
-    ``changes`` (``--set``) already applied (:func:`staged_settings`), which
-    the install writes to the config at the switch. A service that is off
-    has its ports left out.
+    app passes ``app``. ``changes`` (``--set``) are staged onto
+    ``settings`` (:func:`stage_settings`): the plan and the models step use
+    them as staged, an engine switch completed with its voice, and the
+    install writes them to the config at the switch. They are checked
+    against this voiced's engines, the new environment's for the app; a
+    ``source`` build's are checked at the switch, by its own Python. A
+    service that is off has its ports left out.
     """
     config_file = config_file or config_path()
+    if changes:
+        from voiced.engines.catalogue import engines_list
+        from voiced.settings_store import ConfigFileError, InvalidSetting, stage_settings
+
+        try:
+            staged = stage_settings(
+                changes, config_file, engines=engines_list if source is None else None
+            )
+        except (InvalidSetting, ConfigFileError) as exc:
+            raise InstallError(f"--set {exc}") from None
+        settings, changes = staged.onto(settings), staged.wanted
     state = (state_dir or settings.install.venv_dir).expanduser().absolute()
     if source is None:
         environment, found = stable_environment(sys.prefix if prefix is None else prefix)
@@ -718,7 +732,7 @@ class InstallError(RuntimeError):
     pass
 
 
-def write_settings(plan: InstallPlan) -> None:
+def write_settings(plan: InstallPlan, say: Say = print) -> None:
     """Write ``plan.changes`` to the config at the switch, once the models
     step has downloaded what they name, as ``voiced settings set`` does:
     every check included, the engines those of the environment being
@@ -730,9 +744,12 @@ def write_settings(plan: InstallPlan) -> None:
         return engines_in_subprocess(entry=plan.environment / "bin" / "voiced")
 
     try:
-        apply_settings(plan.changes, plan.config_file, engines=engines)
+        change = apply_settings(plan.changes, plan.config_file, engines=engines)
     except InvalidSetting as exc:
         raise InstallError(f"{exc}. Nothing was changed in {plan.config_file}") from None
+    for service in change.restart_required:
+        # Daemons already running read the config at start.
+        say(f"{service}: its settings changed; a running service takes them on restart")
 
 
 def current_manifest(plan: InstallPlan) -> Manifest | None:
@@ -912,7 +929,9 @@ def install_steps(
     # The switch: everything above can fail without touching what runs now.
     if plan.changes:
         shown = ", ".join(f"{key}={value}" for key, value in plan.changes.items())
-        steps.append(Step("settings", f"set {shown} in {config}", lambda: write_settings(plan)))
+        steps.append(
+            Step("settings", f"set {shown} in {config}", lambda: write_settings(plan, say))
+        )
     in_place = same_path(plan.environment, plan.state_dir)  # a legacy venv, adopted
     old = previous.environment if previous is not None else None
     unchanged = old is not None and same_path(old, plan.environment)
