@@ -2,8 +2,8 @@
 
 voiced is one Python package that runs as two services on an Apple Silicon
 Mac. Each service is one long-lived process that loads one model onto the
-GPU through MLX, keeps it resident, and serves it over two protocols from
-one event loop. This page explains the pieces; the decision records under
+GPU through MLX, keeps it resident (unless `idle_unload_s` says to unload
+it while unused), and serves it over two protocols from one event loop. This page explains the pieces; the decision records under
 [decisions/](decisions/README.md) explain why.
 
 ## Services
@@ -77,6 +77,22 @@ download` or `voiced install` fetches it.
 If `load()` raises, the process logs the traceback and exits with status 1,
 so launchd restarts it. A stop request during a load exits immediately
 rather than waiting for a load thread that cannot be interrupted.
+
+A service switched off (`enabled = false`) does none of this: `voiced
+serve` writes its pid to `<state dir>/<service>.off` and waits for launchd
+to stop it, with no engine and no ports, and the watchdog takes that pid
+for `off` (`voiced.launchd.parked`).
+
+## Model residency
+
+`voiced.residency.Residency` owns every `load()` and `unload()` of the
+engine. With `idle_unload_s` above 0, a timer unloads the model once that
+long has passed since the last request and the queue is empty; `/health`
+says `idle`. `inference()` calls `Residency.ensure_loaded()` once it holds
+the slot, so the next request, on any transport, waits while the model
+loads again (`loading`) and is then served; an unload never overlaps a
+request. Measurements and the engine contract are in
+[ADR 0033](decisions/0033-model-residency.md).
 
 ## Request path
 

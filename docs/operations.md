@@ -302,6 +302,8 @@ each service with a `timeout_s` limit and applies these rules:
 | Observation | Action |
 |---|---|
 | `ok` | Reset the failure count; end the startup grace period. |
+| `idle` (the model unloaded after `idle_unload_s`) or `loading` (loading it again for a request) | As `ok`. A load that hangs holds the queue, which the stall rule below catches. The probe is not sent while `idle`. |
+| `off`: launchd's pid for the service is its parked process (`enabled = false`) | Nothing: never polled, never a failure, no grace; logged once per process. |
 | Connection refused or timed out within `startup_grace_s` of the watchdog starting, of its last restart of the service, or of launchd giving the service a new pid, and before that process has answered with its model loaded | Nothing. The service is starting. |
 | `starting` while the service's own uptime is below `startup_grace_s` | Nothing. The model is loading. |
 | `starting` beyond `startup_grace_s` | Restart: the load is hung. |
@@ -378,9 +380,9 @@ every 10 s, and a `settings` event follows any change to the config file.
 
 | Operation | Arguments | Result |
 |---|---|---|
-| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `unknown`), `pid`, `health` (the `/health` body), `engine`, `model`, `warm`, `uptime_s`, `restarts` |
+| `status` | | `installed`, and per service (`stt`, `tts`, `watchdog`): `state` (`running`, `starting`, `stopped`, `degraded`, `missing_model` (the model is not downloaded; `model` names it), `off` (switched off: the process is parked), `unknown`), `pid`, `health` (the `/health` body, whose `status` says `idle` while the model is unloaded and `loading` while it loads again), `engine`, `model`, `warm` (the first load is done; true while `idle` too), `uptime_s`, `restarts` |
 | `settings.get` | | `bind` (`loopback` or `lan`), `api_key_set`, `zeroconf`, `stt`, `tts`, `browser_settings`, `ports`, `paths`. Never the API key. |
-| `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed` | the new settings plus `changed`, `restart_required` and `warnings` |
+| `settings.set` | any of `bind`, `api_key`, `zeroconf`, `browser_settings`, `stt.engine`, `stt.model`, `tts.engine`, `tts.model`, `tts.voice`, `tts.speed`, `stt.enabled`, `tts.enabled`, `stt.idle_unload_s`, `tts.idle_unload_s` | the new settings plus `changed`, `restart_required` and `warnings` |
 | `engines.list` | | installed engines with their `label`, models, languages, `model_languages` (each model's, which the app shows for the model in use), `unavailable_reason` (why the engine cannot run on this Mac, such as Moonshine's "needs macOS 15 or later" below macOS 15; null when it can), voices, `voice_labels` and `voice_languages`, without loading any |
 | `service.restart` | `service`: `stt`, `tts` or `all` | `accepted` at once and `detail` per service; progress follows as `status` events |
 | `logs.tail` | `service`: `stt`, `tts` or `watchdog`; `lines` up to 1000 | `lines`, each cut at 4 KiB (` [line truncated]`), from at most the last 4 MiB of the file |
@@ -473,6 +475,15 @@ overlapping 20 s chunks and MLX's buffer cache is emptied after each request,
 so the serving peak holds for any input length. The load peak is a transient:
 parakeet-mlx reads the fp32 weights and then casts them to bf16
 ([ADR 0008](decisions/0008-stt-engine-parakeet.md)).
+
+What a service costs while it waits, with the defaults, `idle_unload_s` set, and
+switched off (`voiced serve` with `/metrics.json`, M1 Max; see
+[ADR 0033](decisions/0033-model-residency.md) for every engine):
+
+| Service | Model loaded | Model unloaded (`idle`) | First request after `idle` | Off (`enabled = false`) |
+|---|---|---|---|---|
+| stt, Parakeet | 1.51 GB footprint, 2.1 GB after use | 0.12 GB | waits about 0.4 s for the load | 29 MB, no model, no ports |
+| tts, Kokoro | 0.47 GB footprint, 0.73 GB after use | 0.10 GB | waits about 0.25 s for the load | 29 MB, no model, no ports |
 
 Plan for the two services together to take about 2.2 GB idle, more than
 3 GB at moments while serving (Kokoro's long replies and Parakeet's long input each

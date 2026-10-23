@@ -16,9 +16,13 @@ need; a client configured for the tts port cannot transcribe, and the other
 way round. The `api_key` argument is required by the client library; any
 value works unless you configured one (see [Authentication](#authentication)).
 
-While the model is still loading, every `/v1` route answers `503`
-`server_busy` with the message `EngineNotLoaded: model is still loading`
-and `Retry-After: 1`. `/health` shows the same state as `starting`.
+While the model is still loading after the service starts, every `/v1`
+route answers `503` `server_busy` with the message `EngineNotLoaded: model
+is still loading` and `Retry-After: 1`. `/health` shows the same state as
+`starting`. A model unloaded after `idle_unload_s` is different: the next
+request waits while it loads again, a fraction of a second, and is answered
+(ADR 0033). A service switched off (`enabled = false`) does not listen at
+all.
 
 ## Authentication
 
@@ -480,8 +484,9 @@ for model in tts.models.list():
 
 ## GET /health
 
-No authentication. `200` once the model is loaded and warm, `503` with
-`"status": "starting"` before that, or `"status": "missing_model"` when the
+No authentication. `200` once the model is loaded and warm, and while it
+is unloaded on purpose (`idle`, `loading`), `503` with
+`"status": "starting"` before the first load, or `"status": "missing_model"` when the
 configured model is not downloaded (the services never download one; the
 process stays up and `last_error` names the `voiced models download`
 command); the body is the same document either way. The services bind their ports before loading the model, so a loading
@@ -511,7 +516,8 @@ curl -s http://127.0.0.1:8880/health
 
 | Field | Meaning |
 |---|---|
-| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference failed on the server side, `ok` otherwise. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022); clients should treat a status they do not know as not ready. |
+| `status` | `starting` until the model is loaded and warm, `missing_model` if the configured model is not in the cache, `degraded` if the most recent inference (or a load for one) failed on the server side, `idle` while the model is unloaded after `idle_unload_s` without a request, `loading` while it loads again for a request that waits, `ok` otherwise. A request to an `idle` service is answered after the load, not refused. Client errors, busy answers and disconnects never change it. `missing_model` is new in 0.2.0 (ADR 0022), `idle` and `loading` after 0.3.0 (ADR 0033); clients should treat a status they do not know as not ready, except that a `200` answer takes requests. |
+| `model_loaded` | Whether the model is in memory now: false while `starting`, `idle` and `loading`. |
 | `queue_depth`, `queue_capacity` | Requests waiting or running, and the limit from `queue_depth` in the config. |
 | `last_inference_at` | Unix time of the last successful inference, `null` before the first. |
 | `last_inference_ms` | Duration of that inference while it held the GPU. For streams this is the whole session; for HTTP speech it is the synthesis, not the download. |

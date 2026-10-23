@@ -200,6 +200,33 @@ VOICED_CONFIG=/path/to/other.toml # use a different config file
 `voiced config` prints the effective configuration as JSON. Unknown keys are
 errors, so a typo stops the service with a message instead of being ignored.
 
+### Memory: unload when idle, or switch a service off
+
+Each service keeps its model loaded, about 1.5 GB for Parakeet and 0.5 to
+0.7 GB for Kokoro. Two settings per service change that, from the app's
+Speech to Text and Text to Speech panes or the command line:
+
+```sh
+voiced settings set tts.idle_unload_s=300   # unload after 5 minutes unused
+voiced settings set stt.enabled=false       # another app does the listening
+voiced restart all
+```
+
+- `idle_unload_s` unloads the model after that many seconds without a
+  request, which frees nearly all of it (Parakeet's service drops from
+  1.5 GB to 0.12 GB). The next request waits while it loads again, about
+  0.4 s for Parakeet and 0.25 s for Kokoro, and is then answered as usual.
+  `0`, the default, keeps the model loaded.
+- `enabled = false` switches the service off: it loads no model, opens no
+  port and is not announced to Home Assistant. Its LaunchDaemon still
+  starts it at boot (stopping that for good would need an administrator
+  each time), and the process waits, holding about 30 MB. `voiced status`
+  and the app say "off".
+
+Both take effect when the service restarts. For Home Assistant, leave
+`idle_unload_s` at 0: the first command after a quiet spell would wait for
+the reload. See [ADR 0033](docs/decisions/0033-model-residency.md).
+
 ### Security note on `bind`
 
 Both services bind to `127.0.0.1` by default and are reachable only from the
@@ -714,6 +741,8 @@ daemons and Metal access, including from a real daemon context with
 |---|---|
 | `/health` returns 503 with `"status": "starting"`, `/v1` returns 503 `server_busy` | The model is still loading, which takes seconds; watch `voiced logs`. |
 | `/health` returns 503 with `"status": "missing_model"`, `/v1` returns 503 `model_not_downloaded` | The configured model is not in the Hugging Face cache (a hand-edited config, a cache another tool cleared). `last_error` and `voiced doctor` name the command: `voiced models download <model>`, then `voiced restart`. The watchdog leaves the service alone meanwhile. |
+| `/health` says `"idle"` or `"loading"` | Not a problem: `idle_unload_s` unloaded the model, and the next request loads it again (`loading`) before it is answered. |
+| `voiced status` says a service is `off` | `enabled = false` for it. Turn it on with `voiced settings set stt.enabled=true` (or `tts`) and `voiced restart stt`. |
 | `/health` says `"degraded"` | The last inference failed. The error is in `last_error` and on the status page; the watchdog restarts the service if it stays degraded for two minutes. |
 | HTTP 503 `server_busy` while the model is loaded | The inference queue is full. Raise `queue_depth` or send fewer concurrent requests. |
 | HTTP 401 `auth_error` | `api_key` is set; send `Authorization: Bearer <key>`. |
