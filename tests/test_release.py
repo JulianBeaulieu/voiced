@@ -98,7 +98,6 @@ def test_the_cask_leaves_the_services_alone_on_upgrade(release: ModuleType) -> N
     for service in ("stt", "tts", "watchdog"):
         label = f"io.github.julianbeaulieu.voiced.{service}"
         assert f'"{label}"' in zap
-        assert f'"/Library/LaunchDaemons/{label}.plist"' in zap
     assert 'trash:     "~/Library/Application Support/voiced"' in zap
 
 

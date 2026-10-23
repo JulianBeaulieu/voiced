@@ -27,7 +27,8 @@ cask "voiced" do
   # The services are not the cask's: voiced-privileged installs them when the app first
   # opens (ADR 0018). Homebrew runs `uninstall` on upgrade and reinstall too, with sudo, so
   # removing them there would cost an update a password and the app another to put them
-  # back; only `--zap` removes them.
+  # back; only `--zap` removes them. `launchctl:` also deletes each label's plist in
+  # /Library/LaunchDaemons.
   uninstall quit: "io.github.julianbeaulieu.voiced.menubar"
 
   zap launchctl: [
@@ -35,26 +36,20 @@ cask "voiced" do
         "io.github.julianbeaulieu.voiced.tts",
         "io.github.julianbeaulieu.voiced.watchdog",
       ],
-      delete:    [
-        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist",
-        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist",
-        "/Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist",
-      ],
       trash:     "~/Library/Application Support/voiced"
 
   caveats <<~EOS
     voiced.app installs the voiced services the first time it opens.
 
-    `brew upgrade --cask voiced` keeps the services running and asks for no
-    password; the app updates them on its next launch, and asks for one only
-    if the release changes the services' plists.
+    `brew upgrade --cask voiced` leaves the services running.
+    The app updates them on its next launch.
 
-    `brew uninstall --cask voiced` removes the app and leaves the services
-    running from ~/.voiced. To remove them as well, use Uninstall in the
-    app's Settings first, or run `~/.voiced/bin/voiced uninstall` and the
-    sudo step it prints afterwards, or uninstall with
-    `brew uninstall --zap --cask voiced`, which also removes the app's uv
-    cache. Only the first two can remove ~/.voiced, the config in
-    ~/.config/voiced and the downloaded models.
+    `brew uninstall --cask voiced` leaves the services running.
+    To remove them:
+      before it, Uninstall in the app's Settings;
+      or `brew uninstall --zap --cask voiced`;
+      or afterwards, the `voiced uninstall` steps in docs/operations.md.
+    Only the app and `voiced uninstall` can also remove ~/.voiced,
+    the config in ~/.config/voiced and the downloaded models.
   EOS
 end

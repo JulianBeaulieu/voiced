@@ -535,26 +535,32 @@ and `brew upgrade --cask voiced`, or download it from the
 and replace the copy in Applications. On its next launch the app sees that
 the services run an older voiced and offers **Update voiced**.
 
-Passwords: the first open of the app asks for an administrator password
-once, to install the daemons (`voiced-privileged install`); Homebrew asks
-for none, unless `/Applications` is not writable for your account (a
-managed Mac), in which case it asks to move the app there. An upgrade or
-reinstall of the cask leaves the daemons alone, so Homebrew asks for
-nothing, and **Update voiced** asks only when `voiced-privileged check`
-finds that a plist differs or a label is not loaded, or when the firewall
-is on and the services' Python changed. The plists run
-`~/.voiced/bin/voiced`, so an ordinary update takes no password at all.
-The first upgrade from 0.4.0 or earlier is the exception: Homebrew runs
-the uninstall stanza of the cask that is installed, and up to 0.4.0 that
-stanza removed the daemons with `sudo`, so that one upgrade asks in the
-terminal and the app asks again to put them back.
+Administrator passwords:
 
-`brew uninstall --cask voiced` removes the app only; the daemons keep
-running from `~/.voiced`. To remove them, use Uninstall in the app's
-Settings before it, run `~/.voiced/bin/voiced uninstall` and its sudo step
-after it, or uninstall with `brew uninstall --zap --cask voiced`, which
-boots them out and deletes their plists (one password, Homebrew's) and the
-app's uv cache, but leaves `~/.voiced`, the config and the models.
+- First open of the app: one, to install the services
+  (`voiced-privileged install`). Homebrew asks for none, unless
+  `/Applications` is not writable for your account (a managed Mac).
+- `brew upgrade --cask voiced` or a reinstall: none. The cask leaves the
+  services running.
+- **Update voiced**: none, unless `voiced-privileged check` finds that a
+  plist differs or a label is not loaded, or the firewall is on and the
+  services' Python changed. The plists run `~/.voiced/bin/voiced`, so an
+  ordinary update needs none.
+- The first upgrade from 0.4.0 or earlier: two, once. Homebrew runs the
+  uninstall stanza of the installed cask, which up to 0.4.0 removed the
+  services with `sudo`, and the app asks again to put them back.
+
+`brew uninstall --cask voiced` removes the app only; the services keep
+running from `~/.voiced`. To remove them:
+
+- before it, use Uninstall in the app's Settings;
+- or run `brew uninstall --zap --cask voiced`, which stops and removes the
+  services and their plists (one password, Homebrew's) and the app's uv
+  cache, and leaves `~/.voiced`, the config and the models;
+- or afterwards, from a terminal: `~/.voiced/bin/voiced uninstall` prints
+  the root step; run it, then `~/.voiced/bin/voiced uninstall --yes`
+  (add `--remove-config`, `--remove-models` and `--remove-logs` to delete
+  those as well).
 
 ### Homebrew
 
