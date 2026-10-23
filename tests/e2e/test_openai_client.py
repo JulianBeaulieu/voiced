@@ -129,14 +129,12 @@ def test_speech_soprano(tts_soprano_service: LiveService) -> None:
 
 
 def test_default_voice_and_an_unknown_voice(tts_kokoro_service: LiveService) -> None:
-    from openai import BadRequestError
-
     client = tts_kokoro_service.openai_client()
-    # No voice: falls back to the configured default (af_heart), still produces audio.
-    data = client.audio.speech.create(model="voiced", voice="", input="Hello there.").read()
-    assert _audio_signature_ok("wav", data)
-    with pytest.raises(BadRequestError):
-        client.audio.speech.create(model="voiced", voice="not_a_voice", input="Hello.").read()
+    # No voice, or one the service does not serve: spoken in the configured
+    # default (af_heart), not refused (ADR 0022).
+    for voice in ("", "not_a_voice"):
+        data = client.audio.speech.create(model="voiced", voice=voice, input="Hello there.").read()
+        assert _audio_signature_ok("wav", data), voice
 
 
 # --- content round trips (TTS -> STT) ---------------------------------------
