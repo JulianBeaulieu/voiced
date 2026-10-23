@@ -23,9 +23,15 @@ import os
 import signal
 from pathlib import Path
 
+from voiced.layout import off_marker
 
-def off_detail(service: str) -> str:
-    """What every surface says about a parked service, with the way back."""
+
+def off_detail(service: str, *, enabled_now: bool = False) -> str:
+    """What every surface says about a parked service, with the way back.
+    ``enabled_now``: the config file already turns it on, and only the
+    restart is missing."""
+    if enabled_now:
+        return f"off until restarted (`voiced restart {service}`); [{service}] enabled is true now"
     return (
         f"off ([{service}] enabled = false); turn it on with "
         f"`voiced settings set {service}.enabled=true` and `voiced restart {service}`"
@@ -34,7 +40,7 @@ def off_detail(service: str) -> str:
 
 def marker(state_dir: Path, service: str) -> Path:
     """Where a parked ``service`` writes its pid: ``<state dir>/<service>.off``."""
-    return state_dir / f"{service}.off"
+    return off_marker(state_dir, service)
 
 
 def parked_pid(path: Path) -> int | None:
@@ -49,6 +55,23 @@ def parked_pid(path: Path) -> int | None:
 def is_parked(path: Path, pid: int | None) -> bool:
     """Whether ``pid``, the process launchd runs for the service now, is parked."""
     return pid is not None and parked_pid(path) == pid
+
+
+def running(path: Path) -> bool:
+    """Whether a process with the pid in the marker at ``path`` is alive:
+    for a reader that does not know launchd's pid (the other service's
+    status page). A pid reused by an unrelated process would read as
+    parked; :func:`is_parked` is the exact test."""
+    pid = parked_pid(path)
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def clear(path: Path) -> None:

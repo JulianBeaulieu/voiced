@@ -61,7 +61,7 @@ def warm(payload: dict[str, Any] | None) -> bool:
     unloaded while idle and loaded again by the next request (ADR 0033)."""
     if not payload:
         return False
-    return payload.get("model_loaded") is True or payload.get("status") in ("idle", "loading")
+    return payload.get("model_loaded") is True or payload.get("status") in HEALTHY
 
 
 def service_view(

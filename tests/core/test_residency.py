@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event
 
@@ -176,15 +177,6 @@ async def test_tts_lists_voices_while_unloaded_and_speaks(
         assert tts_engine.loads == 2
 
 
-async def test_two_requests_share_one_load(stt_app: FastAPI, stt_engine: FakeSTTEngine) -> None:
-    idle(stt_app, 0.2)
-    async with lifespan_client(stt_app) as c:
-        await until(lambda: stt_engine.unloads == 1)
-        stt_engine.latency_s = 0.05
-        assert await asyncio.gather(transcribe(c), transcribe(c)) == [200, 200]
-        assert stt_engine.loads == 2
-
-
 async def test_a_failed_load_fails_the_request_and_the_next_tries_again(
     stt_idle: tuple[AsyncClient, ServiceContext],
     stt_engine: FakeSTTEngine,
@@ -224,6 +216,71 @@ async def test_a_model_deleted_while_idle_is_missing_model(
     health = await c.get("/health")
     assert health.status_code == 503
     assert health.json()["status"] == "missing_model"
+
+
+async def test_a_request_during_an_unload_waits_then_loads_again(stt_app: FastAPI) -> None:
+    """An HTTP request and a Wyoming stream arrive while ``unload()`` runs:
+    both wait for it, then for one reload, and both are answered."""
+    async with idle_listener(stt_app) as (ctx, engine, listener):
+        c = AsyncClient(transport=ASGITransport(app=stt_app), base_url="http://voiced")
+        assert await transcribe(c) == 200, "loaded again"
+        gate = engine.unload_gate = asyncio.Event()
+        unloading = asyncio.create_task(ctx.residency._unload())
+        await until(lambda: ctx.health.status == "idle" and not gate.is_set())
+        upload = asyncio.create_task(transcribe(c))
+        async with client(listener) as w:
+            await w.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+            await w.write_event(chunk())
+            await asyncio.sleep(0.05)
+            assert engine.loads == 2, "nothing loads while the unload runs"
+            seen: list[str] = []
+            engine.latency_s = 0.1
+            gate.set()
+            await until(lambda: seen.append(ctx.health.status) or ctx.health.status == "ok")
+            await w.write_event(AudioStop().event())
+            events = await read_until(w, "transcript", "error")
+        assert events[-1].type == "transcript"
+        assert await upload == 200
+        await unloading
+        assert "loading" in seen
+        assert engine.loads == 3 and engine.unloads == 2
+        await c.aclose()
+
+
+async def test_a_cancelled_reload_still_finishes(
+    stt_idle: tuple[AsyncClient, ServiceContext], stt_engine: FakeSTTEngine
+) -> None:
+    """The client hangs up while the model loads again: the load completes
+    and health says so, and the next request does not load a second copy."""
+    c, ctx = stt_idle
+    stt_engine.latency_s = 0.2
+    hung_up = asyncio.create_task(transcribe(c))
+    await until(lambda: ctx.health.status == "loading")
+    hung_up.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await hung_up
+    await until(lambda: ctx.health.status == "ok")
+    assert stt_engine.loaded and stt_engine.loads == 2
+    assert await transcribe(c) == 200
+    assert stt_engine.loads == 2
+
+
+async def test_two_streams_share_one_load(stt_app: FastAPI, settings: Settings) -> None:
+    """Shared stream slots (``stt.streams = 2``): both sessions wait on the
+    same reload."""
+    async with idle_listener(stt_app) as (ctx, engine, listener):
+        assert ctx.queue.max_shared == 2
+        engine.latency_s = 0.2
+        async with client(listener) as a, client(listener) as b:
+            for w in (a, b):
+                await w.write_event(AudioStart(rate=16_000, width=2, channels=1).event())
+                await w.write_event(chunk())
+            await until(lambda: ctx.queue.depth == 2)
+            for w in (a, b):
+                await w.write_event(AudioStop().event())
+            results = [await read_until(w, "transcript", "error") for w in (a, b)]
+        assert [r[-1].type for r in results] == ["transcript", "transcript"]
+        assert engine.loads == 2
 
 
 # --- engines that cannot unload, and the first load ------------------------------

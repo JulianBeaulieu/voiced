@@ -132,3 +132,20 @@ async def test_health_withholds_the_error_message_when_a_key_is_set(
         assert snapshot["last_error"].startswith("RuntimeError")
         assert "secret words" not in snapshot["last_error"]
     assert "secret words" not in json.dumps(metrics)
+
+
+async def test_metrics_say_when_the_other_service_is_off(
+    tts_client: AsyncClient, settings: Settings
+) -> None:
+    """ADR 0033: the TTS page says speech to text is off while its process parks."""
+    import os
+
+    from voiced.launchd import parked
+
+    assert (await tts_client.get("/metrics.json")).json()["services_off"] == []
+    marker = parked.marker(settings.install.venv_dir, "stt")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{os.getpid()}\n")  # a live pid stands in for the parked process
+    assert (await tts_client.get("/metrics.json")).json()["services_off"] == ["stt"]
+    marker.write_text("999999\n")  # gone
+    assert (await tts_client.get("/metrics.json")).json()["services_off"] == []

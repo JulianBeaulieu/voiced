@@ -53,6 +53,7 @@ from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
     MANIFEST,
+    OFF_SERVICES,
     PARTIAL_SUFFIX,
     PYTHONS,
     Manifest,
@@ -67,6 +68,7 @@ from voiced.layout import (
     is_legacy_venv,
     legacy_venv_paths,
     link_entry_point,
+    off_marker,
     partial_environments,
     read_manifest,
     same_path,
@@ -1141,7 +1143,8 @@ def state_targets(state_dir: Path) -> UninstallTargets:
     except ManifestError as exc:
         return UninstallTargets([], [], [], refused=str(exc))
     entry = entry_point(state_dir)
-    files = [entry, state_dir / "control.sock", state_dir / MANIFEST]
+    markers = [off_marker(state_dir, service) for service in OFF_SERVICES]
+    files = [entry, state_dir / "control.sock", *markers, state_dir / MANIFEST]
     if manifest is None:  # nothing installed; at most a stray socket
         return UninstallTargets([], files, [state_dir])
     # Unfinished builds too: uninstall holds the lock the builder holds.

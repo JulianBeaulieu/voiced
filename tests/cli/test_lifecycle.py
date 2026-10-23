@@ -365,7 +365,7 @@ def test_uninstall_waits_for_an_install(
 # A service switched off (ADR 0033) ------------------------------------------
 
 
-def test_start_of_a_service_switched_off_says_how_to_turn_it_on(settings: Settings) -> None:
+def test_start_of_a_service_switched_off_starts_it_and_says_so(settings: Settings) -> None:
     settings.stt.enabled = False
     stt, tts = settings.launchd.label("stt"), settings.launchd.label("tts")
     fake = FakeLaunchctl({stt: True, tts: True})
@@ -373,18 +373,19 @@ def test_start_of_a_service_switched_off_says_how_to_turn_it_on(settings: Settin
     assert lc.cmd_start("stt", settings, fake, out.append) == 0
     assert out == [
         "stt: off ([stt] enabled = false); turn it on with "
-        "`voiced settings set stt.enabled=true` and `voiced restart stt`"
+        "`voiced settings set stt.enabled=true` and `voiced restart stt`",
+        f"stt: kickstarted {stt}",
     ]
-    assert fake.calls == [], "not kickstarted, not bootstrapped"
-    out.clear()
-    lc.cmd_start("tts", settings, fake, out.append)
-    assert ["launchctl", "kickstart", f"system/{tts}"] in fake.calls
+    # Started as any other service: its process parks, and turning it on
+    # later is a restart, which needs the daemon loaded.
+    assert ["launchctl", "kickstart", f"system/{stt}"] in fake.calls
 
 
 def test_status_says_off_for_the_parked_process(settings: Settings) -> None:
     from voiced.control import state_dir
     from voiced.launchd import parked
 
+    settings.stt.enabled = False
     fake = FakeLaunchctl({settings.launchd.label(s): True for s in ("stt", "tts", "watchdog")})
     marker = parked.marker(state_dir(settings), "stt")
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -398,6 +399,12 @@ def test_status_says_off_for_the_parked_process(settings: Settings) -> None:
     assert rows[0]["health"] == "off"
     assert "voiced settings set stt.enabled=true" in rows[0]["health_detail"]
     assert rows[1]["health"] == "idle"
+    # Turned on in the file, not restarted yet.
+    settings.stt.enabled = True
+    rows = lc.collect_status(settings, fake, poll)
+    assert rows[0]["health"] == "off"
+    assert rows[0]["health_detail"].startswith("off until restarted (`voiced restart stt`)")
+    settings.stt.enabled = False
 
     out: list[str] = []
     assert lc.cmd_status(settings, fake, out.append, control=lambda s: None) == 1
@@ -415,3 +422,11 @@ def test_status_is_fine_with_idle_and_off(
     monkeypatch.setattr(lc, "collect_status", lambda *a, **k: rows)
     out: list[str] = []
     assert lc.cmd_status(settings, FakeLaunchctl({}), out.append, control=lambda s: None) == 0
+
+
+def test_no_probe_for_a_service_that_unloads_when_idle(settings: Settings) -> None:
+    """Each probe is a request: it would keep the model loaded (ADR 0033)."""
+    settings.tts.idle_unload_s = 300
+    stt, tts = lc.watchdog_specs(settings)
+    assert stt.probe is not None
+    assert tts.probe is None

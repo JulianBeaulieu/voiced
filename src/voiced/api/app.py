@@ -86,6 +86,8 @@ async def _load(ctx: ServiceContext) -> None:
         log.exception("%s engine failed to load; exiting", ctx.service)
         logging.shutdown()
         exit_process(1)
+    if isinstance(ctx.engine, TTSEngine):
+        ctx.engine_voices = await ctx.engine.voices()
     if not ctx.languages:
         log.warning(
             "%s serves no language: engine %s offers %s but %s.languages is %s",

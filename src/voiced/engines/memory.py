@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import gc
+from collections.abc import Callable
+
+from voiced.threads import ModelThread
 
 
 def release_memory() -> None:
@@ -21,3 +24,15 @@ def release_memory() -> None:
     except ImportError:
         return
     mx.clear_cache()
+
+
+async def unload_on(thread: ModelThread, drop: Callable[[], None]) -> None:
+    """An engine's ``unload()``: on its model thread, ``drop`` the model's
+    state (set every attribute ``load()`` filled back to empty), then
+    :func:`release_memory`."""
+
+    def blocking() -> None:
+        drop()
+        release_memory()
+
+    await thread.run(blocking)

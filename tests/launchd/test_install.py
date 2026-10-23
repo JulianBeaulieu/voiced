@@ -1332,6 +1332,7 @@ def test_uninstall_removes_only_what_voiced_owns(settings: Settings, tmp_path: P
     _install(p)
     (p.state_dir / "python" / "cpython-3.12").mkdir(parents=True)
     (p.state_dir / "control.sock").write_text("")
+    (p.state_dir / "stt.off").write_text("4242\n")  # a parked process killed by SIGKILL
     (p.state_dir / "precious.txt").write_text("mine")
     said: list[str] = []
     targets = uninstall_targets(p, settings, logs=False, models=False, config=False)

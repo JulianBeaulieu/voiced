@@ -59,7 +59,7 @@ Kind = Literal[
     "missing_model",
     "off",
 ]
-HEALTHY: frozenset[Kind] = frozenset({"ok", "idle", "loading"})
+HEALTHY: frozenset[str] = frozenset({"ok", "idle", "loading"})
 """Answers that reset every counter: ``idle`` (the model unloaded on purpose)
 and ``loading`` (loading it again for a request) are healthy (ADR 0033)."""
 Action = Literal["none", "restart", "cooldown"]
@@ -148,8 +148,21 @@ class ServiceState:
     busy_since: float | None = None
     last_completion: float | None = None
     not_loaded_reported: bool = False
-    missing_reported: bool = False
-    off_reported: bool = False
+    reported: set[str] = field(default_factory=set)
+    """Kinds already logged once for the current process (``missing_model``,
+    ``off``); cleared when launchd gives the service a new pid."""
+
+    def report_once(self, kind: str) -> bool:
+        """Whether ``kind`` is new for this process (and note it)."""
+        new = kind not in self.reported
+        self.reported.add(kind)
+        return new
+
+    def leave_alone(self) -> None:
+        """A state the watchdog does not act on: no failure, no timers."""
+        self.failures = 0
+        self.degraded_since = None
+        self.busy_since = None
 
     def in_grace(self, now: float, startup_grace_s: float) -> bool:
         """Is an ``unreachable`` poll at ``now`` still the startup window?"""
@@ -245,14 +258,11 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.failures = 0
         state.busy_since = None
         state.last_pid = obs.pid
-        state.missing_reported = False
-        state.off_reported = False
+        state.reported.clear()
     if obs.kind == "off":
-        state.failures = 0
-        state.degraded_since = None
-        state.busy_since = None
+        state.leave_alone()
         state.awaiting_recovery = False
-        quiet, state.off_reported = state.off_reported, True
+        quiet = not state.report_once("off")
         return Decision("none", f"not supervised: {obs.detail}", quiet=quiet)
     loaded = obs.payload is not None and obs.payload.get("model_loaded") is True
     if obs.kind in HEALTHY or (loaded and obs.kind != "starting"):
@@ -270,9 +280,8 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         return Decision("none", "healthy again" if recovered else "healthy", recovered)
 
     if obs.kind == "missing_model":
-        state.failures = 0
-        state.degraded_since = None
-        quiet, state.missing_reported = state.missing_reported, True
+        state.leave_alone()
+        quiet = not state.report_once("missing_model")
         return Decision("none", f"model not downloaded, not restarting: {obs.detail}", quiet=quiet)
 
     if obs.loaded is False:
@@ -372,7 +381,7 @@ def poll_health(url: str, *, timeout_s: float, api_key: str = "") -> Observation
     uptime = payload.get("uptime_s")
     uptime_s = float(uptime) if isinstance(uptime, int | float) else None
     status = payload.get("status")
-    if status in ("ok", "idle", "loading") and code == 200:
+    if status in HEALTHY and code == 200:
         return Observation(status, "", uptime_s, payload)
     if status == "starting":
         return Observation("starting", "model loading", uptime_s, payload)

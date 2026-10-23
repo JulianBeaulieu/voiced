@@ -67,6 +67,7 @@ from voiced.layout import (
 from voiced.settings_store import BOOLEAN_SETTINGS, INTEGER_SETTINGS, SETTABLE
 from voiced.table import render_table
 from voiced.watchdog import (
+    HEALTHY,
     Observation,
     ServiceSpec,
     Watchdog,
@@ -346,9 +347,9 @@ def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> i
     failures = 0
     for name in _services(service):
         if name in HTTP_SERVICES and not settings.service(name).enabled:
-            # Not started: it would only park (voiced.launchd.parked, ADR 0033).
+            # Started as any other: its process parks (voiced.launchd.parked,
+            # ADR 0033), and turning it on is a restart without root.
             echo(f"{name}: {parked.off_detail(name)}")
-            continue
         label = settings.launchd.label(name)
         if print_service(label, runner).loaded:
             result = runner(kickstart_argv(label))
@@ -586,7 +587,9 @@ def collect_status(
                 off_marker = parked.marker(state_dir(settings), http_service)
                 if parked.is_parked(off_marker, ls.pid):
                     row["health"] = "off"
-                    row["health_detail"] = parked.off_detail(http_service)
+                    row["health_detail"] = parked.off_detail(
+                        http_service, enabled_now=settings.service(http_service).enabled
+                    )
                     row["health_payload"] = None
                     continue
                 obs = poll(f"{settings.http_url(http_service)}/health")
@@ -609,7 +612,7 @@ def _uptime(seconds: float | None) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-FINE = ("ok", "idle", "loading", "off")
+FINE = HEALTHY | {"off"}
 """Health that ``voiced status`` reports as fine: serving, a model unloaded
 while idle or loading again, or switched off on purpose (ADR 0033)."""
 
@@ -922,13 +925,15 @@ def cmd_doctor(args: argparse.Namespace, settings: Settings, runner: Runner, ech
 
 
 def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
+    """A service with ``idle_unload_s`` set gets no probe: each probe is a
+    request, and would keep its model loaded (ADR 0033)."""
     return [
         ServiceSpec(
             name="stt",
             label=settings.launchd.label("stt"),
             base_url=settings.http_url("stt"),
             api_key=settings.server.api_key,
-            probe=default_probe("stt", settings.stt.model),
+            probe=None if settings.stt.idle_unload_s else default_probe("stt", settings.stt.model),
             engine=settings.stt.engine,
             model=settings.stt.model,
             off_marker=parked.marker(state_dir(settings), "stt"),
@@ -938,7 +943,9 @@ def watchdog_specs(settings: Settings) -> list[ServiceSpec]:
             label=settings.launchd.label("tts"),
             base_url=settings.http_url("tts"),
             api_key=settings.server.api_key,
-            probe=default_probe("tts", settings.tts.model, settings.tts.default_voice),
+            probe=None
+            if settings.tts.idle_unload_s
+            else default_probe("tts", settings.tts.model, settings.tts.default_voice),
             engine=settings.tts.engine,
             model=settings.tts.model,
             off_marker=parked.marker(state_dir(settings), "tts"),

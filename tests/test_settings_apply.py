@@ -385,3 +385,10 @@ def test_enabled_and_idle_unload_are_checked(cfg: Path, name: str, value: object
         apply_settings({name: value}, cfg)
     assert info.value.field == name
     assert cfg.read_text() == before
+
+
+def test_idle_unload_is_at_most_a_week(cfg: Path) -> None:
+    with pytest.raises(InvalidSetting) as info:
+        apply_settings({"tts.idle_unload_s": 10**400}, cfg)
+    assert info.value.field == "tts.idle_unload_s"
+    assert apply_settings({"tts.idle_unload_s": 7 * 24 * 3600}, cfg).changed

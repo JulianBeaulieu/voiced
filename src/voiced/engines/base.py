@@ -223,10 +223,12 @@ class _EngineMeta(ABC):
         while another method of the engine runs. Drop every reference to
         model state (weights, caches, voice tensors, sessions), then return
         what the framework keeps for reuse to the system: for MLX,
-        ``voiced.engines.memory.release_memory()`` on the thread that ran
-        the model.
-        The default raises :class:`NotImplementedError`, and the service
-        then keeps the model loaded and says so in its log.
+        ``voiced.engines.memory.unload_on()`` does both on the engine's
+        model thread.
+
+        The default raises :class:`NotImplementedError`: a service whose
+        engine keeps it never unloads, and says so in its log. It is not
+        abstract so that engines written before it still load.
         """
         raise NotImplementedError
 

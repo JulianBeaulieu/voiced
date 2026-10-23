@@ -7,6 +7,7 @@
       envs/<id>/             environments built by `voiced install --source` (or the app)
       python/                uv-managed Pythons those environments run on
       control.sock           the watchdog's control socket (ADR 0013)
+      stt.off, tts.off       the pid of a service switched off and parked (ADR 0033)
       install.json           the manifest: which environment is active, and that
                              the directory is voiced's
 
@@ -50,7 +51,13 @@ ORIGINS: tuple[Origin, ...] = ("cli", "homebrew", "app")
 VENV_ENTRIES = ("lib", "include", "share", "pyvenv.cfg", ".gitignore", "CACHEDIR.TAG", ".lock")
 # Files a state directory may hold without a manifest: what a watchdog that
 # ran before any install leaves, and Finder's.
-UNCLAIMED_OK = frozenset({"control.sock", ".DS_Store"})
+OFF_SERVICES = ("stt", "tts")
+UNCLAIMED_OK = frozenset({"control.sock", ".DS_Store", *(f"{s}.off" for s in OFF_SERVICES)})
+
+
+def off_marker(state_dir: Path, service: str) -> Path:
+    """Where a service switched off writes its pid (``voiced.launchd.parked``)."""
+    return state_dir / f"{service}.off"
 
 
 def entry_point(state_dir: Path) -> Path:

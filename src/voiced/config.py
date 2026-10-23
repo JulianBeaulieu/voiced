@@ -118,6 +118,9 @@ STT_STREAMS = 2
 """Stream sessions within the finalize target for Parakeet on an M1 Max (ADR 0020)."""
 
 
+MAX_IDLE_UNLOAD_S = 7 * 24 * 3600
+
+
 class _ServiceSection(_Section):
     """What both inference services share: whether the service runs and how
     long its model stays loaded while unused (ADR 0033)."""
@@ -125,8 +128,8 @@ class _ServiceSection(_Section):
     # Off: the service's process serves nothing and loads no model.
     enabled: bool = True
     # Seconds without a request after which the model is unloaded; the next
-    # request loads it again. 0 keeps it loaded.
-    idle_unload_s: int = Field(default=0, ge=0)
+    # request loads it again. 0 keeps it loaded; at most a week.
+    idle_unload_s: int = Field(default=0, ge=0, le=MAX_IDLE_UNLOAD_S)
 
 
 class STTConfig(_ServiceSection):

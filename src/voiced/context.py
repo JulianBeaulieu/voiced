@@ -38,6 +38,9 @@ class ServiceContext:
     many at once as the queue holds."""
     residency: Residency = field(init=False)
     """Every load and unload of the engine (ADR 0033)."""
+    engine_voices: list[Voice] = field(default_factory=list)
+    """A TTS engine's voices, kept from its first load so they are listed
+    while the model is unloaded (``voices()`` is stable after a load)."""
 
     def __post_init__(self) -> None:
         self.uploads = Admission(self.queue.capacity)
@@ -76,7 +79,7 @@ class ServiceContext:
         """The TTS engine's voices whose language matches :attr:`languages`;
         as of its first load, so they are listed while the model is unloaded."""
         bases = {primary_subtag(t) for t in self.languages}
-        voices = self.residency.voices or await self.tts_engine.voices()
+        voices = self.engine_voices or await self.tts_engine.voices()
         return [v for v in voices if primary_subtag(v.language) in bases]
 
     def check_language(self, language: str | None) -> str | None:

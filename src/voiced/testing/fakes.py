@@ -104,6 +104,8 @@ class FakeSTTEngine(STTEngine):
         self.loaded = False
         self.calls = 0
         self.loads = self.unloads = 0
+        self.unload_gate: asyncio.Event | None = None
+        """Set to make ``unload()`` wait until the event is set."""
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
@@ -111,6 +113,8 @@ class FakeSTTEngine(STTEngine):
         self.loads += 1
 
     async def unload(self) -> None:
+        if self.unload_gate is not None:
+            await self.unload_gate.wait()
         self.loaded = False
         self.unloads += 1
 
@@ -159,6 +163,8 @@ class FakeTTSEngine(TTSEngine):
         self.loaded = False
         self.calls = 0
         self.loads = self.unloads = 0
+        self.unload_gate: asyncio.Event | None = None
+        """Set to make ``unload()`` wait until the event is set."""
 
     async def load(self) -> None:
         await asyncio.sleep(self.latency_s)
@@ -166,6 +172,8 @@ class FakeTTSEngine(TTSEngine):
         self.loads += 1
 
     async def unload(self) -> None:
+        if self.unload_gate is not None:
+            await self.unload_gate.wait()
         self.loaded = False
         self.unloads += 1
 

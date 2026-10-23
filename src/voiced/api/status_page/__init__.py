@@ -34,8 +34,10 @@ from fastapi.responses import HTMLResponse
 from voiced.api.context import APIError, Ctx
 from voiced.config import Settings, config_path, load_settings
 from voiced.context import ServiceContext
+from voiced.control import state_dir
 from voiced.control.protocol import MODEL_NOT_DOWNLOADED
 from voiced.engines.catalogue import engines_list
+from voiced.launchd import parked
 from voiced.settings_store import (
     SETTABLE,
     ConfigFileError,
@@ -84,7 +86,15 @@ async def metrics_json(ctx: Ctx) -> dict[str, Any]:
         "api_key_required": bool(ctx.settings.server.api_key),
         "default_voice": ctx.settings.tts.default_voice if ctx.service == "tts" else None,
         "settings_form": await asyncio.to_thread(_form_state, ctx.settings),
+        "services_off": _services_off(ctx),
     }
+
+
+def _services_off(ctx: ServiceContext) -> list[str]:
+    """The other service, if it is switched off and parked (ADR 0033)."""
+    other = "tts" if ctx.service == "stt" else "stt"
+    marker = parked.marker(state_dir(ctx.settings), other)
+    return [other] if parked.running(marker) else []
 
 
 def _public_metrics(ctx: ServiceContext) -> dict[str, Any]:

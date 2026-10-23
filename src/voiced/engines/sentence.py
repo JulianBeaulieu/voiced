@@ -52,7 +52,7 @@ from voiced.engines.base import (
     TTSEngine,
     UnknownVoice,
 )
-from voiced.engines.memory import release_memory
+from voiced.engines.memory import unload_on
 from voiced.text.sentences import split_sentences
 from voiced.threads import ModelThread
 
@@ -152,11 +152,7 @@ class SentenceTTSEngine(TTSEngine):
         """Blocking load and warm-up; assigns ``self._model`` last."""
 
     async def unload(self) -> None:
-        await self._thread.run(self._unload_and_release)
-
-    def _unload_and_release(self) -> None:
-        self._unload_sync()
-        release_memory()
+        await unload_on(self._thread, self._unload_sync)
 
     def _unload_sync(self) -> None:
         """Blocking: drop every reference ``_load_sync`` made. The model by

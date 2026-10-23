@@ -65,7 +65,7 @@ from voiced.engines.base import (
     Transcript,
     UnsupportedLanguage,
 )
-from voiced.engines.memory import release_memory
+from voiced.engines.memory import unload_on
 from voiced.gpu import stt_turn
 from voiced.models import default_model
 from voiced.text import collapse_whitespace, primary_subtag
@@ -199,11 +199,10 @@ class ParakeetEngine(STTEngine):
         await self._thread.run(self._load_blocking)
 
     async def unload(self) -> None:
-        await self._thread.run(self._unload_blocking)
+        await unload_on(self._thread, self._drop)
 
-    def _unload_blocking(self) -> None:
+    def _drop(self) -> None:
         self._model = self._attention = None
-        release_memory()
 
     def _load_blocking(self) -> None:
         from parakeet_mlx import from_pretrained

@@ -63,8 +63,19 @@ SETTABLE: dict[str, tuple[str, str]] = {
 }
 """Settable name (as the control protocol spells it) -> (section, file key)."""
 
-BOOLEAN_SETTINGS = ("zeroconf", "browser_settings", "stt.enabled", "tts.enabled")
-INTEGER_SETTINGS = ("stt.idle_unload_s", "tts.idle_unload_s")
+
+def setting_type(name: str) -> object:
+    """The annotation of the config field a settable name writes."""
+    section, key = SETTABLE[name]
+    model = Settings.model_fields[section].annotation
+    assert isinstance(model, type) and issubclass(model, BaseModel)
+    return model.model_fields[key].annotation
+
+
+BOOLEAN_SETTINGS = tuple(name for name in SETTABLE if setting_type(name) is bool)
+"""Settable names whose value is true or false (from the config models)."""
+INTEGER_SETTINGS = tuple(name for name in SETTABLE if setting_type(name) is int)
+"""Settable names whose value is a whole number (from the config models)."""
 
 # Which services read a section at startup. browser_settings is read from the
 # file by the status page, so changing it needs no restart.
