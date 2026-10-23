@@ -147,3 +147,10 @@ async def test_one_deadline_for_the_whole_exchange() -> None:
             await Speech(lambda: spec, timeout_s=0.2)("Hi.", "a")
     finally:
         server.close()
+
+
+async def test_a_chunked_answer_is_refused_rather_than_played() -> None:
+    chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\n"
+    async with stub(chunked) as spec:
+        with pytest.raises(SpeechUnavailable, match="chunks"):
+            await Speech(lambda: spec)("Hi.", "a")

@@ -63,7 +63,8 @@ class Speech:
         self.max_seconds = max_seconds
 
     async def __call__(self, text: str, voice: str) -> bytes:
-        spec = self.spec()
+        # The watchdog's lock, held through a whole restart: off the event loop.
+        spec = await asyncio.to_thread(self.spec)
         if spec is None:
             raise SpeechUnavailable("tts is not supervised by this watchdog")
         try:
@@ -116,13 +117,20 @@ async def _request(
         await writer.drain()
         status = (await reader.readline()).split()
         code = int(status[1]) if len(status) > 1 and status[1].isdigit() else 0
-        while (await reader.readline()).strip():
-            pass  # headers: HTTP/1.0, so the body ends when the server closes
+        chunked = False
+        while header := (await reader.readline()).strip():
+            name, _, value = header.partition(b":")
+            if name.strip().lower() == b"transfer-encoding" and b"chunked" in value.lower():
+                chunked = True
+        # HTTP/1.0: the body ends when the server closes. uvicorn's h11 server
+        # answers an HTTP/1.0 client so; its httptools server would chunk.
+        if chunked:
+            raise SpeechUnavailable("the tts service answered in chunks, which this reader refuses")
         cap = (limit if code == 200 and limit is not None else _ERROR_BODY_BYTES) + 1
         data = bytearray()
         while len(data) < cap and (chunk := await reader.read(cap - len(data))):
             data += chunk
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: a header line over the stream limit
         raise SpeechUnavailable(f"the tts service broke off: {exc}") from None
     finally:
         writer.close()

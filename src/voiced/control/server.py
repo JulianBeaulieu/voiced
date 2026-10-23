@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import socket
@@ -29,6 +28,7 @@ from voiced.control.protocol import (
     BAD_REQUEST,
     MAX_LINE_BYTES,
     OpError,
+    Request,
     encode,
     error,
     event,
@@ -138,16 +138,6 @@ class _Client:
     """Its requests in ``CONCURRENT_OPS`` still being answered."""
 
 
-def _op_of(line: bytes) -> object:
-    """The ``op`` of a request line, or None; :func:`parse_request` reports
-    what is wrong with a bad line."""
-    try:
-        request = json.loads(line)
-    except ValueError:
-        return None
-    return request.get("op") if isinstance(request, dict) else None
-
-
 def _cancel(tasks: set[asyncio.Task[None]]) -> None:
     for task in list(tasks):
         task.cancel()
@@ -229,7 +219,9 @@ class ControlServer:
         await self.ops.wait_restarts()
         if self._server is not None:
             self._server.close()
+        answering = [task for c in self.clients for task in c.answering]
         await asyncio.gather(*(self._finish(c) for c in list(self.clients)))
+        await asyncio.gather(*answering, return_exceptions=True)  # cancelled by _finish
         for task in list(self._tasks):
             task.cancel()
         if self._tasks:
@@ -291,19 +283,21 @@ class ControlServer:
                 return
             if not line.strip():
                 continue
-            if _op_of(line) in CONCURRENT_OPS:
-                task = asyncio.create_task(self._answer(client, line), name="voiced-control-answer")
+            try:
+                request = parse_request(line)
+            except OpError as exc:
+                self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
+                continue
+            if request.op not in CONCURRENT_OPS:
+                await self._answer(client, request)
+            elif not client.closed:  # dropped meanwhile: nobody to answer
+                task = asyncio.create_task(
+                    self._answer(client, request), name="voiced-control-answer"
+                )
                 client.answering.add(task)
                 task.add_done_callback(client.answering.discard)
-            else:
-                await self._answer(client, line)
 
-    async def _answer(self, client: _Client, line: bytes) -> None:
-        try:
-            request = parse_request(line)
-        except OpError as exc:
-            self._send(client, error(exc.extra.get("id"), exc.code, exc.message))
-            return
+    async def _answer(self, client: _Client, request: Request) -> None:
         try:
             result = await self.ops.dispatch(request.op, request.args)
         except OpError as exc:

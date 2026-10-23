@@ -79,6 +79,9 @@ def voice_names(cls: type[TTSEngine], voices: list[Voice]) -> dict[str, str]:
     A"), and a "Default" voice names no one."""
     if getattr(cls, "personal_voice_names", False) is not True:
         return {}
+    # By name, not by engine: "Default" is the name every engine gives the
+    # voice it uses when none is chosen (Soprano, Chatterbox, Phonon), so a
+    # third-party engine's is left out too.
     return {v.id: v.name for v in voices if v.name and v.name.lower() != "default"}
 
 

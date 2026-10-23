@@ -200,6 +200,7 @@ public enum PreviewLine {
         let line = base.flatMap { lines[aliases[$0] ?? $0] } ?? lines["en"]!
         guard let name, !name.isEmpty else { return line.unnamed }
         let named = line.named.replacingOccurrences(of: "%@", with: name)
-        return named.count <= maxLength ? named : line.unnamed
+        // Code points, as the server's `len` counts them, not grapheme clusters.
+        return named.unicodeScalars.count <= maxLength ? named : line.unnamed
     }
 }

@@ -197,8 +197,11 @@ final class VoicePreviewTests: XCTestCase {
         let saved = await model.apply(.ttsVoice("bf_emma"))
         XCTAssertTrue(saved)
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        XCTAssertEqual(server.openConnections, 2)
         preview.stop()
         XCTAssertEqual(preview.state, .idle)
+        let closed = await eventually { server.openConnections == 1 }
+        XCTAssertTrue(closed, "stop closes the preview's connection, which the server sees")
         XCTAssertEqual(model.connection, .connected(version: "0.0.1"), "the app's own connection stays")
     }
 
@@ -270,5 +273,9 @@ final class PreviewLineTests: XCTestCase {
     func testANameTooLongForTheServersLimitIsLeftOut() {
         let long = String(repeating: "x", count: PreviewLine.maxLength)
         XCTAssertEqual(PreviewLine.text(name: long, language: "en"), "Hi, this is my voice.")
+        // Counted in code points, as the server counts: "मैं" is one or two graphemes, three scalars.
+        let hindi = String(repeating: "मैं", count: 15)
+        XCTAssertLessThan(hindi.count, PreviewLine.maxLength)
+        XCTAssertEqual(PreviewLine.text(name: hindi, language: "hi"), "नमस्ते, यह मेरी आवाज़ है।")
     }
 }
