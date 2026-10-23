@@ -24,7 +24,7 @@ class Voiced < Formula
   end
 
   def install
-    # The daemons run this environment (through ~/.voiced/bin/voiced, see
+    # The services run this environment (through ~/.voiced/bin/voiced, see
     # caveats), so it is isolated from the brewed Python's own site-packages.
     venv = virtualenv_create(libexec, python3, system_site_packages: false)
     python = venv.root/"bin/python"
@@ -47,24 +47,26 @@ class Voiced < Formula
 
   def caveats
     <<~EOS
-      voiced runs as three LaunchDaemons that start at boot, before anyone logs
-      in, as your user (never root). `brew services` cannot set that up, so:
+      voiced runs as three LaunchAgents of your user: they start when you log
+      in and stop when you log out, so a Mac that serves unattended keeps you
+      logged in, or logs you in automatically. `brew services` cannot set them
+      up, so:
 
         voiced install
 
       It links ~/.voiced/bin/voiced to this formula, downloads the models
-      (about 2.7 GB) and prints one `sudo /bin/bash .../voiced-privileged.sh
-      install <you>` line: the only step that needs root, the same script the
-      menu bar app runs. Then `voiced status`.
+      (about 2.7 GB) and loads the services. No sudo. Then `voiced status`.
 
       Upgrade with `brew upgrade voiced` (for a `--HEAD` install, `brew upgrade
       --fetch-HEAD voiced`); once it has removed the old version, the watchdog
       moves the services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set,
-      run `voiced restart all` after the upgrade instead.
+      run `voiced restart all` after the upgrade instead. After the first
+      upgrade from 0.4.0 or earlier, run `voiced install` once more: it prints
+      the one line that removes the old LaunchDaemons.
 
-      Before `brew uninstall voiced`, run `voiced uninstall` and the sudo step
-      it prints; otherwise launchd stops the daemons, since their program is
-      gone, but keeps them loaded.
+      Before `brew uninstall voiced`, run `voiced uninstall --yes`; otherwise
+      launchd stops the services, since their program is gone, but keeps them
+      loaded.
     EOS
   end
 

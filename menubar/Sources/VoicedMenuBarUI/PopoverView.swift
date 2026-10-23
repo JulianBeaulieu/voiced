@@ -611,7 +611,7 @@ struct InstallHelpView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
             CommandBlock(command: "voiced install --source ~/voiced")
-            Text("It ends with the one command to run with administrator rights.")
+            Text("It installs and starts the services as you; no administrator is needed.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -686,7 +686,7 @@ struct LaunchCards: View {
                 if launch.backgroundItemsOff {
                     Notice(
                         symbol: "exclamationmark.triangle.fill", tint: .orange,
-                        text: "voiced can't start at boot while it is off in Login Items.",
+                        text: "voiced can't start when you log in while it is off in Login Items.",
                         actionTitle: "Open Login Items"
                     ) { SMAppService.openSystemSettingsLoginItems() }
                 }

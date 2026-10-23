@@ -4,7 +4,7 @@ import Foundation
 public enum ConnectionState: Sendable, Equatable {
     case connecting
     case connected(version: String?)
-    /// No usable server. `installed` says whether a voiced watchdog LaunchDaemon exists.
+    /// No usable server. `installed` says whether a voiced watchdog LaunchAgent exists.
     case unreachable(installed: Bool, reason: UnreachableReason)
     /// voiced answered with a protocol this app does not speak.
     case incompatible(message: String)
@@ -138,7 +138,7 @@ public enum DashboardReducer {
             guard let status else { return Dashboard(health: .attention, headline: "Connecting", isBusy: true) }
             var dashboard = reduce(status)
             if !status.installed {
-                // The watchdog answers (run by hand, say) but the LaunchDaemons are missing:
+                // The watchdog answers (run by hand, say) but the LaunchAgents are missing:
                 // keep the controls, say what is missing.
                 dashboard.notice = "voiced is running but will not start automatically when "
                     + "this Mac restarts. To set that up:"

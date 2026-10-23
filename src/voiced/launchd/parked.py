@@ -1,8 +1,9 @@
 """A service switched off parks its process instead of serving (ADR 0033).
 
-With ``[stt] enabled = false`` (or ``[tts]``) the daemon still starts, at
-boot and after every restart: unloading a LaunchDaemon so that it stays
-down needs root, and switching a service off must not. The process reads
+With ``[stt] enabled = false`` (or ``[tts]``) the agent still starts, at
+login and after every restart, so on and off stay one restart apart, through
+the watchdog, with no launchctl step (chosen while the services were
+LaunchDaemons, which only root could unload; ADR 0035 keeps it). The process reads
 the setting, loads no engine, binds no port, advertises nothing, writes
 its pid to ``<state dir>/<service>.off`` (``voiced.layout.off_marker``) and
 waits for launchd to stop it.

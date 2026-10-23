@@ -1,6 +1,7 @@
 # 0018: Install from the menu bar app
 
-Date: 2026-10-15, revised 2026-10-18. Status: proposed.
+Date: 2026-10-15, revised 2026-10-18. Status: proposed. Amended by ADR 0035:
+the services are LaunchAgents and "The privileged step" below is gone.
 
 ## Context
 
@@ -1156,3 +1157,18 @@ two XPC services, `Autoupdate`, `Updater.app` and the framework, then the
 app (`menubar/Scripts/codesign-app.sh`), and step 5's assets include
 `appcast.xml`, the feed every release must carry, signed with the EdDSA key
 in the `release` environment's `SPARKLE_PRIVATE_KEY`.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents in the user's domain, so "The privileged
+step" no longer exists: `voiced install` renders and loads the plists as
+its last step (`agents`), and the app's Install, Update, Repair, Roll back
+and Uninstall run without an administrator prompt, an approval screen or
+`voiced-privileged check`. The script, its embedding in the executable and
+`menubar/Scripts/test-privileged.sh` are gone; the plist keys are those
+of item 1 without `UserName`. Item 8, the firewall exception, is dropped:
+the services start in the user's session, where macOS asks about incoming
+connections itself, and `voiced doctor` reports the answer. The one prompt
+left removes an earlier release's LaunchDaemons before `voiced install`
+runs (ADR 0035, Migration), with the same fixed `osascript` environment
+and the bundle self-check, and fixed commands instead of a script.

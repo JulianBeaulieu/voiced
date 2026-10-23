@@ -13,12 +13,12 @@ public enum InstallerPhase: Sendable, Equatable {
     case environment(step: String)
     /// `voiced install --json-progress`: its steps and downloads.
     case installing(InstallProgress)
-    /// "Install background services", before the administrator prompt.
-    case approval(firewallOn: Bool)
-    /// The administrator prompt and the privileged script.
-    case approving(firewallOn: Bool)
-    /// `voiced-privileged check`: whether an update or repair needs the administrator.
-    case checking
+    /// LaunchDaemons of an earlier release still run the services: one last administrator
+    /// prompt removes them before `voiced install` puts the LaunchAgents in their place
+    /// (ADR 0035). A cancelled prompt comes back here, the services running the old way.
+    case migration
+    /// That prompt, and the removal behind it.
+    case migrating
     /// Waiting for the watchdog's hello.
     case starting
     case homeAssistant(HomeAssistantStage)
@@ -55,7 +55,7 @@ public struct HomeAssistantInfo: Sendable, Equatable {
 /// runs the stage again; every stage is safe to repeat.
 public struct InstallFailure: Error, Sendable, Equatable {
     public enum Stage: Sendable, Equatable {
-        case environment, install, approval, starting, uninstall
+        case environment, install, migration, starting, uninstall
     }
 
     public var stage: Stage

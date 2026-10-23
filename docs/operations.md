@@ -1,7 +1,10 @@
 # Operations
 
-Running voiced on a Mac that nobody logs in to. "Service" below means the
-stt or tts process; "daemon" means the launchd job that keeps it running.
+Running voiced on a Mac, including one that serves Home Assistant
+unattended. "Service" below means the stt or tts process; "agent" means
+the launchd job that keeps it running. Nothing here needs an administrator
+password, except once to remove the LaunchDaemons of 0.4.0 or earlier
+([Moving from LaunchDaemons](#moving-from-launchdaemons)).
 
 ## Commands
 
@@ -11,16 +14,16 @@ app does not: run the commands as `~/.voiced/bin/voiced`, or add
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the ports of each service that is on are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models of each service that is on, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and prints the one root step (below). Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`), `--set KEY=VALUE` (repeatable, `stt.enabled`, `stt.engine`, `stt.model` and the same for `tts` only, an engine with its model: the install plans, checks ports and downloads models with these settings, and writes them to the config once the models are in, with every check of `voiced settings set`; a failed download leaves the config as it was; the app's first-run setup passes its choice this way, such as `--set tts.enabled=false`). Waits while another install or uninstall holds the state directory; changes nothing the daemons use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
-| `voiced start [stt\|tts\|watchdog]` | Starts a loaded daemon with `launchctl kickstart`, which needs no root. A daemon that is not loaded is bootstrapped; that needs root, so the command is printed for you to run with `sudo`. |
-| `voiced stop [stt\|tts\|watchdog]` | Prints `sudo launchctl bootout` for each loaded daemon. Unloading needs root, and `KeepAlive` would restart a merely killed process. Run as root, it runs them. |
-| `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now, without root: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
-| `voiced status [--json]` | Each daemon's launchd state and each service's `/health`; with the watchdog running, also each service's state, uptime and restart count from the control socket. |
+| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the ports of each service that is on are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models of each service that is on, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and last writes the three LaunchAgents to `~/Library/LaunchAgents` and loads them into your launchd domain (`gui/<uid>`); an agent whose plist is unchanged and loaded keeps running. Refuses a `~/.voiced` holding files that are not voiced's, and stops before it changes anything while LaunchDaemons from 0.4.0 or earlier are installed, printing the one line that removes them ([below](#moving-from-launchdaemons)). Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`), `--set KEY=VALUE` (repeatable, `stt.enabled`, `stt.engine`, `stt.model` and the same for `tts` only, an engine with its model: the install plans, checks ports and downloads models with these settings, and writes them to the config once the models are in, with every check of `voiced settings set`; a failed download leaves the config as it was; the app's first-run setup passes its choice this way, such as `--set tts.enabled=false`). Waits while another install or uninstall holds the state directory; changes nothing the services use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
+| `voiced start [stt\|tts\|watchdog]` | Starts a loaded agent with `launchctl kickstart`; an installed agent that is not loaded (after `voiced stop`) is loaded with `launchctl bootstrap`. |
+| `voiced stop [stt\|tts\|watchdog]` | Unloads each loaded agent with `launchctl bootout` (`KeepAlive` would restart a merely killed process). It stays stopped until `voiced start` or your next login. |
+| `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
+| `voiced status [--json]` | Each agent's launchd state and each service's `/health`; with the watchdog running, also each service's state, uptime and restart count from the control socket. |
 | `voiced settings [get] [--json]`, `voiced settings set KEY=VALUE ...` | Shows or changes the common settings (see [Control channel](#control-channel)). `api_key=-` reads the key from stdin. |
 | `voiced logs [stt\|tts\|watchdog] [-n N] [-f] [--stderr]` | The application logs; `--stderr` adds launchd's stderr capture. |
 | `voiced doctor [--json]` | Checks the machine (see below). |
-| `voiced doctor --metal-probe` | Writes `~/.config/voiced/metal-probe.sh`, a script that installs a one-shot LaunchDaemon testing Metal from a real daemon context and removes it again, with its plist inside, and prints the `sudo` command to run it. A later `voiced doctor` reads the result. |
-| `voiced uninstall` | Prints the root step that unloads and removes the daemons, then lists what it would delete. `--yes` deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. `--remove-models` deletes the model revisions voiced pinned from the Hugging Face cache, through `huggingface_hub`, and says how many bytes that freed; it keeps other revisions and repositories in the cache, which other tools may use, and a configured model voiced does not pin. When another tool downloaded a model's `main` and `main` is the pinned commit, that is the same revision: the dry run says so before `--yes` deletes it. It refuses to delete anything while a daemon is still loaded. |
+| `voiced doctor --metal-probe` | Runs a one-shot LaunchAgent that tests Metal as the services run, from a plist in a temporary directory, waits up to 60 s for its result, unloads it and prints the result. A later `voiced doctor` reads it. |
+| `voiced uninstall` | Lists what it would remove, the LaunchAgents first. `--yes` unloads the agents and deletes their plists, then deletes what `voiced install` put in `~/.voiced` (the link, the environments it built, their Pythons, `install.json`) and keeps anything else there, and never an environment elsewhere such as Homebrew's; `--remove-config`, `--remove-logs` and `--remove-models` add those. `--remove-models` deletes the model revisions voiced pinned from the Hugging Face cache, through `huggingface_hub`, and says how many bytes that freed; it keeps other revisions and repositories in the cache, which other tools may use, and a configured model voiced does not pin. When another tool downloaded a model's `main` and `main` is the pinned commit, that is the same revision: the dry run says so before `--yes` deletes it. While LaunchDaemons from 0.4.0 or earlier are installed it prints the line that removes them and deletes nothing. |
 | `voiced models list [--json]` | Every model voiced can download, by engine: licence, download size or size on disk, and state (in use, downloaded, not downloaded, update available, an old version cached). See [Models](#models). |
 | `voiced models download <model> [--json-progress]` | Downloads a model at its pinned revision, with its engine's shared files (Phonon's voices). A repository voiced does not know is fetched whole at `main`, unpinned, with a notice. |
 | `voiced models delete <model> [--previous] [--yes] [--json]` | Deletes a model's pinned revision (`--previous`: only its older pinned revisions) from the Hugging Face cache. Refuses the model the config uses and anything voiced does not pin; asks first without `--yes`. |
@@ -28,48 +31,26 @@ app does not: run the commands as `~/.voiced/bin/voiced`, or add
 | `voiced serve stt\|tts` | Runs one service in the foreground. For development and for trying an engine before installing. |
 | `voiced config` | Prints the effective configuration as JSON. |
 
-voiced never runs root steps itself. Anything that touches
-`/Library/LaunchDaemons` is printed as a command for you to run with `sudo`.
-The daemons are installed and removed by one script, the one the menu bar
-app runs too (ADR 0018), shipped in the voiced package:
-
-```sh
-sudo /bin/bash <environment>/lib/python3.12/site-packages/voiced/launchd/voiced-privileged.sh install <you>
-sudo /bin/bash <same path> uninstall <you>
-```
-
-`voiced install` and `voiced uninstall` print the exact lines. Its only
-input is your user name: it renders the three plists itself from fixed
-values and your home directory, refuses system accounts and another
-account's install (one install per Mac), and allows one run at a time. It
-exits 0 when done, 1 when it refused (nothing written), 3 when launchd did
-not load a label, 4 when the firewall exception could not be added and 5
-when the firewall is on but the environment's Python is outside your home
-(Homebrew's) and was left alone; 4 and 5 come after a successful install.
-The file is in the environment voiced runs from, which your account can
-write: the same trust as any script you run with `sudo`. `voiced install`
-prints the line, with the path fully resolved, only if the file and every
-directory on the way to it belong to you or root and no other account can
-write them, by mode bits or by an ACL; a Homebrew owned by another admin,
-or a group-writable directory with other members, gets no root step and a
-pointer to `voiced install --source`. An environment on a volume mounted
-with ownership ignored cannot be checked this way: every file there looks
-like yours. Read it first if you like. Re-running it is safe.
-
-The plists name only `~/.voiced/bin/voiced`, `~/.config/voiced/config.toml`
-and the default labels, so the services take everything else from the
-config file when they start: a config change needs `voiced restart all`,
-not root. An install with another state directory, config path or
-`[launchd] label_prefix` gets no root step: `voiced install` and `voiced
-uninstall` say so, and such a layout runs with `voiced serve` instead.
+The agents' plists follow the install's layout: `~/Library/LaunchAgents/<label>.plist`
+runs `<state dir>/bin/voiced` with `VOICED_CONFIG` set to the config file the
+install used, under the labels `[launchd] label_prefix` gives. The services
+take everything else from that config file when they start, so a config
+change needs `voiced restart all`, not a new install. A scratch layout (a
+`--state-dir`, a `VOICED_CONFIG` and another `label_prefix`) installs agents
+of its own beside the real ones, which is how a harness tests a change
+without touching your install.
 
 `voiced doctor` checks Apple Silicon, the macOS version, Python, the
 espeak-ng library Kokoro would load (`[tts] espeak_library`, else the
 `espeakng-loader` wheel's in voiced's environment, else the Homebrew keg),
-ffmpeg, memory, the four ports (and which process holds them), FileVault,
-each service's configured model (downloaded at its pin, or the command
-that fetches it), whether the daemons are installed and loaded, Metal from the service
-environment, and the last `--metal-probe` result. It exits non-zero only on
+ffmpeg, memory, the four ports (and which process holds them), whether
+voiced starts after a reboot (FileVault or automatic login), LaunchDaemons
+left from 0.4.0 or earlier, each service's configured model (downloaded at
+its pin, or the command that fetches it), whether the agents are installed
+and loaded, the control socket, Metal from the service environment, the
+last `--metal-probe` result and, with `bind` on the network and the
+firewall on, whether the firewall lets the services' Python accept
+connections. It exits non-zero only on
 a failed check, not on a warning.
 
 ## Models
@@ -234,8 +215,8 @@ voiced install --source ~/voiced
 engines, from your checkout into `~/.voiced/envs/`, every package at the
 version and hash in the checkout's lock, on a Python 3.12 that uv downloads
 into `~/.voiced/python`. It then points `~/.voiced/bin/voiced` at that
-environment, downloads the models into the Hugging Face cache, and prints
-the root step above. A warning about `HF_TOKEN` along the way is harmless:
+environment, downloads the models into the Hugging Face cache, and loads
+the LaunchAgents. A warning about `HF_TOKEN` along the way is harmless:
 the models are public and need no Hugging Face account.
 `voiced install --source ~/voiced --dry-run` shows everything it would do
 without writing anything.
@@ -247,56 +228,78 @@ see [menubar/README.md](../menubar/README.md).
 
 ## launchd
 
-Three LaunchDaemons, labels `io.github.julianbeaulieu.voiced.stt`, `.tts`
-and `.watchdog`. `[launchd] label_prefix` changes only which labels
-`voiced status`, `start`, `stop`, `restart`, `doctor` and the watchdog
-address, for daemons installed some other way, such as by an earlier
-release; the root step installs the default labels. Daemons an earlier
-release installed under another prefix are removed by hand:
-`sudo /bin/launchctl bootout system/<label>`, then
-`sudo /bin/rm /Library/LaunchDaemons/<label>.plist`, for each of the three.
+Three LaunchAgents in your own launchd domain, `gui/<uid>`, labels
+`io.github.julianbeaulieu.voiced.stt`, `.tts` and `.watchdog`, plists in
+`~/Library/LaunchAgents/io.github.julianbeaulieu.voiced.{stt,tts,watchdog}.plist`
+([ADR 0035](decisions/0035-launch-agents.md)). `[launchd] label_prefix`
+changes the labels `voiced install` writes and that `voiced status`,
+`start`, `stop`, `restart`, `doctor` and the watchdog address.
 
 Each plist sets:
 
 | Key | Value | Why |
 |---|---|---|
-| `UserName` | the installing user | The models and config live in that user's home; nothing runs as root. |
-| `RunAtLoad` | true | Start at boot. |
-| `KeepAlive` | true | Restart on exit, whatever the exit status. |
+| `ProgramArguments` | `~/.voiced/bin/voiced serve <service>`, or `watchdog` | The entry point `voiced install` links ([ADR 0017](decisions/0017-homebrew-packaging.md)). |
+| `RunAtLoad` | true | Start at login, and when `voiced install` or `voiced start` loads it. |
+| `KeepAlive` | `{PathState: {~/.voiced/bin/voiced: true}}` | Restart on exit while the entry point exists; not after `brew uninstall voiced` left it dangling. |
 | `ThrottleInterval` | 10 | Wait 10 s between restarts so a crash loop does not spin. |
 | `ProcessType` | Interactive | Full CPU and GPU scheduling priority. |
-| `WorkingDirectory` | the user's home | |
-| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, nothing else | The daemon reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and a custom `log_dir` from it, so the plists are the same fixed values the menu bar app renders (ADR 0018). `VOICED_STDIO_LOG` (`~/Library/Logs/voiced/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them; with a custom `log_dir` it moves them there once the config is read. |
+| `WorkingDirectory` | your home | |
+| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, nothing else | The service reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and the rest from it. `VOICED_STDIO_LOG` (`<log_dir>/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them. |
+| `AssociatedBundleIdentifiers` | the menu bar app | System Settings > General > Login Items lists the services under voiced's name. |
 
-The plists do not set `StandardOutPath` or `StandardErrorPath`: launchd
-may open those files as root, in a log directory the user owns, so a
-symlink planted there could make root create or append to any file. The
-process opens them as the user instead and refuses a symlink (ADR 0006).
-Plists from an older release still carry the two keys and keep working;
-run the root step once to replace them.
+There is no `UserName`: an agent runs as the user whose domain it is in.
+The plists do not set `StandardOutPath` or `StandardErrorPath`; the
+process opens its logs itself and refuses a symlink (ADR 0006).
 
-Daemons rather than LaunchAgents because agents only start once their user
-logs in to the GUI. Metal works from a daemon context on Apple Silicon: a
-probe daemon on macOS 15.7 with MLX 0.32 saw the GPU and ran a matrix
-multiply as a normal user with no GUI session
-([ADR 0004](decisions/0004-launchd-daemon-vs-agent.md)). Run
+Agents run while you are logged in: they start at login and stop at
+logout ([After a reboot](#after-a-reboot)). Metal works from an agent: the
+probe saw the GPU from one on macOS 15.7 with MLX 0.32. Run
 `voiced doctor --metal-probe` to confirm it on your machine and macOS
-version; `voiced doctor` only accepts a probe result recorded by launchd's
-system manager on the macOS version that is running now.
+version; `voiced doctor` only accepts a probe result recorded by a
+LaunchAgent on the macOS version that is running now.
 
-Useful launchctl commands, with the default prefix:
+If System Settings > General > Login Items > Allow in the Background has
+voiced switched off, launchd does not start the services; the menu bar app
+says so.
+
+Useful launchctl commands, with the default prefix, as yourself:
 
 ```sh
-launchctl print system/io.github.julianbeaulieu.voiced.tts           # state, pid, last exit
-sudo launchctl kickstart -k system/io.github.julianbeaulieu.voiced.tts   # force restart
-sudo launchctl bootout system/io.github.julianbeaulieu.voiced.tts        # unload
+launchctl print gui/$(id -u)/io.github.julianbeaulieu.voiced.tts        # state, pid, last exit
+launchctl kickstart -k gui/$(id -u)/io.github.julianbeaulieu.voiced.tts # force restart
+launchctl bootout gui/$(id -u)/io.github.julianbeaulieu.voiced.tts      # unload until login
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.julianbeaulieu.voiced.tts.plist
 ```
+
+### Moving from LaunchDaemons
+
+voiced 0.4.0 and earlier installed the services as LaunchDaemons in
+`/Library/LaunchDaemons`, which only an administrator can remove, and the
+agents cannot run beside them (both would use the same ports). The first
+`voiced install` of a newer release therefore stops before it changes
+anything and prints one line to run, the last time voiced needs a
+password:
+
+```sh
+sudo /bin/sh -c '/bin/launchctl bootout system/io.github.julianbeaulieu.voiced.stt 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.tts 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.watchdog 2>/dev/null; /bin/rm -f /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist'
+voiced install
+```
+
+It stops the three daemons and deletes their plists, nothing else; your
+`~/.voiced`, config and models stay. The services are down from the first
+command until the second has loaded the agents, a few seconds with the
+models already cached. `voiced status` and `voiced doctor` print the same
+line while the daemons are there. Daemons an earlier release installed
+under another label prefix are removed the same way, with their labels.
+The menu bar app does the same with one administrator prompt when it
+updates or repairs such an install ([The menu bar app](#the-menu-bar-app)).
 
 ## Watchdog
 
 `KeepAlive` only restarts a process that exits. MLX can wedge a process that
 stays alive: the GPU queue never drains while the process keeps running. The
-watchdog daemon catches that. Every `interval_s` it requests `/health` from
+watchdog agent catches that. Every `interval_s` it requests `/health` from
 each service with a `timeout_s` limit and applies these rules:
 
 | Observation | Action |
@@ -313,7 +316,7 @@ each service with a `timeout_s` limit and applies these rules:
 | Optional probe request times out after `probe_timeout_s` | One failure: stalled. |
 | Connection refused or timed out after the grace period (or after the process has answered with its model loaded), or a non-health answer | One failure. |
 | `failures_before_restart` consecutive failures | Restart. |
-| The daemon is not loaded (after `voiced stop`) | Never restart; logged once. |
+| The agent is not loaded (after `voiced stop`) | Never restart; logged once. |
 
 | Key under `[watchdog]` | Default |
 |---|---|
@@ -329,10 +332,8 @@ each service with a `timeout_s` limit and applies these rules:
 
 A restart reads the pid from `launchctl print`, sends it `SIGKILL` and runs
 `launchctl kickstart` so the service comes back at once instead of after the
-throttle interval. The watchdog runs as the installing user, which can kill
-its own processes and kickstart a loaded daemon but cannot use
-`kickstart -k`; running it as root would mean executing the user-writable
-service environment as root. A second restart of the same service within
+throttle interval. The watchdog is an agent in the same domain, so it may
+signal the services and kickstart them. A second restart of the same service within
 `restart_cooldown_s` waits for the cooldown.
 
 The optional probe (`probe = true`) sends a tiny real request each poll
@@ -353,7 +354,7 @@ directory, and the kernel's peer uid is checked), and listens on no network
 interface whatever `bind` says. The design is in
 [ADR 0013](decisions/0013-local-control-channel.md).
 
-Once voiced is installed, the watchdog daemon already serves the socket:
+Once voiced is installed, the watchdog agent already serves the socket:
 `voiced settings`, `voiced restart` and `voiced status` use it. Do not also
 run `voiced watchdog` in a terminal then; a second watchdog cannot take the
 socket and would restart the services alongside the first. With nothing
@@ -419,8 +420,8 @@ set, on loopback too: any web page you open could otherwise reach it.
 |---|---|
 | `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
 | `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
-| `~/Library/Logs/voiced/<service>.stderr.log` | The daemon's stderr, opened by the daemon itself. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
-| `~/Library/Logs/voiced/<service>.stdout.log` | The daemon's stdout; normally empty. Not rotated. |
+| `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by the service itself. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
+| `~/Library/Logs/voiced/<service>.stdout.log` | The service's stdout; normally empty. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
 `voiced logs -f` follows all service logs; `tail -f
@@ -438,17 +439,25 @@ record that cannot be written is reported on stderr instead (a `--- Logging
 error ---` block), which under launchd goes to the stderr file on the same
 full disk and is lost. Free space and the log resumes.
 
-## FileVault
+## After a reboot
 
-With FileVault on, a reboot stops at the disk-unlock screen and nothing
-starts until someone types the password there. After the unlock, launchd
-starts the daemons without a GUI login; nobody needs to sign in. `voiced
-doctor` warns when FileVault is on so you know a remote reboot will wait for
-a keyboard.
+The services are your LaunchAgents: they start when you log in and stop
+when you log out. Locking the screen, display sleep and switching to
+another user (fast user switching) keep them running. Whether a reboot
+brings them back by itself depends on the login:
 
-If the Mac must come back unattended, either turn FileVault off (the disk is
-then readable by anyone with physical access) or keep it on and accept that
-reboots need a person. voiced does not change this setting.
+| Mac | After a reboot |
+|---|---|
+| FileVault on | voiced starts when someone unlocks the disk at boot: that unlock logs you in |
+| FileVault off, automatic login as you | voiced starts at the automatic login |
+| FileVault off, no automatic login | voiced waits at the login window until you log in |
+
+`voiced doctor` says which row applies ("After a reboot"). A Mac that must
+come back unattended, a remote reboot or a power cut, needs automatic login
+(System Settings > Users & Groups > Automatically log in as; macOS offers it
+only with FileVault off, and the disk is then readable by anyone with
+physical access) or a person to unlock FileVault. voiced does not change
+either setting.
 
 ## Memory budget
 
@@ -509,7 +518,8 @@ They are the usual steps for a Mac that runs as a server:
   makes it stick. Leave at least 8 GB for macOS and the CPU side; `0`
   restores the default.
 - Keep the Mac awake and bring it back after power loss:
-  `sudo pmset -a sleep 0 disksleep 0 autorestart 1 womp 1`.
+  `sudo pmset -a sleep 0 disksleep 0 autorestart 1 womp 1`, and keep its
+  user logged in or log in automatically ([After a reboot](#after-a-reboot)).
 - Exclude the Hugging Face cache from Spotlight under **System Settings**,
   **Siri and Spotlight**, **Spotlight Privacy**.
 
@@ -517,7 +527,7 @@ They are the usual steps for a Mac that runs as a server:
 
 The plists run `~/.voiced/bin/voiced`, a link to the active environment,
 and are the same for every way of installing, so an update that only
-changes the environment needs no root step. The watchdog restarts both
+changes the environment does not reload them. The watchdog restarts both
 services onto the new environment and then itself, within one poll
 (`[watchdog] interval_s`) of either of two things: a file it runs from
 was deleted or replaced (the old Homebrew keg or Python removed, a keg
@@ -527,7 +537,8 @@ Homebrew is installing voiced or its Python, the watchdog neither polls
 nor restarts anything, and refuses `voiced restart` (it exits non-zero
 with the reason), for up to 30 minutes.
 `voiced restart all` does it at once. If the changelog says a release
-changes the plists, run the root step `voiced install` prints as well.
+changes the plists, run `voiced install` again: it reloads the agents
+whose plists changed.
 
 ### The menu bar app
 
@@ -543,33 +554,34 @@ Settings > General > Check for updates automatically. `brew update` and
 still work; after either the app offers **Update voiced** on its next
 launch.
 
-Administrator passwords:
+No step asks for an administrator password: the first open installs the
+services, **Update voiced**, Repair, Roll back and Uninstall run without
+one, and so do `brew upgrade --cask voiced` and a reinstall, which leave
+the services running. **Install and Relaunch** asks only if the app's
+folder is not writable for your account; then macOS asks once to replace
+it. Homebrew asks only if `/Applications` is not writable for your account
+(a managed Mac).
 
-- First open of the app: one, to install the services
-  (`voiced-privileged install`). Homebrew asks for none, unless
-  `/Applications` is not writable for your account (a managed Mac).
-- `brew upgrade --cask voiced` or a reinstall: none. The cask leaves the
-  services running.
-- **Install and Relaunch**: none, unless the app's folder is not writable
-  for your account; then macOS asks once to replace it. The update of the
-  services that follows asks as **Update voiced** does.
-- **Update voiced**: none, unless `voiced-privileged check` finds that a
-  plist differs or a label is not loaded, or the firewall is on and the
-  services' Python changed. The plists run `~/.voiced/bin/voiced`, so an
-  ordinary update needs none.
-- The first upgrade from 0.4.0 or earlier: two, once. Homebrew runs the
-  uninstall stanza of the installed cask, which up to 0.4.0 removed the
-  services with `sudo`, and the app asks again to put them back.
+The one exception is once, on a Mac that ran 0.4.0 or earlier, whose
+services are still LaunchDaemons ([Moving from LaunchDaemons](#moving-from-launchdaemons)).
+**Update voiced** (or Repair) builds the new environment first, then asks
+to "remove the old background services (the last time a password is
+needed)", then installs the services as LaunchAgents. Cancel, and the
+services keep running the old way until you accept. If the first
+`brew upgrade --cask voiced` from 0.4.0 or earlier already asked Homebrew's
+password (it runs the old cask's uninstall stanza, which removed the
+daemons), the app asks nothing and installs the agents.
 
 `brew uninstall --cask voiced` removes the app only; the services keep
 running from `~/.voiced`. To remove them:
 
 - before it, use Uninstall in the app's Settings;
 - or run `brew uninstall --zap --cask voiced`, which stops and removes the
-  services and their plists (one password, Homebrew's) and the app's uv
-  cache, and leaves `~/.voiced`, the config and the models;
-- or afterwards, from a terminal: `~/.voiced/bin/voiced uninstall` prints
-  the root step; run it, then `~/.voiced/bin/voiced uninstall --yes`
+  LaunchAgents and their plists and the app's uv cache, without a
+  password, and leaves `~/.voiced`, the config and the models (services
+  still on LaunchDaemons from 0.4.0 or earlier need the removal line in
+  [Moving from LaunchDaemons](#moving-from-launchdaemons));
+- or afterwards, from a terminal: `~/.voiced/bin/voiced uninstall --yes`
   (add `--remove-config`, `--remove-models` and `--remove-logs` to delete
   those as well).
 
@@ -595,17 +607,23 @@ it has finished the new version, and a voiced started in between can
 leave some of its files unloadable (macOS kills, or hangs, every later
 process that loads them). `brew reinstall voiced` writes them anew.
 
-To remove voiced, run `voiced uninstall`, its sudo step and
-`voiced uninstall --yes` first, then `brew uninstall voiced`. Homebrew does
-not show the caveats at uninstall. Uninstalling the formula first leaves
-the daemons loaded with `~/.voiced/bin/voiced` pointing nowhere; launchd
+After the first `brew upgrade voiced` from 0.4.0 or earlier, run
+`voiced install` once: it prints the line that removes the old
+LaunchDaemons ([Moving from LaunchDaemons](#moving-from-launchdaemons)).
+Until then they run the new version, whose watchdog looks for the services
+among your LaunchAgents and so does not restart a hung one.
+
+To remove voiced, run `voiced uninstall --yes` first, then
+`brew uninstall voiced`. Homebrew does not show the caveats at uninstall.
+Uninstalling the formula first leaves the agents loaded with
+`~/.voiced/bin/voiced` pointing nowhere; launchd
 then stops restarting them (their `KeepAlive` holds only while that path
 exists) and `voiced doctor` reports the dangling link. Reinstall the formula
-to bring them back, or run the uninstall steps above. If a daemon stays
+to bring them back, or run the uninstall steps above. If an agent stays
 loaded but not running after the link is back (`voiced doctor`: "loaded
 but not running"; launchd can leave such a job at `spawn scheduled`),
-re-run the root step `voiced install` prints: it boots the daemons out
-and in again, which starts them.
+`voiced stop` and `voiced start` it: that unloads and loads it again,
+which starts it.
 
 ### From a checkout
 
@@ -620,7 +638,7 @@ voiced restart all
 Each `voiced install --source` builds a fresh environment in
 `~/.voiced/envs/` from `src/voiced/requirements.lock` (every package with
 its hash, then voiced itself), checks that it imports the engines, and
-repoints the link; the daemons keep running the previous environment until
+repoints the link; the services keep running the previous environment until
 they restart. It keeps the new environment and the previous one and removes
 older ones. Models and the config file are kept. Every run builds a new
 environment, even from an unchanged checkout, and the watchdog then
@@ -634,7 +652,7 @@ would keep the old code.
 ### Switching between Homebrew and a checkout
 
 Run `voiced install` from the one you are switching to, then
-`voiced restart all`. No root step, nothing to delete by hand:
+`voiced restart all`. Nothing to delete by hand:
 
 ```sh
 # to Homebrew
@@ -652,7 +670,7 @@ from it removes that venv's files (`lib`, `include`, `pyvenv.cfg`, the rest
 of `bin`) once the new environment is verified and the models are in;
 there is no going back to it, only forward to a new
 `voiced install --source`. Run `voiced restart all` straight after: the
-running daemons still use the removed venv's files.
+running services still use the removed venv's files.
 
 `voiced restart all` restarts stt and tts, then the watchdog, and reports
 once the new watchdog answers on the control socket. `voiced restart stt`

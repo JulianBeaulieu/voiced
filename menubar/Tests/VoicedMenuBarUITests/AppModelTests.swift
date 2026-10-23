@@ -15,9 +15,9 @@ final class AppModelTests: XCTestCase {
         backoff: Backoff = Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)),
         livenessTimeout: Duration = .seconds(25), restartTimeout: Duration = .seconds(30)
     ) throws -> AppModel {
-        let daemons = try launchDaemonsDirectory(watchdogUser: installed ? NSUserName() : nil)
+        let agents = try launchAgentsDirectory(watchdog: installed)
         return AppModel(
-            socketPath: socket, installProbe: InstallProbe(launchDaemonsDirectory: daemons),
+            socketPath: socket, installProbe: try installProbe(agents: agents),
             backoff: backoff, livenessTimeout: livenessTimeout, restartTimeout: restartTimeout,
             opener: { action in
                 opened?.actions.append(action)

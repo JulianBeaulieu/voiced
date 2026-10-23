@@ -23,8 +23,6 @@ public final class Installer {
     /// The setup's choice, which the welcome screen edits; the first install writes it to
     /// the config.
     public var setup: SetupChoice
-    /// A warning from the privileged step (the firewall), shown until the end.
-    public private(set) var warning: String?
     /// A Home Assistant change the watchdog refused.
     public private(set) var errorMessage: String?
 
@@ -35,9 +33,6 @@ public final class Installer {
     /// The environment this run builds, resumes, repairs or rolls back to, once it is
     /// complete.
     private var environment: URL?
-    /// `install.json` when the run began: its Python, to tell whether the firewall's
-    /// exception has to follow a new one.
-    private var recordBefore: InstallRecord?
 
     public init(configuration: InstallerConfiguration, runner: InstallRunner, model: AppModel) {
         self.configuration = configuration
@@ -99,7 +94,7 @@ public final class Installer {
     /// shows it as busy.
     public var isWorking: Bool {
         switch phase {
-        case .environment, .installing, .approving, .checking, .starting, .uninstalling, .homeAssistant(.applying): true
+        case .environment, .installing, .migrating, .starting, .uninstalling, .homeAssistant(.applying): true
         default: false
         }
     }
@@ -131,10 +126,11 @@ public final class Installer {
         return rollbackTarget() != nil
     }
 
-    /// A live account other than this one whose watchdog is installed. An install whose
-    /// account was deleted is orphaned, and the privileged step takes it over.
+    /// A live account other than this one whose watchdog LaunchDaemon, from before ADR 0035,
+    /// is installed: its services hold the ports, and only that account may remove them. An
+    /// install whose account was deleted does not count. LaunchAgents are each account's own.
     private func otherAccountsInstall() -> String? {
-        configuration.installProbe.watchdogUsers().first { name in
+        configuration.installProbe.legacyDaemonUsers().first { name in
             guard let account = getpwnam(name) else { return false }
             return account.pointee.pw_uid != getuid()
         }
@@ -158,10 +154,10 @@ public final class Installer {
         begin { [self] in await firstInstall() }
     }
 
-    /// "Install Background Services": the one administrator prompt.
-    public func approve() {
-        guard case .approval(let firewallOn) = phase else { return }
-        begin { [self] in await installDaemons(firewallOn: firewallOn) }
+    /// "Remove Old Services": the one administrator prompt left, then the install goes on.
+    public func removeOldServices() {
+        guard phase == .migration else { return }
+        begin { [self] in await migrateAndContinue() }
     }
 
     /// "Try Again" on a failure: the failed stage again, in the task that failed.
@@ -181,7 +177,7 @@ public final class Installer {
                 } else {
                     await runTask()
                 }
-            case .approval: await reconcileDaemons()
+            case .migration: await migrateAndContinue()
             case .starting: await startServices()
             }
         }
@@ -214,7 +210,7 @@ public final class Installer {
         phase = .confirmUninstall
     }
 
-    /// Removes the services (one administrator prompt), then voiced's files.
+    /// Removes the services and voiced's files; old LaunchDaemons first, behind one prompt.
     public func uninstall(_ choices: UninstallChoices) {
         guard phase == .confirmUninstall, managesInstall else { return }
         begin { [self] in await runUninstall(choices) }
@@ -249,8 +245,6 @@ public final class Installer {
         guard !isWorking, managesInstall else { return }
         self.task = task
         self.environment = environment
-        recordBefore = record
-        warning = nil
         begin { [self] in await runTask() }
     }
 
@@ -325,11 +319,11 @@ public final class Installer {
 
     // MARK: - The Flow
 
-    /// Installed plists mean only Starting is left; an environment an interrupted run built
+    /// Installed agents mean only Starting is left; an environment an interrupted run built
     /// gets `voiced install` again; anything else starts from the environment. Every stage is
     /// safe to repeat.
     private func firstInstall() async {
-        if isInstalled { return await startServices() }
+        if isInstalled, !stages.hasLegacyDaemons { return await startServices() }
         phase = .environment(step: "Checking the connection")
         guard value(await stages.checkNetwork()) != nil else { return }
         let environment: URL
@@ -383,51 +377,34 @@ public final class Installer {
         return built
     }
 
-    /// `voiced install` in `environment`, then the first install's approval, or for the
-    /// Lifecycle the check that asks for it only when needed. The first install
-    /// writes the setup's choice to the config; the Lifecycle keeps the config as it is.
+    /// `voiced install` in `environment`, which loads the LaunchAgents, then Starting. The
+    /// first install writes the setup's choice to the config; the Lifecycle keeps the config
+    /// as it is. Old LaunchDaemons still running the services go first, behind the one
+    /// prompt left: the install refuses to put the agents beside them (ADR 0035).
     private func installAndContinue(in environment: URL) async {
+        self.environment = environment
+        if stages.hasLegacyDaemons {
+            phase = .migration
+            return
+        }
         phase = .installing(InstallProgress())
         let installed = await stages.runInstall(in: environment, request, progress: { self.phase = .installing($0) })
         guard value(installed) != nil else { return }
-        if task == .install {
-            await showApproval()
-        } else {
-            await reconcileDaemons()
-        }
+        await startServices()
     }
 
-    /// Step 3 of an update: the prompt only if a plist differs or a label is not loaded, or
-    /// when the firewall is on and the services' Python changed, so its exception follows.
-    private func reconcileDaemons() async {
-        guard task != .install else { return await showApproval() }
-        phase = .checking
-        guard let upToDate = value(await stages.checkDaemons()) else { return }
-        let pythonChanged = record?.python != recordBefore?.python
-        if upToDate, !pythonChanged {
-            return await startServices()
-        }
-        let firewallOn = await stages.isFirewallOn()
-        if upToDate, !firewallOn { return await startServices() }
-        phase = .approval(firewallOn: firewallOn)
-    }
-
-    private func showApproval() async {
-        phase = .approval(firewallOn: await stages.isFirewallOn())
-    }
-
-    private func installDaemons(firewallOn: Bool) async {
-        phase = .approving(firewallOn: firewallOn)
-        switch await stages.installDaemons() {
-        case .done(let warning):
-            self.warning = warning
-            await startServices()
+    /// The prompt that removes the old daemons, then the install it held up. Cancelled, it
+    /// leaves them as they are, and running.
+    private func migrateAndContinue() async {
+        phase = .migrating
+        switch await stages.removeLegacyDaemons() {
+        case .done:
+            guard let environment else { return await runTask() }
+            await installAndContinue(in: environment)
         case .cancelled:
-            phase = .approval(firewallOn: firewallOn)
-        case .anotherAccount(let message):
-            phase = .refused(message)
+            phase = .migration
         case .failed(let cause, let output):
-            fail(InstallFailure(stage: .approval, step: "Installing background services", cause: cause, output: output))
+            fail(InstallFailure(stage: .migration, step: "Removing the old background services", cause: cause, output: output))
         }
     }
 
@@ -450,22 +427,20 @@ public final class Installer {
 
     // MARK: - Uninstall
 
-    /// ADR 0018's Uninstall: the privileged script's `uninstall`, then `voiced uninstall
-    /// --yes`. Safe to run again after a failure: plists already removed need no prompt, and
-    /// when no `voiced` is left to run (an interrupted removal, a Python gone), the app removes
-    /// the state directory by the same rules and says the models, logs and config stayed.
+    /// ADR 0018's Uninstall: `voiced uninstall --yes`, which stops the LaunchAgents and removes
+    /// voiced's files, with no prompt; old LaunchDaemons first, behind the one prompt left.
+    /// Safe to run again after a failure: when no `voiced` is left to run (an interrupted
+    /// removal, a Python gone), the app removes the agents and the state directory by the same
+    /// rules and says the models, logs and config stayed.
     private func runUninstall(_ choices: UninstallChoices) async {
         let step = "Uninstalling voiced"
-        if stages.daemonsInstalled {
-            phase = .uninstalling(step: "Removing the background services")
-            switch await stages.uninstallDaemons() {
+        if stages.hasLegacyDaemons {
+            phase = .uninstalling(step: "Removing the old background services")
+            switch await stages.removeLegacyDaemons() {
             case .done:
                 break
             case .cancelled:
                 phase = .confirmUninstall
-                return
-            case .anotherAccount(let message):
-                phase = .refused(message)
                 return
             case .failed(let cause, let output):
                 return fail(InstallFailure(stage: .uninstall, step: step, cause: cause, output: output))
@@ -476,6 +451,7 @@ public final class Installer {
             guard value(await stages.removeFiles(with: voiced, choices)) != nil else { return }
             phase = .uninstalled(choices)
         } else {
+            await stages.removeAgents()
             guard value(await stages.removeStateDirectory()) != nil else { return }
             phase = .uninstalled(UninstallChoices())
         }

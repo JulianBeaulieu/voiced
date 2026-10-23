@@ -52,15 +52,23 @@ def test_parse_not_loaded() -> None:
 
 
 def test_argv_builders() -> None:
-    assert control.print_argv("a.b") == ["launchctl", "print", "system/a.b"]
-    assert control.kickstart_argv("a.b") == ["launchctl", "kickstart", "system/a.b"]
-    assert control.bootout_argv("a.b") == ["launchctl", "bootout", "system/a.b"]
-    assert control.bootstrap_argv("a.b") == [
-        "launchctl",
-        "bootstrap",
-        "system",
-        "/Library/LaunchDaemons/a.b.plist",
-    ]
+    """The user's own domain: nothing here needs root (ADR 0035)."""
+    gui = f"gui/{os.getuid()}"
+    assert control.print_argv("a.b") == ["launchctl", "print", f"{gui}/a.b"]
+    assert control.kickstart_argv("a.b") == ["launchctl", "kickstart", f"{gui}/a.b"]
+    assert control.bootout_argv("a.b") == ["launchctl", "bootout", f"{gui}/a.b"]
+    plist = control.plist_path("a.b")
+    assert plist == Path.home() / "Library/LaunchAgents/a.b.plist"
+    assert control.bootstrap_argv(plist) == ["launchctl", "bootstrap", gui, str(plist)]
+
+
+def test_legacy_daemons_name_their_owner(no_launchd: Path) -> None:
+    import plistlib
+
+    (no_launchd / "a.b.stt.plist").write_bytes(plistlib.dumps({"UserName": "someone"}))
+    (no_launchd / "a.b.tts.plist").write_bytes(b"not a plist")
+    found = control.legacy_daemons(["a.b.stt", "a.b.tts", "a.b.watchdog"])
+    assert [(d.label, d.user) for d in found] == [("a.b.stt", "someone"), ("a.b.tts", None)]
 
 
 def test_run_command_missing_binary() -> None:

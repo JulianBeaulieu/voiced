@@ -1,6 +1,6 @@
-"""Hang watchdog for the two service daemons.
+"""Hang watchdog for the two services.
 
-Runs as its own LaunchDaemon (``voiced watchdog``). Every ``interval_s`` it
+Runs as its own LaunchAgent (``voiced watchdog``). Every ``interval_s`` it
 polls each service's ``/health`` and decides, per service, whether to restart
 it. The decision logic is a pure function of the previous state and the new
 observation so it can be unit-tested without a network (ADR 0012).
@@ -473,13 +473,14 @@ Restarter = Callable[[ServiceSpec], RestartResult]
 
 
 def restart_service(spec: ServiceSpec, runner: Runner = run_command) -> RestartResult:
-    """Restart without root: SIGKILL the pid, then ``launchctl kickstart``.
+    """Restart: SIGKILL the pid, then ``launchctl kickstart``.
 
-    ``launchctl kickstart -k`` is denied to a non-root caller while the job
-    has a running process (ADR 0004). The service runs under the same
-    ``UserName`` as the watchdog, so killing its pid is permitted; SIGKILL
-    because a wedged Metal process may ignore SIGTERM. The plain ``kickstart``
-    then starts it immediately instead of after ``ThrottleInterval``.
+    The service is an agent in the watchdog's own domain, running as the
+    same user, so killing its pid is permitted; SIGKILL because a wedged
+    Metal process may ignore SIGTERM. The plain ``kickstart`` then starts
+    it immediately instead of after ``ThrottleInterval``. (``kickstart -k``
+    would do both, but it needed root for the LaunchDaemons of ADR 0004;
+    this way stays, ADR 0012.)
     """
     status = print_service(spec.label, runner)
     if not status.loaded:

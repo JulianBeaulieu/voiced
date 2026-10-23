@@ -32,3 +32,10 @@ migration in the privileged script: its `install` and `uninstall` must
 recognise and boot out plists with the old prefix before `install` writes
 new ones. Keep the old prefix in its list for at least one release after the
 switch.
+
+## Amendment (ADR 0035)
+
+The services are LaunchAgents that `voiced install` renders itself, so
+there is no root step that installs the default labels only: a
+`[launchd] label_prefix` gets agents under that prefix. The menu bar app
+still knows only the default labels.

@@ -8,8 +8,9 @@ Run speech-to-text and text-to-speech on your Mac for Home Assistant voice
 control or any app that speaks the OpenAI audio API. Models stay loaded on
 the Apple Silicon GPU, so with the default voice the first audio of a reply
 arrives about 100 ms after the request. voiced runs as two services, one for
-each direction, under launchd plus a watchdog: they start at boot without
-anyone logging in and restart themselves after a crash or a hang. Home
+each direction, under launchd plus a watchdog: they run as you while you
+are logged in, start again when you log in, and restart themselves after a
+crash or a hang. Nothing needs an administrator password. Home
 Assistant talks to it over Wyoming, the protocol its Assist pipelines use
 for local speech services.
 
@@ -47,21 +48,24 @@ brew install --cask julianbeaulieu/voiced/voiced
 Open voiced.app. Its first screen asks what to install: speech to text, text
 to speech or both, each with its model, the recommended ones already chosen,
 and shows what that downloads. A service you switch off downloads nothing;
-you can turn it on later in Settings. Install then does the rest and asks
-for an administrator password once, at the end; Homebrew itself asks for
-none. The menu bar icon then shows whether the services are up. The app
-also restarts them, opens the logs and changes the common settings; see
+you can turn it on later in Settings. Install then does the rest without
+asking for a password, and Homebrew asks for none either. The menu bar icon
+then shows whether the services are up. The app also restarts them, opens
+the logs and changes the common settings; see
 [menubar/README.md](menubar/README.md).
 
 The app updates itself: it checks for a new version when it opens and once
 a day, and **Install and Relaunch** on the card in its menu installs it,
-opens it again and then brings the services to the same version, asking
-for a password only if the services need it
-([docs/operations.md](docs/operations.md#the-menu-bar-app)). With Homebrew,
-`brew update` and `brew upgrade --cask voiced` work too: the services keep
-running and Homebrew asks for no password; on its next launch the app
-offers **Update voiced**. The first upgrade from 0.4.0 or earlier still
-asks twice, once.
+opens it again and then brings the services to the same version, without a
+password ([docs/operations.md](docs/operations.md#the-menu-bar-app)). With
+Homebrew, `brew update` and `brew upgrade --cask voiced` work too: the
+services keep running and Homebrew asks for no password; on its next launch
+the app offers **Update voiced**, which asks for none either. Updating from
+0.4.0 or earlier asks once more, the last time: those releases installed
+the services as system-wide LaunchDaemons, which only an administrator can
+remove. The app asks to "remove the old background services (the last time
+a password is needed)", and if you cancel, the services keep running the
+old way until you accept.
 
 Moving the app to the Trash, or `brew uninstall --cask voiced`, leaves the
 services running: to remove voiced, use Settings > About > Uninstall
@@ -84,8 +88,8 @@ brew install julianbeaulieu/voiced/voiced
 voiced install
 ```
 
-`voiced install` downloads the configured models and prints one command to
-run with `sudo`, the only step that needs root;
+`voiced install` downloads the configured models and starts the services
+as your LaunchAgents, with no `sudo`;
 [docs/operations.md](docs/operations.md#commands) says what it does. Both
 the cask and the formula come from the
 [tap](https://github.com/JulianBeaulieu/homebrew-voiced).
@@ -111,11 +115,28 @@ curl -s http://127.0.0.1:8881/v1/audio/transcriptions \
   -F file=@hello.wav -F model=parakeet
 ```
 
-To remove a formula install, run `voiced uninstall`
+To remove a formula install, run `voiced uninstall --yes`
 ([docs/operations.md](docs/operations.md#commands)). All three ways of
 installing set up the same `~/.voiced` and the same launchd services
 ([ADR 0017](docs/decisions/0017-homebrew-packaging.md)), so you can switch
 between them.
+
+### voiced runs while you are logged in
+
+The services are LaunchAgents of the user who installed them: they start
+when that user logs in and stop when they log out. Locking the screen,
+letting the display sleep or switching to another user keeps them running.
+After a reboot:
+
+- with FileVault on, unlocking the disk at boot logs you in, so voiced
+  starts then;
+- with FileVault off and automatic login on (System Settings > Users &
+  Groups), voiced starts at the automatic login;
+- otherwise voiced waits at the login window until you log in.
+
+A Mac that serves Home Assistant unattended keeps its user logged in, or
+has automatic login on. `voiced doctor` says which case applies
+([ADR 0035](docs/decisions/0035-launch-agents.md)).
 
 ## What you get
 
@@ -252,9 +273,9 @@ voiced restart all
   0.4 s for Parakeet and 0.25 s for Kokoro, and is then answered as usual.
   `0`, the default, keeps the model loaded.
 - `enabled = false` switches the service off: it loads no model, opens no
-  port and is not announced to Home Assistant. Its LaunchDaemon still
-  starts it at boot (stopping that for good would need an administrator
-  each time), and the process waits, holding about 30 MB. `voiced status`
+  port and is not announced to Home Assistant. Its LaunchAgent still
+  starts it at login, so turning it back on is one restart, and the
+  process waits, holding about 30 MB. `voiced status`
   and the app say "off".
 
 Both take effect when the service restarts. For Home Assistant, leave
@@ -281,6 +302,11 @@ exposes the services to your whole network:
 - The config file is created readable only by you (0600), because the API
   key goes there. Other accounts on the Mac can read files in your home
   directory that are not, so keep it that way if you edit it by hand.
+- With the macOS firewall on (System Settings > Network > Firewall),
+  macOS asks the first time a device on the network connects whether
+  voiced's Python (`python3.12`) may accept incoming connections. Choose
+  Allow; you are logged in when voiced runs, so the question reaches you.
+  `voiced doctor` shows what the firewall says about it.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
 - Settings and restarts go through a Unix socket that only your user can
   open (`voiced settings`, `voiced restart`). The status page's settings
@@ -767,9 +793,10 @@ trailing silence and 105 ms median at the last word
 ## Troubleshooting
 
 Start with `voiced doctor`. It checks Apple Silicon, the macOS version,
-Python, espeak-ng, ffmpeg, memory, port conflicts, FileVault, the installed
-daemons and Metal access, including from a real daemon context with
-`voiced doctor --metal-probe`.
+Python, espeak-ng, ffmpeg, memory, port conflicts, whether voiced starts
+after a reboot, the installed LaunchAgents, the firewall when voiced is on
+the network, and Metal access, including from a LaunchAgent as the services
+run it with `voiced doctor --metal-probe`.
 
 | Symptom | Likely cause and fix |
 |---|---|
@@ -788,9 +815,10 @@ daemons and Metal access, including from a real daemon context with
 | Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
-| `voiced stop` prints a `sudo` command | Unloading a LaunchDaemon needs root; run the printed command. |
+| `voiced install`, `status` or `doctor` prints a `sudo /bin/sh -c '/bin/launchctl bootout system/...'` line | voiced 0.4.0 or earlier installed the services as LaunchDaemons, which only an administrator can remove. Run that line once (the last time voiced needs a password), then `voiced install`. |
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, or mDNS does not cross your VLAN. See [docs/home-assistant.md](docs/home-assistant.md). |
-| Services do not come up after a reboot | FileVault waits for a disk unlock; see [docs/operations.md](docs/operations.md#filevault). |
+| Services do not come up after a reboot | They start when you log in; without FileVault or automatic login the Mac waits at the login window. See [voiced runs while you are logged in](#voiced-runs-while-you-are-logged-in). |
+| Home Assistant cannot reach voiced on the network, with the firewall on | The firewall's question for `python3.12` was answered Deny, or not at all. Allow it in System Settings > Network > Firewall > Options; `voiced doctor` names the file. |
 | Port already in use | Another program owns 8880, 8881, 10200 or 10300. `voiced doctor` names it; change the port in the config. |
 | Services stopped after `brew uninstall voiced` | `~/.voiced/bin/voiced` points at the removed formula, so launchd no longer starts them. Reinstall it, or finish removing voiced: [docs/operations.md](docs/operations.md#homebrew). |
 | `voiced settings set` says `is not downloaded` | voiced refuses to switch to a model that is not in the cache; run the `voiced models download` it names first. |
@@ -835,7 +863,7 @@ Report vulnerabilities privately, not in a public issue.
 | [docs/api.md](docs/api.md) | HTTP, WebSocket and Wyoming reference with curl and Python examples |
 | [docs/home-assistant.md](docs/home-assistant.md) | Wyoming setup, Assist pipeline, optional Ollama conversation agent |
 | [docs/architecture.md](docs/architecture.md) | Services, inference path, queue, engine registry, audio conventions, adding an engine |
-| [docs/operations.md](docs/operations.md) | Commands, installing from a checkout, launchd, watchdog, control channel, logs, FileVault, memory, updating |
+| [docs/operations.md](docs/operations.md) | Commands, installing from a checkout, launchd and the move from LaunchDaemons, watchdog, control channel, logs, after a reboot, memory, updating |
 | [docs/decisions/](docs/decisions/README.md) | Architecture decision records |
 | [menubar/README.md](menubar/README.md) | The macOS menu bar app: building, running it against the fake control server |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, development setup, tests, conventions |

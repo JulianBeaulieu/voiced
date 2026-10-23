@@ -63,7 +63,7 @@ def process_of(pid: int) -> tuple[str, list[str]]:
 
 
 def runs_entry(argv: Sequence[str], entry: Path) -> bool:
-    """``argv`` is a voiced daemon started from ``entry``: the plists run
+    """``argv`` is a voiced service started from ``entry``: the plists run
     ``<entry> serve ...``, a console script, so the kernel runs it as
     ``<interpreter> <entry> serve ...``."""
     return len(argv) > 1 and argv[1] == str(entry)

@@ -224,7 +224,7 @@ def test_check_restart(settings: Settings) -> None:
         dog, runner=runner, installed=lambda label: plists[label.rsplit(".", 1)[1]]
     )
     sup.check_restart("stt")  # plist and loaded
-    with pytest.raises(NotInstalled, match="no launchd plist"):
+    with pytest.raises(NotInstalled, match="no LaunchAgent plist"):
         sup.check_restart("tts")
     printed.append(113)  # launchctl print: not found
     with pytest.raises(ServiceUnavailable, match="not loaded"):

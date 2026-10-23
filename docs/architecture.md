@@ -10,7 +10,7 @@ it while unused), and serves it over two protocols from one event loop. This pag
 
 ```mermaid
 flowchart TB
-    subgraph launchd [launchd LaunchDaemons]
+    subgraph launchd [launchd LaunchAgents]
         direction LR
         d_stt["&lt;prefix&gt;.stt"]
         d_tts["&lt;prefix&gt;.tts"]
@@ -190,14 +190,15 @@ in memory, for the status page.
 
 ## launchd and the watchdog
 
-Three LaunchDaemons, `io.github.julianbeaulieu.voiced.stt`, `.tts` and
-`.watchdog`, rendered as root from the user name alone by the one privileged
-script that `voiced install` prints and the menu bar app runs
-([ADR 0018](decisions/0018-install-from-the-menu-bar-app.md)). launchd starts them at boot with no GUI login and
-restarts a service that exits. The watchdog, a third daemon, polls `/health`
+Three LaunchAgents in the user's launchd domain,
+`io.github.julianbeaulieu.voiced.stt`, `.tts` and `.watchdog`, written to
+`~/Library/LaunchAgents` and loaded by `voiced install`, which the menu bar
+app runs too ([ADR 0035](decisions/0035-launch-agents.md)). launchd starts
+them when the user logs in and restarts a service that exits. The
+watchdog, a third agent, polls `/health`
 and restarts a service that is alive but stuck: a hung load, a queue that
 stops draining, or a service that stays `degraded`. It runs as the
-installing user, not root, and restarts a service by killing its process and
+user, like the services, and restarts a service by killing its process and
 asking launchd to start it again. The plist keys, the restart rules and the
 Metal probe are documented in [operations.md](operations.md#launchd).
 

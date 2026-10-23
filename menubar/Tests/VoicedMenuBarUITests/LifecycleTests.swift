@@ -13,6 +13,7 @@ import XCTest
 @MainActor
 final class LifecycleTests: XCTestCase {
     private var home: URL!
+    private var agents: URL!
     private var daemons: URL!
     private var socket: String!
     private var runner: FakeInstallRunner!
@@ -29,7 +30,8 @@ final class LifecycleTests: XCTestCase {
     override func setUp() async throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
-        daemons = try launchDaemonsDirectory(watchdogUser: NSUserName())
+        agents = try launchAgentsDirectory(watchdog: true)
+        daemons = try launchDaemonsDirectory()
         socket = temporarySocketPath()
         runner = FakeInstallRunner()
         resources = try installResources(in: home.appendingPathComponent("bundle"))
@@ -42,6 +44,7 @@ final class LifecycleTests: XCTestCase {
         models.forEach { $0.stop() }
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
+        try? FileManager.default.removeItem(at: agents)
         try? FileManager.default.removeItem(at: daemons)
     }
 
@@ -57,15 +60,12 @@ final class LifecycleTests: XCTestCase {
     private var watchdogFollowsTheLink = true
     /// `voiced restart all` brings up services that answer with the current install.json.
     private var restartBringsServicesUp = true
-    private var checkResponse = FakeInstallRunner.Response.success
     private var installResponse: FakeInstallRunner.Response?
     private var uninstallResponse = FakeInstallRunner.Response.success
 
     private func respond(_ command: InstallCommand) -> FakeInstallRunner.Response {
         let name = URL(fileURLWithPath: command.executable).lastPathComponent
         switch (name, command.arguments.first) {
-        case ("bash", _):
-            return checkResponse
         case ("voiced", "install"):
             if let installResponse { return installResponse }
             let environment = URL(fileURLWithPath: command.executable).deletingLastPathComponent().deletingLastPathComponent()
@@ -109,7 +109,7 @@ final class LifecycleTests: XCTestCase {
     }
 
     private func makeInstaller(startupTimeout: Duration = .seconds(3)) -> Installer {
-        let probe = InstallProbe(launchDaemonsDirectory: daemons)
+        let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = startupTimeout
         configuration.pollInterval = .milliseconds(20)
@@ -194,7 +194,15 @@ final class LifecycleTests: XCTestCase {
         ((try? FileManager.default.contentsOfDirectory(atPath: envs.path)) ?? []).sorted()
     }
 
-    private var checks: [InstallCommand] { runner.commands(named: "bash") }
+    /// This user's watchdog LaunchDaemon from before ADR 0035, and the prompt's removal of it.
+    private func installOldDaemons() throws {
+        try writePlist(
+            ["ProgramArguments": ["\(home.path)/.voiced/bin/voiced", "watchdog"], "UserName": user],
+            to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+        runner.onLegacyDaemonsRemoved = { [daemons] in
+            try? FileManager.default.removeItem(at: daemons!.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+        }
+    }
 
     // MARK: - Update
 
@@ -220,14 +228,8 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(record?.environment, built.path)
         XCTAssertEqual(record?.previous, current.path)
 
-        // Step 3: the check as the user with a fixed environment; the plists match, so no prompt.
-        let check = try XCTUnwrap(checks.first)
-        XCTAssertEqual(check.executable, "/bin/bash")
-        XCTAssertEqual(Array(check.arguments.suffix(3)), ["voiced-privileged", "check", user])
-        XCTAssertEqual(check.arguments[3], PrivilegedScript.text)
-        XCTAssertFalse(check.inheritsEnvironment)
-        XCTAssertEqual(check.environment, PrivilegedScript.environment)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
+        // voiced install loaded the agents itself: no check, no prompt.
+        XCTAssertEqual(runner.prompts, 0)
         // Step 4 came without a restart; then the uv cache is cleared.
         XCTAssertFalse(runner.commands.contains { $0.arguments.first == "restart" })
         XCTAssertEqual(uv.last?.arguments, ["cache", "clean"])
@@ -237,52 +239,44 @@ final class LifecycleTests: XCTestCase {
         XCTAssertFalse(installer.offersRollback, "only a failed update offers it on the failure screen")
     }
 
-    func testUpdateAsksForTheAdministratorOnlyWhenAPlistDiffers() async throws {
+    /// An install from before ADR 0035: the new environment is built while the old daemons
+    /// still serve, then the one prompt left removes them, then `voiced install` loads the
+    /// agents.
+    func testAnUpdateOfAnOldInstallRemovesItsDaemonsBehindOnePrompt() async throws {
+        try installOldDaemons()
         try startServer()
-        checkResponse = .init([.stdout("differs io.github.julianbeaulieu.voiced.tts"), .exit(1)])
         let installer = makeInstaller()
         installer.update()
-        await reach(installer, "approval") { $0 == .approval(firewallOn: false) }
-        XCTAssertTrue(runner.privilegedCalls.isEmpty, "the prompt waits for the button")
-        installer.approve()
+        await reach(installer, "migration") { $0 == .migration }
+        XCTAssertEqual(environmentNames().count, 2, "built before the prompt")
+        XCTAssertTrue(runner.commands(named: "voiced").isEmpty, "voiced install waits for the daemons to go")
+        installer.removeOldServices()
         await finished(installer)
-        XCTAssertEqual(runner.privilegedCalls, ["install \(user)"])
+        XCTAssertEqual(installer.phase, .finished(version: "0.1.0"))
+        XCTAssertEqual(runner.prompts, 1)
     }
 
-    func testANotLoadedLabelAlsoNeedsTheAdministrator() async throws {
-        try startServer()
-        checkResponse = .init([.stdout("not loaded io.github.julianbeaulieu.voiced.watchdog"), .exit(1)])
+    func testACancelledPromptInAnUpdateKeepsTheOldServices() async throws {
+        try installOldDaemons()
+        runner.privilegedOutcomes = [.cancelled]
+        let installer = makeInstaller()
+        installer.update()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        await reach(installer, "migration again") { $0 == .migration && self.runner.prompts == 1 }
+        XCTAssertEqual(record?.environment, current.path, "the services keep running the old way")
+        XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
+    }
+
+    func testRepairOfAnOldInstallAsksOnce() async throws {
+        try installOldDaemons()
         let installer = makeInstaller()
         installer.repair()
-        await reach(installer, "approval") { if case .approval = $0 { true } else { false } }
-    }
-
-    func testANewPythonWithTheFirewallOnFollowsTheException() async throws {
-        try startServer()
-        installedPython = "3.13.9"
-        let base = runner.respond
-        runner.respond = { command in
-            if command.executable.hasSuffix("socketfilterfw") {
-                return .init([.stdout("Firewall is enabled. (State = 1)"), .exit(0)])
-            }
-            return base(command)
-        }
-        let installer = makeInstaller()
-        installer.update()
-        await reach(installer, "approval") { $0 == .approval(firewallOn: true) }
-        installer.approve()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
         await finished(installer)
-        XCTAssertEqual(runner.privilegedCalls, ["install \(user)"])
-    }
-
-    func testANewPythonWithTheFirewallOffNeedsNoPrompt() async throws {
-        try startServer()
-        installedPython = "3.13.9"
-        let installer = makeInstaller()
-        installer.update()
-        await finished(installer)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
-        XCTAssertEqual(runner.commands(named: "socketfilterfw").count, 1)
+        XCTAssertEqual(runner.prompts, 1)
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments.first), ["install", "restart"])
     }
 
     func testWithoutAHelloFromTheNewEnvironmentItRestartsAll() async throws {
@@ -377,46 +371,6 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(environmentNames(), [current.lastPathComponent])
     }
 
-    func testACheckThatRefusesIsAFailure() async throws {
-        try startServer()
-        checkResponse = .init([.stderr("refused: bad home directory for \(user)"), .exit(1)])
-        let installer = makeInstaller()
-        installer.update()
-        let failed = await failure(installer)
-        XCTAssertEqual(failed?.stage, .approval)
-        XCTAssertEqual(failed?.cause, "Refused: bad home directory for \(user).")
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
-        checkResponse = .success
-        installer.retry()
-        await finished(installer)
-        XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 1, "the check again, not the build")
-    }
-
-    func testACancelledPromptInAnUpdateGoesBackToApproval() async throws {
-        try startServer()
-        checkResponse = .init([.stdout("differs io.github.julianbeaulieu.voiced.stt"), .exit(1)])
-        runner.privilegedOutcomes = [.cancelled]
-        let installer = makeInstaller()
-        installer.update()
-        await reach(installer, "approval") { if case .approval = $0 { true } else { false } }
-        installer.approve()
-        let asked = await eventually { runner.privilegedCalls.count == 1 }
-        XCTAssertTrue(asked)
-        await reach(installer, "approval again") { $0 == .approval(firewallOn: false) }
-    }
-
-    func testAFailedBootstrapInAnUpdateNamesTheService() async throws {
-        try startServer()
-        checkResponse = .init([.stdout("differs io.github.julianbeaulieu.voiced.stt"), .exit(1)])
-        runner.privilegedOutcomes = [.finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.tts")]
-        let installer = makeInstaller()
-        installer.update()
-        await reach(installer, "approval") { if case .approval = $0 { true } else { false } }
-        installer.approve()
-        let failed = await failure(installer)
-        XCTAssertEqual(failed?.cause, "macOS did not start text to speech.")
-    }
-
     func testUpdateRemovesThePythonsNoEnvironmentUses() async throws {
         try startServer()
         let unused = pythonDirectory("3.12.9")
@@ -467,8 +421,7 @@ final class LifecycleTests: XCTestCase {
         ])
         XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments.first), ["install", "restart"])
         XCTAssertEqual(runner.commands(named: "voiced").first?.executable, current.appendingPathComponent("bin/voiced").path)
-        XCTAssertEqual(checks.count, 1)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
+        XCTAssertEqual(runner.prompts, 0)
         XCTAssertEqual(environmentNames(), [current.lastPathComponent])
         XCTAssertNil(record?.previous, "a repair in place replaces nothing")
     }
@@ -496,16 +449,6 @@ final class LifecycleTests: XCTestCase {
         await finished(installer)
         XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 1)
         XCTAssertFalse(runner.commands(named: "voiced").contains { $0.executable.contains(".broken") })
-    }
-
-    func testRepairReinstallsMissingDaemons() async throws {
-        checkResponse = .init([.stdout("differs io.github.julianbeaulieu.voiced.watchdog"), .exit(1)])
-        let installer = makeInstaller()
-        installer.repair()
-        await reach(installer, "approval") { if case .approval = $0 { true } else { false } }
-        installer.approve()
-        await finished(installer)
-        XCTAssertEqual(runner.privilegedCalls, ["install \(user)"])
     }
 
     func testRepairOfAnEnvironmentWhosePythonIsGoneBuildsAFreshOne() async throws {
@@ -559,7 +502,7 @@ final class LifecycleTests: XCTestCase {
 
     // MARK: - Uninstall
 
-    func testUninstallRemovesTheServicesThenTheFiles() async throws {
+    func testUninstallIsVoicedUninstallWithNoPrompt() async throws {
         let cache = home.appendingPathComponent("Library/Application Support/voiced/uv-cache")
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         let installer = makeInstaller()
@@ -570,7 +513,7 @@ final class LifecycleTests: XCTestCase {
         let choices = UninstallChoices(models: true, logs: false, config: true)
         installer.uninstall(choices)
         await reach(installer, "uninstalled") { $0 == .uninstalled(choices) }
-        XCTAssertEqual(runner.privilegedCalls, ["uninstall \(user)"])
+        XCTAssertEqual(runner.prompts, 0)
         let remove = try XCTUnwrap(runner.commands(named: "voiced").first)
         XCTAssertEqual(remove.executable, state.appendingPathComponent("bin/voiced").path)
         XCTAssertEqual(remove.arguments, ["uninstall", "--yes", "--remove-models", "--remove-config"])
@@ -581,42 +524,55 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(installer.task, .install)
     }
 
+    func testUninstallOfAnOldInstallRemovesItsDaemonsFirst() async throws {
+        try installOldDaemons()
+        let installer = makeInstaller()
+        installer.confirmUninstall()
+        installer.uninstall(UninstallChoices())
+        await reach(installer, "uninstalled") { $0 == .uninstalled(UninstallChoices()) }
+        XCTAssertEqual(runner.prompts, 1)
+        XCTAssertEqual(runner.commands(named: "voiced").first?.arguments, ["uninstall", "--yes"])
+    }
+
     func testACancelledUninstallPromptGoesBack() async throws {
+        try installOldDaemons()
         runner.privilegedOutcomes = [.cancelled]
         let installer = makeInstaller()
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices())
-        let asked = await eventually { runner.privilegedCalls.count == 1 }
+        let asked = await eventually { runner.prompts == 1 }
         XCTAssertTrue(asked)
         await reach(installer, "confirmation") { $0 == .confirmUninstall }
         XCTAssertTrue(runner.commands.isEmpty)
     }
 
-    func testAFailedPrivilegedUninstallKeepsTheFiles() async throws {
-        runner.privilegedOutcomes = [.finished(status: 1, output: "refused: another voiced install or uninstall is running")]
+    func testAFailedRemovalOfTheOldDaemonsKeepsTheFiles() async throws {
+        try installOldDaemons()
+        runner.privilegedOutcomes = [.finished(status: 1, output: "rm: denied")]
         let installer = makeInstaller()
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices())
         let failed = await failure(installer)
         XCTAssertEqual(failed?.stage, .uninstall)
-        XCTAssertEqual(failed?.cause, "Refused: another voiced install or uninstall is running.")
+        XCTAssertEqual(failed?.cause, "The old background services could not be removed (status 1).")
         XCTAssertTrue(runner.commands.isEmpty)
         installer.retry()
         XCTAssertEqual(installer.phase, .confirmUninstall, "Try Again asks again")
     }
 
     func testAFailedFileRemovalShowsItsOutput() async throws {
-        uninstallResponse = .init([.stderr("Daemons still loaded: stt. Run the sudo script first, then"), .exit(1)])
+        uninstallResponse = .init([.stderr("refusing to touch /x: not voiced's"), .exit(1)])
         let installer = makeInstaller()
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices())
         let failed = await failure(installer)
         XCTAssertEqual(failed?.stage, .uninstall)
-        XCTAssertEqual(failed?.cause, "Daemons still loaded: stt. Run the sudo script first, then")
+        XCTAssertEqual(failed?.cause, "refusing to touch /x: not voiced's")
     }
 
-    /// No voiced left to run `voiced uninstall`: the services go, then the app removes the
-    /// state directory by the same rules and says the models, logs and config stayed.
+    /// No voiced left to run `voiced uninstall`: the app boots out the agents and removes
+    /// them and the state directory by the same rules, and says the models, logs and config
+    /// stayed.
     func testAnEnvironmentTooBrokenToUninstallIsStillRemoved() async throws {
         try FileManager.default.removeItem(at: pythonDirectory("3.12.15"))
         try makeEnvironment("20261018T120000.partial", version: "0.1.0", python: "3.12.16")
@@ -626,22 +582,15 @@ final class LifecycleTests: XCTestCase {
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices(models: true, logs: true, config: true))
         await reach(installer, "uninstalled") { $0 == .uninstalled(UninstallChoices()) }
-        XCTAssertEqual(runner.privilegedCalls, ["uninstall \(user)"])
+        XCTAssertEqual(runner.prompts, 0)
         XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
+        XCTAssertEqual(
+            runner.commands(named: "launchctl").map(\.arguments),
+            BackgroundItems.labels.map { ["bootout", "gui/\(getuid())/\($0)"] })
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist").path))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: state.path), ["envs"])
         XCTAssertEqual(environmentNames(), ["notes"], "what voiced did not build stays")
-    }
-
-    /// Try Again after the services were removed: no second prompt.
-    func testAnUninstallAfterTheServicesWentAsksNoAdministrator() async throws {
-        try FileManager.default.removeItem(at: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
-        try FileManager.default.removeItem(at: pythonDirectory("3.12.15"))
-        let installer = makeInstaller()
-        installer.confirmUninstall()
-        installer.uninstall(UninstallChoices())
-        await reach(installer, "uninstalled") { if case .uninstalled = $0 { true } else { false } }
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: state.path))
     }
 
     /// The active environment is broken but the rollback one runs: it removes the files, with
@@ -744,14 +693,6 @@ final class LifecycleTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: theirs.appendingPathComponent("cpython-3.11.4").path))
     }
 
-    func testAnotherAccountsUninstallIsRefused() async throws {
-        runner.privilegedOutcomes = [.finished(status: 1, output: "refused: voiced is already installed for someone on this Mac")]
-        let installer = makeInstaller()
-        installer.confirmUninstall()
-        installer.uninstall(UninstallChoices())
-        await reach(installer, "refused") { $0 == .refused("voiced is already installed for someone on this Mac.") }
-    }
-
     // MARK: - Installs the app does not own
 
     func testHomebrewAndCommandLineInstallsAreOnlyShown() throws {
@@ -765,22 +706,23 @@ final class LifecycleTests: XCTestCase {
             installer.confirmUninstall()
             XCTAssertEqual(installer.phase, .welcome, source)
             XCTAssertNil(installer.rollbackTarget())
-            XCTAssertTrue(runner.commands.isEmpty && runner.privilegedCalls.isEmpty, source)
+            XCTAssertTrue(runner.commands.isEmpty && runner.prompts == 0, source)
         }
         XCTAssertEqual(
             ExternalInstall.commands(for: .homebrew).map(\.command),
-            ["brew upgrade voiced", "brew reinstall voiced", "voiced uninstall", "brew uninstall voiced"],
+            ["brew upgrade voiced", "brew reinstall voiced", "voiced uninstall --yes", "brew uninstall voiced"],
             "the services go before the formula")
-        XCTAssertEqual(ExternalInstall.commands(for: .cli).map(\.command), ["voiced install --source <checkout>", "voiced uninstall"])
+        XCTAssertEqual(ExternalInstall.commands(for: .cli).map(\.command), ["voiced install --source <checkout>", "voiced uninstall --yes"])
         XCTAssertTrue(ExternalInstall.commands(for: .app).isEmpty)
     }
 
     func testNothingStartsWhileARunIsWorking() async throws {
+        try installOldDaemons()
         runner.privilegedHangs = true
         let installer = makeInstaller()
         installer.confirmUninstall()
         installer.uninstall(UninstallChoices())
-        await reach(installer, "uninstalling") { $0 == .uninstalling(step: "Removing the background services") }
+        await reach(installer, "uninstalling") { $0 == .uninstalling(step: "Removing the old background services") }
         installer.update()
         installer.repair()
         XCTAssertEqual(installer.task, .uninstall)
@@ -845,6 +787,6 @@ final class LifecycleTests: XCTestCase {
     }
 
     private func makeInstallerConfiguration() -> InstallerConfiguration {
-        InstallerConfiguration(resources: resources, home: home, installProbe: InstallProbe(launchDaemonsDirectory: daemons))
+        InstallerConfiguration(resources: resources, home: home, installProbe: InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons))
     }
 }

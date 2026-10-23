@@ -38,14 +38,17 @@ public final class FakeInstallRunner: InstallRunner {
 
     /// The answer for each command; by default every step succeeds with the recorded lines.
     public var respond: @MainActor (InstallCommand) -> Response = FakeInstallRunner.defaultResponse
-    /// Answers for the privileged step, in order; success once they run out.
+    /// Answers for the administrator prompt, in order; success once they run out.
     public var privilegedOutcomes: [PrivilegedOutcome] = []
-    /// The privileged step never returns, as while the prompt is up.
+    /// The prompt never returns, as while it is up.
     public var privilegedHangs = false
+    /// Runs when a prompt succeeds: the old daemons are gone.
+    public var onLegacyDaemonsRemoved: (@MainActor () -> Void)?
     public var isOnline = true
 
     public private(set) var commands: [InstallCommand] = []
-    public private(set) var privilegedCalls: [String] = []
+    /// How many times the administrator prompt was shown.
+    public private(set) var prompts = 0
     /// Commands whose run was cancelled before they exited: the real runner terminates them.
     public private(set) var terminated: [InstallCommand] = []
 
@@ -59,7 +62,6 @@ public final class FakeInstallRunner: InstallRunner {
                 try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
             }
             return .success
-        case ("socketfilterfw", _): return Response([.stdout("Firewall is disabled. (State = 0)"), .exit(0)])
         case ("voiced", _): return .progress(RecordedProgress.success)
         default: return .success
         }
@@ -95,12 +97,14 @@ public final class FakeInstallRunner: InstallRunner {
         }
     }
 
-    public func runPrivileged(_ mode: PrivilegedMode, user: String) async -> PrivilegedOutcome {
-        privilegedCalls.append("\(mode.rawValue) \(user)")
+    public func removeLegacyDaemons() async -> PrivilegedOutcome {
+        prompts += 1
         if privilegedHangs {
             while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
         }
-        return privilegedOutcomes.isEmpty ? .finished(status: 0, output: "") : privilegedOutcomes.removeFirst()
+        let outcome = privilegedOutcomes.isEmpty ? .finished(status: 0, output: "") : privilegedOutcomes.removeFirst()
+        if outcome == .finished(status: 0, output: "") { onLegacyDaemonsRemoved?() }
+        return outcome
     }
 
     public func isReachable(_ url: URL) async -> Bool { isOnline }
@@ -222,6 +226,7 @@ public enum RecordedProgress {
         "link": "link /Users/someone/.voiced/bin/voiced -> \(env)/bin/voiced",
         "manifest": "write /Users/someone/.voiced/install.json",
         "prune": "remove environments in /Users/someone/.voiced/envs other than the new and the previous one",
+        "agents": "write the LaunchAgents in /Users/someone/Library/LaunchAgents and load the ones that changed",
     ]
 
     public static func step(_ id: String, _ state: String) -> String {
@@ -250,5 +255,5 @@ public enum RecordedProgress {
             #"{"event": "download", "model": "\#(kokoro)", "bytes": 355300000, "total": 355300000, "file": "x"}"#,
             #"{"event": "log", "line": "loaded parakeet"}"#,
             step("models", "done"),
-        ] + steps("link", "manifest", "prune") + [done]
+        ] + steps("link", "manifest", "prune", "agents") + [done]
 }

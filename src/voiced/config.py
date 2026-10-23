@@ -51,21 +51,20 @@ ENGINE_ENV: dict[str, tuple[str, str]] = {  # variable -> (section, key) that se
 # cleared, so the installer and the services agree on one cache and the hub.
 CLEARED_HF_ENV = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT")
 
-# The launchd label prefix. The privileged script (voiced/launchd/
-# voiced-privileged.sh) spells it too, since its only input is the user name;
-# a test keeps the two equal. ``[launchd] label_prefix`` changes which labels
-# the CLI and the watchdog address, not what the root step installs (ADR 0003).
+# The launchd label prefix. ``[launchd] label_prefix`` changes the labels the
+# LaunchAgents are installed under and that the CLI and the watchdog address
+# (ADR 0003, ADR 0035); the menu bar app knows the default only.
 DEFAULT_LAUNCHD_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 ServiceName = Literal["stt", "tts"]
 DaemonName = Literal["stt", "tts", "watchdog", "metalprobe"]
 
-# The two inference services, and the daemons the installer manages.
+# The two inference services, and the LaunchAgents the installer manages.
 HTTP_SERVICES: tuple[ServiceName, ...] = ("stt", "tts")
 SERVICES: tuple[DaemonName, ...] = ("stt", "tts", "watchdog")
 
-# Labels end up in launchd plists and in shell scripts the user runs with sudo.
+# Labels end up in launchd plists and in the commands voiced prints.
 _LABEL_PREFIX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 
 # The TOML file for the Settings instance currently being built. Set by

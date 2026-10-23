@@ -36,8 +36,9 @@ In scope:
 - The HTTP listeners (ports 8880 and 8881) and the Wyoming listeners
   (10200 and 10300).
 - The API key: requests that get past it, and ways it leaks.
-- The installer: `voiced install`, `voiced uninstall`, and the privileged
-  script that installs the LaunchDaemons as root.
+- The installer: `voiced install` and `voiced uninstall`, which write and
+  remove the LaunchAgents as your user, and the one root step left: the
+  fixed command that removes the LaunchDaemons of 0.4.0 or earlier.
 - The launchd pieces: the plists, the services and the watchdog.
 - The menu bar app, its installer, and the watchdog's control socket
   (`~/.voiced/control.sock`).
@@ -59,9 +60,11 @@ voiced is built for a Mac at home or in a small office.
   network can use those ports.
 - voiced is not designed to face the internet. It does no TLS and no rate
   limiting. Do not forward its ports from your router.
-- Nothing runs as root except the privileged script, which you run with
-  `sudo` or approve in the app's administrator prompt. The services and the
-  watchdog run as your user.
+- Nothing runs as root. The services and the watchdog are LaunchAgents of
+  your user. The only command voiced ever asks you to run as an
+  administrator removes the LaunchDaemons of 0.4.0 or earlier, once: fixed
+  `launchctl bootout` and `rm` commands, printed for `sudo` or behind the
+  app's prompt.
 - The control socket accepts only processes of your own user.
 
 The README's [security note on `bind`](README.md#security-note-on-bind)

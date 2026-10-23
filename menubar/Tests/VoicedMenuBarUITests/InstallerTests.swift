@@ -9,6 +9,7 @@ import XCTest
 @MainActor
 final class InstallerTests: XCTestCase {
     private var home: URL!
+    private var agents: URL!
     private var daemons: URL!
     private var socket: String!
     private var runner: FakeInstallRunner!
@@ -17,6 +18,7 @@ final class InstallerTests: XCTestCase {
     override func setUp() async throws {
         home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        agents = try launchAgentsDirectory()
         daemons = try launchDaemonsDirectory()
         socket = temporarySocketPath()
         runner = FakeInstallRunner()
@@ -27,6 +29,7 @@ final class InstallerTests: XCTestCase {
         models.forEach { $0.stop() }
         servers.forEach { $0.stop() }
         try? FileManager.default.removeItem(at: home)
+        try? FileManager.default.removeItem(at: agents)
         try? FileManager.default.removeItem(at: daemons)
         UserDefaults.standard.removePersistentDomain(forName: defaultsSuite)
     }
@@ -43,7 +46,7 @@ final class InstallerTests: XCTestCase {
     private func makeInstaller(
         startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60), installSource: URL? = nil
     ) -> Installer {
-        let probe = InstallProbe(launchDaemonsDirectory: daemons)
+        let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.installSource = installSource
         configuration.defaultsSuite = defaultsSuite
@@ -82,8 +85,9 @@ final class InstallerTests: XCTestCase {
         return nil
     }
 
-    private func reachApproval(_ installer: Installer) async {
-        await reach(installer, "approval") { if case .approval = $0 { true } else { false } }
+    /// `voiced install` is done and loaded the agents: the installer is on to Starting.
+    private func reachInstalled(_ installer: Installer) async {
+        await reach(installer, "starting") { [.starting, .homeAssistant(.asking)].contains($0) }
     }
 
     private func environmentNames() -> [String] {
@@ -91,7 +95,8 @@ final class InstallerTests: XCTestCase {
         return ((try? FileManager.default.contentsOfDirectory(atPath: envs.path)) ?? []).sorted()
     }
 
-    private func installedPlist(for user: String) throws {
+    /// A watchdog LaunchDaemon from before ADR 0035, run as `user`.
+    private func legacyDaemon(for user: String) throws {
         try writePlist(
             ["ProgramArguments": ["/Users/\(user)/.voiced/bin/voiced", "watchdog"], "UserName": user],
             to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
@@ -110,8 +115,8 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(installer.welcome.availableBytes, 100_000_000_000)
 
         installer.install()
-        await reachApproval(installer)
-        XCTAssertEqual(installer.phase, .approval(firewallOn: false))
+        await reach(installer, "Connect Home Assistant") { $0 == .homeAssistant(.asking) }
+        XCTAssertEqual(runner.prompts, 0, "no administrator prompt anywhere")
 
         // The environment, with the bundled uv and its pins, then voiced install from it.
         let uv = runner.commands(named: "uv")
@@ -148,10 +153,6 @@ final class InstallerTests: XCTestCase {
         }
         lock.release()
 
-        installer.approve()
-        await reach(installer, "Connect Home Assistant") { $0 == .homeAssistant(.asking) }
-        XCTAssertEqual(runner.privilegedCalls, ["install \(NSUserName())"])
-
         installer.connectHomeAssistant(true)
         await reach(installer, "connected") { if case .homeAssistant(.connected) = $0 { true } else { false } }
         let sets = server.requests.filter { $0.op == "settings.set" }.map(\.args)
@@ -170,15 +171,13 @@ final class InstallerTests: XCTestCase {
         installer.continueToDone()
         XCTAssertEqual(installer.phase, .done)
         XCTAssertNil(installer.errorMessage)
-        XCTAssertNil(installer.warning)
     }
 
     func testNoToHomeAssistantChangesNothing() async throws {
         let server = try startServer()
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         await reach(installer) { $0 == .homeAssistant(.asking) }
         installer.connectHomeAssistant(false)
         XCTAssertEqual(installer.phase, .done)
@@ -202,8 +201,8 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(makeInstaller().welcome.hasRoom)
     }
 
-    func testAnotherAccountsInstallIsRefused() throws {
-        try installedPlist(for: "root")
+    func testAnotherAccountsOldInstallIsRefused() throws {
+        try legacyDaemon(for: "root")
         let installer = makeInstaller()
         XCTAssertEqual(installer.phase, .refused("voiced is already installed for root on this Mac."))
         installer.install()
@@ -211,7 +210,7 @@ final class InstallerTests: XCTestCase {
     }
 
     func testAnOrphanedInstallIsNotARefusal() throws {
-        try installedPlist(for: "voiced-deleted-account")
+        try legacyDaemon(for: "voiced-deleted-account")
         XCTAssertEqual(makeInstaller().phase, .welcome)
     }
 
@@ -246,7 +245,7 @@ final class InstallerTests: XCTestCase {
         // The wheels and Whisper; nothing for text to speech.
         XCTAssertEqual(installer.downloadBytes, 205_000_000 + 885_000_000)
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(
             installSettings(),
             ["stt.enabled=true", "stt.engine=whisper", "stt.model=\(RecordedProgress.whisper)", "tts.enabled=false"])
@@ -383,8 +382,7 @@ final class InstallerTests: XCTestCase {
         server.update { $0.settings.tts.enabled = false }
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         await reach(installer) { $0 == .homeAssistant(.asking) }
         installer.connectHomeAssistant(true)
         await reach(installer, "connected") { if case .homeAssistant(.connected) = $0 { true } else { false } }
@@ -396,9 +394,14 @@ final class InstallerTests: XCTestCase {
     func testTheSetupOpensAtLaunchOnlyWhenNothingIsInstalled() throws {
         XCTAssertTrue(makeInstaller().opensAtLaunch)
         // The command line or an older app installed the services: the menu shows them.
-        try installedPlist(for: NSUserName())
+        try writePlist(
+            ["ProgramArguments": ["/Users/someone/.voiced/bin/voiced", "watchdog"]],
+            to: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         XCTAssertFalse(makeInstaller().opensAtLaunch)
-        try installedPlist(for: "root")
+        try FileManager.default.removeItem(at: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
+        try legacyDaemon(for: NSUserName())
+        XCTAssertFalse(makeInstaller().opensAtLaunch, "an install from 0.4.0 or earlier")
+        try legacyDaemon(for: "root")
         XCTAssertFalse(makeInstaller().opensAtLaunch)
     }
 
@@ -413,7 +416,7 @@ final class InstallerTests: XCTestCase {
         let installer = makeInstaller()
         XCTAssertTrue(installer.welcome.resuming)
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         let names = environmentNames()
         XCTAssertFalse(names.contains("20260101T000000.partial"))
         // A complete environment is kept; voiced install prunes what it no longer needs.
@@ -421,15 +424,15 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(names.count, 2)
     }
 
-    func testInstalledPlistsLeaveOnlyStarting() async throws {
-        try installedPlist(for: NSUserName())
+    func testInstalledAgentsLeaveOnlyStarting() async throws {
+        agents = try launchAgentsDirectory(watchdog: true)
         try startServer()
         let installer = makeInstaller()
         XCTAssertTrue(installer.welcome.resuming)
         installer.install()
         await reach(installer) { $0 == .homeAssistant(.asking) }
         XCTAssertTrue(runner.commands.isEmpty)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
+        XCTAssertEqual(runner.prompts, 0)
     }
 
     func testCancelTerminatesTheRunningCommand() async throws {
@@ -457,7 +460,7 @@ final class InstallerTests: XCTestCase {
 
         runner.isOnline = true
         installer.retry()
-        await reachApproval(installer)
+        await reachInstalled(installer)
     }
 
     func testAFailedUVStepShowsItsErrorAndRetriesCleanly() async throws {
@@ -482,7 +485,7 @@ final class InstallerTests: XCTestCase {
 
         fail = false
         installer.retry()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         // The stopped build's .partial is gone; only the new environment is left.
         XCTAssertEqual(environmentNames().count, 1)
         XCTAssertFalse(environmentNames()[0].hasSuffix(".partial"))
@@ -509,7 +512,7 @@ final class InstallerTests: XCTestCase {
         }
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(claimedFirst, true)
         let claimed = try JSONSerialization.jsonObject(with: Data(contentsOf: manifest)) as? [String: Any]
         XCTAssertEqual(claimed?["source"] as? String, "app")
@@ -524,7 +527,7 @@ final class InstallerTests: XCTestCase {
         }
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
     }
 
@@ -535,7 +538,7 @@ final class InstallerTests: XCTestCase {
         try existing.write(to: manifest)
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(try Data(contentsOf: manifest), existing)
     }
 
@@ -585,7 +588,7 @@ final class InstallerTests: XCTestCase {
         try makeVoicedVenv(at: home.appendingPathComponent(".voiced"))
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertFalse(FileManager.default.fileExists(atPath: manifest.path))
     }
 
@@ -629,7 +632,7 @@ final class InstallerTests: XCTestCase {
         let installer = makeInstaller()
         XCTAssertTrue(installer.welcome.resuming)
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertTrue(runner.commands(named: "uv").isEmpty)
         XCTAssertEqual(runner.commands(named: "voiced").map(\.executable), [built.appendingPathComponent("bin/voiced").path])
     }
@@ -643,7 +646,7 @@ final class InstallerTests: XCTestCase {
             atPath: bin.appendingPathComponent("voiced").path, withDestinationPath: linked.appendingPathComponent("bin/voiced").path)
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(runner.commands(named: "voiced").map(\.executable), [linked.appendingPathComponent("bin/voiced").path])
     }
 
@@ -651,7 +654,7 @@ final class InstallerTests: XCTestCase {
         try completeEnvironment("20250101T000000", version: "0.0.9")
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(runner.commands(named: "uv").count, 4)
     }
 
@@ -664,7 +667,7 @@ final class InstallerTests: XCTestCase {
         await reach(installer) { $0 == .environment(step: "Waiting for another voiced install to finish") }
         XCTAssertTrue(runner.commands.isEmpty)
         held.release()
-        await reachApproval(installer)
+        await reachInstalled(installer)
     }
 
     // MARK: - voiced install failures
@@ -689,7 +692,7 @@ final class InstallerTests: XCTestCase {
             InstallFailure(stage: .install, step: "Checking the ports", cause: "Port 10300 is in use by python3.12 (pid 4242)."))
         // Only a download failure names the manual download.
         XCTAssertNil(failure?.fallback)
-        XCTAssertTrue(runner.privilegedCalls.isEmpty)
+        XCTAssertEqual(runner.prompts, 0)
     }
 
     func testAnInterruptedDownloadResumesInTheSameEnvironment() async throws {
@@ -712,7 +715,7 @@ final class InstallerTests: XCTestCase {
         let built = runner.commands(named: "uv").count
 
         installer.retry()
-        await reachApproval(installer)
+        await reachInstalled(installer)
         XCTAssertEqual(runner.commands(named: "uv").count, built)
         XCTAssertEqual(Set(runner.commands(named: "voiced").map(\.executable)).count, 1)
     }
@@ -773,81 +776,66 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(failure?.stage, .install)
     }
 
-    // MARK: - Approval
+    // MARK: - Migration from LaunchDaemons (ADR 0035)
 
-    func testTheFirewallStateIsShownBeforeThePrompt() async throws {
-        runner.respond = { command in
-            command.executable.hasSuffix("socketfilterfw")
-                ? .init([.stdout("Firewall is enabled. (State = 1)"), .exit(0)]) : FakeInstallRunner.defaultResponse(command)
+    /// The services still run as this user's LaunchDaemons: the environment is built, then the
+    /// one prompt left, then `voiced install`, which loads the agents.
+    func testOldDaemonsAreRemovedBehindOnePromptBeforeVoicedInstall() async throws {
+        try legacyDaemon(for: NSUserName())
+        runner.onLegacyDaemonsRemoved = { [daemons] in
+            try? FileManager.default.removeItem(at: daemons!.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         }
+        try startServer()
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        XCTAssertEqual(installer.phase, .approval(firewallOn: true))
+        await reach(installer, "migration") { $0 == .migration }
+        XCTAssertEqual(runner.prompts, 0, "the prompt waits for the button")
+        XCTAssertTrue(runner.commands(named: "voiced").isEmpty, "voiced install waits for the daemons to go")
+        XCTAssertFalse(environmentNames().isEmpty, "the environment is built first")
+        XCTAssertFalse(installer.isWorking)
+
+        installer.removeOldServices()
+        await reach(installer) { $0 == .homeAssistant(.asking) }
+        XCTAssertEqual(runner.prompts, 1)
+        XCTAssertEqual(runner.commands(named: "voiced").count, 1)
     }
 
-    func testACancelledPromptGoesBackWithoutAnError() async throws {
+    func testACancelledPromptLeavesTheOldServicesRunning() async throws {
+        try legacyDaemon(for: NSUserName())
         runner.privilegedOutcomes = [.cancelled]
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
-        await reach(installer) { $0 == .approval(firewallOn: false) && self.runner.privilegedCalls.count == 1 }
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        await reach(installer) { $0 == .migration && self.runner.prompts == 1 }
+        XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
         XCTAssertNil(installer.errorMessage)
     }
 
-    func testAFailedBootstrapNamesTheService() async throws {
-        runner.privilegedOutcomes = [
-            .finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.tts\rbootstrap failed: io.github.julianbeaulieu.voiced.tts")
-        ]
+    func testAFailedRemovalIsAFailureAndTryAgainAsksAgain() async throws {
+        try legacyDaemon(for: NSUserName())
+        runner.privilegedOutcomes = [.finished(status: 1, output: "rm: Operation not permitted")]
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
-        let failure = await failure(installer)
-        XCTAssertEqual(failure?.stage, .approval)
-        XCTAssertEqual(failure?.cause, "macOS did not start text to speech.")
-        XCTAssertEqual(failure?.output.count, 2)
-
-        // Try again asks again; the script replaces the plists.
-        try startServer()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        let failed = await failure(installer)
+        XCTAssertEqual(failed?.stage, .migration)
+        XCTAssertEqual(failed?.output, ["rm: Operation not permitted"])
         installer.retry()
-        await reachApproval(installer)
-        installer.approve()
-        await reach(installer) { $0 == .homeAssistant(.asking) }
-        XCTAssertEqual(runner.privilegedCalls.count, 2)
+        await reach(installer) { _ in self.runner.prompts == 2 }
     }
 
-    func testAnotherAccountFoundByTheScriptIsARefusal() async throws {
-        runner.privilegedOutcomes = [.finished(status: 1, output: "refused: voiced is already installed for alex on this Mac")]
-        let installer = makeInstaller()
-        installer.install()
-        await reachApproval(installer)
-        installer.approve()
-        await reach(installer) { $0 == .refused("voiced is already installed for alex on this Mac.") }
-    }
-
-    func testOtherRefusalsAreFailures() async throws {
-        runner.privilegedOutcomes = [.finished(status: 1, output: "refused: another voiced install or uninstall is running")]
-        let installer = makeInstaller()
-        installer.install()
-        await reachApproval(installer)
-        installer.approve()
-        let failure = await failure(installer)
-        XCTAssertEqual(failure?.cause, "Refused: another voiced install or uninstall is running.")
-    }
-
-    func testFirewallProblemsAreWarningsNotFailures() async throws {
-        try startServer()
-        for (status, phrase) in [(Int32(4), "could not allow"), (5, "outside your home folder")] {
-            runner.privilegedOutcomes = [.finished(status: status, output: "")]
-            let installer = makeInstaller()
-            installer.install()
-            await reachApproval(installer)
-            installer.approve()
-            await reach(installer) { $0 == .homeAssistant(.asking) }
-            XCTAssertTrue(installer.warning?.contains(phrase) == true, "\(status): \(installer.warning ?? "none")")
-            installer.cancel()
+    func testTheRemovalIsFixedCommandsWithNothingOfTheAppsEnvironment() {
+        let command = LegacyDaemons.command
+        XCTAssertEqual(command.executable, "/usr/bin/osascript")
+        XCTAssertFalse(command.inheritsEnvironment)
+        XCTAssertEqual(command.environment, ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+        XCTAssertEqual(Array(command.arguments.suffix(2)), [LegacyDaemons.removal, LegacyDaemons.prompt])
+        XCTAssertTrue(LegacyDaemons.prompt.contains("remove the old background services (the last time a password is needed)"))
+        for label in BackgroundItems.labels {
+            XCTAssertTrue(LegacyDaemons.removal.contains("/bin/launchctl bootout system/\(label) 2>/dev/null"))
+            XCTAssertTrue(LegacyDaemons.removal.contains("/Library/LaunchDaemons/\(label).plist"))
         }
     }
 
@@ -856,8 +844,7 @@ final class InstallerTests: XCTestCase {
     func testNoHelloInTimeFailsAndTryAgainWaitsAgain() async throws {
         let installer = makeInstaller(startupTimeout: .milliseconds(300))
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         let failure = await failure(installer)
         XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasPrefix("voiced did not answer within") == true)
@@ -866,15 +853,14 @@ final class InstallerTests: XCTestCase {
         try startServer()
         installer.retry()
         await reach(installer) { $0 == .homeAssistant(.asking) }
-        XCTAssertEqual(runner.privilegedCalls.count, 1)
+        XCTAssertEqual(runner.prompts, 0)
     }
 
     func testAnIncompatibleWatchdogIsAFailure() async throws {
         try startServer(.newerProtocol)
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         let failure = await failure(installer)
         XCTAssertTrue(failure?.cause.hasSuffix("Update the menu bar app.") == true)
     }
@@ -885,8 +871,7 @@ final class InstallerTests: XCTestCase {
         try startServer { $0.failingOps = ["settings.set"] }
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         await reach(installer) { $0 == .homeAssistant(.asking) }
         installer.connectHomeAssistant(true)
         let refused = await eventually { installer.errorMessage != nil && installer.phase == .homeAssistant(.asking) }
@@ -897,8 +882,7 @@ final class InstallerTests: XCTestCase {
         try startServer { $0.refusedRestarts = [.stt: "stt is not installed", .tts: "tts is not installed"] }
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
-        installer.approve()
+        await reachInstalled(installer)
         await reach(installer) { $0 == .homeAssistant(.asking) }
         installer.connectHomeAssistant(true)
         let refused = await eventually { installer.errorMessage?.hasPrefix("Not restarted") == true }
@@ -942,7 +926,7 @@ final class InstallerTests: XCTestCase {
         playOverride()
         let installer = makeInstaller(installSource: wheel)
         installer.install()
-        await reachApproval(installer)
+        await reachInstalled(installer)
 
         let work = home.appendingPathComponent("Library/Application Support/voiced/install-source")
         XCTAssertEqual(
@@ -993,9 +977,10 @@ final class InstallerTests: XCTestCase {
     }
 
     func testWaitingOnTheUserIsNotBusy() async throws {
+        try startServer()
         let installer = makeInstaller()
         installer.install()
-        await reachApproval(installer)
+        await reach(installer) { $0 == .homeAssistant(.asking) }
         XCTAssertFalse(installer.isWorking)
     }
 }

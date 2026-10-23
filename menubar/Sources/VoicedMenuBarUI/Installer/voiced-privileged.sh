@@ -1,1 +1,0 @@
-../../../../src/voiced/launchd/voiced-privileged.sh

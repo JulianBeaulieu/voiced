@@ -1,4 +1,4 @@
-"""Installer plan, the root step, the Metal probe, dry-run, and uninstall safety."""
+"""Installer plan, the LaunchAgents, the Metal probe, dry-run, and uninstall safety."""
 
 from __future__ import annotations
 
@@ -30,29 +30,27 @@ from tests.scripts_support import load
 from voiced.cli import main
 from voiced.config import (
     DEFAULT_LAUNCHD_LABEL_PREFIX,
-    LOG_DIR_IN_HOME,
     SERVICES,
     Settings,
     load_settings,
 )
 from voiced.launchd import install as install_module
 from voiced.launchd import ports as ports_module
-from voiced.launchd.control import CommandResult, run_streaming
+from voiced.launchd.control import CommandResult, legacy_removal_command, run_streaming
 from voiced.launchd.install import (
     BASE_PATH,
-    PLIST_END,
-    PRIVILEGED_SCRIPT,
     InstallError,
     InstallPlan,
+    install_agents,
     new_environment_dir,
     plan_install,
     plan_summary,
-    privileged_script,
     removal_refusal,
+    remove_agents,
     remove_targets,
     revision_line,
-    root_command,
     run_install,
+    run_metal_probe,
     uninstall_targets,
     write_default_config,
 )
@@ -101,298 +99,241 @@ def _compare(actual: str, name: str) -> None:
     assert actual == path.read_text(), f"{name} differs from golden file"
 
 
-def test_metal_probe_matches_golden(plan: InstallPlan) -> None:
-    probe = plan.metal_probe(HOME / ".voiced/bin/python")
-    _compare(probe.script, "metal-probe.sh")
-    _compare(probe.plist.decode(), "metalprobe.plist")
-    assert plistlib.loads(probe.plist)["KeepAlive"] is False
-    assert "StandardErrorPath" not in plistlib.loads(probe.plist)
-    # The fixed prefix, whatever the config's label_prefix: config never steers root.
-    assert probe.label == f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"
-    assert "trap " in probe.script and "EXIT" in probe.script
-    assert probe.script_path == HOME / ".config/voiced/metal-probe.sh"
+class FakeLaunchd:
+    """The user's launchd domain, as ``launchctl`` answers for it: labels
+    load from the plists bootstrapped, each with a pid."""
+
+    def __init__(self, fail: set[str] | None = None) -> None:
+        self.loaded: dict[str, int] = {}
+        self.calls: list[list[str]] = []
+        self.fail = fail or set()
+        self.next_pid = 100
+
+    def __call__(self, argv: Sequence[str]) -> CommandResult:
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[0] != "launchctl":
+            return _check_ok(argv)
+        verb, target = argv[1], argv[-1]
+        label = target.rsplit("/", 1)[-1]
+        if verb == "print":
+            if label not in self.loaded:
+                return CommandResult(113, "", f'Could not find service "{label}"')
+            return CommandResult(
+                0, f"{target} = {{\n\tstate = running\n\tpid = {self.loaded[label]}\n}}"
+            )
+        if verb == "bootout":
+            return CommandResult(0) if self.loaded.pop(label, None) else CommandResult(3)
+        if verb == "bootstrap":
+            assert argv[2] == f"gui/{os.getuid()}"
+            label = plistlib.loads(Path(target).read_bytes())["Label"]
+            if label in self.fail:
+                return CommandResult(5, "", "Bootstrap failed: 5: Input/output error")
+            self.next_pid += 1
+            self.loaded[label] = self.next_pid
+            return CommandResult(0)
+        raise AssertionError(argv)
+
+    def verbs(self) -> list[tuple[str, str]]:
+        """(verb, label), or for bootstrap (verb, plist path)."""
+        return [
+            (c[1], c[-1] if c[1] == "bootstrap" else c[-1].rsplit("/", 1)[-1])
+            for c in self.calls
+            if c[0] == "launchctl"
+        ]
 
 
-def _heredoc(script: str) -> str:
-    """The plist between the probe script's heredoc markers."""
-    lines = script.splitlines()
-    begin = next(i for i, line in enumerate(lines) if line.endswith(f"<<'{PLIST_END}'"))
-    return "\n".join(lines[begin + 1 : lines.index(PLIST_END)]) + "\n"
-
-
-def test_metal_probe_carries_its_plist(plan: InstallPlan) -> None:
-    """Root installs the plist written into the script, not a file the user
-    could rewrite after review; the result file is touched only as the user."""
-    probe = plan.metal_probe(HOME / ".voiced/bin/python")
-    assert _heredoc(probe.script) == probe.plist.decode()
-    assert " cp " not in probe.script and ".config/voiced/launchd" not in probe.script
-    for line in probe.script.splitlines():
-        if '"$OUT"' in line and not line.startswith("OUT="):
-            assert line.count('"$OUT"') == line.count("/usr/bin/sudo -n -u someone --"), line
-    # Every command by absolute path; nothing found through PATH as root.
-    for word in ("launchctl", "rm", "cat", "chown", "chmod", "seq", "sleep", "test"):
-        assert not re.search(rf"(^|[;&|] *|do |then |; ){word} ", probe.script), word
-
-
-def test_metal_probe_refuses_a_path_that_ends_its_plist(plan: InstallPlan) -> None:
-    with pytest.raises(InstallError, match=PLIST_END):
-        plan.metal_probe(Path(f"/x\n{PLIST_END}\n/python"))
-
-
-def _stub(directory: Path, name: str, body: str) -> None:
-    path = directory / name
-    path.write_text(f"#!/bin/bash\n{body}\n")
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-
-
-def _runnable(script: str, stubs: Path, tools: Sequence[str], dst: Path) -> str:
-    """The probe script with its absolute tools pointed at stubs and the
-    plist written to ``dst``, to run as a normal user."""
-    for tool in tools:
-        script = re.sub(rf"/(usr/)?(s?bin)/{tool}\b", str(stubs / tool), script)
-    return script.replace("/Library/LaunchDaemons/", f"{dst}/")
-
-
-def test_metal_probe_script_cleans_up_when_bootstrap_fails(
-    plan: InstallPlan, tmp_path: Path
-) -> None:
-    """Run the generated script with stubbed tools: a failed bootstrap must still rm the plist."""
-    probe = plan.metal_probe(HOME / ".voiced/bin/python")
-    stubs = tmp_path / "bin"
-    stubs.mkdir()
-    dst = tmp_path / "LaunchDaemons"
-    dst.mkdir()
-    log = tmp_path / "calls.log"
-    _stub(
-        stubs,
-        "launchctl",
-        f'echo "launchctl $*" >> {log}\ncase "$1" in bootstrap) exit 5;; esac\nexit 113',
-    )
-    _stub(stubs, "sudo", 'shift 4; "$@"')  # sudo -n -u someone -- CMD
-    for tool in ("chown", "chmod", "sleep"):
-        _stub(stubs, tool, f'echo "{tool} $*" >> {log}')
-    _stub(stubs, "rm", f'echo "rm $*" >> {log}; /bin/rm "$@"')
-    tools = ("launchctl", "sudo", "chown", "chmod", "sleep", "rm")
-    script = tmp_path / "metal-probe.sh"
-    script.write_text(_runnable(probe.script, stubs, tools, dst))
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
-    proc = subprocess.run(["/bin/bash", str(script)], env=env, capture_output=True, text=True)
-    assert proc.returncode != 0  # bootstrap failed under set -e
-    calls = log.read_text().splitlines()
-    installed = f"{dst}/{probe.label}.plist"
-    assert f"launchctl bootstrap system {installed}" in calls
-    assert f"chown root:wheel {installed}" in calls
-    assert calls[-2] == f"launchctl bootout system/{probe.label}"  # the trap's bootout
-    assert calls[-1] == f"rm -f {installed}"  # ran even though that bootout failed
-    assert not Path(installed).exists()
-
-
-def test_metal_probe_waits_for_bootout_before_bootstrap(plan: InstallPlan) -> None:
-    lines = plan.metal_probe(HOME / ".voiced/bin/python").script.splitlines()
-    label = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"
-    bootout = lines.index(f"/bin/launchctl bootout system/{label} 2>/dev/null || true")
-    wait = next(i for i, line in enumerate(lines) if f"print system/{label}" in line)
-    bootstrap = lines.index(f"/bin/launchctl bootstrap system /Library/LaunchDaemons/{label}.plist")
-    assert bootout < wait < bootstrap
-
-
-def test_metal_probe_quotes_odd_paths(settings: Settings, tmp_path: Path) -> None:
-    weird = tmp_path / "dir with spaces $HOME 'q'"
-    settings.server.log_dir = weird / "logs"
-    p = plan_install(settings, home=weird, uv=None)
-    script = p.metal_probe(weird / "python").script
-    out = next(line for line in script.splitlines() if line.startswith("OUT="))
-    assert shlex.split(out) == [f"OUT={weird / 'logs' / 'metal-probe.json'}"]
-
-
-# The root step (ADR 0018) ------------------------------------------------------
-
-
-def test_root_command_is_the_packaged_script(settings: Settings, tmp_path: Path) -> None:
-    """One line to paste: bash by path, the script, the mode, the account."""
-    p = plan_install(settings, home=tmp_path, uv=None)
-    user = pwd.getpwuid(os.getuid()).pw_name
-    script = p.privileged_script
-    assert script.is_file() and script.name == PRIVILEGED_SCRIPT
-    for mode in ("install", "uninstall"):
-        assert p.root_command(mode) == f"sudo /bin/bash {shlex.quote(str(script))} {mode} {user}"
-    odd = Path("/x y/voiced-privileged.sh")
-    line = root_command(odd, "install", "a.b")
-    assert shlex.split(line) == ["sudo", "/bin/bash", str(odd), "install", "a.b"]
-
-
-def test_privileged_script_is_the_active_environments(tmp_path: Path) -> None:
-    """The environment bin/voiced points at, by its stable path (Homebrew's
-    opt); this package's copy when that environment has none of its own."""
-    env = tmp_path / "env"
-    copy = env / "lib/python3.12/site-packages/voiced/launchd" / PRIVILEGED_SCRIPT
-    own = Path(install_module.__file__).parent / PRIVILEGED_SCRIPT
-    assert privileged_script(env) == own
-    copy.parent.mkdir(parents=True)
-    copy.write_text("#!/bin/bash\n")
-    assert privileged_script(env) == copy
-
-
-def test_foreign_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The script and every directory to it: this account's or root's, and
-    writable by nobody else (a shared Homebrew is another admin's)."""
-    from voiced.launchd.install import foreign_writer
-
-    d = tmp_path / "env"
-    d.mkdir()
-    script = d / PRIVILEGED_SCRIPT
-    script.write_text("#!/bin/bash\n")
-    assert foreign_writer(script) is None
-    other = os.getuid() + 1
-    assert (
-        foreign_writer(script, uid=other)
-        == f"{script} belongs to {pwd.getpwuid(os.getuid()).pw_name}"
-    )
-    d.chmod(0o777)
-    assert foreign_writer(script) == f"{d} is writable by every account"
-    d.chmod(0o1777)  # sticky: nobody else can replace the script
-    assert foreign_writer(script) is None
-    d.chmod(0o775)
-    monkeypatch.setattr(install_module, "group_members", lambda gid: {"root", "someone-else"})
-    assert foreign_writer(script) == f"{d} is writable by its group, which has someone-else"
-    me = pwd.getpwuid(os.getuid()).pw_name
-    monkeypatch.setattr(install_module, "group_members", lambda gid: {"root", me})
-    assert foreign_writer(script) is None  # a single-user Homebrew's admin group
-    d.chmod(0o755)
-    link = tmp_path / "opt"
-    link.symlink_to(d)
-    assert foreign_writer(link / PRIVILEGED_SCRIPT) is None
-    d.chmod(0o777)  # reached through a link: the resolved path is what is checked
-    assert foreign_writer(link / PRIVILEGED_SCRIPT) == f"{d} is writable by every account"
-    d.chmod(0o755)
-    assert foreign_writer(tmp_path / "missing").startswith(
-        f"{tmp_path / 'missing'} cannot be checked"
-    )
-
-
-def _chmod_acl(path: Path, *args: str) -> None:
-    subprocess.run(["/bin/chmod", *args, str(path)], check=True)
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ACLs")
-def test_foreign_writer_refuses_an_acl_that_lets_others_write(tmp_path: Path) -> None:
-    """Mode bits are not the whole story: an allow entry for anyone but this
-    account or root that grants a write, add or delete refuses."""
-    from voiced.launchd.install import foreign_writer
-
-    d = tmp_path / "env"
-    d.mkdir()
-    script = d / PRIVILEGED_SCRIPT
-    script.write_text("#!/bin/bash\n")
-    me = pwd.getpwuid(os.getuid()).pw_name
-    _chmod_acl(d, "+a", f"user:{me} allow add_file,delete_child")  # this account: fine
-    _chmod_acl(d, "+a", "everyone deny add_file")  # a deny takes nothing away from us
-    _chmod_acl(d, "+a", "everyone allow read")  # reading changes nothing
-    assert foreign_writer(script) is None
-    _chmod_acl(d, "+a", "everyone allow add_file,delete_child")
-    found = foreign_writer(script)
-    assert found is not None
-    assert found.startswith(f"{d} has an ACL that lets others write: group everyone ")
-    assert "delete_child" in found
-    _chmod_acl(d, "-N")
-    _chmod_acl(script, "+a", "staff allow write")  # on the script itself
-    assert (
-        foreign_writer(script) == f"{script} has an ACL that lets others write: group staff write"
-    )
-    _chmod_acl(script, "-N")
-    d.chmod(0o1777)  # sticky does not excuse an ACL
-    _chmod_acl(d, "+a", "everyone allow delete_child")
-    assert foreign_writer(script) is not None
-
-
-def test_root_command_names_the_resolved_script(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """a/env -> b/link -> c/real with b open to everyone: the check walks the
-    resolved path, and the sudo line names that path, so no link in the
-    chain is run through."""
-    from voiced.launchd.install import foreign_writer
-
-    real = tmp_path / "c" / "real"
-    copy = real / "lib/python3.12/site-packages/voiced/launchd" / PRIVILEGED_SCRIPT
-    copy.parent.mkdir(parents=True)
-    copy.write_text("#!/bin/bash\n")
-    (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "link").symlink_to(real)
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "env").symlink_to(tmp_path / "b" / "link")
-    (tmp_path / "b").chmod(0o777)
-    monkeypatch.setattr(sys, "prefix", str(tmp_path / "a" / "env"))
-    p = plan_install(settings, home=tmp_path, uv=None)
-    assert p.environment == tmp_path / "a" / "env"
-    assert p.privileged_script == copy
-    assert foreign_writer(p.privileged_script) is None
-    assert shlex.split(p.root_command("install"))[2] == str(copy)
-    (tmp_path / "b").chmod(0o755)
-
-
-def test_group_members_leave_out_the_setup_account(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``admin`` holds _mbsetupuser on every Mac; it is no one who could edit
-    a Homebrew keg, so it must not refuse a single-user one. Every other
-    member counts, system accounts included."""
-    import grp
-
-    from voiced.launchd.install import SETUP_ACCOUNT, group_members
-
-    fake = grp.struct_group(("admin", "*", 80, ["root", SETUP_ACCOUNT, "_www", "alice"]))
-    monkeypatch.setattr(grp, "getgrgid", lambda gid: fake)
-    monkeypatch.setattr(pwd, "getpwall", lambda: [])
-    assert group_members(80) == {"root", "_www", "alice"}
-
-
-def test_install_prints_no_root_step_for_a_script_others_can_change(
-    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_plists_run_what_install_links(settings: Settings, tmp_path: Path) -> None:
+    """Every key the services need, in the user's domain: the entry point
+    with its command, kept alive while it exists, the config path and the
+    log prefix, the app's bundle id; no UserName, no log paths for launchd
+    to open."""
     home = tmp_path / "home"
-    p = plan_install(
+    settings.server.log_dir = tmp_path / "custom-logs"
+    settings.install.hf_home = tmp_path / "hf"
+    plan = plan_install(
         settings,
-        home=home,
         state_dir=home / ".voiced",
+        home=home,
         config_file=home / ".config/voiced/config.toml",
         uv=None,
     )
-    assert p.root_step_refusal() is None
-    monkeypatch.setattr(install_module, "foreign_writer", lambda path: "/opt/x belongs to admin")
-    refusal = p.root_step_refusal()
-    assert refusal is not None
-    assert refusal.startswith(
-        "another account could change the root script: /opt/x belongs to admin"
-    )
+    for service in SERVICES:
+        rendered = plistlib.loads(plan.agent_plist(service))
+        command = ["watchdog"] if service == "watchdog" else ["serve", service]
+        assert rendered == {
+            "Label": f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.{service}",
+            "ProgramArguments": [str(plan.entry), *command],
+            "RunAtLoad": True,
+            # Respawned only while the entry point resolves (not after `brew uninstall`).
+            "KeepAlive": {"PathState": {str(plan.entry): True}},
+            "ThrottleInterval": 10,
+            "ProcessType": "Interactive",
+            "WorkingDirectory": str(home),
+            "EnvironmentVariables": {
+                "HOME": str(home),
+                "PATH": f"{home}/.voiced/bin:{BASE_PATH}",
+                "VOICED_CONFIG": str(home / ".config/voiced/config.toml"),
+                "PYTHONUNBUFFERED": "1",
+                "VOICED_STDIO_LOG": str(tmp_path / "custom-logs" / service),
+            },
+            "AssociatedBundleIdentifiers": [f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.menubar"],
+        }
+        assert plan.agent_path(service) == home / f"Library/LaunchAgents/{rendered['Label']}.plist"
 
 
-def test_daemon_mismatches(settings: Settings, tmp_path: Path) -> None:
-    """The root step installs daemons for ~/.voiced, the default config and
-    the default labels; anything else is said, not silently ignored."""
-    home = tmp_path / "home"
-    default = {"home": home, "uv": None, "state_dir": home / ".voiced"}
-    config = home / ".config/voiced/config.toml"
-    assert plan_install(settings, config_file=config, **default).daemon_mismatches() == []
-    p = plan_install(
-        settings, **{**default, "state_dir": tmp_path / "s"}, config_file=tmp_path / "c.toml"
-    )
-    found = p.daemon_mismatches()
-    assert len(found) == 2 and "state dir" in found[0] and "config" in found[1]
-    settings.launchd.label_prefix = "org.example.voiced"
-    found = plan_install(settings, config_file=config, **default).daemon_mismatches()
-    assert found == [
-        f"[launchd] label_prefix is org.example.voiced, not {DEFAULT_LAUNCHD_LABEL_PREFIX}"
+def test_agents_follow_a_custom_layout(settings: Settings, tmp_path: Path) -> None:
+    """No root renders them any more, so a scratch state dir, config and
+    label prefix get agents of their own (a test harness beside the real
+    install, ADR 0003)."""
+    settings.launchd.label_prefix = "org.example.voicedtest"
+    p = _plan(settings, tmp_path)
+    watchdog = plistlib.loads(p.agent_plist("watchdog"))
+    assert watchdog["Label"] == "org.example.voicedtest.watchdog"
+    assert watchdog["ProgramArguments"] == [str(tmp_path / "state/bin/voiced"), "watchdog"]
+    assert watchdog["EnvironmentVariables"]["VOICED_CONFIG"] == str(tmp_path / "config.toml")
+
+
+def test_install_loads_the_agents_as_the_user(settings: Settings, tmp_path: Path) -> None:
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd()
+    said: list[str] = []
+    run_install(p, runner=lambda argv: CommandResult(0), query=launchd, say=said.append)
+    labels = [p.labels[s] for s in SERVICES]
+    assert sorted(launchd.loaded) == sorted(labels)
+    assert [v for v in launchd.verbs() if v[0] == "bootstrap"] == [
+        ("bootstrap", str(p.agent_path(s))) for s in SERVICES
     ]
+    for service in SERVICES:
+        path = p.agent_path(service)
+        assert path.read_bytes() == p.agent_plist(service)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert not any(line.startswith("sudo") for line in said)
 
 
-def test_long_venv_path_is_not_flagged(settings: Settings, tmp_path: Path) -> None:
-    """uv and pip both write a /bin/sh trampoline instead of a ``#!`` line when the
-    interpreter path is long or has spaces, and the engine reads espeak-ng data
-    from Homebrew, not from the venv, so no venv path length is too long."""
-    venv = tmp_path / "Application Support" / ("x" * 200) / ".voiced"
-    p = plan_install(settings, state_dir=venv, home=tmp_path, uv=None)
-    summary = plan_summary(p)
-    assert f"state dir      {venv}" in summary
-    assert "warning" not in summary
+def test_install_leaves_up_to_date_agents_running(settings: Settings, tmp_path: Path) -> None:
+    """A second install changes nothing that runs; a changed plist is booted
+    out and loaded again, a label booted out by hand is loaded again."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd()
+    install_agents(p, launchd, lambda _: None)
+    pids = dict(launchd.loaded)
+    launchd.calls.clear()
+    install_agents(p, launchd, lambda _: None)
+    assert launchd.loaded == pids
+    assert {verb for verb, _ in launchd.verbs()} == {"print"}
+
+    p.agent_path("tts").write_bytes(b"<plist/>")
+    del launchd.loaded[p.labels["stt"]]
+    launchd.calls.clear()
+    install_agents(p, launchd, lambda _: None)
+    changed = [v for v in launchd.verbs() if v[0] != "print"]
+    assert changed == [
+        ("bootstrap", str(p.agent_path("stt"))),
+        ("bootout", p.labels["tts"]),
+        ("bootstrap", str(p.agent_path("tts"))),
+    ]
+    assert launchd.loaded[p.labels["watchdog"]] == pids[p.labels["watchdog"]]
+    assert p.agent_path("tts").read_bytes() == p.agent_plist("tts")
+
+
+def test_a_label_that_fails_to_load_is_named(settings: Settings, tmp_path: Path) -> None:
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd(fail={p.labels["tts"]})
+    with pytest.raises(InstallError, match=f"bootstrap failed for {re.escape(p.labels['tts'])}"):
+        install_agents(p, launchd, lambda _: None)
+    assert sorted(launchd.loaded) == sorted([p.labels["stt"], p.labels["watchdog"]])
+
+
+def _daemon(directory: Path, label: str, user: str) -> None:
+    plist = {"Label": label, "UserName": user, "ProgramArguments": ["/x/voiced", "watchdog"]}
+    (directory / f"{label}.plist").write_bytes(plistlib.dumps(plist))
+
+
+def test_install_refuses_while_old_launchdaemons_hold_the_labels(
+    settings: Settings, tmp_path: Path, no_launchd: Path
+) -> None:
+    """Both would run and fight over the ports, and only root removes the
+    daemons: the install stops before it writes anything, with the one line
+    that does it (ADR 0035)."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    for service in SERVICES:
+        _daemon(no_launchd, p.labels[service], p.user)
+    with pytest.raises(InstallError) as refused:
+        run_install(p, runner=lambda argv: CommandResult(0), query=FakeLaunchd(), dry_run=True)
+    line = legacy_removal_command([p.labels[s] for s in SERVICES])
+    assert line in str(refused.value)
+    assert "the last time voiced needs an administrator" in str(refused.value)
+    with pytest.raises(InstallError):
+        run_install(p, runner=lambda argv: CommandResult(0), query=FakeLaunchd())
+    assert not p.state_dir.exists() and not p.agent_path("stt").exists()
+
+
+def test_another_accounts_old_launchdaemons_are_not_offered_for_removal(
+    settings: Settings, tmp_path: Path, no_launchd: Path
+) -> None:
+    p = _plan(settings, tmp_path)
+    _daemon(no_launchd, p.labels["watchdog"], "someoneelse")
+    refusal = p.legacy_refusal()
+    assert refusal is not None and "installed for someoneelse" in refusal
+    assert "sudo" not in refusal
+
+
+def test_the_removal_line_is_fixed_commands() -> None:
+    """Root runs nothing the user's account wrote: launchctl and rm by path,
+    the plists in /Library/LaunchDaemons, nothing else. The app runs the same
+    commands (LegacyDaemons.swift)."""
+    line = legacy_removal_command(["a.b.stt", "a.b.watchdog"])
+    assert line == (
+        "sudo /bin/sh -c '/bin/launchctl bootout system/a.b.stt 2>/dev/null; "
+        "/bin/launchctl bootout system/a.b.watchdog 2>/dev/null; "
+        "/bin/rm -f /Library/LaunchDaemons/a.b.stt.plist /Library/LaunchDaemons/a.b.watchdog.plist'"
+    )
+    swift = (
+        Path(__file__).parents[2] / "menubar/Sources/VoicedMenuBarUI/Installer/LegacyDaemons.swift"
+    )
+    inner = shlex.split(
+        legacy_removal_command([f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.{s}" for s in SERVICES])
+    )[-1]
+    assert f'"{inner}"' in swift.read_text()
+
+
+def test_metal_probe_runs_as_a_one_shot_agent(plan: InstallPlan, tmp_path: Path) -> None:
+    """Bootstrapped from a temporary plist, booted out after its result."""
+    p = dataclasses.replace(plan, log_dir=tmp_path / "logs", home=tmp_path)
+    launchd = FakeLaunchd()
+    seen: dict[str, Any] = {}
+
+    def query(argv: Sequence[str]) -> CommandResult:
+        result = launchd(argv)
+        if argv[1] == "bootstrap":
+            seen.update(plistlib.loads(Path(argv[-1]).read_bytes()))
+            seen["path"] = argv[-1]
+            (tmp_path / "logs/metal-probe.json").write_text('{"ok": true}\n')
+        return result
+
+    assert run_metal_probe(p, Path("/x/python"), query, sleep=lambda _: None) == '{"ok": true}\n'
+    label = p.labels["metalprobe"]
+    assert seen["Label"] == label and seen["KeepAlive"] is False
+    assert seen["ProgramArguments"][:3] == ["/x/python", "-m", "voiced.launchd.metal_probe"]
+    assert "UserName" not in seen
+    assert not Path(seen["path"]).exists()
+    assert launchd.verbs()[-1] == ("bootout", label) and label not in launchd.loaded
+
+
+def test_metal_probe_without_a_result_is_booted_out(
+    plan: InstallPlan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = dataclasses.replace(plan, log_dir=tmp_path / "logs", home=tmp_path)
+    monkeypatch.setattr(install_module, "METAL_PROBE_WAIT_S", 0.0)
+    launchd = FakeLaunchd()
+    with pytest.raises(InstallError, match="no result"):
+        run_metal_probe(p, Path("/x/python"), launchd, sleep=lambda _: None)
+    assert p.labels["metalprobe"] not in launchd.loaded
 
 
 def test_default_install_runner_streams() -> None:
@@ -402,10 +343,10 @@ def test_default_install_runner_streams() -> None:
 def test_engine_variables_come_from_the_config_not_the_plists(
     settings: Settings, tmp_path: Path
 ) -> None:
-    """The plists carry only the fixed environment the privileged script
-    renders (ADR 0018). The services, and the download as a child of a
-    voiced that set them (apply_engine_environment), get the rest from the
-    config; the download's own argument is only the config path."""
+    """The plists carry only a fixed environment (ADR 0018). The services,
+    and the download as a child of a voiced that set them
+    (apply_engine_environment), get the rest from the config; the
+    download's own argument is only the config path."""
     settings.install.hf_home = tmp_path / "hf"
     settings.tts.espeak_library = tmp_path / "lib/libespeak-ng.dylib"
     settings.tts.espeak_data = tmp_path / "data"
@@ -776,12 +717,12 @@ def test_plan_uses_the_real_account_not_logname(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """LOGNAME and USER are whatever the environment says; "System
-    Administrator" is uid 0, so believing it would write a root UserName."""
+    Administrator" is uid 0, so believing it would take root's old
+    LaunchDaemons for this user's."""
     monkeypatch.setenv("LOGNAME", "System Administrator")
     monkeypatch.setenv("USER", "System Administrator")
     p = plan_install(settings, home=tmp_path, uv=None)
     assert p.user == pwd.getpwuid(os.getuid()).pw_name != "System Administrator"
-    assert p.root_command("install").endswith(f" install {p.user}")
 
 
 # The state directory (ADR 0017) -----------------------------------------------
@@ -826,9 +767,12 @@ def _install(p: InstallPlan, said: list[str] | None = None) -> list[list[str]]:
             _environment(p.environment)
         return CommandResult(0)
 
+    launchd = FakeLaunchd()
+
     def query(argv: Sequence[str]) -> CommandResult:
-        calls.append(list(argv))
-        return _check_ok(argv)
+        if argv[0] != "launchctl":
+            calls.append(list(argv))
+        return launchd(argv)
 
     run_install(p, runner=runner, query=query, say=(said if said is not None else []).append)
     return calls
@@ -850,10 +794,9 @@ def test_install_links_the_running_environment(settings: Settings, tmp_path: Pat
     assert sorted(x.name for x in p.state_dir.iterdir()) == ["bin", "install.json"]
 
 
-def test_install_stages_nothing_for_root(settings: Settings, tmp_path: Path) -> None:
-    """Root renders the plists itself, so no file a same-user process could
-    rewrite after review is left for it: an install writes no plist and no
-    script, and removes what an earlier release staged for its sudo script."""
+def test_install_removes_what_an_early_release_staged(settings: Settings, tmp_path: Path) -> None:
+    """What releases before ADR 0018 staged for a sudo script goes: an
+    install writes no script, and plists only in ~/Library/LaunchAgents."""
     env = _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
     staging = p.legacy_staging_dir
@@ -866,7 +809,8 @@ def test_install_stages_nothing_for_root(settings: Settings, tmp_path: Path) -> 
     assert sorted(x.name for x in staging.iterdir()) == ["mine.txt"]
     assert any(line.startswith("remove the plists and sudo scripts") for line in said)
     left = [x for x in tmp_path.rglob("*") if x.suffix in (".plist", ".sh")]
-    assert [x for x in left if not x.is_relative_to(env)] == []
+    agents = tmp_path / "Library/LaunchAgents"
+    assert [x for x in left if not x.is_relative_to(env) and not x.is_relative_to(agents)] == []
     (staging / "mine.txt").unlink()
     for path in p.legacy_staged_files()[:1]:
         path.write_text("<plist/>")
@@ -1029,7 +973,13 @@ def test_run_install_tightens_an_existing_readable_config(
     run_install(p, runner=lambda argv: CommandResult(0), dry_run=True, say=said.append)
     assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o644, "dry run changes nothing"
     assert any("would tighten" in line for line in said)
-    run_install(p, runner=lambda argv: CommandResult(0), skip_models=True, say=said.append)
+    run_install(
+        p,
+        runner=lambda argv: CommandResult(0),
+        query=FakeLaunchd(),
+        skip_models=True,
+        say=said.append,
+    )
     assert stat.S_IMODE(p.config_file.stat().st_mode) == 0o600
 
 
@@ -1072,7 +1022,7 @@ def test_the_chosen_settings_are_downloaded_first_and_written_at_the_switch(
         return CommandResult(0)
 
     said: list[str] = []
-    run_install(p, runner=runner, query=_check_ok, say=said.append)
+    run_install(p, runner=runner, query=FakeLaunchd(), say=said.append)
     ((download, config_then),) = seen
     assert config_then == before, "the config is unchanged while the models download"
     assert download[-8:] == [
@@ -1170,34 +1120,31 @@ def test_cli_dry_run_prints_everything_and_writes_nothing(
     assert not (tmp_path / "logs").exists()
     assert "dry run" in out
     assert "--require-hashes" in out and "--build-constraints" in out
-    # A scratch state dir and config: the daemons would not run this install.
-    assert "No root step" in out and f"the state dir is {tmp_path / 'state'}" in out
+    assert "would write the LaunchAgents" in out
     assert "sudo" not in out
 
 
-def test_cli_install_prints_the_root_step(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_cli_install_prints_the_removal_line_for_old_launchdaemons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    no_launchd: Path,
 ) -> None:
-    """The default layout: one line to paste for install, one for uninstall."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("VOICED_CONFIG", raising=False)
-    monkeypatch.setenv("VOICED_SERVER__LOG_DIR", str(tmp_path / "logs"))
-    assert main(["install", "--dry-run", "--source", str(tmp_path)]) == 0
-    out = capsys.readouterr().out
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "missing.toml"))
     user = pwd.getpwuid(os.getuid()).pw_name
-    script = shlex.quote(str(Path(install_module.__file__).parent / PRIVILEGED_SCRIPT))
-    assert f"\n  sudo /bin/bash {script} install {user}\n" in out
-    assert f"To remove them later: sudo /bin/bash {script} uninstall {user}\n" in out
-    assert "read it" in out and "No root step" not in out
-    assert not home.exists()
+    labels = [f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.{s}" for s in SERVICES]
+    for label in labels:
+        _daemon(no_launchd, label, user)
+    assert main(["install", "--dry-run", "--state-dir", str(tmp_path / "state")]) == 1
+    out = capsys.readouterr().out
+    assert f"\n\n  {legacy_removal_command(labels)}\n\n" in out
+    assert "then run `voiced install` again" in out
 
 
 def test_cli_install_refuses_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Root daemons running a user-writable environment would hand root to
-    anything that can write to it."""
+    """The services are the user's LaunchAgents; root's domain is not theirs."""
     from voiced import cli_lifecycle
 
     monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
@@ -1667,126 +1614,56 @@ def test_cli_uninstall_names_homebrew_from_the_manifest(
     assert not state.exists()
 
 
-# The root script (ADR 0018): shipped in the package, compiled into the app
-# through a symlink. The tests run the file itself.
-PRIVILEGED = Path(install_module.__file__).parent / PRIVILEGED_SCRIPT
-APP_COPY = (
-    Path(__file__).parents[2] / "menubar/Sources/VoicedMenuBarUI/Installer" / PRIVILEGED_SCRIPT
-)
+def test_uninstall_stops_and_removes_the_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No root step: the dry run names the agents, --yes boots them out and
+    deletes their plists before the files they run."""
+    from voiced.cli import build_parser
+    from voiced.cli_lifecycle import run_lifecycle
+
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    state = tmp_path / "state"
+    settings = Settings()
+    settings.server.log_dir = tmp_path / "logs"
+    p = plan_install(settings, state_dir=state, uv=None)
+    launchd = FakeLaunchd()
+    install_agents(p, launchd, lambda _: None)
+    write_manifest(state, Manifest(source="cli", environment=None))
+
+    def uninstall(*flags: str) -> str:
+        args = build_parser().parse_args(["uninstall", "--state-dir", str(state), *flags])
+        assert run_lifecycle(args, settings, launchd, print) == 0
+        return capsys.readouterr().out
+
+    out = uninstall()
+    assert f"{p.agent_path('stt')} ({p.labels['stt']}, stopped first)" in out
+    assert "sudo" not in out and len(launchd.loaded) == 3
+    out = uninstall("--yes")
+    assert launchd.loaded == {}
+    assert not any(p.agent_path(s).exists() for s in SERVICES)
+    assert f"stopped {p.labels['watchdog']}" in out and not state.exists()
+    remove_agents(p, launchd, lambda _: None)  # again: nothing to do
 
 
-def test_the_app_embeds_the_packaged_script() -> None:
-    """One script for both: the file the app's `.embedInCode` names is a
-    relative symlink to the packaged one (the Swift tests compare the bytes
-    compiled in), and the wheel ships the package directory."""
-    assert APP_COPY.is_symlink()
-    assert not os.path.isabs(os.readlink(APP_COPY))
-    assert APP_COPY.resolve() == PRIVILEGED.resolve()
-    pyproject = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
-    assert pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/voiced"]
-    assert PRIVILEGED.read_bytes().startswith(b"#!/bin/bash\n")
+def test_uninstall_waits_for_old_launchdaemons_to_go(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    no_launchd: Path,
+) -> None:
+    from voiced.cli import build_parser
+    from voiced.cli_lifecycle import run_lifecycle
 
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
-def test_privileged_script_renders_what_the_cli_expects(settings: Settings, tmp_path: Path) -> None:
-    """The root step renders the plists from the user name alone; they run
-    what `voiced install` links, read the config it writes, carry the
-    environment the Metal probe gets too, and use the labels status, doctor
-    and the watchdog address, whatever this config says about the log dir or
-    the Hugging Face cache."""
-    home = tmp_path / "home"
-    home.mkdir()
-    dest = tmp_path / "dest"
-    dest.mkdir()
-    settings.server.log_dir = tmp_path / "custom-logs"
-    settings.install.hf_home = tmp_path / "hf"
-    settings.tts.espeak_data = tmp_path / "espeak-ng-data"
-    plan = plan_install(
-        settings,
-        state_dir=home / ".voiced",
-        home=home,
-        config_file=home / ".config/voiced/config.toml",
-        uv=None,
-    )
-    assert plan.daemon_mismatches() == []
-    user = pwd.getpwuid(os.getuid()).pw_name
-    env = {"PATH": "/usr/bin:/bin", "VOICED_TEST_DEST": str(dest), "VOICED_TEST_HOME": str(home)}
-    result = subprocess.run(
-        ["/bin/bash", str(PRIVILEGED), "install", user], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
-    assert sorted(x.name for x in dest.iterdir()) == sorted(
-        f"{plan.labels[s]}.plist" for s in SERVICES
-    )
-    for service in SERVICES:
-        rendered = plistlib.loads((dest / f"{plan.labels[service]}.plist").read_bytes())
-        command = ["watchdog"] if service == "watchdog" else ["serve", service]
-        assert rendered == {
-            "Label": f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.{service}",
-            "ProgramArguments": [str(plan.entry), *command],
-            "UserName": user,
-            "RunAtLoad": True,
-            # Respawned only while the entry point resolves (not after `brew uninstall`).
-            "KeepAlive": {"PathState": {str(plan.entry): True}},
-            "ThrottleInterval": 10,
-            "ProcessType": "Interactive",
-            "WorkingDirectory": str(home),
-            "EnvironmentVariables": {
-                **plan.environment_variables(),
-                "VOICED_STDIO_LOG": str(home / LOG_DIR_IN_HOME / service),
-            },
-            "AssociatedBundleIdentifiers": [f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.menubar"],
-        }
-        assert rendered["Label"] == plan.labels[service]
-    assert plan.environment_variables()["PATH"] == f"{home}/.voiced/bin:{BASE_PATH}"
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="the script uses macOS tools (plutil)")
-def test_privileged_script_refuses_while_another_run_holds_the_lock(tmp_path: Path) -> None:
-    """A kernel lock on every macOS the app supports (14 has no lockf): held,
-    the run says so; a lock it cannot take at all is not reported as held."""
-    import fcntl
-
-    home, dest = tmp_path / "home", tmp_path / "dest"
-    home.mkdir()
-    dest.mkdir()
-    user = pwd.getpwuid(os.getuid()).pw_name
-    env = {"PATH": "/usr/bin:/bin", "VOICED_TEST_DEST": str(dest), "VOICED_TEST_HOME": str(home)}
-
-    def install() -> subprocess.CompletedProcess[str]:
-        argv = ["/bin/bash", str(PRIVILEGED), "install", user]
-        return subprocess.run(argv, env=env, capture_output=True, text=True)
-
-    lock = tmp_path / "dest.lock"
-    with lock.open("a") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        refused = install()
-    assert refused.returncode == 1
-    assert "another voiced install or uninstall is running" in refused.stderr
-    assert list(dest.iterdir()) == []
-    assert install().returncode == 0, "a lock file nobody holds does not block"
-
-    lock.unlink()
-    assert install().returncode == 0
-    assert stat.S_IMODE(lock.stat().st_mode) == 0o600  # the script's umask 077
-
-    def uninstall() -> subprocess.CompletedProcess[str]:
-        argv = ["/bin/bash", str(PRIVILEGED), "uninstall", user]
-        return subprocess.run(argv, env=env, capture_output=True, text=True)
-
-    with lock.open("a") as held:
-        fcntl.flock(held, fcntl.LOCK_EX)
-        refused = uninstall()
-    assert refused.returncode == 1
-    assert "another voiced install or uninstall is running" in refused.stderr
-    assert len(list(dest.iterdir())) == len(SERVICES), "a held lock refuses uninstall"
-    assert uninstall().returncode == 0 and list(dest.iterdir()) == []
-
-    lock.unlink()
-    lock.mkdir()  # cannot be opened for writing
-    broken = install()
-    assert broken.returncode == 1 and "another voiced" not in broken.stderr
-    assert f"cannot open {lock}" in broken.stderr
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    settings = Settings()
+    _daemon(no_launchd, settings.launchd.label("stt"), pwd.getpwuid(os.getuid()).pw_name)
+    write_manifest(tmp_path / "state", Manifest(source="cli", environment=None))
+    args = build_parser().parse_args(["uninstall", "--yes", "--state-dir", str(tmp_path / "state")])
+    assert run_lifecycle(args, settings, FakeLaunchd(), print) == 1
+    out = capsys.readouterr().out
+    assert legacy_removal_command([settings.launchd.label("stt")]) in out
+    assert (tmp_path / "state/install.json").exists()
 
 
 # The ports step (ADR 0018) ---------------------------------------------------
@@ -1996,6 +1873,6 @@ def test_install_says_a_service_switched_off_stays_off(settings: Settings, tmp_p
     _install(p, said)
     assert (
         "stt: off ([stt] enabled = false); turn it on with `voiced settings set "
-        "stt.enabled=true` and `voiced restart stt`. Its daemon starts and serves nothing."
+        "stt.enabled=true` and `voiced restart stt`. Its agent starts and serves nothing."
     ) in said
     assert not any(line.startswith("tts: off") for line in said)

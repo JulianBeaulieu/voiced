@@ -213,7 +213,7 @@ not running, start it again and the app reconnects.
 
 Pointing the app at a socket that does not exist shows the "not installed"
 or "not running" state, depending on whether a voiced watchdog plist is in
-`/Library/LaunchDaemons`.
+`~/Library/LaunchAgents`.
 
 `swift run MenuBarSnapshots <directory>` renders the menu bar window, the
 Settings window, each installer screen, the launch cards, the icons and
@@ -230,36 +230,30 @@ recommended ones chosen; what goes where, the download size of that choice,
 free disk space), building
 the environment with the bundled uv, `voiced install --origin app
 --json-progress` with the setup's choice as `--set` settings, its steps and
-download progress, one administrator
-prompt that runs the privileged script, waiting for the watchdog's `hello`,
-Connect Home Assistant, and Done. Each step that fails shows its cause and
+download progress (its last step loads the LaunchAgents), waiting for the
+watchdog's `hello`, Connect Home Assistant, and Done. Nothing asks for an
+administrator password ([ADR 0035](../docs/decisions/0035-launch-agents.md)). Each step that fails shows its cause and
 the last lines of output, with Try Again.
 
 `Installer` (in `Sources/VoicedMenuBarUI/Installer`) sequences the steps,
 which `InstallStages` implements, each returning what it made or why it
 failed. They reach the Mac only through an `InstallRunner`:
 `SystemInstallRunner` starts each command in a process group of its own and
-shows the prompt, and the tests and the snapshots use `FakeInstallRunner`
+shows the one prompt left (below), and the tests and the snapshots use `FakeInstallRunner`
 (in `Tests/TestSupport`) with recorded lines of the progress protocol. The
 services are reached through the app's own `AppModel`, against the fake
-control server in tests. Nothing in `swift test` prompts, starts a daemon
-or touches `/Library`.
+control server in tests. Nothing in `swift test` prompts, loads a launchd
+job or touches `/Library`.
 
-The script that runs as root is `src/voiced/launchd/voiced-privileged.sh`
-in the voiced package, the same file `voiced install` prints for `sudo`;
-`Sources/VoicedMenuBarUI/Installer/voiced-privileged.sh` is a symlink to
-it. Its bytes are compiled into the executable (`.embedInCode` in
-`Package.swift`); it is never a file in the bundle, and a test compares the
-compiled-in bytes with the packaged file. The app runs it through
-`osascript` with an environment of `PATH` alone, so nothing of its own
-environment reaches the shells that run as root. Run as a normal user, the
-script has a test mode that writes to a scratch directory.
-`Scripts/test-privileged.sh` uses it to check what the script renders and
-every refusal; it needs nothing staged:
-
-```sh
-menubar/Scripts/test-privileged.sh
-```
+The one administrator prompt left removes the LaunchDaemons of voiced
+0.4.0 or earlier, once, before `voiced install` puts the agents in their
+place: Install, Update, Repair and Roll back show "Remove the old
+background services" when this user's daemons are still in
+`/Library/LaunchDaemons`, and Uninstall asks first. It runs fixed
+`launchctl bootout` and `rm` commands (`LegacyDaemons.swift`, the same
+commands `voiced install` prints for `sudo`) through `osascript` with an
+environment of `PATH` alone, so nothing of the app's environment reaches
+the shell that runs as root. Cancelled, the old services keep running.
 
 The app offers the installer only when its bundle carries
 `Contents/Helpers/uv` and, in `Contents/Resources`, `install-manifest.json`,
@@ -272,10 +266,8 @@ For an install the app made (`source = app` in `install.json`), the same
 window runs ADR 0018's Lifecycle with the same stages in another order:
 
 - **Update voiced** (the version card, or Settings > About): a new
-  environment beside the current one, its own `voiced install`, then
-  `voiced-privileged check` as the user. The administrator prompt appears
-  only if a plist differs, a label is not loaded, or the firewall is on and
-  the services' Python changed. The app waits for a `hello` from the new
+  environment beside the current one, then its own `voiced install`, which
+  reloads only the agents whose plists changed. The app waits for a `hello` from the new
   environment, runs `voiced restart all` if none comes within the startup
   grace, and afterwards removes the Pythons no environment uses (none when
   `~/.voiced`, `envs` or `python` is a link, or an environment's
@@ -287,23 +279,22 @@ window runs ADR 0018's Lifecycle with the same stages in another order:
 - **Repair** (Settings > About, or the menu while the services do not
   answer): the bundled lock and wheel reinstalled into the active
   environment, or, when its Python is gone, a fresh one built after the old
-  one is moved to `envs/<id>.broken`; then `voiced install`, the check, and
-  a restart.
-- **Uninstall** (Settings > About): the privileged script's `uninstall`,
-  then `voiced uninstall --yes`, which removes only voiced's files under the
+  one is moved to `envs/<id>.broken`; then `voiced install` and a restart.
+- **Uninstall** (Settings > About): `voiced uninstall --yes`, which stops
+  and removes the LaunchAgents, then removes only voiced's files under the
   install lock and refuses symbolic links. Models, logs and the config are
   boxes, unticked by default. Running it again after a failure is safe:
-  plists already removed need no prompt, and when no `voiced` is left to
-  run (an interrupted removal, a Python gone), the app removes the state
-  directory by the same rules (`install.state_targets`), never through a
-  link, and says the models, logs and config stayed. Dragging the app to
-  the Trash leaves the services running; the app, anything left unticked,
-  and a firewall entry for voiced's Python (when the firewall is on) stay
-  after Uninstall.
+  when no `voiced` is left to run (an interrupted removal, a Python gone),
+  the app unloads the agents and deletes their plists itself, removes the
+  state directory by the same rules (`install.state_targets`), never
+  through a link, and says the models, logs and config stayed. Dragging the
+  app to the Trash leaves the services running; the app, anything left
+  unticked, and a firewall entry for voiced's Python (if you allowed it)
+  stay after Uninstall.
 
 Homebrew's and the command line's installs are shown, never changed:
 Settings > About lists the commands that update, repair and remove them,
-with `voiced uninstall` and its root step before `brew uninstall voiced`.
+with `voiced uninstall --yes` before `brew uninstall voiced`.
 
 ### Installing a development voiced
 
@@ -336,8 +327,7 @@ root (ADR 0018, "On every launch"):
   the version and the lock's hash. A difference, either way, is shown; for a
   Homebrew install with `brew upgrade voiced`.
 - **Login Items.** When the services are switched off in System Settings >
-  General > Login Items, a card says voiced can't start at boot and opens
-  Login Items. The app asks `SMAppService` off the main thread, at launch
+  General > Login Items, a card says so and opens Login Items. The app asks `SMAppService` off the main thread, at launch
   and every 2 s while the menu bar window is open; the Debug pane shows each
   service's raw status.
 
@@ -389,7 +379,8 @@ directory (`[install] venv_dir`) needs one of the first two. When nothing
 answers, the window says why (no socket, a stale socket, another user's
 socket, something that is not a socket, no hello) and names the path; for a
 missing socket it reads the `*.watchdog.plist` files in
-`/Library/LaunchDaemons` to tell "not installed" from "installed but not
+`~/Library/LaunchAgents` (and, for an install from 0.4.0 or earlier,
+`/Library/LaunchDaemons`) to tell "not installed" from "installed but not
 running", whatever the label prefix. It retries with a backoff from 0.5 s up
 to 15 s, and drops a connection that sends no event for 25 s.
 
@@ -401,12 +392,12 @@ On a crowded menu bar macOS can hide the icon. Launching the app again
 | Path | Contents |
 |---|---|
 | `Sources/VoicedControl` | Line framing, the control client (`NWConnection` over the Unix socket), payload models and `SettingKey`, the reduction from payloads to what the windows show, settings edits, the checks on what `open` may open, socket discovery and the install probe. No UI. |
-| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner, the privileged script and the development override. `Launch/` holds the launch checks, What's new and the diagnostics. `Updates/` holds the app's own updates: `AppUpdater`, `AppUpdates` and the card. |
+| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner, the removal of an earlier release's LaunchDaemons and the development override. `Launch/` holds the launch checks, What's new and the diagnostics. |
 | `Sources/VoicedMenuBar` | The `@main` app with its `MenuBarExtra` and `Settings` scenes, and Sparkle behind `AppUpdater`. |
 | `Sources/FakeControlServerKit`, `Sources/FakeControlServer` | The fake control server and its command line. |
 | `Sources/MenuBarSnapshots` | Renders the menu bar window, the Settings window and each installer screen to PNG. |
 | `Tests/VoicedControlTests` | Framing, client dispatch, connection failures and cancellation against the fake server; payload reduction; settings edits; open checks; install probe. |
-| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, Update, Roll back, Repair and Uninstall, the progress protocol, the privileged script in its test mode and the process runner. The launch checks, What's new, the diagnostics and the development override. The app's updates with a fake updater. |
+| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, Update, Roll back, Repair and Uninstall, the migration from LaunchDaemons, the progress protocol, the administrator prompt and the process runner. The launch checks, What's new, the diagnostics and the development override. |
 | `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner, recorded progress lines and the fake updater. |
 
 The protocol is the control channel's

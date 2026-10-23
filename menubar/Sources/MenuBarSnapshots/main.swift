@@ -214,12 +214,12 @@ func render<Content: View>(_ view: Content, dark: Bool, to url: URL) async {
     try? previous?.write(to: url)
 }
 
-/// A stand-in /Library/LaunchDaemons holding a watchdog plist for this user, or nothing.
-func launchDaemons(in scratch: URL, installed: Bool) -> URL {
+/// A stand-in ~/Library/LaunchAgents holding a watchdog plist, or nothing.
+func launchAgents(in scratch: URL, installed: Bool) -> URL {
     let directory = scratch.appendingPathComponent(installed ? "installed" : "empty", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     if installed {
-        let plist: [String: Any] = ["ProgramArguments": ["/usr/local/bin/voiced", "watchdog"], "UserName": NSUserName()]
+        let plist: [String: Any] = ["ProgramArguments": ["/usr/local/bin/voiced", "watchdog"]]
         let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         FileManager.default.createFile(
             atPath: directory.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist").path,
@@ -245,7 +245,9 @@ func run() async {
         }
         let model = AppModel(
             socketPath: socket,
-            installProbe: InstallProbe(launchDaemonsDirectory: launchDaemons(in: scratch, installed: shot.installed)),
+            installProbe: InstallProbe(
+                launchAgentsDirectory: launchAgents(in: scratch, installed: shot.installed),
+                launchDaemonsDirectory: launchAgents(in: scratch, installed: false)),
             opener: { _ in true })
         model.start()
         await settle(model)
@@ -338,7 +340,7 @@ func launchChecks(model: AppModel, in directory: URL) async -> LaunchChecks {
     let checks = LaunchChecks(
         model: model, manifest: manifest,
         paths: VoicedPaths(home: directory, bundle: URL(fileURLWithPath: "/Applications/voiced.app")),
-        backgroundItems: BackgroundItems(launchDaemonsDirectory: daemons, status: { _ in .requiresApproval }),
+        backgroundItems: BackgroundItems(launchAgentsDirectory: daemons, status: { _ in .requiresApproval }),
         translocation: { _ in URL(fileURLWithPath: "/Users/someone/Downloads/voiced.app") })
     await checks.refresh()
     return checks
@@ -352,6 +354,8 @@ struct InstallerShot {
     var setup: @MainActor (FakeInstallRunner) -> Void = { _ in }
     var server = false
     var otherAccount = false
+    /// This user's LaunchDaemons from before ADR 0035 are installed.
+    var oldInstall = false
     var capacity: Int64 = 412_000_000_000
     var stallTimeout: Duration = .seconds(60)
     /// Files an interrupted run left in the home.
@@ -372,15 +376,14 @@ func failed(_ installer: Installer) async {
 }
 
 @MainActor
-func reachApproval(_ installer: Installer) async {
+func reachMigration(_ installer: Installer) async {
     installer.install()
-    await until(installer) { if case .approval = $0 { true } else { false } }
+    await until(installer) { $0 == .migration }
 }
 
 @MainActor
 func reachHomeAssistant(_ installer: Installer) async {
-    await reachApproval(installer)
-    installer.approve()
+    installer.install()
     await until(installer) { $0 == .homeAssistant(.asking) }
 }
 
@@ -425,28 +428,18 @@ let installerShots = [
                 if case .installing(let progress) = $0 { progress.downloads.last?.bytes == 177_650_000 } else { false }
             }
         }),
+    InstallerShot(name: "installer-migration", oldInstall: true, steps: reachMigration),
     InstallerShot(
-        name: "installer-approval",
-        setup: { runner in
-            runner.respond = { command in
-                command.executable.hasSuffix("socketfilterfw")
-                    ? .init([.stdout("Firewall is enabled. (State = 1)"), .exit(0)]) : FakeInstallRunner.defaultResponse(command)
-            }
-        },
-        steps: reachApproval),
-    InstallerShot(
-        name: "installer-approving", setup: { $0.privilegedHangs = true },
+        name: "installer-migrating", setup: { $0.privilegedHangs = true }, oldInstall: true,
         steps: { installer in
-            await reachApproval(installer)
-            installer.approve()
-            await until(installer) { if case .approving = $0 { true } else { false } }
+            await reachMigration(installer)
+            installer.removeOldServices()
+            await until(installer) { $0 == .migrating }
         }),
     InstallerShot(
         name: "installer-starting",
-        setup: { $0.privilegedOutcomes = [.finished(status: 4, output: "")] },
         steps: { installer in
-            await reachApproval(installer)
-            installer.approve()
+            installer.install()
             await until(installer) { $0 == .starting }
         }),
     InstallerShot(name: "installer-home-assistant", server: true, steps: reachHomeAssistant),
@@ -490,15 +483,12 @@ let installerShots = [
             await failed(installer)
         }),
     InstallerShot(
-        name: "installer-failed-bootstrap",
-        setup: {
-            $0.privilegedOutcomes = [
-                .finished(status: 3, output: "failed io.github.julianbeaulieu.voiced.tts\nbootstrap failed: io.github.julianbeaulieu.voiced.tts")
-            ]
-        },
+        name: "installer-failed-migration",
+        setup: { $0.privilegedOutcomes = [.finished(status: 1, output: "rm: /Library/LaunchDaemons: Operation not permitted")] },
+        oldInstall: true,
         steps: { installer in
-            await reachApproval(installer)
-            installer.approve()
+            await reachMigration(installer)
+            installer.removeOldServices()
             await failed(installer)
         }),
     InstallerShot(
@@ -520,7 +510,13 @@ let installerShots = [
         }),
     InstallerShot(
         name: "lifecycle-failed-uninstall",
-        setup: { $0.privilegedOutcomes = [.finished(status: 1, output: "refused: another voiced install or uninstall is running")] },
+        setup: { runner in
+            runner.respond = { command in
+                command.arguments.first == "uninstall"
+                    ? .init([.stderr("refusing to touch ~/.voiced: not voiced's"), .exit(1)])
+                    : FakeInstallRunner.defaultResponse(command)
+            }
+        },
         leftovers: { appInstall(in: $0) },
         steps: { installer in
             installer.confirmUninstall()
@@ -553,11 +549,14 @@ func renderInstaller(in scratch: URL) async {
         let home = scratch.appendingPathComponent(shot.name, isDirectory: true)
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         shot.leftovers(home)
+        let agents = home.appendingPathComponent("Library/LaunchAgents", isDirectory: true)
         let daemons = home.appendingPathComponent("LaunchDaemons", isDirectory: true)
+        try? FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
-        if shot.otherAccount {
+        if shot.otherAccount || shot.oldInstall {
+            let user = shot.otherAccount ? "root" : NSUserName()
             try? writePlist(
-                ["ProgramArguments": ["/Users/alex/.voiced/bin/voiced", "watchdog"], "UserName": "root"],
+                ["ProgramArguments": ["/Users/alex/.voiced/bin/voiced", "watchdog"], "UserName": user],
                 to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist"))
         }
         let socket = scratch.appendingPathComponent("i-\(shot.name.suffix(6)).sock").path
@@ -571,7 +570,7 @@ func renderInstaller(in scratch: URL) async {
         }
         let runner = FakeInstallRunner()
         shot.setup(runner)
-        let probe = InstallProbe(launchDaemonsDirectory: daemons)
+        let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = .seconds(600)
         configuration.stallTimeout = shot.stallTimeout

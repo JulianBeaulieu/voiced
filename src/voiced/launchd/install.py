@@ -1,25 +1,22 @@
 """Installer: plan, render and execute ``voiced install`` / ``uninstall``.
 
 The plan is a plain value (:class:`InstallPlan`) so ``--dry-run`` and the tests
-can show every step without touching the machine. The step that needs root
-(rendering the plists into ``/Library/LaunchDaemons`` and bootstrapping them)
-is never executed here: it is :data:`PRIVILEGED_SCRIPT`, the script the menu
-bar app runs too (ADR 0018), and ``voiced install`` prints the one ``sudo``
-line that runs it. See ADR 0006 for the layout, and ADR 0017 for the state
-directory (``voiced.layout``).
+can show every step without touching the machine. The last step writes the
+three LaunchAgent plists into ``~/Library/LaunchAgents`` and loads them into
+the user's domain; nothing needs root (ADR 0035). See ADR 0006 for the
+layout, and ADR 0017 for the state directory (``voiced.layout``).
 """
 
 from __future__ import annotations
 
 import contextlib
-import errno
-import grp
 import os
 import pwd
 import shlex
 import shutil
 import stat
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -28,7 +25,6 @@ from typing import Any, Literal
 
 import voiced
 from voiced.config import (
-    DEFAULT_LAUNCHD_LABEL_PREFIX,
     ENV_HF_HOME,
     HTTP_SERVICES,
     SERVICES,
@@ -38,13 +34,17 @@ from voiced.config import (
     config_path,
 )
 from voiced.launchd.control import (
+    LegacyDaemon,
     Runner,
     bootout_argv,
     bootstrap_argv,
+    legacy_daemons,
+    legacy_removal_command,
     plist_path,
-    print_argv,
+    print_service,
     run_command,
     run_streaming,
+    wait_unloaded,
 )
 from voiced.launchd.parked import off_detail
 from voiced.launchd.plist import log_paths, render_plist
@@ -89,15 +89,8 @@ from voiced.models import (
 Service = DaemonName
 METAL_PROBE_FILE = "metal-probe.json"
 
-# The root step, shipped in the package and compiled into the menu bar app
-# (whose copy is a symlink to this one, ADR 0018). It renders the plists from
-# the user name alone, for the default layout below.
-PRIVILEGED_SCRIPT = "voiced-privileged.sh"
-# What the plists it renders run and read, relative to the home.
-DAEMON_STATE_DIR = Path(".voiced")
-DAEMON_CONFIG = Path(".config/voiced/config.toml")
-# What earlier releases staged in <config dir>/launchd for a sudo script to
-# copy; `install` removes them, so no stale script can install them.
+# What releases before ADR 0018 staged in <config dir>/launchd for a sudo
+# script to copy; `install` removes them, so no stale script is left.
 LEGACY_STAGING = "launchd"
 LEGACY_SCRIPTS = ("install-daemons.sh", "uninstall-daemons.sh", "metal-probe.sh")
 
@@ -153,7 +146,7 @@ def example_config_text() -> str:
 def installing_user() -> str:
     """The account running the installer, from its uid. Not
     ``getpass.getuser()``, which believes ``LOGNAME`` and ``USER``: with
-    ``LOGNAME="System Administrator"`` it would name uid 0 as the daemons'
+    ``LOGNAME="System Administrator"`` it would name uid 0 as the services'
     ``UserName``."""
     return pwd.getpwuid(os.getuid()).pw_name
 
@@ -162,146 +155,9 @@ def find_uv() -> str | None:
     return shutil.which("uv")
 
 
-def is_root() -> bool:
-    return os.geteuid() == 0
-
-
 def q(path: Path | str) -> str:
-    """Shell-quote a path for the generated scripts."""
+    """Shell-quote a path for a printed command."""
     return shlex.quote(str(path))
-
-
-def privileged_script(environment: Path) -> Path:
-    """:data:`PRIVILEGED_SCRIPT` as installed in ``environment``, so the
-    printed path is that environment's; this package's own copy when there
-    is no single one there (an editable checkout, or an environment not
-    built yet)."""
-    pattern = f"lib/python3*/site-packages/voiced/launchd/{PRIVILEGED_SCRIPT}"
-    found = sorted(environment.glob(pattern))
-    if len(found) == 1:
-        return found[0]
-    return Path(voiced.__file__).resolve().parent / "launchd" / PRIVILEGED_SCRIPT
-
-
-def _account(uid: int) -> str:
-    try:
-        return pwd.getpwuid(uid).pw_name
-    except KeyError:
-        return f"uid {uid}"
-
-
-# Not a person: macOS's setup assistant account, a member of `admin` on every
-# Mac, so of the group that owns Homebrew's directories. On a stock Mac it is
-# the only account below uid 500 in wheel, staff or admin besides root.
-SETUP_ACCOUNT = "_mbsetupuser"
-
-
-def group_members(gid: int) -> set[str]:
-    """The accounts in group ``gid`` but the setup account: its listed
-    members and the accounts whose primary group it is."""
-    try:
-        members = set(grp.getgrgid(gid).gr_mem)
-    except KeyError:
-        members = set()
-    members |= {entry.pw_name for entry in pwd.getpwall() if entry.pw_gid == gid}
-    return members - {SETUP_ACCOUNT}
-
-
-# acl_perm_t names that let a holder change a file or a directory's entries.
-ACL_WRITES = frozenset(
-    (
-        "write add_file append add_subdirectory delete delete_child writeattr "
-        "writeextattr writesecurity chown"
-    ).split()
-)
-ACL_TYPE_EXTENDED = 0x00000100
-
-
-def acl_entries(path: Path) -> list[str]:
-    """``path``'s extended ACL as ``acl_to_text`` lines
-    (``tag:uuid:name:id:allow|deny:perms``); empty without one."""
-    import ctypes
-    import ctypes.util
-
-    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-    libc.acl_get_file.restype = ctypes.c_void_p
-    libc.acl_get_file.argtypes = [ctypes.c_char_p, ctypes.c_int]
-    libc.acl_to_text.restype = ctypes.c_void_p
-    libc.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    libc.acl_free.argtypes = [ctypes.c_void_p]
-    acl = libc.acl_get_file(os.fsencode(path), ACL_TYPE_EXTENDED)
-    if not acl:
-        if ctypes.get_errno() == errno.ENOENT:  # no ACL
-            return []
-        raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
-    try:
-        text = libc.acl_to_text(acl, None)
-        if not text:
-            raise OSError(ctypes.get_errno(), os.strerror(ctypes.get_errno()))
-        try:
-            lines = ctypes.string_at(text).decode().splitlines()
-        finally:
-            libc.acl_free(text)
-    finally:
-        libc.acl_free(acl)
-    return [line for line in lines if line and not line.startswith("!#acl")]
-
-
-def acl_writer(path: Path, uid: int) -> str | None:
-    """An ACL entry on ``path`` that allows anyone but ``uid`` and root to
-    change it, as ``ls -le`` would name it, or None."""
-    for entry in acl_entries(path):
-        fields = entry.split(":")
-        if len(fields) < 6:
-            return f"an ACL entry it cannot read ({entry})"
-        tag, _, name, ident, kind, perms = fields[:6]
-        if kind != "allow" or not ACL_WRITES & set(perms.split(",")):
-            continue
-        if tag == "user" and ident in (str(uid), "0"):
-            continue
-        return f"{tag} {name} {perms}"
-    return None
-
-
-def foreign_writer(path: Path, uid: int | None = None) -> str | None:
-    """Why an account other than ``uid`` (default: this one) and root could
-    change what ``path`` holds, or None. The user runs the root script with
-    sudo, so it, and every directory on the way to it, must belong to them
-    or root, with no mode bit and no ACL entry letting anyone else write.
-    A sticky directory lets nobody replace an entry they do not own.
-
-    The path is checked resolved, and the sudo line names the resolved path
-    (:meth:`InstallPlan.root_command`): what root runs then has no link in
-    it to swap, however many hops led there. A volume mounted with
-    ownership ignored shows every file as the user's and cannot be judged."""
-    uid = os.getuid() if uid is None else uid
-    me = _account(uid)
-    resolved = path.resolve()
-    for part in (resolved, *resolved.parents):
-        try:
-            st = os.lstat(part)
-            acl = acl_writer(part, uid) if sys.platform == "darwin" else None
-        except OSError as exc:
-            return f"{part} cannot be checked ({exc.strerror})"
-        if st.st_uid not in (0, uid):
-            return f"{part} belongs to {_account(st.st_uid)}"
-        if acl is not None:
-            return f"{part} has an ACL that lets others write: {acl}"
-        if stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_ISVTX:
-            continue
-        if st.st_mode & stat.S_IWOTH:
-            return f"{part} is writable by every account"
-        if st.st_mode & stat.S_IWGRP:
-            others = sorted(group_members(st.st_gid) - {me, "root"})
-            if others:
-                return f"{part} is writable by its group, which has {', '.join(others)}"
-    return None
-
-
-def root_command(script: Path, mode: Literal["install", "uninstall"], user: str) -> str:
-    """The line the user pastes. ``/bin/bash`` by path: the script needs no
-    execute bit and no ``PATH``; sudo resets the environment."""
-    return f"sudo /bin/bash {shlex.join([str(script), mode, user])}"
 
 
 @dataclass(frozen=True)
@@ -334,7 +190,7 @@ class InstallPlan:
     # services bind them on, for the ports step.
     ports: dict[str, int] = field(default_factory=dict)
     bind: str = "127.0.0.1"
-    # Services switched off in the config: their daemons start and park.
+    # Services switched off in the config: their services start and park.
     off: tuple[ServiceName, ...] = ()
     # Settings to write to the config once the models are in (``--set``,
     # the app's first-run choices), as ``voiced settings set`` takes them.
@@ -370,55 +226,53 @@ class InstallPlan:
         names = [f"{label}.plist" for label in self.labels.values()]
         return [self.legacy_staging_dir / name for name in (*names, *LEGACY_SCRIPTS)]
 
-    # The root step -----------------------------------------------------
+    # The LaunchAgents (ADR 0035) ----------------------------------------
 
-    @property
-    def privileged_script(self) -> Path:
-        """Resolved: the sudo line names the file :func:`foreign_writer`
-        checked, with no link on the way."""
-        return privileged_script(self.environment).resolve()
+    def agent_path(self, service: DaemonName) -> Path:
+        return plist_path(self.labels[service], self.home)
 
-    def root_command(self, mode: Literal["install", "uninstall"]) -> str:
-        return root_command(self.privileged_script, mode, self.user)
+    def agent_plist(self, service: DaemonName) -> bytes:
+        """What ``~/Library/LaunchAgents/<label>.plist`` holds for ``service``:
+        the entry point with ``watchdog`` or ``serve <service>``, kept alive
+        while the entry point exists (ADR 0017)."""
+        command = ["watchdog"] if service == "watchdog" else ["serve", service]
+        return render_plist(
+            label=self.labels[service],
+            program_arguments=[str(self.entry), *command],
+            log_dir=self.log_dir,
+            working_directory=self.home,
+            environment=self.environment_variables(),
+            keep_alive={"PathState": {str(self.entry): True}},
+        )
 
-    def root_step_refusal(self) -> str | None:
-        """Why no root step is printed for this plan, or None: the daemons
-        would not run this install, or another account could change the
-        script before the user runs it as root."""
-        mismatches = self.daemon_mismatches()
-        if mismatches:
+    def legacy_daemons(self) -> list[LegacyDaemon]:
+        """The LaunchDaemons an earlier release installed for these labels."""
+        return legacy_daemons([self.labels[service] for service in SERVICES])
+
+    def legacy_refusal(self) -> str | None:
+        """Why the agents cannot be installed yet, or None: LaunchDaemons from
+        an earlier release still hold the labels and the ports, and only root
+        can remove them. The install stops before it changes anything, with
+        the one line that does it, so both never run at once."""
+        found = self.legacy_daemons()
+        if not found:
+            return None
+        others = sorted({d.user for d in found if d.user not in (self.user, None)})
+        if others:
             return (
-                "the daemons run ~/.voiced/bin/voiced with ~/.config/voiced/config.toml "
-                f"under the default labels, and here {'; '.join(mismatches)}. "
-                "Run `voiced serve` yourself instead."
+                f"voiced is installed for {', '.join(others)} on this Mac as LaunchDaemons "
+                "from an earlier release; that account has to remove them first"
             )
-        problem = foreign_writer(self.privileged_script)
-        if problem is not None:
-            return (
-                f"another account could change the root script: {problem}. Install voiced "
-                "into an environment of your own (`voiced install --source <checkout>`)."
-            )
-        return None
-
-    def daemon_mismatches(self) -> list[str]:
-        """Where this plan differs from what the root step installs: the
-        daemons run ``~/.voiced/bin/voiced`` with ``~/.config/voiced/config.toml``
-        under the default labels, whatever this config says (ADR 0018)."""
-        found: list[str] = []
-        state = self.home / DAEMON_STATE_DIR
-        if os.path.realpath(self.state_dir) != os.path.realpath(state):
-            found.append(f"the state dir is {self.state_dir}, not {state}")
-        config = self.home / DAEMON_CONFIG
-        if os.path.realpath(self.config_file) != os.path.realpath(config):
-            found.append(f"the config is {self.config_file}, not {config}")
-        prefix = self.labels["stt"].removesuffix(".stt")
-        if prefix != DEFAULT_LAUNCHD_LABEL_PREFIX:
-            found.append(f"[launchd] label_prefix is {prefix}, not {DEFAULT_LAUNCHD_LABEL_PREFIX}")
-        return found
+        return (
+            "the services still run as LaunchDaemons from an earlier release. Remove them, "
+            "the last time voiced needs an administrator:\n\n"
+            f"  {legacy_removal_command([d.label for d in found])}\n\n"
+            "then run `voiced install` again: it installs them as LaunchAgents"
+        )
 
     def environment_variables(self) -> dict[str, str]:
-        """The fixed environment the root step renders into the daemons'
-        plists (a test runs it to compare), and the Metal probe's."""
+        """The environment in the agents' plists, and the Metal probe's: the
+        services read everything else from ``VOICED_CONFIG`` (ADR 0018)."""
         return {
             "HOME": str(self.home),
             "PATH": f"{self.entry.parent}:{BASE_PATH}",
@@ -473,100 +327,6 @@ class InstallPlan:
             argv += ["--set", f"{key}={str(value).lower() if isinstance(value, bool) else value}"]
         return [*argv, "--report"] if report else argv
 
-    # One-shot Metal probe -----------------------------------------------
-
-    def metal_probe(self, python: Path) -> MetalProbe:
-        """A self-removing one-shot daemon that runs ``voiced.launchd.metal_probe``.
-
-        The plist is inside the script, so root reads nothing else the user
-        can write; the result file in the user's log dir is removed and read
-        as the user."""
-        label = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.metalprobe"  # never the config's
-        out = self.log_dir / METAL_PROBE_FILE
-        plist = render_plist(
-            label=label,
-            program_arguments=[
-                str(python),
-                "-m",
-                "voiced.launchd.metal_probe",
-                "--out",
-                str(out),
-            ],
-            log_dir=self.log_dir,
-            user_name=self.user,
-            working_directory=self.home,
-            environment=self.environment_variables(),
-            keep_alive=False,
-        )
-        body = plist.decode()
-        if f"\n{PLIST_END}\n" in f"\n{body}":
-            raise InstallError(f"a path in the probe's plist contains a line {PLIST_END}")
-        dst = plist_path(label)
-        as_user = f"/usr/bin/sudo -n -u {q(self.user)} --"
-        bootout, probe, bootstrap = (
-            shlex.join([LAUNCHCTL, *argv[1:]])
-            for argv in (bootout_argv(label), print_argv(label), bootstrap_argv(label))
-        )
-        # Under `set -e` a failing bootout inside the trap would abort before rm.
-        cleanup = f"{bootout} 2>/dev/null || true; /bin/rm -f {q(dst)}"
-        stderr_log = log_paths(self.log_dir, "metalprobe").stderr
-        no_result = f"no result after 60 s; see {stderr_log}"
-        lines = [
-            "#!/bin/bash",
-            "# voiced: one-shot LaunchDaemon that checks MLX/Metal without a GUI session.",
-            "# Installs the job, waits for its result, then removes it again (also on error).",
-            "# Its plist is below; root reads no other file. Review, then run with sudo.",
-            "set -euo pipefail",
-            "umask 022",
-            f"OUT={q(out)}",
-            # The trap guarantees no RunAtLoad plist is left behind.
-            f"trap {q(cleanup)} EXIT",
-            f'{as_user} /bin/rm -f -- "$OUT"',
-            f"{bootout} 2>/dev/null || true",
-            # bootout is asynchronous: bootstrapping while the old instance is
-            # still being torn down fails with error 5.
-            f"for _ in $(/usr/bin/seq 1 30); do {probe} >/dev/null 2>&1 || break;"
-            " /bin/sleep 1; done",
-            f"/bin/rm -f {q(dst)}",
-            f"/bin/cat > {q(dst)} <<'{PLIST_END}'",
-            body.rstrip("\n"),
-            PLIST_END,
-            f"/usr/sbin/chown root:wheel {q(dst)}",
-            f"/bin/chmod 644 {q(dst)}",
-            bootstrap,
-            f'for _ in $(/usr/bin/seq 1 60); do {as_user} /bin/test -f "$OUT" && break;'
-            " /bin/sleep 1; done",
-            f'if {as_user} /bin/test -f "$OUT"; then {as_user} /bin/cat -- "$OUT"; else',
-            f"  echo {q(no_result)}; exit 1",
-            "fi",
-            "",
-        ]
-        return MetalProbe(
-            label=label,
-            script_path=self.config_file.parent / "metal-probe.sh",
-            plist=plist,
-            script="\n".join(lines),
-            result_file=out,
-        )
-
-
-# Ends the probe's plist inside its script; a quoted heredoc expands nothing.
-PLIST_END = "VOICED_PLIST_END"
-LAUNCHCTL = "/bin/launchctl"
-
-
-@dataclass(frozen=True)
-class MetalProbe:
-    label: str
-    script_path: Path
-    plist: bytes
-    script: str
-    result_file: Path
-
-    def write(self) -> None:
-        self.script_path.parent.mkdir(parents=True, exist_ok=True)
-        self.script_path.write_text(self.script)
-
 
 ENGINE_CHECK = (
     "import mlx.core, parakeet_mlx, mlx_audio, voiced; print('voiced', voiced.__version__)"
@@ -593,7 +353,7 @@ def new_environment_dir(
     state_dir: Path, stamp: str | None = None, manifest: Manifest | None = None
 ) -> Path:
     """A fresh ``envs/<id>``: a build never writes into an environment a
-    daemon may be running, and ``install.json`` never names a path that once
+    service may be running, and ``install.json`` never names a path that once
     was another environment. Two installs within a second get ``<id>-2``."""
     base = state_dir / ENVS / (stamp or time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
     candidate, n = base, 1
@@ -712,12 +472,116 @@ def remove_legacy_staging(plan: InstallPlan, say: Say) -> None:
         plan.legacy_staging_dir.rmdir()
 
 
+# The LaunchAgents ---------------------------------------------------------
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
+    """Write each service's plist and load it, where it changed or is not
+    loaded. An agent that is up to date and loaded keeps running: the
+    watchdog moves the services to a new environment itself (ADR 0017).
+    A label that fails to load does not stop the others."""
+    failed: list[str] = []
+    for service in SERVICES:
+        label, path, plist = (
+            plan.labels[service],
+            plan.agent_path(service),
+            plan.agent_plist(service),
+        )
+        loaded = print_service(label, query).loaded
+        if loaded and _read_bytes(path) == plist:
+            say(f"{label}: up to date")
+            continue
+        if loaded:
+            query(bootout_argv(label))
+            wait_unloaded(label, query)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        tmp.write_bytes(plist)
+        tmp.chmod(0o644)  # launchd refuses a plist others may write
+        tmp.replace(path)
+        result = query(bootstrap_argv(path))
+        if result.ok:
+            say(f"{label}: loaded")
+        else:
+            failed.append(f"{label} ({result.output or f'exit {result.returncode}'})")
+    if failed:
+        raise InstallError(f"launchctl bootstrap failed for {'; '.join(failed)}")
+
+
+def remove_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
+    """Boot out the services and delete their plists (``voiced uninstall``)."""
+    for service in SERVICES:
+        label, path = plan.labels[service], plan.agent_path(service)
+        if print_service(label, query).loaded:
+            query(bootout_argv(label))
+            wait_unloaded(label, query)
+            say(f"stopped {label}")
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+            say(f"removed {path}")
+
+
+# The Metal probe ----------------------------------------------------------
+
+METAL_PROBE_WAIT_S = 60.0
+
+
+def run_metal_probe(
+    plan: InstallPlan,
+    python: Path,
+    query: Runner = run_command,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """Run ``voiced.launchd.metal_probe`` once as a LaunchAgent, as the
+    services run, and return the JSON it wrote (ADR 0035). Its plist is in
+    a temporary directory and the job is booted out afterwards, also on
+    error, so nothing of it is left to load at the next login."""
+    label = plan.labels["metalprobe"]
+    out = plan.log_dir / METAL_PROBE_FILE
+    plist = render_plist(
+        label=label,
+        program_arguments=[str(python), "-m", "voiced.launchd.metal_probe", "--out", str(out)],
+        log_dir=plan.log_dir,
+        working_directory=plan.home,
+        environment=plan.environment_variables(),
+        keep_alive=False,
+    )
+    plan.log_dir.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    query(bootout_argv(label))
+    wait_unloaded(label, query, sleep)
+    with tempfile.TemporaryDirectory(prefix="voiced-probe-") as tmp:
+        path = Path(tmp) / f"{label}.plist"
+        path.write_bytes(plist)
+        path.chmod(0o644)
+        try:
+            result = query(bootstrap_argv(path))
+            if not result.ok:
+                raise InstallError(f"launchctl bootstrap failed: {result.output}")
+            deadline = time.monotonic() + METAL_PROBE_WAIT_S
+            while not out.is_file():
+                if time.monotonic() >= deadline:
+                    stderr = log_paths(plan.log_dir, "metalprobe").stderr
+                    raise InstallError(f"no result after {METAL_PROBE_WAIT_S:.0f} s; see {stderr}")
+                sleep(0.5)
+        finally:
+            query(bootout_argv(label))
+    return out.read_text()
+
+
 def write_default_config(config_file: Path) -> bool:
     """Create the config file from the example if it does not exist.
 
     It is created 0600: it is where ``api_key`` goes, home directories on
     macOS are readable by the ``staff`` group every local user is in, and the
-    daemons run as this user, so nobody else needs to read it.
+    services run as this user, so nobody else needs to read it.
     """
     if config_file.exists():
         return False
@@ -780,7 +644,7 @@ def remove_legacy_venv(state_dir: Path, say: Say) -> None:
 
 def prune_environments(state_dir: Path, keep: Sequence[Path | None], say: Say) -> None:
     """Remove the environments voiced built other than ``keep`` (the new and
-    the previous one: daemons not yet restarted still run the previous)."""
+    the previous one: services not yet restarted still run the previous)."""
     kept = [p for p in keep if p is not None]
     for env in built_environments(state_dir):
         if any(same_path(env, k) for k in kept if k.exists()):
@@ -839,7 +703,7 @@ def install_steps(
     say: Say = print,
 ) -> list[Step]:
     """Everything ``voiced install`` does, in order. Nothing that the
-    running daemons use changes before the models are in: a failed install
+    running services use changes before the models are in: a failed install
     leaves the previous one as it was (ADR 0017). ``report``: the model
     download reports its bytes (``--json-progress``)."""
     steps: list[Step] = []
@@ -990,6 +854,14 @@ def install_steps(
                 lambda: remove_legacy_staging(plan, say),
             )
         )
+    steps.append(
+        Step(
+            "agents",
+            f"write the LaunchAgents in {plan.agent_path('watchdog').parent} and load the ones "
+            "that changed",
+            lambda: install_agents(plan, query, say),
+        )
+    )
     return steps
 
 
@@ -1015,6 +887,9 @@ def run_install(
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
+    refusal = plan.legacy_refusal()
+    if refusal is not None:
+        raise InstallError(f"Not installing yet: {refusal}.")
     if dry_run:
         for step in install_steps(
             plan,
@@ -1055,13 +930,13 @@ def run_install(
     old = previous.environment if previous is not None else None
     if old is not None and not same_path(old, plan.environment):
         say(
-            f"The environment changed from {old}: running daemons switch to the new one "
+            f"The environment changed from {old}: running services switch to the new one "
             "within one watchdog interval, or now with `voiced restart all`."
         )
     for service in plan.off:
-        # The daemon stays loaded (unloading it would need root at every
-        # switch); its process parks (voiced.launchd.parked, ADR 0033).
-        say(f"{service}: {off_detail(service)}. Its daemon starts and serves nothing.")
+        # The agent stays loaded; its process parks (voiced.launchd.parked,
+        # ADR 0033).
+        say(f"{service}: {off_detail(service)}. Its agent starts and serves nothing.")
 
 
 # Uninstall ------------------------------------------------------------------

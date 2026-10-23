@@ -4,7 +4,7 @@
 matrix multiplication on the default device and writes a JSON record of the
 outcome together with facts about the process context (uid, parent pid,
 ``launchctl managername``, ``HOME``). The installer and ``voiced doctor`` read
-that record to answer "does Metal work from a LaunchDaemon on this machine"
+that record to answer "does Metal work from a LaunchAgent on this machine"
 without guessing. Standard library plus ``mlx`` only (and the stdlib-only ``voiced.launchd``
 helpers), so it runs in any interpreter that has MLX installed.
 """

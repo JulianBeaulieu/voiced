@@ -1,15 +1,15 @@
-"""Point a daemon's stdout and stderr at its log files, opened by the daemon.
+"""Point a service's stdout and stderr at its log files, opened by itself.
 
-The plists do not set ``StandardOutPath``/``StandardErrorPath``: launchd
-may open those paths as root before it drops to ``UserName``, and they live
-in a directory the user owns, so a symlink planted there could have root
-create or append to any file. Instead the plist names the files in
+The plists do not set ``StandardOutPath``/``StandardErrorPath``: for the
+LaunchDaemons of earlier releases launchd opened those paths as root, in a
+directory the user owns, so a symlink planted there could have root create
+or append to any file. The LaunchAgents keep the same way (ADR 0035): the
+plist names the files in
 ``VOICED_STDIO_LOG`` and the process, already running as the user, opens
 them itself without following a symlink and duplicates them onto fds 1 and
 2, so tracebacks and C-level output (MLX, espeak-ng) still land in them
-(ADR 0006). The plists always name the default log directory; a custom
-``[server] log_dir`` takes over once the config is read
-(:func:`follow_log_dir`).
+(ADR 0006). A ``[server] log_dir`` changed after install takes over once
+the config is read (:func:`follow_log_dir`).
 
 Standard library only: this runs before anything else is imported.
 """

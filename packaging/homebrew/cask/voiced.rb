@@ -25,22 +25,29 @@ cask "voiced" do
 
   app "voiced.app"
 
-  # The services are not the cask's: voiced-privileged installs them when the app first
-  # opens (ADR 0018). Homebrew runs `uninstall` on upgrade and reinstall too, with sudo, so
-  # removing them there would cost an update a password and the app another to put them
-  # back; only `--zap` removes them. `launchctl:` also deletes each label's plist in
-  # /Library/LaunchDaemons.
+  # The services are not the cask's: `voiced install` writes them as the user's
+  # LaunchAgents when the app first opens (ADR 0035). Homebrew runs `uninstall` on
+  # upgrade and reinstall too, so it only quits the app; `--zap` removes the services.
+  # Not `launchctl:`, which also looks for each label in the system domain with sudo,
+  # and so would prompt for administrator credentials: `zap` boots the agents out of
+  # the user's own domain by their plists, then trashes the plists. The uid and the
+  # home are the shell's, read when it runs, not when the cask is loaded.
   uninstall quit: "io.github.julianbeaulieu.voiced.menubar"
 
-  zap launchctl: [
-        "io.github.julianbeaulieu.voiced.stt",
-        "io.github.julianbeaulieu.voiced.tts",
-        "io.github.julianbeaulieu.voiced.watchdog",
-      ],
-      trash:     "~/Library/Application Support/voiced"
+  agents = %w[stt tts watchdog].map { |s| "Library/LaunchAgents/io.github.julianbeaulieu.voiced.#{s}.plist" }
+  zap script: {
+        executable:   "/bin/sh",
+        args:         [
+          "-c",
+          "/bin/launchctl bootout \"gui/$(/usr/bin/id -u)\" #{agents.map { |a| "\"$HOME/#{a}\"" }.join(" ")}",
+        ],
+        must_succeed: false,
+      },
+      trash:  ["~/Library/Application Support/voiced", *agents.map { |a| "~/#{a}" }]
 
   caveats <<~EOS
-    voiced.app installs the voiced services the first time it opens.
+    voiced.app installs the voiced services the first time it opens,
+    without a password. They run as you while you are logged in.
 
     `brew upgrade --cask voiced` leaves the services running.
     The app updates them on its next launch.
