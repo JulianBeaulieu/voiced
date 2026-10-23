@@ -416,6 +416,17 @@ public final class FakeControlServer: @unchecked Sendable {
             case (.ttsSpeed, .number(let speed)):
                 guard speed > 0, speed <= 4 else { return invalid(name, "must be greater than 0 and at most 4") }
                 next.settings.tts.speed = speed
+            case (.sttEnabled, .bool(let on)): next.settings.stt.residency.enabled = on
+            case (.ttsEnabled, .bool(let on)): next.settings.tts.residency.enabled = on
+            case (.sttIdleUnload, .number(let seconds)), (.ttsIdleUnload, .number(let seconds)):
+                guard seconds >= 0, seconds.rounded() == seconds else {
+                    return invalid(name, "must be a whole number of seconds")
+                }
+                if key == .sttIdleUnload {
+                    next.settings.stt.residency.idleUnloadSeconds = Int(seconds)
+                } else {
+                    next.settings.tts.residency.idleUnloadSeconds = Int(seconds)
+                }
             default:
                 return invalid(name, "wrong type")
             }
@@ -454,8 +465,8 @@ public final class FakeControlServer: @unchecked Sendable {
         var restart = Set<String>()
         for key in keys {
             switch key {
-            case .sttEngine, .sttModel: restart.insert("stt")
-            case .ttsEngine, .ttsModel, .ttsVoice, .ttsSpeed: restart.insert("tts")
+            case .sttEngine, .sttModel, .sttEnabled, .sttIdleUnload: restart.insert("stt")
+            case .ttsEngine, .ttsModel, .ttsVoice, .ttsSpeed, .ttsEnabled, .ttsIdleUnload: restart.insert("tts")
             case .bind, .apiKey, .zeroconf: restart.formUnion(["stt", "tts"])
             case .browserSettings: break  // read live by the status page
             }
@@ -513,6 +524,11 @@ public final class FakeControlServer: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + options.restartDuration) { [weak self] in
             guard let self else { return }
             for kind in accepted where self.state[kind].state == .starting {
+                if !self.state.settings.residency(kind).enabled {
+                    // Switched off: the process parks (ADR 0033).
+                    self.state[kind].state = .off
+                    continue
+                }
                 let missing = self.isMissing(kind == .stt ? self.state.settings.stt.model : self.state.settings.tts.model)
                 self.state[kind].state = missing ? .missingModel : .running
                 self.state[kind].warm = !missing

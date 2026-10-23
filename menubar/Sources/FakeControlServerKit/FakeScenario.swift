@@ -38,6 +38,8 @@ public enum FakeScenario: String, CaseIterable, Sendable {
     case cycle
     /// Text to speech up but its model (Kokoro) not downloaded: `missing_model` (ADR 0022).
     case missingModel = "missing-model"
+    /// Speech to text switched off, text to speech idle with its model unloaded (ADR 0033).
+    case sttOff = "stt-off"
 
     public var helloProtocol: Int { self == .newerProtocol ? 2 : 1 }
 
@@ -52,6 +54,7 @@ public enum FakeScenario: String, CaseIterable, Sendable {
         case .newerProtocol: "hello with protocol 2"
         case .cycle: "cycles through the states every few seconds"
         case .missingModel: "text to speech up, its model not downloaded"
+        case .sttOff: "speech to text off, text to speech idle with its model unloaded"
         }
     }
 
@@ -67,6 +70,13 @@ public enum FakeScenario: String, CaseIterable, Sendable {
                     "status": "missing_model",
                     "last_error": "mlx-community/Kokoro-82M-bf16 is not downloaded; run voiced models download mlx-community/Kokoro-82M-bf16",
                 ], engine: "kokoro", model: "mlx-community/Kokoro-82M-bf16", uptime: 30)
+        case .sttOff:
+            state.settings.stt.residency.enabled = false
+            state.settings.tts.residency.idleUnloadSeconds = 300
+            state[.stt] = ServiceStatus(
+                state: .off, pid: 4242, engine: state[.stt].engine, model: state[.stt].model,
+                uptime: 11_520)
+            state[.tts].health = ["status": "idle", "model_loaded": false]
         case .starting:
             state[.tts] = ServiceStatus(
                 state: .starting, pid: 4243, engine: "kokoro",

@@ -304,7 +304,50 @@ public struct SettingsView: View {
         } footer: {
             Text("Use switches to a model, downloading it first if needed, and restarts the service.").footnote()
         }
+        residency(.stt, settings)
         ModelSections(models: models, app: model, kind: .stt, settings: settings)
+    }
+
+    /// Off, and when to unload the model (ADR 0033). Either change restarts the service, which
+    /// reads them when it starts.
+    @ViewBuilder
+    private func residency(_ kind: ServiceKind, _ settings: SettingsPayload) -> some View {
+        let current = settings.residency(kind)
+        Section {
+            Toggle(
+                kind == .stt ? "Run speech to text" : "Run text to speech",
+                isOn: Binding(
+                    get: { current.enabled },
+                    set: { on in if on != current.enabled { saveAndRestart(.enabled(kind, on), kind) } }))
+            Picker(
+                "Unload the model",
+                selection: Binding(
+                    get: { current.idleUnloadSeconds },
+                    set: { seconds in
+                        if seconds != current.idleUnloadSeconds { saveAndRestart(.idleUnload(kind, seconds: seconds), kind) }
+                    })
+            ) {
+                ForEach(IdleUnload.choices(including: current.idleUnloadSeconds), id: \.self) { seconds in
+                    Text(IdleUnload.label(seconds)).tag(seconds)
+                }
+            }
+            .disabled(!current.enabled)
+        } header: {
+            Text("Service")
+        } footer: {
+            Text(
+                current.enabled
+                    ? "An unloaded model frees its memory; the next request waits while it loads again, about half a second. Changing either setting restarts the service."
+                    : "Off: the service loads no model and answers nothing, so Home Assistant and other apps cannot use it. Turning it on restarts it."
+            )
+            .footnote()
+        }
+    }
+
+    private func saveAndRestart(_ edit: SettingsEdit, _ kind: ServiceKind) {
+        Task {
+            if await model.apply(edit) { await model.restart(.service(kind)) }
+        }
     }
 
     @ViewBuilder
@@ -323,6 +366,7 @@ public struct SettingsView: View {
             Text("The voice is the default for requests that do not name one; the list is the engine in use's. Use switches to a model, downloading it first if needed, and restarts the service.")
                 .footnote()
         }
+        residency(.tts, settings)
         ModelSections(models: models, app: model, kind: .tts, settings: settings)
     }
 
