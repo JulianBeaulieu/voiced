@@ -63,6 +63,8 @@ public struct SettingsView: View {
     let models: ModelManager
     /// The play button beside the Voice picker.
     let preview: VoicePreview
+    /// The app's own updates (ADR 0034); nil in a build without a feed.
+    let updates: AppUpdates?
     @AppStorage(SettingsPane.storageKey) private var storedPane: SettingsPane = .general
     @AppStorage(SettingsPane.showDebugKey) private var showDebug = false
     /// Set for snapshots: shows this pane and leaves the remembered one alone.
@@ -73,10 +75,11 @@ public struct SettingsView: View {
 
     public init(
         model: AppModel, models: ModelManager, loginItem: LoginItem, launch: LaunchChecks? = nil,
-        installer: Installer? = nil, pane: SettingsPane? = nil, preview: VoicePreview
+        installer: Installer? = nil, updates: AppUpdates? = nil, pane: SettingsPane? = nil, preview: VoicePreview
     ) {
         self.model = model
         self.preview = preview
+        self.updates = updates
         self.loginItem = loginItem
         self.launch = launch
         self.installer = installer
@@ -182,6 +185,16 @@ public struct SettingsView: View {
                 }
             } else {
                 LabeledContent("Open at login") {
+                    Text("Available in the app bundle").foregroundStyle(.secondary)
+                }
+            }
+            if let updates {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(get: { updates.automaticallyChecks }, set: { updates.automaticallyChecks = $0 }))
+                    .help("Checks when the app opens and once a day. Installing an update always waits for you.")
+            } else {
+                LabeledContent("Check for updates automatically") {
                     Text("Available in the app bundle").foregroundStyle(.secondary)
                 }
             }
@@ -486,8 +499,9 @@ public struct SettingsView: View {
                     }
                 }
                 if let installer, managed {
-                    // Update and Repair wait for a model download or delete (ADR 0022).
-                    let working = installer.isWorking || models.isBusy
+                    // Update and Repair wait for a model download or delete (ADR 0022), and for an
+                    // update of the app, whose relaunch would stop them (ADR 0034).
+                    let working = installer.isWorking || models.isBusy || updates?.isBusy == true
                     if case .differs = launch?.installMatch {
                         Button("Update voiced…") { inInstaller(installer.update) }.disabled(working)
                     }

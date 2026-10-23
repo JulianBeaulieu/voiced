@@ -8,9 +8,12 @@ from the maintainer's Apple developer account and, for CI, from secrets of
 the `release` environment.
 
 `sign.sh` does the signing, both by hand and in the release workflow: it
-signs the bundled uv and then the app with the hardened runtime and a secure
-timestamp (no entitlements: the app needs none, and uv runs Python as a
-separate process), notarizes and staples the app, checks Gatekeeper accepts
+signs every piece of code in the app inside out with the hardened runtime
+and a secure timestamp (`codesign-app.sh`: the bundled uv, Sparkle's two XPC
+services, `Autoupdate` and `Updater.app`, the Sparkle framework, then the
+app; no entitlements: the app needs none, uv runs Python as a separate
+process, and Sparkle needs none outside a sandbox), notarizes and staples
+the app, checks Gatekeeper accepts
 it, and then makes the zip and the DMG, signing, notarizing and stapling the
 DMG too.
 
@@ -111,7 +114,7 @@ of using the login keychain, as CI does.
 ## In CI
 
 `.github/workflows/release.yml` runs `sign.sh` on a macOS runner when the
-build is for a tag and all six secrets are set; otherwise it runs
+build is for a tag and the six signing secrets are set; otherwise it runs
 `sign.sh --adhoc`, which only packages, and names the assets
 `voiced-<version>-macos-adhoc.zip` and `.dmg`. Stapling and its validation, for
 the app and the DMG, are tried up to five times, 10 to 40 seconds apart,
@@ -125,6 +128,7 @@ notarization. The secrets:
 | `NOTARY_TEAM_ID` | The team ID; `sign.sh` signs with the Developer ID Application identity of this team |
 | `NOTARY_KEY_P8` | The App Store Connect API key, the `.p8` as downloaded (base64 also accepted) |
 | `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | Its key ID and issuer ID |
+| `SPARKLE_PRIVATE_KEY` | The EdDSA private key the app's updates are signed with, as `generate_keys -x` exports it ("Updates of the app"); only the Appcast step reads it |
 
 Only tag builds use the `release` environment, so a run from a branch, even
 one started by someone who edited the workflow there, cannot read its
@@ -137,3 +141,55 @@ In the job, `sign.sh` imports the `.p12` into a keychain under
 deletes it by path in case the job was cancelled. The API key is written to a
 temporary file only `sign.sh` reads and removed with it. Secrets reach only
 the two steps that need them, through `env`.
+
+## Updates of the app
+
+The app updates itself with Sparkle (ADR 0034). Every update archive is
+signed with one EdDSA key pair, separate from the Developer ID:
+
+- **The public key** is `SPARKLE_PUBLIC_KEY` in `bundle.sh`, which writes it
+  into Info.plist as `SUPublicEDKey`. It is not secret.
+- **The private key** is in the maintainer's login keychain, the item
+  "Private key for signing Sparkle updates" (account `voiced`, where
+  `https://sparkle-project.org`), and in the `release` environment's secret
+  `SPARKLE_PRIVATE_KEY`. Back up the keychain item: with it lost, installed
+  apps accept no further update except through a rotation (below).
+
+The release workflow signs `voiced-<version>-macos.zip` with it
+(`sign_update --ed-key-file -`, the key on stdin), checks the signature
+against the app's `SUPublicEDKey` (`verify-update.swift`), and uploads
+`appcast.xml` (`scripts/release.py appcast`) for a pushed tag's signed build.
+Without the secret that build fails: installed apps read only the latest
+release's `appcast.xml`. Dry runs sign with a throwaway key made on the
+runner and upload no appcast.
+
+Made once, with Sparkle's tools from the package's checkout
+(`menubar/.build/artifacts/sparkle/Sparkle/bin` after `swift build`):
+
+```sh
+generate_keys --account voiced      # prints the public key for bundle.sh
+# The secret, through a private temporary file removed in the same command:
+bash -c 'set -euo pipefail; umask 077; d="$(mktemp -d)"; trap "rm -rf -- \"$d\"" EXIT
+    generate_keys --account voiced -x "$d/key" >/dev/null
+    gh secret set SPARKLE_PRIVATE_KEY --env release --repo JulianBeaulieu/voiced < "$d/key"'
+```
+
+(`generate_keys -x` refuses a path that exists, so it cannot write to a
+pipe.) On another Mac, `generate_keys --account voiced -f <file>` imports an
+exported key.
+
+To sign by hand: `sign_update --account voiced voiced-<version>-macos.zip`.
+
+**Rotating the key.** The app verifies archives before unpacking them
+(`SUVerifyUpdateBeforeExtraction`), so Sparkle accepts a new public key only
+from an update whose archive is a Developer ID signed disk image of the same
+team. To rotate: make a new pair (`generate_keys --account voiced-<year>`),
+put its public key in `bundle.sh`, set `SPARKLE_PRIVATE_KEY` to it, and for
+that one release make the appcast's enclosure the release's notarized
+`voiced-<version>-macos.dmg` (signed with the new key). `release.py appcast`
+writes the zip, so that release's `appcast.xml` is edited by hand: the
+enclosure's `url`, `length` and `sparkle:edSignature` for the DMG, then
+uploaded over the draft's asset (`gh release upload v<version> appcast.xml
+--clobber`) before publishing. Releases after it go back to the zip. Never
+change the Developer ID and the EdDSA key in the same release: Sparkle needs
+one of them to stay the same.

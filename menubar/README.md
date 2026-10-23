@@ -23,9 +23,8 @@ why.
 
 It talks only to voiced's local control socket, a Unix socket served by the
 watchdog; even a voice preview comes through it. It opens no network
-connection outside the installer: no
-analytics, no update checks.
-Opening the status page hands the URL voiced reports to your browser.
+connection outside the installer and its own updates: no analytics. Opening
+the status page hands the URL voiced reports to your browser.
 
 It needs macOS 14 or newer on Apple Silicon. Install it with
 `brew install --cask julianbeaulieu/voiced/voiced`, or download the DMG
@@ -33,16 +32,18 @@ from the [release page](https://github.com/JulianBeaulieu/voiced/releases/latest
 the released app is signed and notarized, so macOS only asks once whether
 to open an app downloaded from the internet. The rest of this page is for
 working on the app. Building it needs Swift 6 (Xcode 16 or newer, or the
-matching command line tools) and no third-party packages.
+matching command line tools); SwiftPM fetches the one third-party package,
+Sparkle, at the version `Package.resolved` pins.
 
 ## The icon
 
-Three states (ADR 0018), each a template image, so the menu bar draws it
-for light and dark:
+Four states (ADR 0018 and 0034), each a template image, so the menu bar
+draws it for light and dark:
 
 | State | Image | Meaning |
 |---|---|---|
 | idle | `waveform` | Both services running with their model loaded |
+| update | `waveform` with a small plain dot at the top, drawn by `MenuBarIconImage` | Running, and a newer app is waiting to be installed (ADR 0034) |
 | busy | `waveform` with a dotted badge, drawn by `MenuBarIconImage` | Starting, loading a model, connecting, or installing |
 | error | `waveform.badge.exclamationmark` | Degraded, a service stopped, voiced not running, not installed, or an incompatible version |
 
@@ -64,10 +65,12 @@ installer needs (ADR 0018, "What the app ships and pins"):
 | In the bundle | What it is |
 |---|---|
 | `Contents/Helpers/uv` | uv at the version and sha256 pinned in `bundle.sh` |
+| `Contents/Frameworks/Sparkle.framework` | Sparkle, the app's updater, as SwiftPM built it at the version `Package.resolved` pins; the executable finds it through an `@executable_path/../Frameworks` rpath |
 | `Contents/Resources/voiced-*.whl` | The voiced wheel, built from this checkout with that uv |
 | `Contents/Resources/requirements.lock` | The lock the wheel carries |
 | `Contents/Resources/install-manifest.json` | The voiced version, the CPython patch version (`app-python-version`), the wheel's and the lock's sha256, the download size of the locked wheels (from `uv.lock`), and the model catalogue the setup offers, each model with its revision and size, the defaults marked recommended; written by `scripts/app_manifest.py` |
 | `Contents/Resources/uv-LICENSE` | uv's licence text, fetched at the same tag and checked |
+| `Contents/Resources/Sparkle-LICENSE` | Sparkle's licence text, from the archive SwiftPM fetched |
 | `Contents/Resources/NOTICE` | The repository's third-party notice (`scripts/notice.py` writes it from the lock) |
 | `Contents/Resources/WhatsNew.md` | This version's section of `CHANGELOG.md`, else the Unreleased one |
 
@@ -85,7 +88,11 @@ installed. The bundle is about 30 MB, most of it uv.
 would not match any commit; `--dirty` builds one anyway. `--debug` builds the
 app in debug configuration, for the development override below.
 
-The bundle is ad-hoc signed, uv first and then the app, which has no
+A release build's Info.plist also names the update feed and the key updates
+are signed with (below, "Updates of the app"); a `--debug` build has neither.
+
+The bundle is ad-hoc signed inside out by `Scripts/codesign-app.sh` (uv,
+Sparkle's helpers and the framework, then the app), which has no
 identity and is not notarized. Releases are signed and notarized by
 `Scripts/sign.sh` in the release workflow;
 [Scripts/SIGNING.md](Scripts/SIGNING.md) has the details.
@@ -338,6 +345,37 @@ When the services first run this app's pins after running another version,
 a "What's new" window shows the bundled notes, once. A first install shows
 none.
 
+## Updates of the app
+
+The app updates itself with [Sparkle](https://sparkle-project.org)
+(ADR 0034). It reads
+`https://github.com/JulianBeaulieu/voiced/releases/latest/download/appcast.xml`
+when it opens and once a day; **Check for updates automatically** in
+Settings > General turns that off, and **Check for Updates…** in the menu
+checks at once. A newer version is a card at the top of the menu bar
+window: **Install and Relaunch** downloads it, checks its EdDSA signature
+against the key in Info.plist, replaces the app and opens it again, and the
+relaunched app then runs "Update voiced" for an install it manages, showing
+the installer's progress. **Later** hides the card until the next check.
+While voiced installs or a model downloads, Install and Relaunch waits and
+the card says why, since quitting would stop them; if a quit is cancelled
+anyway, **Relaunch Now** asks again. A found update adds a small dot to the
+icon, never the error badge.
+
+Sparkle shows none of its own windows: `Sources/VoicedMenuBar/SparkleUpdater.swift`,
+the one file that imports it, hands what Sparkle reports to `AppUpdates`
+(`Sources/VoicedMenuBarUI/Updates`), which the tests and the snapshots
+drive with `FakeAppUpdater`. A build without a feed (`swift run`, a
+`--debug` bundle) has no updater, and the menu and Settings leave it out.
+
+To try it without a release, give a copy of the bundle another bundle
+identifier, `SUFeedURL` on `http://127.0.0.1` and a throwaway key's
+`SUPublicEDKey`, re-sign it with `Scripts/codesign-app.sh APP --sign -
+--timestamp=none`, and serve a feed from `scripts/release.py appcast` for a
+zip of a higher `CFBundleVersion` signed with `sign_update --ed-key-file -`
+(`.build/artifacts/sparkle/Sparkle/bin`). ADR 0034, "Measured", has what
+that run showed.
+
 ## How it finds the socket
 
 1. The `VOICED_CONTROL_SOCKET` environment variable.
@@ -363,13 +401,13 @@ On a crowded menu bar macOS can hide the icon. Launching the app again
 | Path | Contents |
 |---|---|
 | `Sources/VoicedControl` | Line framing, the control client (`NWConnection` over the Unix socket), payload models and `SettingKey`, the reduction from payloads to what the windows show, settings edits, the checks on what `open` may open, socket discovery and the install probe. No UI. |
-| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner, the privileged script and the development override. `Launch/` holds the launch checks, What's new and the diagnostics. |
-| `Sources/VoicedMenuBar` | The `@main` app with its `MenuBarExtra` and `Settings` scenes. |
+| `Sources/VoicedMenuBarUI` | The observable app model (connection, liveness, reconnect, actions) and the SwiftUI views. `Installer/` holds the installer: the state machine, the progress protocol, the runner, the privileged script and the development override. `Launch/` holds the launch checks, What's new and the diagnostics. `Updates/` holds the app's own updates: `AppUpdater`, `AppUpdates` and the card. |
+| `Sources/VoicedMenuBar` | The `@main` app with its `MenuBarExtra` and `Settings` scenes, and Sparkle behind `AppUpdater`. |
 | `Sources/FakeControlServerKit`, `Sources/FakeControlServer` | The fake control server and its command line. |
 | `Sources/MenuBarSnapshots` | Renders the menu bar window, the Settings window and each installer screen to PNG. |
 | `Tests/VoicedControlTests` | Framing, client dispatch, connection failures and cancellation against the fake server; payload reduction; settings edits; open checks; install probe. |
-| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, Update, Roll back, Repair and Uninstall, the progress protocol, the privileged script in its test mode and the process runner. The launch checks, What's new, the diagnostics and the development override. |
-| `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner and recorded progress lines. |
+| `Tests/VoicedMenuBarUITests` | The app model against the fake server: reconnects, liveness, start and stop, settings, restarts, warnings. The installer through every step and failure, Update, Roll back, Repair and Uninstall, the progress protocol, the privileged script in its test mode and the process runner. The launch checks, What's new, the diagnostics and the development override. The app's updates with a fake updater. |
+| `Tests/TestSupport` | Helpers shared by both, and by the snapshots: the fake install runner, recorded progress lines and the fake updater. |
 
 The protocol is the control channel's
 ([ADR 0013](../docs/decisions/0013-local-control-channel.md)); the app speaks

@@ -4,19 +4,25 @@
 # ships and pins"):
 #
 #   Contents/Helpers/uv                     uv at UV_VERSION, checked against UV_SHA256
+#   Contents/Frameworks/Sparkle.framework   Sparkle, the app's updater (ADR 0034), at the
+#                                           version Package.resolved pins
 #   Contents/Resources/voiced-*.whl         the voiced wheel, built from this checkout
 #   Contents/Resources/requirements.lock    the lock that wheel carries
 #   Contents/Resources/install-manifest.json  the voiced version, Python, the wheel's and the
 #                                           lock's sha256, the locked wheels' download size and
 #                                           the pinned models (scripts/app_manifest.py)
 #   Contents/Resources/uv-LICENSE           uv's licence (MIT; uv is MIT or Apache-2.0)
+#   Contents/Resources/Sparkle-LICENSE      Sparkle's licence (MIT), from the archive SwiftPM
+#                                           fetched and checked
 #   Contents/Resources/NOTICE               the repository's third-party notice
 #   Contents/Resources/WhatsNew.md          this version's CHANGELOG section
 #
 # Everything fetched is pinned by hash: uv and its licence here, the build backend and
 # `packaging` by src/voiced/build-requirements.lock. The bundle is not signed with any
 # identity; see SIGNING.md. Downloads are cached in menubar/build/downloads and checked
-# against their sha256 every time.
+# against their sha256 every time. A release build's Info.plist names the update feed and
+# the key its updates are signed with (ADR 0034); a --debug build has neither, so it never
+# replaces itself with a release.
 #
 # The wheel is built from the checkout as it is on disk, so a tree with uncommitted changes
 # is refused: the bundle would not be what any commit says. --dirty builds it anyway.
@@ -29,6 +35,11 @@ set -euo pipefail
 readonly UV_VERSION=0.13.1
 readonly UV_SHA256=cfe454573412ff7380d15fc7dae5997ab53ffce72fce0a78e91ddbc84001acd2
 readonly UV_LICENSE_SHA256=860e3d7a86b84e6a7012c7a635fc64df475cebc6cce34dfeb73a5982ec58176c
+# Where the app looks for updates, and the EdDSA public key their archives are signed with
+# (SIGNING.md, "Updates of the app"). The private key is in the maintainer's keychain and the
+# release environment's SPARKLE_PRIVATE_KEY.
+readonly SPARKLE_FEED_URL=https://github.com/JulianBeaulieu/voiced/releases/latest/download/appcast.xml
+readonly SPARKLE_PUBLIC_KEY=E2ULSKHRBQcl0z97odAyKk7ku64u70yOUlDUHOrugmw=
 
 dirty=0
 configuration=release
@@ -137,12 +148,19 @@ swift build -c "$configuration" --package-path "$package_dir" --product voiced-m
 bin_dir="$(swift build -c "$configuration" --package-path "$package_dir" --show-bin-path)"
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Helpers" "$app/Contents/Frameworks"
 cp "$bin_dir/voiced-menubar" "$app/Contents/MacOS/voiced-menubar"
+# SwiftPM links Sparkle as @rpath/Sparkle.framework next to the executable; in the bundle it
+# is in Contents/Frameworks.
+install_name_tool -add_rpath @executable_path/../Frameworks "$app/Contents/MacOS/voiced-menubar"
+ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+sparkle_license="$package_dir/.build/artifacts/sparkle/Sparkle/LICENSE"
+[ -s "$sparkle_license" ] || { echo "bundle.sh: no Sparkle licence at $sparkle_license" >&2; exit 1; }
 install -m 755 "$uv" "$app/Contents/Helpers/uv"
 resources="$app/Contents/Resources"
 cp "$wheel" "$lock" "$work/install-manifest.json" "$repo_dir/NOTICE" "$resources/"
 cp "$uv_license" "$resources/uv-LICENSE"
+cp "$sparkle_license" "$resources/Sparkle-LICENSE"
 printf '# What'\''s new in voiced %s\n\n%s\n' "$pep440" "$notes" > "$resources/WhatsNew.md"
 
 # The icon is drawn from an SF Symbol by make-icon.swift, its source.
@@ -186,13 +204,22 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Sparkle's settings: our feed only, archives verified against the key before they are
+# unpacked, checks on without Sparkle's first-launch question (the switch in Settings turns
+# them off), and once a day.
+if [ "$configuration" = release ]; then
+    plist="$app/Contents/Info.plist"
+    plutil -insert SUFeedURL -string "$SPARKLE_FEED_URL" "$plist"
+    plutil -insert SUPublicEDKey -string "$SPARKLE_PUBLIC_KEY" "$plist"
+    plutil -insert SUVerifyUpdateBeforeExtraction -bool YES "$plist"
+    plutil -insert SUEnableAutomaticChecks -bool YES "$plist"
+    plutil -insert SUScheduledCheckInterval -integer 86400 "$plist"
+fi
 plutil -lint -s "$app/Contents/Info.plist"
 
 # Apple Silicon only runs signed code. An ad-hoc signature ("-") has no identity: it seals
 # the bundle so it launches, and it is replaced when the bundle is signed for real. Inside
-# out: the helper first, then the app that seals it.
-codesign --force --sign - --timestamp=none "$app/Contents/Helpers/uv"
-codesign --force --sign - --timestamp=none "$app"
-codesign --verify --strict --deep "$app"
+# out, as sign.sh signs it.
+"$package_dir/Scripts/codesign-app.sh" "$app" --sign - --timestamp=none
 
 echo "$app (version $version from $pep440, $configuration build, uv $UV_VERSION, $(basename "$wheel"), ad-hoc signed, not notarized)"

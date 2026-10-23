@@ -3,29 +3,35 @@ import ServiceManagement
 import SwiftUI
 import VoicedControl
 
-/// The menu bar icon in its three states (ADR 0018), with a spoken label. Each is a template
+/// The menu bar icon in its states (ADR 0018, and ADR 0034 for a waiting update), with a spoken label. Each is a template
 /// image, so the menu bar draws it for light and dark and for a selected item.
 public struct MenuBarIcon: View {
     let dashboard: Dashboard
     let installing: Bool
     let downloading: Bool
+    /// A newer app waits to be installed (ADR 0034).
+    let updateAvailable: Bool
 
-    public init(dashboard: Dashboard, installing: Bool = false, downloading: Bool = false) {
+    public init(dashboard: Dashboard, installing: Bool = false, downloading: Bool = false, updateAvailable: Bool = false) {
         self.dashboard = dashboard
         self.installing = installing
         self.downloading = downloading
+        self.updateAvailable = updateAvailable
     }
 
     public var body: some View {
-        let status = MenuBarIconStatus(dashboard: dashboard, installing: installing, downloading: downloading)
+        let status = MenuBarIconStatus(
+            dashboard: dashboard, installing: installing, downloading: downloading, updateAvailable: updateAvailable)
         Image(nsImage: MenuBarIconImage.image(for: status.state))
             .accessibilityLabel(status.accessibilityLabel)
     }
 }
 
-/// The icon's images. Idle and error are SF Symbols; busy is drawn here, since SF Symbols has
-/// no waveform with a progress badge: the waveform with a filled circle cut out of its corner
-/// and three dots knocked out of the circle, the way the symbols draw their own badges.
+/// The icon's images. Idle and error are SF Symbols; busy and update are drawn here, since
+/// SF Symbols has no waveform with either badge. Busy is the waveform with a filled circle cut
+/// out of its bottom corner and three dots knocked out of the circle, the way the symbols draw
+/// their own badges; update is a smaller plain dot at the top corner, a hint rather than an
+/// alarm.
 @MainActor
 public enum MenuBarIconImage {
     static let pointSize: CGFloat = 15
@@ -33,6 +39,7 @@ public enum MenuBarIconImage {
     public static func image(for state: MenuBarIconState) -> NSImage {
         switch state {
         case .idle: idle
+        case .update: update
         case .busy: busy
         case .error: error
         }
@@ -40,33 +47,39 @@ public enum MenuBarIconImage {
 
     static let idle = symbol("waveform")
     static let error = symbol("waveform.badge.exclamationmark")
-    static let busy: NSImage = {
+    static let busy = badged(scale: 0.56, top: false, dots: true)
+    static let update = badged(scale: 0.38, top: true, dots: false)
+
+    /// The waveform with a badge of `scale` times its height, at the top or bottom right; it
+    /// sticks out past the waveform, as the error symbol's does.
+    private static func badged(scale: CGFloat, top: Bool, dots: Bool) -> NSImage {
         let wave = symbol("waveform")
-        // The badge sits on the bottom right and sticks out past the waveform, as the error
-        // symbol's does.
-        let diameter = (wave.size.height * 0.56).rounded()
+        let diameter = (wave.size.height * scale).rounded()
         let size = NSSize(width: (wave.size.width + diameter * 0.3).rounded(), height: wave.size.height)
         let image = NSImage(size: size, flipped: false) { rect in
             wave.draw(in: NSRect(origin: .zero, size: wave.size))
             guard let context = NSGraphicsContext.current else { return true }
-            let badge = NSRect(x: rect.maxX - diameter, y: rect.minY, width: diameter, height: diameter)
+            let y = top ? rect.maxY - diameter : rect.minY
+            let badge = NSRect(x: rect.maxX - diameter, y: y, width: diameter, height: diameter)
             context.compositingOperation = .destinationOut
             NSBezierPath(ovalIn: badge.insetBy(dx: -1.5, dy: -1.5)).fill()
             context.compositingOperation = .sourceOver
             NSColor.black.setFill()
             NSBezierPath(ovalIn: badge).fill()
-            context.compositingOperation = .destinationOut
-            let dot = max(1.5, diameter / 6)
-            for index in -1...1 {
-                let x = badge.midX + CGFloat(index) * dot * 1.6 - dot / 2
-                NSBezierPath(ovalIn: NSRect(x: x, y: badge.midY - dot / 2, width: dot, height: dot)).fill()
+            if dots {
+                context.compositingOperation = .destinationOut
+                let dot = max(1.5, diameter / 6)
+                for index in -1...1 {
+                    let x = badge.midX + CGFloat(index) * dot * 1.6 - dot / 2
+                    NSBezierPath(ovalIn: NSRect(x: x, y: badge.midY - dot / 2, width: dot, height: dot)).fill()
+                }
+                context.compositingOperation = .sourceOver
             }
-            context.compositingOperation = .sourceOver
             return true
         }
         image.isTemplate = true
         return image
-    }()
+    }
 
     private static func symbol(_ name: String) -> NSImage {
         let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
@@ -91,12 +104,14 @@ public struct PopoverView: View {
     let repair: (() -> Void)?
     /// The model download's progress row and the Download of a missing model.
     let models: ModelManager
+    /// The app's own updates (ADR 0034); nil in a build without a feed, which hides them.
+    let updates: AppUpdates?
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
     public init(
         model: AppModel, models: ModelManager, canInstall: Bool = false, launch: LaunchChecks? = nil,
-        update: (() -> Void)? = nil, repair: (() -> Void)? = nil
+        update: (() -> Void)? = nil, repair: (() -> Void)? = nil, updates: AppUpdates? = nil
     ) {
         self.model = model
         self.canInstall = canInstall
@@ -104,10 +119,12 @@ public struct PopoverView: View {
         self.update = update
         self.repair = repair
         self.models = models
+        self.updates = updates
     }
 
-    /// Update and Repair wait for a model download or delete (ADR 0022).
-    private var downloading: Bool { models.isBusy }
+    /// Update and Repair wait for a model download or delete (ADR 0022), and for an update of
+    /// the app, whose relaunch would stop them (ADR 0034).
+    private var downloading: Bool { models.isBusy || updates?.isBusy == true }
 
     public var body: some View {
         let dashboard = model.dashboard
@@ -116,6 +133,9 @@ public struct PopoverView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
             Divider()
+            if let updates {
+                AppUpdateCard(updates: updates)
+            }
             if let launch {
                 LaunchCards(launch: launch, update: downloading ? nil : update.map(inInstaller))
             }
@@ -161,6 +181,10 @@ public struct PopoverView: View {
                         Task { await model.restart(.all) }
                     }
                     .disabled(!model.restarting.isEmpty)
+                }
+                if let updates {
+                    ActionRow(title: "Check for Updates…", symbol: "arrow.down.circle", action: updates.check)
+                        .disabled(updates.isBusy)
                 }
                 ActionRow(title: "Settings…", symbol: "gearshape", shortcut: "⌘,", action: showSettings)
                     .keyboardShortcut(",")

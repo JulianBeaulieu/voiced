@@ -1,8 +1,9 @@
 name: release
 
 # Builds a release (ADR 0018, "Signing and release CI"): the voiced wheel and
-# sdist, and voiced.app as a zip and a DMG, with sha256 sums. Pushing a `v*`
-# tag also creates a draft GitHub release for it, which a person publishes,
+# sdist, and voiced.app as a zip and a DMG, with sha256 sums, and for a signed
+# tag build the appcast the app checks for its own updates (ADR 0034). Pushing
+# a `v*` tag also creates a draft GitHub release for it, which a person publishes,
 # and leaves the Homebrew formula and cask for the tag as an artifact for the
 # tap. `workflow_dispatch` is a dry run: the same build, uploaded as workflow
 # artifacts only, never a release. Started on a tag ref it signs and notarizes
@@ -166,6 +167,46 @@ jobs:
         if: steps.signing.outputs.signed != 'true'
         run: menubar/Scripts/sign.sh --adhoc "$APP" "$DIST" "voiced-$VERSION-macos-adhoc"
 
+      - name: Appcast
+        # The app's update feed (ADR 0034). Installed apps read only
+        # releases/latest/download/appcast.xml, the newest published release's
+        # asset, so every release must carry one: a pushed tag's signed build
+        # without SPARKLE_PRIVATE_KEY fails here rather than publish a release
+        # that leaves every installed app without a feed. Every other build (a
+        # dry run, an ad hoc build) signs its zip with a throwaway key made on
+        # the runner and writes the feed outside dist, so sign_update and the
+        # generator are checked before the first tag and nothing is uploaded.
+        # The key reaches sign_update on stdin, never a file or argv, and is
+        # unset before anything else runs.
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ github.event_name == 'push' && steps.signing.outputs.signed == 'true' && secrets.SPARKLE_PRIVATE_KEY || '' }}
+          RELEASE: ${{ github.event_name == 'push' && steps.signing.outputs.signed == 'true' }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          if [ "$SIGNED" = true ]; then zip="$DIST/voiced-$VERSION-macos.zip"; else zip="$DIST/voiced-$VERSION-macos-adhoc.zip"; fi
+          if [ "$RELEASE" = true ]; then
+              if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+                  echo "::error::SPARKLE_PRIVATE_KEY is not set: this release would have no appcast.xml, and installed apps read only the latest release's"
+                  exit 1
+              fi
+              key="$SPARKLE_PRIVATE_KEY"
+              public="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")"
+              out="$DIST/appcast.xml"
+          else
+              read -r key public < <(printf '%s\n' 'import CryptoKit' 'let key = Curve25519.Signing.PrivateKey()' \
+                  'print(key.rawRepresentation.base64EncodedString(), key.publicKey.rawRepresentation.base64EncodedString())' |
+                  swift -)
+              out="$RUNNER_TEMP/appcast-check.xml"
+          fi
+          unset SPARKLE_PRIVATE_KEY
+          # Sparkle's tools come with the framework SwiftPM fetched and checked for bundle.sh.
+          signature="$(printf '%s' "$key" | menubar/.build/artifacts/sparkle/Sparkle/bin/sign_update --ed-key-file - -p "$zip")"
+          unset key
+          swift menubar/Scripts/verify-update.swift "$public" "$zip" "$signature"
+          python3 scripts/release.py appcast --version "$VERSION" --app "$APP" --zip "$zip" \
+              --signature "$signature" > "$out"
+          cat "$out"
+
       - name: Remove the keychain
         # sign.sh deletes it on exit; this covers a job cancelled mid-step.
         if: always() && steps.signing.outputs.signed == 'true'
@@ -190,6 +231,9 @@ jobs:
               echo
               if [ "$SIGNED" = true ]; then
                   echo "voiced.app is signed with the Developer ID, notarized and stapled."
+                  if [ -f "$DIST/appcast.xml" ]; then
+                      echo "The release carries \`appcast.xml\`: once it is published, installed apps offer this version."
+                  fi
               else
                   echo "> [!WARNING]"
                   echo "> **Ad hoc build.** voiced.app is not signed with a Developer ID and not notarized:"
@@ -304,6 +348,7 @@ jobs:
               {
                   echo "> [!WARNING]"
                   echo "> This build of voiced.app is ad hoc signed, not signed with a Developer ID or notarized."
+                  echo "> It has no appcast.xml: publishing it stops the updates of every installed app until a release that has one."
                   echo
                   cat "$RUNNER_TEMP/notes/notes.md"
               } > "$RUNNER_TEMP/notes.md"

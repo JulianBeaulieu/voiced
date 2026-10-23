@@ -795,6 +795,10 @@ caveats say so.
 
 ### Updating the app itself
 
+Amended by ADR 0034: the app updates itself with Sparkle, the cask has
+`auto_updates true`, and after its own update the app runs "Update voiced"
+without asking again. The original decision:
+
 Through the cask only (`brew upgrade --cask voiced`), or a new download
 from the GitHub release. The app does not update itself, and there is no
 Sparkle: one more signing key and feed for a tool whose users mostly come
@@ -1141,3 +1145,14 @@ pinned revisions: the chosen ones on a first install, the configured ones
 for the models no longer gives a size, which only the cache knows. With a
 service off, the Connect Home Assistant screen names only the Wyoming port
 that is open.
+
+## Amendment (ADR 0034)
+
+"Updating the app itself" above is replaced: the app updates itself with
+Sparkle 2, and after its own update runs "Update voiced" without asking
+again; the cask has `auto_updates true`. In "Signing and release CI", step 3
+signs inside out every piece of code in the bundle, the bundled uv, Sparkle's
+two XPC services, `Autoupdate`, `Updater.app` and the framework, then the
+app (`menubar/Scripts/codesign-app.sh`), and step 5's assets include
+`appcast.xml`, the feed every release must carry, signed with the EdDSA key
+in the `release` environment's `SPARKLE_PRIVATE_KEY`.

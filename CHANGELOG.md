@@ -17,16 +17,32 @@ uses [Semantic Versioning](https://semver.org/).
   voice, naming it in its language ("Hi, I'm Heart."), at the default speed;
   a second click stops it. The app asks the watchdog over the control socket
   (the new `tts.speak` operation), which asks the running service with the
-  API key it holds, so the app still opens no network connection. The button
+  API key it holds, so the app opens no network connection for it. The button
   is off while text to speech is off, stopped or starting.
 - The default speed is a control in the app: Settings > Text to Speech >
   Speed, 0.5x to 2x in steps of 0.1. The service now reads `tts.speed` from
   the config file for each request, so a new speed applies at once, from the
   app, `voiced settings set tts.speed=1.2` or the status page form, with no
   restart; Home Assistant's requests get it too.
+- The menu bar app updates itself. It checks for a new version when it opens
+  and once a day; a card in its menu then says which version is out, and
+  Install and Relaunch downloads it, checks its signature, replaces the app
+  and opens it again, without a DMG or Finder. The relaunched app goes on to
+  update the services to the voiced it carries, showing the installer's
+  progress, so one click updates both. Check for Updates… in the menu checks
+  at once, and Settings > General > Check for updates automatically turns the
+  checks off. An update found is not shown as a problem: the icon gets a small
+  dot, not the error badge, and Install and Relaunch waits while voiced is
+  installing or a model downloads. This release is the first with the updater
+  and the first to publish the feed: an older app is updated to it once more
+  by hand or with Homebrew, and the first update the app installs itself is to
+  the release after it. The Homebrew cask now says `auto_updates`, and `brew
+  upgrade --cask voiced` still works.
 
 ### Changed
 
+- A plain `brew upgrade` now leaves the menu bar app to its own updates (the
+  cask says `auto_updates`); `brew upgrade --cask voiced` still updates it.
 - `brew uninstall --cask voiced` removes the app and leaves the services
   running, as moving the app to the Trash does. To remove them, use
   Uninstall in the app first, or `brew uninstall --zap --cask voiced`.

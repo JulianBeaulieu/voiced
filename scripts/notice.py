@@ -78,6 +78,12 @@ COMPONENTS = [
         "in the app bundle (Contents/Helpers/uv)",
     ),
     Component(
+        "Sparkle",
+        "MIT",
+        "https://github.com/sparkle-project/Sparkle",
+        "in the app bundle (Contents/Frameworks/Sparkle.framework), which it updates",
+    ),
+    Component(
         "CPython (python-build-standalone)",
         "PSF-2.0",
         "https://github.com/astral-sh/python-build-standalone",
@@ -102,7 +108,7 @@ COMPONENTS = [
 HEADER = """\
 voiced is released under the MIT licence (LICENSE). It uses the third-party
 software below, under the licences given. The menu bar app carries only
-voiced and uv. Everything else is downloaded from PyPI and the Python
+voiced, uv and Sparkle. Everything else is downloaded from PyPI and the Python
 releases by your own Mac when voiced is installed; it is not part of voiced
 and voiced does not distribute it. Each entry links to its source.
 """

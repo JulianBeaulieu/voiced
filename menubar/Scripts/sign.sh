@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Packages voiced.app for a release (ADR 0018, "Signing and release CI"): NAME.zip and
 # NAME.dmg in OUT. By default it first signs the app with the Developer ID, inside out (the
-# bundled uv, then the app) with the hardened runtime and a secure timestamp, notarizes and
+# bundled uv, Sparkle and its helpers, then the app: codesign-app.sh, which also verifies
+# the result) with the hardened runtime and a secure timestamp, notarizes and
 # staples it, and checks Gatekeeper accepts it; then it signs, notarizes and staples the DMG
 # too. With --adhoc it only packages the ad hoc bundle bundle.sh made. The release workflow
 # and SIGNING.md ("By hand") both run it.
@@ -17,7 +18,8 @@
 #       temporary directory) that is deleted on exit. Without them the identity comes from
 #       the keychain search list: by hand, the login keychain.
 #
-# No entitlements: the app needs none, and uv runs Python as a separate process.
+# No entitlements: the app needs none, uv runs Python as a separate process, and Sparkle
+# needs none outside a sandbox (ADR 0034).
 set -euo pipefail
 
 adhoc=0
@@ -118,9 +120,8 @@ if (( ! adhoc )); then
     fi
     notary=(--key "$work/AuthKey_$NOTARY_KEY_ID.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
 
-    sign --options runtime "$app/Contents/Helpers/uv"
-    sign --options runtime "$app"
-    codesign --verify --strict --deep --verbose=2 "$app"
+    "$(dirname "$0")/codesign-app.sh" "$app" --timestamp --options runtime --sign "$identity" \
+        ${keychain_args[@]+"${keychain_args[@]}"}
     ditto -c -k --sequesterRsrc --keepParent "$app" "$work/notarize.zip"
     notarize "$work/notarize.zip"
     stapler staple "$app"

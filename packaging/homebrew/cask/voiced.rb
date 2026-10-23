@@ -17,8 +17,9 @@ cask "voiced" do
     strategy :github_latest
   end
 
-  # No auto_updates: the app does not update itself; `brew upgrade --cask voiced`
-  # does (ADR 0018, "Updating the app itself").
+  # The app updates itself (ADR 0034), so `brew upgrade` leaves it to the app;
+  # `brew upgrade --cask voiced` still updates it when asked.
+  auto_updates true
   depends_on arch: :arm64
   depends_on macos: :sonoma
 

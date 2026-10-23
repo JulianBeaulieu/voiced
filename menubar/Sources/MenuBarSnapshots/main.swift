@@ -35,6 +35,8 @@ struct Shot {
     var modelSteps: [ModelStep] = []
     /// Press the voice's play button first; the audio goes nowhere.
     var previewsVoice = false
+    /// Where the app's own update stands (ADR 0034); nil hides updates, as `swift run` does.
+    var appUpdate: AppUpdateStep?
 }
 
 /// Takes the preview's audio and keeps "playing" until stopped, so the stop button shows.
@@ -42,6 +44,37 @@ struct Shot {
 final class SilentPlayer: PreviewPlayer {
     func play(_ wav: Data, finished: @escaping @MainActor () -> Void) throws {}
     func stop() {}
+}
+
+enum AppUpdateStep {
+    case idle, available, blocked, downloading, upToDate
+
+    /// The app's updates with the fake updater, played to this step as Sparkle would.
+    @MainActor
+    func updates() -> AppUpdates {
+        let updates = AppUpdates(updater: FakeAppUpdater(), appVersion: "0.4.0")
+        let update = AvailableUpdate(
+            version: "0.5.0", releasePage: URL(string: "https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.0"))
+        switch self {
+        case .idle:
+            break
+        case .available:
+            updates.found(update) { _ in }
+        case .blocked:
+            updates.installBlocker = { AppUpdates.blocker(installing: false, modelsBusy: true) }
+            updates.found(update) { _ in }
+        case .downloading:
+            updates.found(update) { _ in }
+            updates.install()
+            updates.downloadStarted {}
+            updates.downloadExpects(16_000_000)
+            updates.downloadReceived(6_400_000)
+        case .upToDate:
+            updates.checkStarted()
+            updates.notFound()
+        }
+        return updates
+    }
 }
 
 enum ModelStep {
@@ -103,6 +136,12 @@ let shots = [
     Shot(name: "model-downloading-disconnected", scenario: nil, installed: true, modelSteps: [.downloading(phonon31)]),
     Shot(name: "settings-tts-downloading", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.downloading(phonon31)]),
     Shot(name: "settings-tts-after-use", scenario: .running, window: .settings, pane: .textToSpeech, modelSteps: [.use(.tts, phonon31)]),
+    // ADR 0034's updates of the app itself: found, downloading, and a check with nothing new.
+    Shot(name: "app-update-available", scenario: .running, appUpdate: .available),
+    Shot(name: "app-update-blocked", scenario: .running, appUpdate: .blocked),
+    Shot(name: "app-update-downloading", scenario: .running, appUpdate: .downloading),
+    Shot(name: "app-update-up-to-date", scenario: .running, appUpdate: .upToDate),
+    Shot(name: "settings-general-updates", scenario: .running, window: .settings, pane: .general, appUpdate: .idle),
 ]
 
 /// The model rows against the fake cache next to `socket`, which the fake server reads, with
@@ -213,13 +252,15 @@ func run() async {
         for edit in shot.edits { await model.apply(edit) }
         let launch = shot.launchCards ? await launchChecks(model: model, in: scratch.appendingPathComponent(shot.name)) : nil
         let models = await modelManager(model, socket: socket, steps: shot.modelSteps)
+        let updates = shot.appUpdate?.updates()
         for dark in [false, true] {
             let file = output.appendingPathComponent("\(shot.name)-\(dark ? "dark" : "light").png")
             switch shot.window {
             case .status:
                 // With launch cards, Update is offered as it will be once Update exists.
                 let view = PopoverView(
-                    model: model, models: models, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} })
+                    model: model, models: models, canInstall: shot.canInstall, launch: launch, update: launch.map { _ in {} },
+                    updates: updates)
                 await render(view, dark: dark, to: file)
             case .settings:
                 // One for each picture: closing the last picture's window stops its preview.
@@ -230,8 +271,8 @@ func run() async {
                 }
                 await render(
                     SettingsView(
-                        model: model, models: models, loginItem: LoginItem(), launch: launch, pane: shot.pane,
-                        preview: preview),
+                        model: model, models: models, loginItem: LoginItem(), launch: launch, updates: updates,
+                        pane: shot.pane, preview: preview),
                     dark: dark, to: file)
             }
             print(file.path)
@@ -245,7 +286,7 @@ func run() async {
 
     // The three menu bar icons side by side.
     let icons = HStack(spacing: 18) {
-        ForEach([MenuBarIconState.idle, .busy, .error], id: \.self) { state in
+        ForEach([MenuBarIconState.idle, .update, .busy, .error], id: \.self) { state in
             VStack(spacing: 6) {
                 Image(nsImage: MenuBarIconImage.image(for: state))
                 Text(String(describing: state)).font(.caption).foregroundStyle(.secondary).fixedSize()
