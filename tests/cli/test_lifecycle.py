@@ -23,17 +23,29 @@ NOT_LOADED = CommandResult(113, "", "Could not find service")
 
 
 class FakeLaunchctl:
-    def __init__(self, loaded: dict[str, bool]) -> None:
+    """The user's GUI domain; nothing in the system domain. A job booted
+    out stays listed for ``linger`` more prints, as launchd tears it down."""
+
+    def __init__(self, loaded: dict[str, bool], linger: int = 0) -> None:
         self.loaded = loaded
+        self.linger = linger
+        self.unloading: dict[str, int] = {}
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: Sequence[str]) -> CommandResult:
         self.calls.append(list(argv))
+        target = argv[-1]
+        label = target.rsplit("/", 1)[-1]
         if argv[1] == "print":
-            label = argv[2].rsplit("/", 1)[-1]
+            if target.startswith("system/"):
+                return NOT_LOADED
+            if self.unloading.get(label, 0) > 0:
+                self.unloading[label] -= 1
+                return CommandResult(0, "gui/x = {\n\tstate = exiting\n}")
             return CommandResult(0, RUNNING) if self.loaded.get(label) else NOT_LOADED
         if argv[1] == "bootout":
-            self.loaded.pop(argv[2].rsplit("/", 1)[-1], None)
+            self.loaded.pop(label, None)
+            self.unloading[label] = self.linger
         return CommandResult(0)
 
 
@@ -83,9 +95,58 @@ def test_stop_boots_out_without_root(settings: Settings) -> None:
     assert lc.cmd_stop("all", settings, fake, out.append) == 0
     assert ["launchctl", "bootout", f"{GUI}/{stt}"] in fake.calls
     assert "stt: stopped until the next login or `voiced start`" in out
-    assert stt not in fake.loaded, "stop returns once launchd has let go of the job"
+    assert stt not in fake.loaded
     assert "tts: not loaded" in out
     assert not any("sudo" in line for line in out)
+
+
+def test_stop_returns_once_launchd_has_let_go_of_the_job(settings: Settings) -> None:
+    """bootout returns while launchd still tears the job down; a `voiced
+    start` straight after would kickstart the dying job."""
+    stt = settings.launchd.label("stt")
+    fake = FakeLaunchctl({stt: True}, linger=3)
+    out: list[str] = []
+    assert lc.cmd_stop("stt", settings, fake, out.append) == 0
+    prints_after = [
+        c for c in fake.calls[fake.calls.index(["launchctl", "bootout", f"{GUI}/{stt}"]) :]
+    ]
+    assert [c[1] for c in prints_after] == ["bootout", "print", "print", "print", "print"]
+    assert (
+        lc.cmd_start("stt", settings, fake, out.append) == 1
+    )  # not installed: nothing to bootstrap
+    assert not any(c[1] == "kickstart" for c in fake.calls)
+
+
+def test_stop_says_a_job_still_unloading(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voiced.launchd import control
+
+    monkeypatch.setattr(control, "BOOTOUT_WAIT_S", 0.0)
+    stt = settings.launchd.label("stt")
+    out: list[str] = []
+    assert lc.cmd_stop("stt", settings, FakeLaunchctl({stt: True}, linger=10**6), out.append) == 1
+    assert out == ["stt: still unloading; try again in a moment"]
+
+
+@pytest.mark.parametrize("command", ["start", "stop", "restart", "status", "uninstall", "doctor"])
+def test_every_launchd_command_refuses_root(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """As root launchctl addresses gui/0: `sudo voiced stop` would find
+    nothing loaded and leave the user's services running."""
+    from voiced.cli import build_parser
+
+    monkeypatch.setattr(lc, "is_root", lambda: True)
+    fake = FakeLaunchctl({settings.launchd.label("stt"): True})
+    out: list[str] = []
+    args = build_parser().parse_args([command, *(["--yes"] if command == "uninstall" else [])])
+    assert lc.run_lifecycle(args, settings, fake, out.append) == 2
+    assert out == [
+        f"Run `voiced {command}` as the user the services run as, not with sudo: "
+        "they are that user's LaunchAgents."
+    ]
+    assert fake.calls == []
 
 
 def test_start_and_stop_point_old_launchdaemons_to_their_removal(
@@ -102,11 +163,11 @@ def test_start_and_stop_point_old_launchdaemons_to_their_removal(
         fake = FakeLaunchctl({label: True})
         out: list[str] = []
         assert command("all", settings, fake, out.append) == 1
-        assert fake.calls == []
-        assert any(
-            line.startswith("  sudo /bin/sh -c '/bin/launchctl bootout system/") for line in out
-        )
-        assert out[-1] == "  voiced install"
+        assert all(c[1] == "print" and c[2].startswith("system/") for c in fake.calls)
+        (message,) = out
+        assert message.startswith("voiced still runs as LaunchDaemons from 0.4.0 or earlier")
+        assert f"\n  sudo /bin/sh -c '/bin/launchctl bootout system/{label} " in message
+        assert message.endswith("\n  voiced install")
 
 
 def test_status_table(settings: Settings) -> None:

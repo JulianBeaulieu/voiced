@@ -389,7 +389,8 @@ def test_restart_after_a_reboot() -> None:
     """The agents start when the user logs in: FileVault's unlock at boot is
     that login, otherwise automatic login is (ADR 0035)."""
     on = make_runner({"fdesetup status": CommandResult(0, "FileVault is On.\n")})
-    assert doctor.check_restart(on, "someone").result == "pass"
+    check = doctor.check_restart(on, "someone")
+    assert check.result == "pass" and "when someone unlocks the disk" in check.detail
     off = {"fdesetup status": CommandResult(0, "FileVault is Off.\n")}
     auto = make_runner({**off, "defaults read": CommandResult(0, "someone\n")})
     check = doctor.check_restart(auto, "someone")
@@ -430,45 +431,88 @@ def test_agent_states(settings: Settings) -> None:
 
 
 def test_old_launchdaemons_fail_with_their_removal(settings: Settings, no_launchd: Path) -> None:
+    """By plist, under the default prefix whatever the config says (the old
+    root step installed no other), and by `launchctl print system/<label>`
+    for one whose plist is gone while it stays loaded."""
     import plistlib
 
-    assert doctor.check_legacy_daemons(settings) == doctor.Check(
+    settings.launchd.label_prefix = "org.example.voicedtest"
+    nothing = make_runner({})
+    assert doctor.check_legacy_daemons(settings, nothing, "someone") == doctor.Check(
         "Old LaunchDaemons", "pass", "none"
     )
-    label = settings.launchd.label("watchdog")
-    (no_launchd / f"{label}.plist").write_bytes(plistlib.dumps({"UserName": "someone"}))
-    check = doctor.check_legacy_daemons(settings)
+    watchdog = "io.github.julianbeaulieu.voiced.watchdog"
+    (no_launchd / f"{watchdog}.plist").write_bytes(plistlib.dumps({"UserName": "someone"}))
+    check = doctor.check_legacy_daemons(settings, nothing, "someone")
     assert check.result == "fail"
-    assert f"/bin/launchctl bootout system/{label}" in check.detail
-    assert check.detail.endswith("then run `voiced install`")
+    assert check.detail.startswith(f"{watchdog}: voiced still runs as LaunchDaemons")
+    assert f"/bin/launchctl bootout system/{watchdog}" in check.detail
+    assert check.detail.endswith("`; then run `voiced install`")
+    (no_launchd / f"{watchdog}.plist").unlink()
+    stt = "io.github.julianbeaulieu.voiced.stt"
+    loaded = make_runner({f"launchctl print system/{stt}": CommandResult(0, "system/x = {}")})
+    check = doctor.check_legacy_daemons(settings, loaded, "someone")
+    assert check.result == "fail" and check.detail.startswith(f"{stt}:")
 
 
-def test_firewall_on_the_network(tmp_path: Path) -> None:
-    """Checked only with bind = lan; the answer the user gave macOS's
-    prompt is in --listapps, readable as the user."""
-    python = tmp_path / "python3.12"
-    python.write_text("")
-    fw = doctor.SOCKETFILTERFW
-    on = {f"{fw} --getglobalstate": CommandResult(0, "Firewall is enabled. (State = 1)\n")}
-
-    def listing(rule: str) -> dict[str, CommandResult]:
-        rule_line = f"             ({rule} incoming connections)"
-        text = f"Total number of apps = 1 \n1 : {python} \n{rule_line}\n"
-        return {**on, f"{fw} --listapps": CommandResult(0, text)}
-
-    assert doctor.check_firewall(make_runner(on), False, python) is None
+def test_firewall_on_the_network() -> None:
+    """Checked only with bind = lan. voiced adds no exception: macOS asks when
+    a service starts listening, and again after the Python changes."""
+    fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    on = make_runner(
+        {f"{fw} --getglobalstate": CommandResult(0, "Firewall is enabled. (State = 1)\n")}
+    )
     off = make_runner(
         {f"{fw} --getglobalstate": CommandResult(0, "Firewall is disabled. (State = 0)")}
     )
-    assert doctor.check_firewall(off, True, python) == doctor.Check("Firewall", "pass", "off")
-    unasked = doctor.check_firewall(
-        make_runner({**on, f"{fw} --listapps": CommandResult(0, "")}), True, python
+    assert doctor.check_firewall(on, False) is None
+    assert doctor.check_firewall(off, True) == doctor.Check("Firewall", "pass", "off")
+    check = doctor.check_firewall(on, True)
+    assert check is not None and check.result == "warn"
+    assert "asks again after an update that changes that Python" in check.detail
+    assert "System Settings > Network > Firewall > Options" in check.detail
+
+
+def test_discovery_needs_the_network_not_only_this_mac(settings: Settings) -> None:
+    """Bonjour from a LaunchAgent reached only loopback when measured (ADR
+    0035): seen there only, Home Assistant cannot discover voiced."""
+    assert doctor.check_discovery(settings, lambda: {}) is None  # loopback bind
+    settings.server.bind = "0.0.0.0"
+    both = {"voiced-stt": {1, 14}, "voiced-tts": {14}}
+    assert doctor.check_discovery(settings, lambda: both) == doctor.Check(
+        "Discovery", "pass", "voiced-stt, voiced-tts advertised on the network"
     )
-    assert unasked is not None and unasked.result == "warn" and "choose Allow" in unasked.detail
-    allowed = doctor.check_firewall(make_runner(listing("Allow")), True, python)
-    assert allowed is not None and allowed.result == "pass"
-    blocked = doctor.check_firewall(make_runner(listing("Block")), True, python)
-    assert blocked is not None and blocked.result == "fail"
+    check = doctor.check_discovery(settings, lambda: {"voiced-stt": {1}, "voiced-tts": {1}})
+    assert check is not None and check.result == "warn"
+    assert "Local Network" in check.detail and "address and port" in check.detail
+    settings.tts.enabled = False
+    assert doctor.check_discovery(settings, lambda: {"voiced-stt": {14}}).result == "pass"  # type: ignore[union-attr]
+    check = doctor.check_discovery(settings, lambda: None)
+    assert check is not None and check.result == "warn"
+    settings.server.zeroconf = False
+    assert doctor.check_discovery(settings, lambda: {}) is None
+
+
+def test_browse_reads_dns_sd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dns-sd's columns: the interface index is the fourth."""
+    text = (
+        "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n"
+        "17:44:38.263  Add        3   1 local.               _wyoming._tcp.       voiced-stt\n"
+        "17:44:38.263  Add        2  14 local.               _wyoming._tcp.       voiced-stt\n"
+        "17:44:39.000  Rmv        0  14 local.               _wyoming._tcp.       old one\n"
+    )
+    import os as os_module
+
+    reads = [text.encode()]
+    monkeypatch.setattr("pty.fork", lambda: (4242, 99))
+    monkeypatch.setattr("select.select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(
+        os_module, "read", lambda fd, n: reads.pop() if reads else (_ for _ in ()).throw(OSError())
+    )
+    monkeypatch.setattr(os_module, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(os_module, "waitpid", lambda pid, flags: (pid, 0))
+    monkeypatch.setattr(os_module, "close", lambda fd: None)
+    assert doctor.browse_wyoming(1.0) == {"voiced-stt": {1, 14}}
 
 
 def test_metal_shell() -> None:

@@ -101,12 +101,11 @@ def test_the_cask_leaves_the_services_alone_on_upgrade(release: ModuleType) -> N
     uninstall, zap = (body for _, body in stanzas)
     assert uninstall == 'quit: "io.github.julianbeaulieu.voiced.menubar"'
     assert "launchctl:" not in zap and "sudo" not in zap
-    assert """'/bin/launchctl bootout "gui/$(/usr/bin/id -u)" '""" in zap
-    for service in ("stt", "tts", "watchdog"):
-        plist = f"Library/LaunchAgents/io.github.julianbeaulieu.voiced.{service}.plist"
-        assert f'"$HOME/{plist}"' in zap
-        assert f'"~/{plist}"' in zap
-    assert '"~/Library/Application Support/voiced"' in zap
+    plists = '"Library/LaunchAgents/io.github.julianbeaulieu.voiced.#{s}.plist"'
+    assert f"agents = %w[stt tts watchdog].map {{ |s| {plists} }}" in text
+    assert '/bin/launchctl bootout \\"gui/$(/usr/bin/id -u)\\"' in zap
+    assert '"\\"$HOME/#{a}\\""' in zap and '"~/#{a}"' in zap
+    assert '["~/Library/Application Support/voiced", *agents.map' in zap
 
 
 def test_an_adhoc_cask_says_so_and_points_at_the_adhoc_asset(release: ModuleType) -> None:

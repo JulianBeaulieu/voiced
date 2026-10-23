@@ -25,6 +25,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from voiced.launchd.control import DEFAULT_LABEL_PREFIX
 from voiced.models import DEFAULT_ENGINES, DEFAULT_HF_HOME, default_model
 
 ENV_PREFIX = "VOICED_"
@@ -54,7 +55,7 @@ CLEARED_HF_ENV = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_ENDPOINT")
 # The launchd label prefix. ``[launchd] label_prefix`` changes the labels the
 # LaunchAgents are installed under and that the CLI and the watchdog address
 # (ADR 0003, ADR 0035); the menu bar app knows the default only.
-DEFAULT_LAUNCHD_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
+DEFAULT_LAUNCHD_LABEL_PREFIX = DEFAULT_LABEL_PREFIX
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 ServiceName = Literal["stt", "tts"]
@@ -196,6 +197,10 @@ class LaunchdConfig(_Section):
 
     def label(self, service: DaemonName) -> str:
         return f"{self.label_prefix}.{service}"
+
+    def service_labels(self) -> list[str]:
+        """The labels of the three agents ``voiced install`` loads."""
+        return [self.label(service) for service in SERVICES]
 
 
 class WatchdogConfig(_Section):

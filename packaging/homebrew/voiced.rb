@@ -62,7 +62,8 @@ class Voiced < Formula
       moves the services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set,
       run `voiced restart all` after the upgrade instead. After the first
       upgrade from 0.4.0 or earlier, run `voiced install` once more: it prints
-      the one line that removes the old LaunchDaemons.
+      the one line that removes the old LaunchDaemons; until then the watchdog
+      cannot restart a hung service.
 
       Before `brew uninstall voiced`, run `voiced uninstall --yes`; otherwise
       launchd stops the services, since their program is gone, but keeps them

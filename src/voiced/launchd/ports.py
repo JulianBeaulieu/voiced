@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import errno
 import socket
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 
 import psutil
@@ -70,7 +70,11 @@ def runs_entry(argv: Sequence[str], entry: Path) -> bool:
 
 
 def foreign_listeners(
-    ports: Mapping[str, int], bind: str, entry: Path, query: Runner
+    ports: Mapping[str, int],
+    bind: str,
+    entry: Path,
+    query: Runner,
+    own: Collection[int],
 ) -> tuple[list[str], list[str]]:
     """The configured ports (by config key) another program holds, each
     with its holder, and notes on ports in use that lsof cannot tell apart.
@@ -78,7 +82,10 @@ def foreign_listeners(
     A port is held when the services could not bind it, or when lsof lists
     a listener on it that is not voiced's own (a reinstall or an update):
     with ``SO_REUSEADDR`` a listener on 127.0.0.1 does not stop a bind on
-    0.0.0.0, yet would answer local clients in voiced's place."""
+    0.0.0.0, yet would answer local clients in voiced's place. voiced's own
+    runs the entry point and is one of the ``own`` pids: the processes
+    launchd runs for this install's agents, so an old LaunchDaemon running
+    the same entry point is a holder like any other."""
     conflicts: list[str] = []
     notes: list[str] = []
     for key, port in ports.items():
@@ -93,10 +100,30 @@ def foreign_listeners(
             continue
         holders = [(pid, *process_of(pid)) for pid in pids]
         others = [
-            f"{name} (pid {pid})" for pid, name, argv in holders if not runs_entry(argv, entry)
+            f"{name} (pid {pid})"
+            for pid, name, argv in holders
+            if not runs_entry(argv, entry) or pid not in own
         ]
         if others:
             conflicts.append(f"port {port} ({key}) is in use by {', '.join(others)}")
         elif error is not None and not holders:
             conflicts.append(f"port {port} ({key}) is in use by another account or the system")
     return conflicts, notes
+
+
+SOCKETFILTERFW = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+
+FIREWALL_NOTE = (
+    "the application firewall is on, so macOS asks on this Mac, when a service starts "
+    "listening on the network, whether voiced's Python may accept incoming connections, "
+    "and asks again after an update that changes that Python. Until someone answers at "
+    "the Mac, devices on the network are blocked. Answer Allow, or allow the Python in "
+    "System Settings > Network > Firewall > Options"
+)
+"""What ``voiced install`` and ``voiced doctor`` say with ``bind`` on the
+network and the firewall on (ADR 0035): voiced adds no exception itself."""
+
+
+def firewall_enabled(runner: Runner) -> bool:
+    """Whether the application firewall is on; readable as the user."""
+    return "enabled" in runner([SOCKETFILTERFW, "--getglobalstate"]).stdout

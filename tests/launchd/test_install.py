@@ -56,6 +56,7 @@ from voiced.launchd.install import (
 )
 from voiced.launchd.ports import bind_error as real_bind_error
 from voiced.launchd.ports import listener_pids as real_listener_pids
+from voiced.launchd.progress import Progress
 from voiced.layout import (
     Manifest,
     ManifestError,
@@ -100,13 +101,27 @@ def _compare(actual: str, name: str) -> None:
 
 
 class FakeLaunchd:
-    """The user's launchd domain, as ``launchctl`` answers for it: labels
-    load from the plists bootstrapped, each with a pid."""
+    """launchctl as it answers for the user's GUI domain: labels load from
+    the plists bootstrapped, each with a pid. A job booted out stays listed
+    for ``linger`` more prints, as launchd tears it down, and bootstrapping
+    it meanwhile fails as launchd does (error 5). ``session`` False: nobody
+    is logged in at the Mac. ``daemons``: labels loaded in the system domain."""
 
-    def __init__(self, fail: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        fail: set[str] | None = None,
+        *,
+        linger: int = 0,
+        session: bool = True,
+        daemons: set[str] | None = None,
+    ) -> None:
         self.loaded: dict[str, int] = {}
+        self.unloading: dict[str, int] = {}
         self.calls: list[list[str]] = []
         self.fail = fail or set()
+        self.linger = linger
+        self.session = session
+        self.daemons = daemons or set()
         self.next_pid = 100
 
     def __call__(self, argv: Sequence[str]) -> CommandResult:
@@ -115,19 +130,30 @@ class FakeLaunchd:
         if argv[0] != "launchctl":
             return _check_ok(argv)
         verb, target = argv[1], argv[-1]
+        gui = f"gui/{os.getuid()}"
         label = target.rsplit("/", 1)[-1]
         if verb == "print":
+            if target == gui:
+                return CommandResult(0 if self.session else 113)
+            if target.startswith("system/"):
+                return CommandResult(0) if label in self.daemons else CommandResult(113)
+            if self.unloading.get(label, 0) > 0:
+                self.unloading[label] -= 1
+                return CommandResult(0, f"{target} = {{\n\tstate = exiting\n}}")
             if label not in self.loaded:
                 return CommandResult(113, "", f'Could not find service "{label}"')
             return CommandResult(
                 0, f"{target} = {{\n\tstate = running\n\tpid = {self.loaded[label]}\n}}"
             )
         if verb == "bootout":
-            return CommandResult(0) if self.loaded.pop(label, None) else CommandResult(3)
+            if self.loaded.pop(label, None) is None:
+                return CommandResult(3)
+            self.unloading[label] = self.linger
+            return CommandResult(0)
         if verb == "bootstrap":
-            assert argv[2] == f"gui/{os.getuid()}"
+            assert argv[2] == gui
             label = plistlib.loads(Path(target).read_bytes())["Label"]
-            if label in self.fail:
+            if label in self.fail or self.unloading.get(label, 0) > 0:
                 return CommandResult(5, "", "Bootstrap failed: 5: Input/output error")
             self.next_pid += 1
             self.loaded[label] = self.next_pid
@@ -243,7 +269,7 @@ def test_a_label_that_fails_to_load_is_named(settings: Settings, tmp_path: Path)
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
     launchd = FakeLaunchd(fail={p.labels["tts"]})
-    with pytest.raises(InstallError, match=f"bootstrap failed for {re.escape(p.labels['tts'])}"):
+    with pytest.raises(InstallError, match=f"not loaded: {re.escape(p.labels['tts'])}"):
         install_agents(p, launchd, lambda _: None)
     assert sorted(launchd.loaded) == sorted([p.labels["stt"], p.labels["watchdog"]])
 
@@ -266,11 +292,30 @@ def test_install_refuses_while_old_launchdaemons_hold_the_labels(
     with pytest.raises(InstallError) as refused:
         run_install(p, runner=lambda argv: CommandResult(0), query=FakeLaunchd(), dry_run=True)
     line = legacy_removal_command([p.labels[s] for s in SERVICES])
-    assert line in str(refused.value)
-    assert "the last time voiced needs an administrator" in str(refused.value)
+    assert f"\n\n  {line}\n  voiced install" in str(refused.value)
+    assert "the last time voiced needs a password" in str(refused.value)
     with pytest.raises(InstallError):
         run_install(p, runner=lambda argv: CommandResult(0), query=FakeLaunchd())
     assert not p.state_dir.exists() and not p.agent_path("stt").exists()
+
+
+def test_old_launchdaemons_are_the_default_labels_and_the_loaded_ones(
+    settings: Settings, tmp_path: Path, no_launchd: Path
+) -> None:
+    """The old root step installed the default labels only, whatever the
+    prefix of this install; and a daemon still loaded after its plist was
+    deleted holds the ports as much as one with a plist."""
+    settings.launchd.label_prefix = "org.example.voicedtest"
+    p = _plan(settings, tmp_path)
+    assert p.legacy_refusal(FakeLaunchd()) is None
+    watchdog = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.watchdog"
+    _daemon(no_launchd, watchdog, p.user)
+    refusal = p.legacy_refusal(FakeLaunchd())
+    assert refusal is not None and f"system/{watchdog}" in refusal
+    (no_launchd / f"{watchdog}.plist").unlink()
+    stt = f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.stt"
+    refusal = p.legacy_refusal(FakeLaunchd(daemons={stt}))
+    assert refusal is not None and f"system/{stt}" in refusal and watchdog not in refusal
 
 
 def test_another_accounts_old_launchdaemons_are_not_offered_for_removal(
@@ -278,9 +323,98 @@ def test_another_accounts_old_launchdaemons_are_not_offered_for_removal(
 ) -> None:
     p = _plan(settings, tmp_path)
     _daemon(no_launchd, p.labels["watchdog"], "someoneelse")
-    refusal = p.legacy_refusal()
+    refusal = p.legacy_refusal(FakeLaunchd())
     assert refusal is not None and "installed for someoneelse" in refusal
     assert "sudo" not in refusal
+
+
+def test_prepare_builds_and_downloads_and_changes_nothing_that_runs(
+    settings: Settings, tmp_path: Path, no_launchd: Path
+) -> None:
+    """The app's first half of a migration: with the old daemons still
+    running, the engine check and the models, no ports step (they hold the
+    ports), and nothing linked, recorded or loaded (ADR 0035)."""
+    env = _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    _daemon(no_launchd, p.labels["watchdog"], p.user)
+    launchd = FakeLaunchd()
+    steps: list[str] = []
+    progress = Progress()
+    progress.step = lambda step, state, shown: steps.append(f"{step} {state}")  # type: ignore[method-assign]
+    calls: list[list[str]] = []
+    run_install(
+        p,
+        runner=lambda argv: calls.append(list(argv)) or CommandResult(0),  # type: ignore[func-returns-value]
+        query=launchd,
+        prepare=True,
+        say=lambda _: None,
+        progress=progress,
+    )
+    ids = [line.split()[0] for line in steps if line.endswith(" done")]
+    assert ids == ["config", "claim", "check", "models"]
+    assert calls[0][:5] == [str(env / "bin/python"), "-P", "-m", "voiced.models", "download"]
+    assert not p.entry.exists() and not (p.state_dir / "install.json").read_text().count(
+        'environment": "'
+    )
+    assert launchd.loaded == {} and not p.agent_path("stt").exists()
+
+
+def test_the_agents_need_a_logged_in_user(settings: Settings, tmp_path: Path) -> None:
+    """Over SSH with nobody logged in at the Mac there is no gui domain."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    with pytest.raises(InstallError, match="not logged in at this Mac"):
+        install_agents(p, FakeLaunchd(session=False), lambda _: None)
+    assert not p.agent_path("stt").exists()
+
+
+def test_a_changed_agent_is_loaded_again_only_once_the_old_one_is_gone(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """bootout returns while launchd still tears the job down; bootstrapping
+    then would fail (the fake refuses it as launchd does)."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd(linger=3)
+    install_agents(p, launchd, lambda _: None)
+    p.agent_path("tts").write_bytes(b"<plist/>")
+    launchd.calls.clear()
+    install_agents(p, launchd, lambda _: None)
+    tts = [
+        c
+        for c in launchd.calls
+        if c[-1].endswith(p.labels["tts"]) or c[-1] == str(p.agent_path("tts"))
+    ]
+    assert [c[1] for c in tts] == [
+        "print",
+        "bootout",
+        "print",
+        "print",
+        "print",
+        "print",
+        "bootstrap",
+    ]
+    assert p.labels["tts"] in launchd.loaded
+
+
+def test_an_agent_that_never_unloads_is_said_not_failed_later(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from voiced.launchd import control
+
+    monkeypatch.setattr(control, "BOOTOUT_WAIT_S", 0.0)
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd(linger=10**6)
+    install_agents(p, FakeLaunchd(), lambda _: None)
+    launchd.loaded = {p.labels["tts"]: 7}
+    p.agent_path("tts").write_bytes(b"<plist/>")
+    with pytest.raises(InstallError, match="still unloading"):
+        install_agents(p, launchd, lambda _: None)
+    assert not any(c[1] == "bootstrap" and c[-1] == str(p.agent_path("tts")) for c in launchd.calls)
+    launchd.loaded = {p.labels["stt"]: 8}
+    with pytest.raises(InstallError, match="still unloading"):
+        remove_agents(p, launchd, lambda _: None)
 
 
 def test_the_removal_line_is_fixed_commands() -> None:
@@ -288,11 +422,23 @@ def test_the_removal_line_is_fixed_commands() -> None:
     the plists in /Library/LaunchDaemons, nothing else. The app runs the same
     commands (LegacyDaemons.swift)."""
     line = legacy_removal_command(["a.b.stt", "a.b.watchdog"])
-    assert line == (
-        "sudo /bin/sh -c '/bin/launchctl bootout system/a.b.stt 2>/dev/null; "
-        "/bin/launchctl bootout system/a.b.watchdog 2>/dev/null; "
-        "/bin/rm -f /Library/LaunchDaemons/a.b.stt.plist /Library/LaunchDaemons/a.b.watchdog.plist'"
+    wait = (
+        "n=0; while /bin/launchctl print system/{} >/dev/null 2>&1 && [ $n -lt 150 ]; "
+        "do /bin/sleep 0.2; n=$((n+1)); done"
     )
+    assert shlex.split(line) == [
+        "sudo",
+        "/bin/sh",
+        "-c",
+        "/bin/launchctl bootout system/a.b.stt 2>/dev/null; "
+        "/bin/launchctl bootout system/a.b.watchdog 2>/dev/null; "
+        "/bin/rm -f /Library/LaunchDaemons/a.b.stt.plist "
+        "/Library/LaunchDaemons/a.b.watchdog.plist; "
+        f"{wait.format('a.b.stt')}; {wait.format('a.b.watchdog')}",
+    ]
+    # Then waits, bounded, until launchd has let go of each (30 s), as the old script did.
+    done = subprocess.run(["/bin/sh", "-n", "-c", shlex.split(line)[-1]], check=False)
+    assert done.returncode == 0
     swift = (
         Path(__file__).parents[2] / "menubar/Sources/VoicedMenuBarUI/Installer/LegacyDaemons.swift"
     )
@@ -757,7 +903,9 @@ def _check_ok(argv: Sequence[str]) -> CommandResult:
     return CommandResult(0, "voiced 0.0.1\n")
 
 
-def _install(p: InstallPlan, said: list[str] | None = None) -> list[list[str]]:
+def _install(
+    p: InstallPlan, said: list[str] | None = None, launchd: FakeLaunchd | None = None
+) -> list[list[str]]:
     """Runs ``p``; returns every command, the engine check included."""
     calls: list[list[str]] = []
 
@@ -767,7 +915,7 @@ def _install(p: InstallPlan, said: list[str] | None = None) -> list[list[str]]:
             _environment(p.environment)
         return CommandResult(0)
 
-    launchd = FakeLaunchd()
+    launchd = launchd or FakeLaunchd()
 
     def query(argv: Sequence[str]) -> CommandResult:
         if argv[0] != "launchctl":
@@ -1057,7 +1205,7 @@ def test_a_failed_download_leaves_the_config_as_it_was(
         run_install(
             p,
             runner=lambda argv: CommandResult(1 if "voiced.models" in argv else 0),
-            query=_check_ok,
+            query=FakeLaunchd(),
             say=[].append,
         )
     assert p.config_file.read_text() == before
@@ -1137,8 +1285,7 @@ def test_cli_install_prints_the_removal_line_for_old_launchdaemons(
         _daemon(no_launchd, label, user)
     assert main(["install", "--dry-run", "--state-dir", str(tmp_path / "state")]) == 1
     out = capsys.readouterr().out
-    assert f"\n\n  {legacy_removal_command(labels)}\n\n" in out
-    assert "then run `voiced install` again" in out
+    assert f"\n\n  {legacy_removal_command(labels)}\n  voiced install" in out
 
 
 def test_cli_install_refuses_root(
@@ -1256,7 +1403,7 @@ def test_a_failed_model_download_changes_nothing(settings: Settings, tmp_path: P
         return CommandResult(1, "", "no network") if "voiced.models" in argv else CommandResult(0)
 
     with pytest.raises(InstallError, match="model download"):
-        run_install(p, runner=runner, query=_check_ok, say=lambda _: None)
+        run_install(p, runner=runner, query=FakeLaunchd(), say=lambda _: None)
     assert (os.readlink(p.entry), (p.state_dir / "install.json").read_text()) == before
 
 
@@ -1710,7 +1857,7 @@ def test_a_port_held_by_another_program_stops_the_install(
         run_install(
             p,
             runner=lambda argv: calls.append(list(argv)) or CommandResult(0),
-            query=_check_ok,
+            query=FakeLaunchd(),
             say=lambda _: None,
         )
     message = str(info.value)
@@ -1724,18 +1871,38 @@ def test_a_port_held_by_another_program_stops_the_install(
 def test_voiceds_own_running_services_are_not_a_conflict(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reinstall or an update runs while the services listen."""
+    """A reinstall or an update runs while the services listen: the
+    processes launchd runs for this install's agents."""
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
-    ports = list(p.ports.values())
     serve = ("Python", ["/x/bin/python3.12", str(p.entry), "serve", "stt"])
     _listening(
         monkeypatch,
-        {port: [20 + i] for i, port in enumerate(ports)},
-        dict.fromkeys(range(20, 24), serve),
+        {port: [20 if "stt" in key else 22] for key, port in p.ports.items()},
+        {20: serve, 22: serve},
     )
-    _install(p)
+    launchd = FakeLaunchd()
+    launchd.loaded = {p.labels["stt"]: 20, p.labels["tts"]: 22, p.labels["watchdog"]: 99}
+    _install(p, launchd=launchd)
     assert p.entry.is_symlink()
+
+
+def test_the_same_entry_point_outside_this_installs_agents_is_a_conflict(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old LaunchDaemon (or a `voiced serve`) runs the same entry point,
+    but launchd does not run it for this user's agents: the agents would
+    fail to bind and respawn every 10 s for ever, so the install says so."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    port = p.ports["[stt] wyoming_port"]
+    serve = ("python3.12", ["/x/bin/python3.12", str(p.entry), "serve", "stt"])
+    _listening(monkeypatch, {port: [31]}, {31: serve})
+    with pytest.raises(
+        InstallError,
+        match=rf"port {port} \(\[stt\] wyoming_port\) is in use by python3.12 \(pid 31\)",
+    ):
+        _install(p)
 
 
 @pytest.mark.parametrize(

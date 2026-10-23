@@ -48,9 +48,12 @@ voiced starts after a reboot (FileVault or automatic login), LaunchDaemons
 left from 0.4.0 or earlier, each service's configured model (downloaded at
 its pin, or the command that fetches it), whether the agents are installed
 and loaded, the control socket, Metal from the service environment, the
-last `--metal-probe` result and, with `bind` on the network and the
-firewall on, whether the firewall lets the services' Python accept
-connections. It exits non-zero only on
+last `--metal-probe` result and, with `bind` on the network, whether the
+firewall is on (macOS then asks at the Mac whether the services' Python
+may accept connections, again after an update that changes it) and
+whether the services' Bonjour announcements reach the network (`dns-sd`
+sees them on an interface other than loopback; macOS's Local Network
+privacy can keep them on this Mac, ADR 0035). It exits non-zero only on
 a failed check, not on a warning.
 
 ## Models
@@ -289,9 +292,11 @@ voiced install
 It stops the three daemons and deletes their plists, nothing else; your
 `~/.voiced`, config and models stay. The services are down from the first
 command until the second has loaded the agents, a few seconds with the
-models already cached. `voiced status` and `voiced doctor` print the same
-line while the daemons are there. Daemons an earlier release installed
-under another label prefix are removed the same way, with their labels.
+models already cached. `voiced start`, `stop`, `uninstall`, `status` and
+`doctor` print the same message while the daemons are there. They are
+found by the default labels, the only ones the old root step installed,
+both by their plists and by `launchctl print system/<label>`, so one still
+loaded after its plist was deleted is found too.
 The menu bar app does the same with one administrator prompt when it
 updates or repairs such an install ([The menu bar app](#the-menu-bar-app)).
 
@@ -448,7 +453,7 @@ brings them back by itself depends on the login:
 
 | Mac | After a reboot |
 |---|---|
-| FileVault on | voiced starts when someone unlocks the disk at boot: that unlock logs you in |
+| FileVault on | voiced starts when you unlock the disk at boot; the unlock logs in the account that unlocked it, so on a Mac with several accounts, only if that is the one that installed voiced |
 | FileVault off, automatic login as you | voiced starts at the automatic login |
 | FileVault off, no automatic login | voiced waits at the login window until you log in |
 

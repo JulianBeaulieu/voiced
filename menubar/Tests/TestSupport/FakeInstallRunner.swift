@@ -38,6 +38,12 @@ public final class FakeInstallRunner: InstallRunner {
 
     /// The answer for each command; by default every step succeeds with the recorded lines.
     public var respond: @MainActor (InstallCommand) -> Response = FakeInstallRunner.defaultResponse
+    /// Labels `launchctl print system/<label>` finds loaded: old LaunchDaemons whose plist may
+    /// be gone. The prompt's success unloads them.
+    public var loadedDaemons: Set<String> = []
+    /// After a successful prompt, `loadedDaemons` stays loaded for this many more
+    /// `launchctl print system/...` answers, as launchd tears the jobs down.
+    public var unloadingPrints = 0
     /// Answers for the administrator prompt, in order; success once they run out.
     public var privilegedOutcomes: [PrivilegedOutcome] = []
     /// The prompt never returns, as while it is up.
@@ -49,6 +55,8 @@ public final class FakeInstallRunner: InstallRunner {
     public private(set) var commands: [InstallCommand] = []
     /// How many times the administrator prompt was shown.
     public private(set) var prompts = 0
+    /// A prompt succeeded: the daemons are going.
+    private var removed = false
     /// Commands whose run was cancelled before they exited: the real runner terminates them.
     public private(set) var terminated: [InstallCommand] = []
 
@@ -74,7 +82,7 @@ public final class FakeInstallRunner: InstallRunner {
 
     public func run(_ command: InstallCommand) -> AsyncThrowingStream<ProcessOutput, Error> {
         commands.append(command)
-        let response = respond(command)
+        let response = daemonResponse(command) ?? respond(command)
         return AsyncThrowingStream { continuation in
             guard !response.cannotStart else {
                 continuation.finish(throwing: CannotStart())
@@ -97,13 +105,35 @@ public final class FakeInstallRunner: InstallRunner {
         }
     }
 
+    /// `launchctl print system/<label>`, answered from `loadedDaemons`.
+    private func daemonResponse(_ command: InstallCommand) -> Response? {
+        guard command.executable == "/bin/launchctl", command.arguments.first == "print",
+            let target = command.arguments.last, target.hasPrefix("system/")
+        else { return nil }
+        let loaded = loadedDaemons.contains(String(target.dropFirst("system/".count)))
+        if loaded, removed, unloadingPrints > 0 {
+            unloadingPrints -= 1
+            if unloadingPrints == 0 { loadedDaemons = [] }
+        }
+        return Response([.exit(loaded ? 0 : 113)])
+    }
+
+    /// What the installer ran other than its read-only `launchctl print` checks.
+    public var changes: [InstallCommand] {
+        commands.filter { !($0.executable == "/bin/launchctl" && $0.arguments.first == "print") }
+    }
+
     public func removeLegacyDaemons() async -> PrivilegedOutcome {
         prompts += 1
         if privilegedHangs {
             while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
         }
         let outcome = privilegedOutcomes.isEmpty ? .finished(status: 0, output: "") : privilegedOutcomes.removeFirst()
-        if outcome == .finished(status: 0, output: "") { onLegacyDaemonsRemoved?() }
+        if outcome == .finished(status: 0, output: "") {
+            removed = true
+            if unloadingPrints <= 0 { loadedDaemons = [] }
+            onLegacyDaemonsRemoved?()
+        }
         return outcome
     }
 
@@ -246,6 +276,10 @@ public enum RecordedProgress {
             download(parakeet, 627_125_000, 2_508_500_000), download(kokoro, 88_825_000, 355_300_000),
             download(parakeet, 1_254_250_000, 2_508_500_000), download(kokoro, 177_650_000, 355_300_000),
         ]
+
+    /// `voiced install --prepare`: up to the models, then done.
+    public static let prepared: [String] =
+        [hello] + steps("config", "claim", "check", "models") + [done]
 
     /// A whole successful run, with an unknown event and unknown fields along the way.
     public static let success: [String] =

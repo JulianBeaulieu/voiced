@@ -52,8 +52,8 @@ write_timeout_s = 10
 http_port = 8881
 # Wyoming protocol listener used by Home Assistant.
 wyoming_port = 10300
-# Off (false): the service runs nothing. Its LaunchDaemon still starts it at
-# boot, but the process loads no model, opens no port, is not announced to
+# Off (false): the service runs nothing. Its LaunchAgent still starts it at
+# login, but the process loads no model, opens no port, is not announced to
 # Home Assistant, and waits; `voiced status` and the app say "off". Change it
 # with `voiced settings set stt.enabled=false`, then `voiced restart stt`.
 enabled = true
@@ -105,8 +105,8 @@ max_upload_mb = 50
 [tts]
 http_port = 8880
 wyoming_port = 10200
-# Off (false): the service runs nothing. Its LaunchDaemon still starts it at
-# boot, but the process loads no model, opens no port, is not announced to
+# Off (false): the service runs nothing. Its LaunchAgent still starts it at
+# login, but the process loads no model, opens no port, is not announced to
 # Home Assistant, and waits; `voiced status` and the app say "off". Change it
 # with `voiced settings set tts.enabled=false`, then `voiced restart tts`.
 enabled = true
@@ -155,8 +155,8 @@ max_input_chars = 4096
 [launchd]
 # Reverse-DNS prefix of the launchd labels that status, start, stop, restart,
 # doctor and the watchdog address: <prefix>.stt, <prefix>.tts and
-# <prefix>.watchdog. The root step installs the default labels only; change
-# this only for daemons installed some other way.
+# <prefix>.watchdog. `voiced install` installs the LaunchAgents under these
+# labels; change it only for a second install beside the first, such as a test.
 label_prefix = "io.github.julianbeaulieu.voiced"
 
 [watchdog]
@@ -187,7 +187,7 @@ probe = false
 probe_timeout_s = 20
 
 [install]
-# The state directory: bin/voiced (the program the daemons run, a link to
+# The state directory: bin/voiced (the program the services run, a link to
 # the active environment), the environments `voiced install --source` builds,
 # install.json and the control socket. The name is historical; it is not
 # necessarily a virtual environment (ADR 0017).

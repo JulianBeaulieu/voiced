@@ -128,8 +128,9 @@ when that user logs in and stop when they log out. Locking the screen,
 letting the display sleep or switching to another user keeps them running.
 After a reboot:
 
-- with FileVault on, unlocking the disk at boot logs you in, so voiced
-  starts then;
+- with FileVault on, voiced starts when you unlock the disk at boot: the
+  unlock logs in the account that unlocked it, so on a Mac with several
+  accounts, unlock as the one that installed voiced;
 - with FileVault off and automatic login on (System Settings > Users &
   Groups), voiced starts at the automatic login;
 - otherwise voiced waits at the login window until you log in.
@@ -303,10 +304,20 @@ exposes the services to your whole network:
   key goes there. Other accounts on the Mac can read files in your home
   directory that are not, so keep it that way if you edit it by hand.
 - With the macOS firewall on (System Settings > Network > Firewall),
-  macOS asks the first time a device on the network connects whether
-  voiced's Python (`python3.12`) may accept incoming connections. Choose
-  Allow; you are logged in when voiced runs, so the question reaches you.
-  `voiced doctor` shows what the firewall says about it.
+  macOS asks on the Mac, when the services start listening on the network,
+  whether voiced's Python (`python3.12`) may accept incoming connections,
+  and asks again after an update that changes that Python. Until someone
+  answers at the Mac, devices on the network are blocked, so on a Mac
+  nobody sits at, allow the Python in System Settings > Network > Firewall
+  > Options after an update. `voiced install` and `voiced doctor` remind
+  you while the firewall is on.
+- Home Assistant finds voiced through Bonjour (`zeroconf`). macOS's Local
+  Network privacy applies to the services, and on macOS 15 it blocked
+  their Bonjour announcements on the network when measured, so Home
+  Assistant may not discover voiced by itself. `voiced doctor` checks; if
+  it warns, add the Wyoming integrations by the Mac's address and port
+  ([docs/home-assistant.md](docs/home-assistant.md)). Connections to voiced
+  are not affected.
 - voiced does no TLS. Put a reverse proxy in front if you need HTTPS.
 - Settings and restarts go through a Unix socket that only your user can
   open (`voiced settings`, `voiced restart`). The status page's settings

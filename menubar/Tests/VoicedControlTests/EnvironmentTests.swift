@@ -54,6 +54,18 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertEqual(sam.legacyDaemonUsers(), ["alex"])
     }
 
+    /// The three default labels, as `voiced.launchd.control.LEGACY_LABELS`: any of them left
+    /// is an old install, not only the watchdog; another prefix never had daemons.
+    func testInstallProbeChecksEveryDefaultLabel() throws {
+        let agents = try launchAgentsDirectory()
+        let daemons = try launchDaemonsDirectory()
+        try writePlist(["UserName": "alex"], to: daemons.appendingPathComponent("io.github.julianbeaulieu.voiced.tts.plist"))
+        try writePlist(["UserName": "sam"], to: daemons.appendingPathComponent("org.example.voiced.stt.plist"))
+        let alex = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons, userName: "alex")
+        XCTAssertTrue(alex.hasLegacyDaemons())
+        XCTAssertEqual(alex.legacyDaemonUsers(), ["alex"])
+    }
+
     func testInstallProbeIgnoresOtherWatchdogs() throws {
         let directory = try launchAgentsDirectory()
         try writePlist(

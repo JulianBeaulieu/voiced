@@ -15,7 +15,7 @@ CLI's printed `sudo` line, the cask's sudo uninstall).
 The owner decided on 2026-10-23 that the services run while their user is
 logged in, and no longer before: most Macs have FileVault on, and with
 FileVault a daemon does not start before someone unlocks the disk at boot
-anyway, and that unlock logs the user in. As LaunchAgents in the user's own
+anyway, and that unlock logs the unlocking account in. As LaunchAgents in the user's own
 domain the services need no root at any point: install, update, repair,
 start, stop, restart, uninstall and the Homebrew cask's `zap`. Handy, the
 model for the app (ADR 0018), works this way.
@@ -24,7 +24,7 @@ What that costs, plainly: the services run while that user is logged in.
 
 | Situation | Services |
 |---|---|
-| FileVault on, reboot | start when the disk is unlocked at boot: the unlock logs the user in |
+| FileVault on, reboot | start when the user unlocks the disk at boot: the unlock logs in the account that unlocked it, so on a Mac with several accounts, only if it was this one |
 | FileVault off, automatic login on, reboot | start at the automatic login |
 | FileVault off, no automatic login, reboot | wait at the login window until the user logs in |
 | User logs out | stop (launchd ends the user's session, and its agents with it) |
@@ -84,7 +84,16 @@ the rows applies ("After a reboot").
   nothing to load again. The parked check compares the marker with the pid
   `launchctl print gui/<uid>/<label>` reports.
 - **`voiced stop`** boots the agent out until the next login or `voiced
-  start`, which bootstraps it again. No `sudo` line.
+  start`, which bootstraps it again, and returns once launchd has let go
+  of the job (`wait_unloaded`): `bootout` returns while launchd still tears
+  it down, and a `start` straight after would act on the dying job. No
+  `sudo` line.
+- **Never as root.** `voiced install`, `start`, `stop`, `restart`,
+  `status`, `uninstall` and `doctor` refuse to run with `sudo`: launchctl
+  would address root's own domain, `gui/0`, so `sudo voiced stop` would
+  find nothing loaded and leave the services running.
+- **No GUI session, no agents.** Over SSH with nobody logged in at the Mac
+  there is no `gui/<uid>`; the `agents` step says "log in on the Mac first".
 - **The privileged script (ADR 0018)** is gone: no `install`, `check` or
   `uninstall` mode, no root rendering, no lock in `/var/run`, no path check
   of who could write the script (`foreign_writer`), no `osascript` in the
@@ -109,17 +118,56 @@ the rows applies ("After a reboot").
 
 It existed because the services' Python is signed ad hoc and, running
 before login, nobody could answer the application firewall's "accept
-incoming connections?" prompt, so Home Assistant on the LAN would have been
-blocked silently. Adding the exception needs root
+incoming connections?" question, so Home Assistant on the LAN would have
+been blocked silently. Adding the exception needs root
 (`socketfilterfw --add`). The services now start in the user's session,
-where macOS shows that prompt itself the first time a device connects, and
-the logged-in user answers it once. So voiced does nothing, and says so:
-with `bind = lan` and the firewall on, `voiced doctor` reads the
-firewall's list as the user (`socketfilterfw --listapps`) and passes when
-the Python is allowed, fails when it is blocked, and otherwise warns that
-macOS will ask, with "choose Allow". The README's LAN section says the
-same. An exception the privileged script added before stays in the
-firewall's list; it names the same Python and keeps working.
+where macOS asks that question itself, at the Mac, when a service starts
+listening on the network, and asks again whenever the Python changes: an
+update can install a newer interpreter (a `--source` build asks uv for
+`3.12`, which may resolve to a newer patch release), and an exception, the
+privileged script's or the user's answer, names a file. Until someone
+answers at the Mac, devices on the network are blocked, which on an
+unattended server means until someone comes by.
+
+So voiced adds nothing and says so. With `bind` on the network and the
+firewall on, `voiced install` ends with that note and `voiced doctor` warns
+with it: macOS asks when the services start listening and after an update
+that changes the Python, and the alternative is to allow the Python in
+System Settings > Network > Firewall > Options. The firewall's own list is
+not read: `socketfilterfw --listapps` is a display format, and
+`--getappblocked` answers "permitted" for any path it does not know. The
+README's LAN section and docs/operations.md say the same.
+
+### Bonjour from an agent: Local Network privacy
+
+Apple's TN3179: macOS's Local Network privacy covers LaunchAgents, where
+daemons were exempt. python-zeroconf, which advertises the Wyoming
+listeners for Home Assistant's discovery, sends its own multicast.
+*Measured* on an M1 Max (macOS 15.7.4) with an agent under a test label
+prefix, `bind = "0.0.0.0"` and `zeroconf = true`: every send on the
+network interface failed with `[Errno 65] No route to host` in the service
+log, which then said "advertising" anyway, and `dns-sd -B _wyoming._tcp`
+saw voiced's two instances on the loopback interface only. The same
+advertisement from a process in a terminal reached the network interface.
+No answer was given at the Mac during the test, so whether macOS showed a
+Local Network prompt for the agent's Python, and whether allowing it in
+System Settings > Privacy & Security > Local Network lifts the block, is
+still open. Incoming connections are not affected: Local Network privacy
+governs what the process sends, and the HTTP and Wyoming listeners answer
+clients as before. Nor are the agent's own connections to the Mac's
+address: *measured* with `bind` set to the Mac's LAN address and the
+watchdog polling it every 2 s for 40 s, every poll answered and the
+watchdog restarted nothing.
+
+So with `bind` on the network and `zeroconf` on, `voiced doctor` browses
+for `_wyoming._tcp` with `dns-sd` and passes only when voiced's instances
+are seen on an interface other than loopback; otherwise it warns that Home
+Assistant may not discover voiced and points to adding the Wyoming
+integrations by this Mac's address and port (docs/home-assistant.md),
+which works either way. A follow-up, to be tried on a real LAN: advertise
+through mDNSResponder (`DNSServiceRegister` through ctypes, or a `dns-sd -R`
+child process) instead of python-zeroconf's own multicast, since the
+system's responder is not a process of the agent.
 
 ### Migration from the LaunchDaemons
 
@@ -128,19 +176,28 @@ can remove, and the agents must not run beside them: both would bind the
 same ports. Stopping the daemons needs root too, so the order is fixed:
 one prompt removes the daemons, then the agents install with none.
 
+- **Found by** the three default labels, the only ones the old root step
+  installed (ADR 0003), and this install's own: by plist, and by
+  `launchctl print system/<label>`, which needs no root, so a daemon still
+  loaded after its plist was deleted counts too
+  (`voiced.launchd.control.legacy_daemons`; the app checks the same labels
+  the same two ways). And the `ports` step takes as voiced's own only the
+  processes launchd runs for this install's agents, so an old daemon
+  running the same entry point is a holder like any other, rather than
+  agents that exit with code 3 every 10 s.
 - `voiced install` checks first, before it writes anything (dry run
-  included): if a daemon plist for one of its labels exists, it stops
-  with the one line that removes them, and asks to run `voiced install`
-  again afterwards:
+  included): if one is found, it stops with one message
+  (`legacy_message`, which `start`, `stop`, `uninstall`, `status` and
+  `doctor` print too) that names the line that removes them and asks to
+  run `voiced install` again afterwards:
 
   ```sh
   sudo /bin/sh -c '/bin/launchctl bootout system/<label> 2>/dev/null; ...; /bin/rm -f /Library/LaunchDaemons/<label>.plist ...'
   ```
 
   Daemons of another account are not offered for removal; that account
-  removes them. `voiced start`, `stop`, `uninstall` and `status` print the
-  same line while daemons are there, and `voiced doctor` fails "Old
-  LaunchDaemons" with it.
+  removes them. `voiced doctor` fails "Old LaunchDaemons" with the same
+  message.
 - The removal is fixed commands by absolute path with no input at all:
   `launchctl bootout` of the three labels and `rm -f` of their plists. So
   the privileged script is not kept for it: a script would only add input
@@ -151,16 +208,22 @@ one prompt removes the daemons, then the agents install with none.
   be deleted in 0.7.0, two minor releases after the first one without
   daemons, after which an install from 0.4.0 or earlier migrates by hand
   (docs/operations.md keeps the commands).
-- **The app** checks before it runs `voiced install` in Install, Update,
-  Repair and Roll back (`InstallProbe.hasLegacyDaemons`): it builds the new
-  environment first, then shows "Remove the old background services", whose
-  button runs the removal behind one administrator prompt, worded
-  "voiced needs an administrator to remove the old background services
-  (the last time a password is needed)". Then `voiced install` runs and
-  loads the agents. Cancelling leaves the daemon install untouched and
-  running the old environment, and the screen says the services keep
-  running the old way until the prompt is accepted. Uninstall of such an
-  install asks the same prompt first.
+- **The app**, in Install, Update, Repair and Roll back, when it finds
+  such daemons (`InstallStages.hasLegacyDaemons`), does everything that
+  can fail first: it builds the new environment and runs
+  `voiced install --prepare`, which checks the engines and downloads the
+  models and changes nothing that runs (no ports step, since the daemons
+  hold the ports, no settings, link, manifest or agents). Only then it
+  shows "Remove the old background services", whose button runs the
+  removal behind one administrator prompt, worded "voiced needs an
+  administrator to remove the old background services (the last time a
+  password is needed)", and then the whole `voiced install`, which finds
+  the environment and the models in place and so is left with the ports,
+  the switch and the agents. Daemons still found after the prompt are a
+  failure, not another prompt. Cancelling leaves the daemon install
+  untouched and running the old environment, and the screen says the
+  services keep running the old way until the prompt is accepted.
+  Uninstall of such an install asks the same prompt first.
 - **The cask.** The first `brew upgrade --cask voiced` from 0.4.0 or
   earlier still runs that version's own `uninstall` stanza, with sudo,
   which removes the daemons (ADR 0017's 2026-10-23 amendment); the new app then finds no
@@ -168,7 +231,7 @@ one prompt removes the daemons, then the agents install with none.
 - **The formula.** `brew upgrade voiced` replaces the keg; the old daemons
   run the new code until `voiced install` has replaced them (the caveats
   say so). Meanwhile the new watchdog looks for its services in the user's
-  domain, finds none, and does not restart a hung service.
+  domain and cannot restart a hung one.
 
 ### The Metal check
 
@@ -194,15 +257,9 @@ manager with pid 1 as parent. *Measured* on an M1 Max, macOS 15.7.4, MLX
 As expected: an agent has the user's Aqua session, which a daemon lacked
 and still had Metal.
 
-*Measured* in the same run, as the user, with agents under a test label
-prefix in a scratch state directory, fake engines on spare ports (nothing
-of the installed voiced touched): `voiced install` loaded the three agents
-(`type = LaunchAgent`, `domain = gui/501`); both `/health` answered `ok`;
-`launchctl kickstart -k gui/501/<label>` exited 0 and launchd started a new
-pid that answered again; `voiced restart all`, `voiced stop stt` then
-`voiced start stt`, and a second `voiced install` (every agent "up to
-date", every pid unchanged) worked; `voiced uninstall --yes` booted all
-three out and deleted their plists. No step asked for a password.
+The same run installed, restarted (`kickstart -k`, `voiced restart all`),
+stopped, started, reinstalled and uninstalled agents under a test label
+prefix as the user, with no password asked at any step.
 
 ## Alternatives considered
 
@@ -226,12 +283,17 @@ three out and deleted their plists. No step asked for a password.
 - No step of voiced needs an administrator, except, once per Mac that ran
   0.4.0 or earlier, the removal of the old daemons.
 - The services stop at logout and start at login. Unattended reboots need
-  FileVault (its unlock is the login) or automatic login.
+  automatic login, or a person to unlock FileVault at boot (as the account
+  that installed voiced, on a Mac with several).
 - The 233-line root-run script, the path-ownership and ACL checks for
   it, the app's check and approval phases and the firewall step are gone.
 - The plists follow the install's layout, so a harness can install real
   agents beside the real ones under another label prefix.
-- Open items: the firewall's own prompt with a LAN client on a real
-  install, and whether advertising over Bonjour from an agent (`zeroconf`)
-  brings up macOS 15's Local Network prompt, which ADR 0018 noted does not
-  apply to daemons; both on the Studio during the migration.
+- Open items, for a real LAN install: the firewall's question for the
+  agent's Python with a device connecting; whether a Local Network prompt
+  appears for the agent and allowing it lets Bonjour reach the network.
+  And a follow-up: the services open their own stdout and stderr
+  (`VOICED_STDIO_LOG`, ADR 0006) only because launchd opened
+  `StandardOutPath` and `StandardErrorPath` as root for a daemon; for an
+  agent launchd could open them as the user, so those keys could replace
+  that code.

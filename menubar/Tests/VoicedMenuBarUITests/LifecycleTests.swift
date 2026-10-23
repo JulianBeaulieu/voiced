@@ -70,6 +70,8 @@ final class LifecycleTests: XCTestCase {
             if let installResponse { return installResponse }
             let environment = URL(fileURLWithPath: command.executable).deletingLastPathComponent().deletingLastPathComponent()
             try? populate(environment, version: installedVersion, python: installedPython)
+            // The first half of a migration changes nothing that runs.
+            if command.arguments.contains("--prepare") { return .progress(RecordedProgress.prepared) }
             let before = InstallRecord.read(stateDirectory: state)
             let previous = before?.environment == environment.path ? before?.previous : before?.environment
             try? writeRecord(
@@ -113,6 +115,7 @@ final class LifecycleTests: XCTestCase {
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = startupTimeout
         configuration.pollInterval = .milliseconds(20)
+        configuration.unloadTimeout = .milliseconds(300)
         configuration.availableCapacity = { _ in 100_000_000_000 }
         let model = AppModel(
             socketPath: socket, installProbe: probe, backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)),
@@ -249,7 +252,9 @@ final class LifecycleTests: XCTestCase {
         installer.update()
         await reach(installer, "migration") { $0 == .migration }
         XCTAssertEqual(environmentNames().count, 2, "built before the prompt")
-        XCTAssertTrue(runner.commands(named: "voiced").isEmpty, "voiced install waits for the daemons to go")
+        XCTAssertEqual(
+            runner.commands(named: "voiced").map { $0.arguments.last }, ["--prepare"],
+            "voiced install changes what runs only after the prompt")
         installer.removeOldServices()
         await finished(installer)
         XCTAssertEqual(installer.phase, .finished(version: "0.1.0"))
@@ -265,7 +270,24 @@ final class LifecycleTests: XCTestCase {
         installer.removeOldServices()
         await reach(installer, "migration again") { $0 == .migration && self.runner.prompts == 1 }
         XCTAssertEqual(record?.environment, current.path, "the services keep running the old way")
-        XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
+        XCTAssertEqual(runner.commands(named: "voiced").map { $0.arguments.last }, ["--prepare"])
+    }
+
+    /// The environment readied before a cancelled prompt is the next Update's: no second
+    /// build of several hundred megabytes.
+    func testAnUpdateAfterACancelledPromptReusesTheReadiedEnvironment() async throws {
+        try installOldDaemons()
+        runner.privilegedOutcomes = [.cancelled]
+        let installer = makeInstaller()
+        installer.update()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        await reach(installer, "migration again") { $0 == .migration && self.runner.prompts == 1 }
+        installer.windowClosed()
+        installer.update()
+        await reach(installer, "migration once more") { $0 == .migration && self.runner.commands(named: "voiced").count == 2 }
+        XCTAssertEqual(runner.commands(named: "uv").filter { $0.arguments.first == "venv" }.count, 1)
+        XCTAssertEqual(environmentNames().count, 2)
     }
 
     func testRepairOfAnOldInstallAsksOnce() async throws {
@@ -276,7 +298,8 @@ final class LifecycleTests: XCTestCase {
         installer.removeOldServices()
         await finished(installer)
         XCTAssertEqual(runner.prompts, 1)
-        XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments.first), ["install", "restart"])
+        XCTAssertEqual(runner.commands(named: "voiced").map(\.arguments.first), ["install", "install", "restart"])
+        XCTAssertEqual(runner.commands(named: "voiced").first?.arguments.last, "--prepare")
     }
 
     func testWithoutAHelloFromTheNewEnvironmentItRestartsAll() async throws {
@@ -585,7 +608,7 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(runner.prompts, 0)
         XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
         XCTAssertEqual(
-            runner.commands(named: "launchctl").map(\.arguments),
+            runner.commands(named: "launchctl").map(\.arguments).filter { $0.first == "bootout" },
             BackgroundItems.labels.map { ["bootout", "gui/\(getuid())/\($0)"] })
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: agents.appendingPathComponent("io.github.julianbeaulieu.voiced.watchdog.plist").path))

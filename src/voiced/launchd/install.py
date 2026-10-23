@@ -38,8 +38,9 @@ from voiced.launchd.control import (
     Runner,
     bootout_argv,
     bootstrap_argv,
+    has_session,
     legacy_daemons,
-    legacy_removal_command,
+    legacy_message,
     plist_path,
     print_service,
     run_command,
@@ -48,7 +49,7 @@ from voiced.launchd.control import (
 )
 from voiced.launchd.parked import off_detail
 from voiced.launchd.plist import log_paths, render_plist
-from voiced.launchd.ports import foreign_listeners
+from voiced.launchd.ports import FIREWALL_NOTE, firewall_enabled, foreign_listeners
 from voiced.launchd.progress import Progress
 from voiced.layout import (
     ENVS,
@@ -85,6 +86,7 @@ from voiced.models import (
     repo_folder,
     size_text,
 )
+from voiced.settings_store import bind_mode
 
 Service = DaemonName
 METAL_PROBE_FILE = "metal-probe.json"
@@ -245,30 +247,18 @@ class InstallPlan:
             keep_alive={"PathState": {str(self.entry): True}},
         )
 
-    def legacy_daemons(self) -> list[LegacyDaemon]:
-        """The LaunchDaemons an earlier release installed for these labels."""
-        return legacy_daemons([self.labels[service] for service in SERVICES])
+    def legacy_daemons(self, query: Runner) -> list[LegacyDaemon]:
+        """The LaunchDaemons of 0.4.0 or earlier: the default labels, which the
+        old root step installed, and this plan's."""
+        return legacy_daemons([self.labels[s] for s in SERVICES], query)
 
-    def legacy_refusal(self) -> str | None:
+    def legacy_refusal(self, query: Runner) -> str | None:
         """Why the agents cannot be installed yet, or None: LaunchDaemons from
-        an earlier release still hold the labels and the ports, and only root
+        0.4.0 or earlier still hold the labels and the ports, and only root
         can remove them. The install stops before it changes anything, with
         the one line that does it, so both never run at once."""
-        found = self.legacy_daemons()
-        if not found:
-            return None
-        others = sorted({d.user for d in found if d.user not in (self.user, None)})
-        if others:
-            return (
-                f"voiced is installed for {', '.join(others)} on this Mac as LaunchDaemons "
-                "from an earlier release; that account has to remove them first"
-            )
-        return (
-            "the services still run as LaunchDaemons from an earlier release. Remove them, "
-            "the last time voiced needs an administrator:\n\n"
-            f"  {legacy_removal_command([d.label for d in found])}\n\n"
-            "then run `voiced install` again: it installs them as LaunchAgents"
-        )
+        found = self.legacy_daemons(query)
+        return legacy_message(found, self.user) if found else None
 
     def environment_variables(self) -> dict[str, str]:
         """The environment in the agents' plists, and the Metal probe's: the
@@ -486,7 +476,13 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
     """Write each service's plist and load it, where it changed or is not
     loaded. An agent that is up to date and loaded keeps running: the
     watchdog moves the services to a new environment itself (ADR 0017).
-    A label that fails to load does not stop the others."""
+    A label that fails to load does not stop the others. Needs the user's
+    GUI session: an agent loads only while its user is logged in."""
+    if not has_session(query):
+        raise InstallError(
+            f"{plan.user} is not logged in at this Mac (an SSH login is not enough): log in "
+            "on the Mac first; the services run as your LaunchAgents while you are logged in"
+        )
     failed: list[str] = []
     for service in SERVICES:
         label, path, plist = (
@@ -500,7 +496,9 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
             continue
         if loaded:
             query(bootout_argv(label))
-            wait_unloaded(label, query)
+            if not wait_unloaded(label, query):
+                failed.append(f"{label} (still unloading; run `voiced install` again)")
+                continue
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.tmp")
         tmp.write_bytes(plist)
@@ -512,20 +510,26 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
         else:
             failed.append(f"{label} ({result.output or f'exit {result.returncode}'})")
     if failed:
-        raise InstallError(f"launchctl bootstrap failed for {'; '.join(failed)}")
+        raise InstallError(f"not loaded: {'; '.join(failed)}")
 
 
-def remove_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
-    """Boot out the services and delete their plists (``voiced uninstall``)."""
+def remove_agents(plan: InstallPlan, query: Runner, say: Say) -> int:
+    """Boot out the services and delete their plists (``voiced uninstall``);
+    how many it stopped or deleted."""
+    removed = 0
     for service in SERVICES:
         label, path = plan.labels[service], plan.agent_path(service)
         if print_service(label, query).loaded:
             query(bootout_argv(label))
-            wait_unloaded(label, query)
+            if not wait_unloaded(label, query):
+                raise InstallError(f"{label} is still unloading; run `voiced uninstall` again")
             say(f"stopped {label}")
+            removed += 1
         if path.is_file() or path.is_symlink():
             path.unlink()
             say(f"removed {path}")
+            removed += 1
+    return removed
 
 
 # The Metal probe ----------------------------------------------------------
@@ -700,12 +704,16 @@ def install_steps(
     query: Runner = run_command,
     skip_models: bool = False,
     report: bool = False,
+    prepare: bool = False,
     say: Say = print,
 ) -> list[Step]:
     """Everything ``voiced install`` does, in order. Nothing that the
     running services use changes before the models are in: a failed install
     leaves the previous one as it was (ADR 0017). ``report``: the model
-    download reports its bytes (``--json-progress``)."""
+    download reports its bytes (``--json-progress``). ``prepare``: only up
+    to the models, nothing the running services use, and no ports step (old
+    LaunchDaemons may hold them): the app's first half of a migration
+    (ADR 0035), before the prompt that removes those daemons."""
     steps: list[Step] = []
     found: dict[str, str] = {}
 
@@ -772,7 +780,11 @@ def install_steps(
     )
 
     def ports() -> None:
-        conflicts, notes = foreign_listeners(plan.ports, plan.bind, plan.entry, query)
+        # Only the processes launchd runs for this install's agents are voiced's
+        # own: an old LaunchDaemon on the port is not, nor a `voiced serve`.
+        pids = (print_service(plan.labels[s], query).pid for s in SERVICES)
+        own = {pid for pid in pids if pid is not None}
+        conflicts, notes = foreign_listeners(plan.ports, plan.bind, plan.entry, query, own)
         for note in notes:
             say(note)
         if conflicts:
@@ -781,7 +793,8 @@ def install_steps(
             )
 
     numbers = ", ".join(str(port) for port in plan.ports.values())
-    steps.append(Step("ports", f"check that ports {numbers} are free", ports))
+    if not prepare:
+        steps.append(Step("ports", f"check that ports {numbers} are free", ports))
     if skip_models:
         say("skipping model download (--skip-models)")
     else:
@@ -790,6 +803,8 @@ def install_steps(
             Step("models", shlex.join(download), run(download, "model download"), command=True)
         )
 
+    if prepare:
+        return steps
     # The switch: everything above can fail without touching what runs now.
     if plan.changes:
         shown = ", ".join(f"{key}={value}" for key, value in plan.changes.items())
@@ -872,6 +887,7 @@ def run_install(
     query: Runner = run_command,
     dry_run: bool = False,
     skip_models: bool = False,
+    prepare: bool = False,
     say: Say = print,
     progress: Progress | None = None,
 ) -> None:
@@ -887,9 +903,9 @@ def run_install(
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
-    refusal = plan.legacy_refusal()
+    refusal = None if prepare else plan.legacy_refusal(query)
     if refusal is not None:
-        raise InstallError(f"Not installing yet: {refusal}.")
+        raise InstallError(f"Not installing yet. {refusal}")
     if dry_run:
         for step in install_steps(
             plan,
@@ -898,6 +914,7 @@ def run_install(
             query=query,
             skip_models=skip_models,
             report=progress.streaming,
+            prepare=prepare,
             say=say,
         ):
             say(step.render(dry_run=True))
@@ -920,6 +937,7 @@ def run_install(
             query=query,
             skip_models=skip_models,
             report=progress.streaming,
+            prepare=prepare,
             say=say,
         )
         for step in steps:
@@ -927,6 +945,9 @@ def run_install(
             progress.step(step.id, "start", step.shown)
             step.run()
             progress.step(step.id, "done", step.shown)
+    if prepare:
+        say(f"{plan.environment} is ready; nothing that runs has changed.")
+        return
     old = previous.environment if previous is not None else None
     if old is not None and not same_path(old, plan.environment):
         say(
@@ -937,6 +958,8 @@ def run_install(
         # The agent stays loaded; its process parks (voiced.launchd.parked,
         # ADR 0033).
         say(f"{service}: {off_detail(service)}. Its agent starts and serves nothing.")
+    if bind_mode(plan.bind) == "lan" and firewall_enabled(query):
+        say(f"Firewall: {FIREWALL_NOTE}")
 
 
 # Uninstall ------------------------------------------------------------------

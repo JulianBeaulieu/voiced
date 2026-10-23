@@ -53,6 +53,7 @@ final class InstallerTests: XCTestCase {
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
+        configuration.unloadTimeout = .milliseconds(300)
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
         let capacity = capacity
         configuration.availableCapacity = { _ in capacity }
@@ -431,7 +432,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(installer.welcome.resuming)
         installer.install()
         await reach(installer) { $0 == .homeAssistant(.asking) }
-        XCTAssertTrue(runner.commands.isEmpty)
+        XCTAssertTrue(runner.changes.isEmpty)
         XCTAssertEqual(runner.prompts, 0)
     }
 
@@ -790,14 +791,17 @@ final class InstallerTests: XCTestCase {
         installer.install()
         await reach(installer, "migration") { $0 == .migration }
         XCTAssertEqual(runner.prompts, 0, "the prompt waits for the button")
-        XCTAssertTrue(runner.commands(named: "voiced").isEmpty, "voiced install waits for the daemons to go")
-        XCTAssertFalse(environmentNames().isEmpty, "the environment is built first")
+        // The environment built and the models in before the prompt; nothing that runs changed.
+        XCTAssertFalse(environmentNames().isEmpty)
+        XCTAssertEqual(runner.commands(named: "voiced").map { $0.arguments.last }, ["--prepare"])
         XCTAssertFalse(installer.isWorking)
 
         installer.removeOldServices()
         await reach(installer) { $0 == .homeAssistant(.asking) }
         XCTAssertEqual(runner.prompts, 1)
-        XCTAssertEqual(runner.commands(named: "voiced").count, 1)
+        let installs = runner.commands(named: "voiced")
+        XCTAssertEqual(installs.count, 2)
+        XCTAssertFalse(installs[1].arguments.contains("--prepare"), "then the whole install")
     }
 
     func testACancelledPromptLeavesTheOldServicesRunning() async throws {
@@ -808,8 +812,55 @@ final class InstallerTests: XCTestCase {
         await reach(installer, "migration") { $0 == .migration }
         installer.removeOldServices()
         await reach(installer) { $0 == .migration && self.runner.prompts == 1 }
-        XCTAssertTrue(runner.commands(named: "voiced").isEmpty)
+        XCTAssertEqual(runner.commands(named: "voiced").map { $0.arguments.last }, ["--prepare"])
         XCTAssertNil(installer.errorMessage)
+    }
+
+    /// A daemon still loaded after its plist was deleted: found by `launchctl print`, so the
+    /// prompt comes instead of a refused `voiced install`.
+    func testAnOldDaemonLoadedWithoutItsPlistIsFound() async throws {
+        runner.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"]
+        let installer = makeInstaller()
+        installer.install()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        await reachInstalled(installer)
+        XCTAssertEqual(runner.prompts, 1)
+    }
+
+    /// launchd may still be tearing the old jobs down when the prompt returns: the install,
+    /// whose ports step would take the old process for a foreign one, waits until they are
+    /// gone.
+    func testTheInstallWaitsUntilTheOldDaemonsAreGone() async throws {
+        runner.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"]
+        runner.unloadingPrints = 4
+        let installer = makeInstaller()
+        installer.install()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        await reachInstalled(installer)
+        XCTAssertEqual(runner.prompts, 1)
+        let commands = runner.commands
+        let install = try XCTUnwrap(commands.lastIndex { URL(fileURLWithPath: $0.executable).lastPathComponent == "voiced" })
+        XCTAssertFalse(commands[install].arguments.contains("--prepare"))
+        // Every check before the install that runs the ports step found the daemon still there,
+        // and the one just before it found it gone.
+        let checks = commands[..<install].enumerated().filter { $0.element.arguments.last == "system/io.github.julianbeaulieu.voiced.tts" }
+        XCTAssertGreaterThanOrEqual(checks.count, 5)
+        XCTAssertTrue(runner.loadedDaemons.isEmpty)
+    }
+
+    func testOldDaemonsStillThereAfterThePromptAreAFailureNotALoop() async throws {
+        runner.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"]
+        runner.onLegacyDaemonsRemoved = { [runner] in runner?.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"] }
+        let installer = makeInstaller()
+        installer.install()
+        await reach(installer, "migration") { $0 == .migration }
+        installer.removeOldServices()
+        let failed = await failure(installer)
+        XCTAssertEqual(failed?.stage, .migration)
+        XCTAssertEqual(failed?.cause, "The old background services are still there after the prompt.")
+        XCTAssertEqual(runner.prompts, 1)
     }
 
     func testAFailedRemovalIsAFailureAndTryAgainAsksAgain() async throws {

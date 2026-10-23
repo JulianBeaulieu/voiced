@@ -50,12 +50,14 @@ remove the old services.
 - The services are LaunchAgents: they run while you are logged in, start
   when you log in and stop when you log out, instead of starting at boot
   before anyone logs in. With FileVault on nothing changes after a reboot,
-  since unlocking the disk logs you in; with FileVault off, turn on
+  since unlocking the disk logs in the account that unlocks it; with
+  FileVault off, turn on
   automatic login for a Mac that must come back unattended. `voiced doctor`
   says which applies. See
   [ADR 0035](docs/decisions/0035-launch-agents.md).
 - Updating from 0.4.0 or earlier: the menu bar app's **Update voiced**
-  builds the new version, then asks for your password once, to "remove the
+  builds the new version and downloads its models, then asks for your
+  password once, to "remove the
   old background services (the last time a password is needed)", and
   installs the new ones. Cancel, and the services keep running the old way
   until you accept. From a terminal, `voiced install` prints the one
@@ -65,13 +67,20 @@ remove the old services.
 - `voiced install` writes the LaunchAgents to `~/Library/LaunchAgents` and
   loads them itself; it prints no `sudo` line. `voiced stop`, `start` and
   `uninstall --yes` need no root either, and `voiced doctor --metal-probe`
-  runs its probe directly.
+  runs its probe directly. Run them as yourself: with `sudo` they refuse,
+  since they would address root's services instead of yours.
 - An install with its own state directory, config file or
   `[launchd] label_prefix` gets LaunchAgents of its own.
 - voiced no longer adds a firewall exception. With the firewall on and
-  voiced on the network, macOS asks the first time a device connects
-  whether voiced's Python may accept connections; choose Allow.
-  `voiced doctor` shows what the firewall says.
+  voiced on the network, macOS asks at the Mac, when the services start
+  listening, whether voiced's Python may accept connections, and again
+  after an update that changes that Python; until someone answers Allow,
+  devices on the network are blocked. `voiced install` and `voiced doctor`
+  say so.
+- The services now run as your LaunchAgents. macOS may keep their Bonjour
+  announcements on the Mac, so Home Assistant may not discover voiced;
+  existing integrations keep working; add new ones by this Mac's address
+  and port; `voiced doctor` checks this (Discovery).
 - A plain `brew upgrade` now leaves the menu bar app to its own updates (the
   cask says `auto_updates`); `brew upgrade --cask voiced` still updates it.
 - `brew uninstall --cask voiced` removes the app and leaves the services

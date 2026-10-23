@@ -247,7 +247,7 @@ public struct SettingsView: View {
             Text(
                 settings.bind == .loopback
                     ? "Discovery needs Local network: Home Assistant on another machine cannot reach this Mac otherwise."
-                    : "Discovery announces the Wyoming services over Bonjour so Home Assistant finds them."
+                    : "Discovery announces the Wyoming services over Bonjour. macOS may keep the announcements on this Mac; if Home Assistant does not list voiced, add the Wyoming integrations by this Mac's address and ports."
             )
             .footnote()
         }

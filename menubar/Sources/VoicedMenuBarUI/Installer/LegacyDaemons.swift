@@ -8,9 +8,10 @@ import VoicedControl
 /// ran an earlier release.
 enum LegacyDaemons {
     /// What root runs: fixed commands by absolute path, with no input at all, so root never
-    /// runs anything the user's account wrote. `voiced.launchd.control.legacy_removal_command`
+    /// runs anything the user's account wrote. They boot out and delete the three daemons,
+    /// then wait up to 30 s per label until launchd has let go of each. `voiced.launchd.control.legacy_removal_command`
     /// prints the same commands for a terminal; a pytest keeps the two equal.
-    static let removal = "/bin/launchctl bootout system/io.github.julianbeaulieu.voiced.stt 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.tts 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.watchdog 2>/dev/null; /bin/rm -f /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist"
+    static let removal = "/bin/launchctl bootout system/io.github.julianbeaulieu.voiced.stt 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.tts 2>/dev/null; /bin/launchctl bootout system/io.github.julianbeaulieu.voiced.watchdog 2>/dev/null; /bin/rm -f /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.stt.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.tts.plist /Library/LaunchDaemons/io.github.julianbeaulieu.voiced.watchdog.plist; n=0; while /bin/launchctl print system/io.github.julianbeaulieu.voiced.stt >/dev/null 2>&1 && [ $n -lt 150 ]; do /bin/sleep 0.2; n=$((n+1)); done; n=0; while /bin/launchctl print system/io.github.julianbeaulieu.voiced.tts >/dev/null 2>&1 && [ $n -lt 150 ]; do /bin/sleep 0.2; n=$((n+1)); done; n=0; while /bin/launchctl print system/io.github.julianbeaulieu.voiced.watchdog >/dev/null 2>&1 && [ $n -lt 150 ]; do /bin/sleep 0.2; n=$((n+1)); done"
 
     /// The fixed AppleScript `osascript` runs. The commands and the prompt arrive as `argv`,
     /// never spliced into source.

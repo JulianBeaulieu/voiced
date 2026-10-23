@@ -121,6 +121,12 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def has_session(runner: Runner = run_command) -> bool:
+    """Whether the user's GUI domain exists: only while they are logged in
+    at the Mac (an SSH login alone has none)."""
+    return runner(["launchctl", "print", domain()]).ok
+
+
 def service_target(label: str) -> str:
     return f"{domain()}/{label}"
 
@@ -152,41 +158,80 @@ def bootout_argv(label: str) -> list[str]:
     return ["launchctl", "bootout", service_target(label)]
 
 
+DEFAULT_LABEL_PREFIX = "io.github.julianbeaulieu.voiced"
+"""The prefix every release installed its LaunchDaemons under (ADR 0003):
+the old root step rendered the default labels only."""
+LEGACY_LABELS = tuple(f"{DEFAULT_LABEL_PREFIX}.{s}" for s in ("stt", "tts", "watchdog"))
+
+
 @dataclass(frozen=True)
 class LegacyDaemon:
-    """A LaunchDaemon an earlier release installed for one of the labels."""
+    """A LaunchDaemon an earlier release installed: its plist is in
+    ``/Library/LaunchDaemons``, or launchd still has it loaded."""
 
     label: str
-    plist: Path
-    user: str | None  # its UserName: whose install it is
+    user: str | None  # its UserName, whose install it is; None without a plist
 
 
-def legacy_daemons(labels: Sequence[str]) -> list[LegacyDaemon]:
-    """The daemons of ``labels`` still in ``/Library/LaunchDaemons`` (world-
-    readable, so no root is needed to look)."""
+def legacy_daemons(labels: Sequence[str], runner: Runner) -> list[LegacyDaemon]:
+    """The LaunchDaemons of the default labels and of ``labels``: by plist
+    (world-readable) and by ``launchctl print system/<label>``, which needs
+    no root, so a daemon whose plist was deleted while it stayed loaded is
+    found too."""
     found = []
-    for label in labels:
+    for label in dict.fromkeys((*LEGACY_LABELS, *labels)):
         plist = LAUNCH_DAEMONS_DIR / f"{label}.plist"
-        if not plist.is_file():
+        user: object = None
+        if plist.is_file():
+            try:
+                with plist.open("rb") as fh:
+                    user = plistlib.load(fh).get("UserName")
+            except (OSError, plistlib.InvalidFileException, ValueError):
+                pass
+        elif not runner(["launchctl", "print", f"system/{label}"]).ok:
             continue
-        try:
-            with plist.open("rb") as fh:
-                user = plistlib.load(fh).get("UserName")
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            user = None
-        found.append(LegacyDaemon(label, plist, user if isinstance(user, str) else None))
+        found.append(LegacyDaemon(label, user if isinstance(user, str) else None))
     return found
 
 
 def legacy_removal_command(labels: Sequence[str]) -> str:
-    """The one line that boots out and deletes the daemons of ``labels``:
-    fixed commands by absolute path, no script and nothing the user's
-    account could have written. The menu bar app runs the same commands
-    behind its one administrator prompt (``LegacyDaemons.swift``)."""
+    """The one line that boots out and deletes the daemons of ``labels``, then
+    waits until launchd has let go of them: fixed commands by absolute path,
+    no script and nothing the user's account could have written. The menu
+    bar app runs the same commands behind its one administrator prompt
+    (``LegacyDaemons.swift``)."""
     steps = [f"/bin/launchctl bootout system/{label} 2>/dev/null" for label in labels]
     plists = [f"/Library/LaunchDaemons/{label}.plist" for label in labels]
     steps.append(shlex.join(["/bin/rm", "-f", *plists]))
+    # bootout returns while launchd still tears a job down; wait up to 30 s
+    # per label, so that what runs next finds the ports free.
+    steps += [
+        f"n=0; while /bin/launchctl print system/{label} >/dev/null 2>&1 "
+        "&& [ $n -lt 150 ]; do /bin/sleep 0.2; n=$((n+1)); done"
+        for label in labels
+    ]
     return f"sudo /bin/sh -c {shlex.quote('; '.join(steps))}"
+
+
+def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool = False) -> str:
+    """What every command says while LaunchDaemons of 0.4.0 or earlier are
+    there (ADR 0035): who they belong to, or the one line that removes them
+    and what to run next. ``one_line``: for a table cell (``voiced doctor``)."""
+    others = sorted({d.user for d in found if d.user not in (user, None)})
+    if others:
+        return (
+            f"voiced is installed for {', '.join(others)} on this Mac as LaunchDaemons from "
+            "0.4.0 or earlier; that account has to remove them before voiced can run as yours."
+        )
+    intro = (
+        "voiced still runs as LaunchDaemons from 0.4.0 or earlier, which only an "
+        "administrator can remove. Remove them, the last time voiced needs a password, "
+        "then install the LaunchAgents"
+    )
+    removal = legacy_removal_command([d.label for d in found])
+    if one_line:
+        return f"{intro}: `{removal}`; then run `voiced install`"
+    return f"{intro}:\n\n  {removal}\n  voiced install"
 
 
 @dataclass(frozen=True)
@@ -244,10 +289,14 @@ BOOTOUT_WAIT_S = 30.0
 
 def wait_unloaded(
     label: str, runner: Runner = run_command, sleep: Callable[[float], None] = time.sleep
-) -> None:
-    """Until ``label`` is gone from the domain: ``bootout`` can return while
-    launchd still tears the job down, and a bootstrap or kickstart of it then
-    fails or acts on the old job."""
+) -> bool:
+    """Wait until ``label`` is gone from the domain; False if it is still
+    there after :data:`BOOTOUT_WAIT_S`. ``bootout`` can return while launchd
+    still tears the job down, and a bootstrap or kickstart of it then fails
+    or acts on the old job."""
     deadline = time.monotonic() + BOOTOUT_WAIT_S
-    while print_service(label, runner).loaded and time.monotonic() < deadline:
+    while print_service(label, runner).loaded:
+        if time.monotonic() >= deadline:
+            return False
         sleep(0.2)
+    return True

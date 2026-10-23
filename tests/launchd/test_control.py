@@ -67,7 +67,8 @@ def test_legacy_daemons_name_their_owner(no_launchd: Path) -> None:
 
     (no_launchd / "a.b.stt.plist").write_bytes(plistlib.dumps({"UserName": "someone"}))
     (no_launchd / "a.b.tts.plist").write_bytes(b"not a plist")
-    found = control.legacy_daemons(["a.b.stt", "a.b.tts", "a.b.watchdog"])
+    nothing_loaded = lambda argv: CommandResult(113)  # noqa: E731
+    found = control.legacy_daemons(["a.b.stt", "a.b.tts", "a.b.watchdog"], nothing_loaded)
     assert [(d.label, d.user) for d in found] == [("a.b.stt", "someone"), ("a.b.tts", None)]
 
 

@@ -141,14 +141,13 @@ public enum ExternalInstall {
 /// Background. The plists name the app in `AssociatedBundleIdentifiers`, so the entries show
 /// as voiced; when the user turns them off, launchd will not run the services.
 public struct BackgroundItems: Sendable {
-    public static let labels = ["stt", "tts", "watchdog"].map { "io.github.julianbeaulieu.voiced.\($0)" }
+    public static let labels = InstallProbe.defaultLabels
 
     public var launchAgentsDirectory: URL
     public var status: @Sendable (URL) -> SMAppService.Status
 
     public init(
-        launchAgentsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents", isDirectory: true),
+        launchAgentsDirectory: URL = InstallProbe.defaultLaunchAgentsDirectory,
         status: @escaping @Sendable (URL) -> SMAppService.Status = { SMAppService.statusForLegacyPlist(at: $0) }
     ) {
         self.launchAgentsDirectory = launchAgentsDirectory

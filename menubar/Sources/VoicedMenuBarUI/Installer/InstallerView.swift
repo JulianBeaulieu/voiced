@@ -335,7 +335,7 @@ private struct HomeAssistantScreen: View {
                 sentence: "Use voiced with Home Assistant on another device?"
             ) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Yes lets devices on your network reach voiced and announces it so Home Assistant can discover it. No keeps voiced on this Mac only; you can change this later in Settings.")
+                    Text("Yes lets devices on your network reach voiced and announces it over Bonjour. No keeps voiced on this Mac only; you can change this later in Settings.")
                         .fixedSize(horizontal: false, vertical: true)
                     if stage == .applying { Working(text: "Applying") }
                     if let message = installer.errorMessage {
@@ -352,7 +352,7 @@ private struct HomeAssistantScreen: View {
         case .connected(let info):
             Screen(
                 symbol: "house", title: "Connect Home Assistant",
-                sentence: "Home Assistant finds voiced under Settings > Devices & services > Discovered."
+                sentence: "In Home Assistant, add the Wyoming Protocol integration with this Mac's address and each port below. If voiced is listed under Settings > Devices & services > Discovered, Add there works too."
             ) {
                 ConnectionDetails(installer: installer, info: info)
             } buttons: {

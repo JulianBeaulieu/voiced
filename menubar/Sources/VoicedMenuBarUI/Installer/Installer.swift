@@ -33,6 +33,9 @@ public final class Installer {
     /// The environment this run builds, resumes, repairs or rolls back to, once it is
     /// complete.
     private var environment: URL?
+    /// The environment `voiced install --prepare` readied before a migration prompt that was
+    /// cancelled: the next Update uses it instead of building another.
+    private var prepared: URL?
 
     public init(configuration: InstallerConfiguration, runner: InstallRunner, model: AppModel) {
         self.configuration = configuration
@@ -323,7 +326,7 @@ public final class Installer {
     /// gets `voiced install` again; anything else starts from the environment. Every stage is
     /// safe to repeat.
     private func firstInstall() async {
-        if isInstalled, !stages.hasLegacyDaemons { return await startServices() }
+        if isInstalled, !(await stages.hasLegacyDaemons()) { return await startServices() }
         phase = .environment(step: "Checking the connection")
         guard value(await stages.checkNetwork()) != nil else { return }
         let environment: URL
@@ -340,6 +343,12 @@ public final class Installer {
 
     /// Steps 1 and 2 of an update: a new environment, and its `voiced install`.
     private func runUpdate() async {
+        if let prepared, stages.isAppEnvironment(prepared),
+            InstallStages.version(in: prepared) == configuration.resources.manifest.version
+        {
+            environment = prepared
+            return await installAndContinue(in: prepared)
+        }
         guard let built = await freshEnvironment() else { return }
         await installAndContinue(in: built)
     }
@@ -383,22 +392,34 @@ public final class Installer {
     /// prompt left: the install refuses to put the agents beside them (ADR 0035).
     private func installAndContinue(in environment: URL) async {
         self.environment = environment
-        if stages.hasLegacyDaemons {
+        phase = .installing(InstallProgress())
+        if await stages.hasLegacyDaemons() {
+            // The environment checked and the models in first, then the prompt: once the old
+            // daemons are gone, only the switch to the agents is left to fail.
+            let prepared = await stages.runInstall(
+                in: environment, request, prepare: true, progress: { self.phase = .installing($0) })
+            guard value(prepared) != nil else { return }
+            self.prepared = environment
             phase = .migration
             return
         }
-        phase = .installing(InstallProgress())
         let installed = await stages.runInstall(in: environment, request, progress: { self.phase = .installing($0) })
         guard value(installed) != nil else { return }
+        prepared = nil
         await startServices()
     }
 
-    /// The prompt that removes the old daemons, then the install it held up. Cancelled, it
-    /// leaves them as they are, and running.
+    /// The prompt that removes the old daemons, then the install it held up, which finds the
+    /// environment and the models in place. Cancelled, it leaves them as they are, and running.
     private func migrateAndContinue() async {
         phase = .migrating
         switch await stages.removeLegacyDaemons() {
         case .done:
+            guard await stages.legacyDaemonsGone() else {
+                return fail(InstallFailure(
+                    stage: .migration, step: "Removing the old background services",
+                    cause: "The old background services are still there after the prompt."))
+            }
             guard let environment else { return await runTask() }
             await installAndContinue(in: environment)
         case .cancelled:
@@ -434,7 +455,7 @@ public final class Installer {
     /// rules and says the models, logs and config stayed.
     private func runUninstall(_ choices: UninstallChoices) async {
         let step = "Uninstalling voiced"
-        if stages.hasLegacyDaemons {
+        if await stages.hasLegacyDaemons() {
             phase = .uninstalling(step: "Removing the old background services")
             switch await stages.removeLegacyDaemons() {
             case .done:

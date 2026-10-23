@@ -16,6 +16,7 @@ import functools
 import json
 import logging
 import os
+import pwd
 import shutil
 import signal
 import sys
@@ -53,7 +54,7 @@ from voiced.launchd.control import (
     bootstrap_argv,
     kickstart_argv,
     legacy_daemons,
-    legacy_removal_command,
+    legacy_message,
     plist_path,
     print_service,
     run_command,
@@ -128,6 +129,12 @@ def add_lifecycle_parsers(sub: argparse._SubParsersAction[argparse.ArgumentParse
         "--json-progress",
         action="store_true",
         help="progress as JSON lines on stdout (ADR 0018); human output goes to stderr",
+    )
+    install.add_argument(
+        "--prepare",
+        action="store_true",
+        help="only build and check the environment and download the models, changing nothing "
+        "that runs (the app's first half of a move from LaunchDaemons, ADR 0035)",
     )
     install.add_argument(
         "--set",
@@ -225,7 +232,23 @@ def run_lifecycle(
         "doctor": lambda: cmd_doctor(args, settings, runner, echo),
         "watchdog": lambda: cmd_watchdog(settings, echo, once=args.once),
     }
+    if args.command in AS_THE_USER and args.command != "install" and is_root():
+        # launchctl would address root's own domain, gui/0: `sudo voiced stop`
+        # would find nothing loaded and leave the user's services running.
+        echo(
+            f"Run `voiced {args.command}` as the user the services run as, not with sudo: "
+            "they are that user's LaunchAgents."
+        )
+        return 2
     return handlers[args.command]()
+
+
+AS_THE_USER = frozenset(
+    {"install", "start", "stop", "restart", "status", "settings", "uninstall", "doctor"}
+)
+"""The commands that talk to launchd or to the watchdog about the user's
+agents (``settings`` would write the user's config as root). ``install``
+refuses root itself, inside its progress stream."""
 
 
 def _services(name: str) -> tuple[DaemonName, ...]:
@@ -341,6 +364,7 @@ def _install(
         query=query,
         dry_run=args.dry_run,
         skip_models=args.skip_models,
+        prepare=args.prepare,
         say=echo,
         progress=progress,
     )
@@ -354,22 +378,18 @@ def is_root() -> bool:
     return os.geteuid() == 0
 
 
-def legacy_note(settings: Settings, echo: Echo) -> bool:
-    """Say so, and how to move on, when LaunchDaemons an earlier release
-    installed are still there: these commands address the LaunchAgents only
+def legacy_note(settings: Settings, runner: Runner, echo: Echo) -> bool:
+    """Say so, and how to move on, when LaunchDaemons of 0.4.0 or earlier
+    are still there: these commands address the LaunchAgents only
     (ADR 0035). True when there are some."""
-    found = legacy_daemons([settings.launchd.label(s) for s in SERVICES])
-    if not found:
-        return False
-    echo("voiced still runs as LaunchDaemons from an earlier release. Remove them, the last")
-    echo("time voiced needs an administrator, then install the LaunchAgents:")
-    echo(f"  {legacy_removal_command([d.label for d in found])}")
-    echo("  voiced install")
-    return True
+    found = legacy_daemons(settings.launchd.service_labels(), runner)
+    if found:
+        echo(legacy_message(found, pwd.getpwuid(os.getuid()).pw_name))
+    return bool(found)
 
 
 def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
-    if legacy_note(settings, echo):
+    if legacy_note(settings, runner, echo):
         return 1
     failures = 0
     for name in _services(service):
@@ -398,7 +418,7 @@ def cmd_start(service: str, settings: Settings, runner: Runner, echo: Echo) -> i
 def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> int:
     """Boot out: KeepAlive would restart a killed process. The agent loads
     again at the next login or with `voiced start`."""
-    if legacy_note(settings, echo):
+    if legacy_note(settings, runner, echo):
         return 1
     failures = 0
     for name in _services(service):
@@ -407,12 +427,14 @@ def cmd_stop(service: str, settings: Settings, runner: Runner, echo: Echo) -> in
             echo(f"{name}: not loaded")
             continue
         result = runner(bootout_argv(label))
-        if result.ok:
-            wait_unloaded(label, runner)
-            echo(f"{name}: stopped until the next login or `voiced start`")
-        else:
+        if not result.ok:
             failures += 1
             echo(f"{name}: launchctl bootout failed: {result.output}")
+        elif not wait_unloaded(label, runner):
+            failures += 1
+            echo(f"{name}: still unloading; try again in a moment")
+        else:
+            echo(f"{name}: stopped until the next login or `voiced start`")
     return 1 if failures else 0
 
 
@@ -687,7 +709,7 @@ def cmd_status(
             echo(f"control socket: {NOT_SERVED}" + (f" ({problem})" if problem else ""))
         else:
             echo(f"control socket: not answering at {path} (watchdog not running)")
-        if not legacy_note(settings, echo) and not any(r.get("installed") for r in rows):
+        if not legacy_note(settings, runner, echo) and not any(r.get("installed") for r in rows):
             echo("The services are not installed. Run `voiced install`.")
     healthy = all(r.get("health", "ok") in FINE and r["pid"] for r in rows)
     return 0 if healthy else 1
@@ -804,6 +826,7 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
 
 def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, echo: Echo) -> int:
     from voiced.launchd.install import (
+        InstallError,
         plan_install,
         remove_agents,
         remove_targets,
@@ -813,14 +836,9 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
     from voiced.models import size_text
 
     plan = plan_install(settings, state_dir=args.state_dir)
-    if legacy_note(settings, echo):
+    if legacy_note(settings, runner, echo):
         echo("Then `voiced uninstall` removes the rest.")
         return 1
-    agents = [
-        f"{plan.agent_path(s)} ({settings.launchd.label(s)}, stopped first)"
-        for s in SERVICES
-        if plan.agent_path(s).is_file() or print_service(settings.launchd.label(s), runner).loaded
-    ]
 
     def targets() -> UninstallTargets:
         return uninstall_targets(
@@ -840,6 +858,11 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         for note in models.notes() if models is not None else []:
             echo(note)
         revisions = models.revisions if models is not None else []
+        agents = [
+            f"{plan.agent_path(s)} ({plan.labels[s]}, stopped first)"
+            for s in SERVICES
+            if plan.agent_path(s).is_file() or print_service(plan.labels[s], runner).loaded
+        ]
         if not agents and not present and not revisions:
             echo("nothing to remove")
             return 0
@@ -859,9 +882,13 @@ def cmd_uninstall(args: argparse.Namespace, settings: Settings, runner: Runner, 
         else contextlib.nullcontext()
     )
     with held:
-        remove_agents(plan, runner, echo)
+        try:
+            stopped = remove_agents(plan, runner, echo)
+        except InstallError as exc:
+            echo(str(exc))
+            return 1
         found = targets()
-        if remove_targets(found, plan, echo) == 0 and not agents:
+        if remove_targets(found, plan, echo) == 0 and not stopped:
             echo("nothing to remove")
     if found.manifest is not None and found.manifest.source == "homebrew":
         echo(

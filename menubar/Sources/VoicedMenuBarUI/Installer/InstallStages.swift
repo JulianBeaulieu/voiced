@@ -427,10 +427,14 @@ struct InstallStages {
 
     /// `voiced install --origin app --json-progress` from `environment`, asked for `request`,
     /// with a stall check while a download is unfinished.
+    /// `prepare`: only up to the models, changing nothing that runs (`voiced install --prepare`),
+    /// before the prompt that removes old LaunchDaemons.
     func runInstall(
-        in environment: URL, _ request: InstallRequest, progress: @escaping (InstallProgress) -> Void
+        in environment: URL, _ request: InstallRequest, prepare: Bool = false,
+        progress: @escaping (InstallProgress) -> Void
     ) async -> Result<Void, InstallFailure> {
-        let command = InstallCommand(environment.appendingPathComponent("bin/voiced").path, request.arguments)
+        let command = InstallCommand(
+            environment.appendingPathComponent("bin/voiced").path, request.arguments + (prepare ? ["--prepare"] : []))
         let state = InstallRun()
         let runner = runner
         let consume = Task {
@@ -505,9 +509,29 @@ struct InstallStages {
 
     // MARK: - Migration
 
-    /// This user's LaunchDaemons from before ADR 0035 are still in `/Library/LaunchDaemons`:
+    /// LaunchDaemons of 0.4.0 or earlier are still there, as `voiced.launchd.control.legacy_daemons`
+    /// finds them: this user's plists under the default labels, or a default label launchd
+    /// still has loaded in the system domain (`launchctl print` needs no root), plist or not.
     /// `voiced install` refuses to put the agents beside them, so they go first.
-    var hasLegacyDaemons: Bool { configuration.installProbe.hasLegacyDaemons() }
+    func hasLegacyDaemons() async -> Bool {
+        if configuration.installProbe.hasLegacyDaemons() { return true }
+        for label in InstallProbe.defaultLabels {
+            let print = InstallCommand("/bin/launchctl", ["print", "system/\(label)"])
+            if let ran = try? await collect(print), ran.status == 0 { return true }
+        }
+        return false
+    }
+
+    /// Whether the old daemons are gone within `unloadTimeout`, as `wait_unloaded` waits: the
+    /// prompt's commands wait too, but launchd may still be tearing a job down.
+    func legacyDaemonsGone() async -> Bool {
+        let deadline = ContinuousClock.now + configuration.unloadTimeout
+        while await hasLegacyDaemons() {
+            if ContinuousClock.now >= deadline || Task.isCancelled { return false }
+            try? await Task.sleep(for: configuration.pollInterval)
+        }
+        return true
+    }
 
     /// The one administrator prompt left: it boots out and deletes the old daemons.
     func removeLegacyDaemons() async -> LegacyDaemons.Result {
@@ -575,8 +599,10 @@ struct InstallStages {
 
     // MARK: - Uninstall
 
-    /// Boots out the LaunchAgents and deletes their plists, as `voiced uninstall` does, for
-    /// when no `voiced` is left to run it. As the user: they are in the user's own domain.
+    /// Boots out the LaunchAgents and deletes their plists, as `voiced uninstall` does
+    /// (`voiced.launchd.install.remove_agents` is the reference), for when no `voiced` is left
+    /// to run it. As the user: they are in the user's own domain. No wait for the unload: the
+    /// state directory goes next, and nothing is loaded again here.
     func removeAgents() async {
         for label in BackgroundItems.labels {
             let bootout = InstallCommand("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])

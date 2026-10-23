@@ -90,5 +90,3 @@ is `<log_dir>/<service>.log`.
   with the same plist content installed under `~/Library/LaunchAgents` and
   `launchctl bootstrap gui/<uid>`. Only the privileged script's
   destination, its `UserName` key and the launchctl domain would change.
-
-

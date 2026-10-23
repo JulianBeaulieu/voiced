@@ -8,15 +8,19 @@ implementations.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
+import pty
 import pwd
 import re
+import select
 import shlex
 import shutil
 import stat
 import sys
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,14 +48,20 @@ from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import (
     Runner,
     legacy_daemons,
-    legacy_removal_command,
+    legacy_message,
     plist_path,
     print_service,
     run_command,
 )
 from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
-from voiced.launchd.ports import listener_pids, process_of, runs_entry
+from voiced.launchd.ports import (
+    FIREWALL_NOTE,
+    firewall_enabled,
+    listener_pids,
+    process_of,
+    runs_entry,
+)
 from voiced.layout import (
     ManifestError,
     NotVoiceds,
@@ -67,6 +77,7 @@ from voiced.layout import (
 from voiced.settings_store import bind_mode
 from voiced.table import render_table
 from voiced.watchdog import Observation, poll_health
+from voiced.wyoming import WYOMING_STT_SERVICE, WYOMING_TTS_SERVICE
 
 Result = Literal["pass", "warn", "fail"]
 Which = Callable[[str], str | None]
@@ -420,7 +431,12 @@ def check_restart(runner: Runner, user: str) -> Check:
     name = "After a reboot"
     filevault = runner(["fdesetup", "status"]).stdout.strip()
     if "FileVault is On" in filevault:
-        return Check(name, "pass", "unlocking FileVault at boot logs you in, which starts voiced")
+        return Check(
+            name,
+            "pass",
+            f"FileVault is on: voiced starts when {user} unlocks the disk at boot (unlocking "
+            "as another account logs that account in instead)",
+        )
     auto = runner(
         ["defaults", "read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]
     )
@@ -434,39 +450,98 @@ def check_restart(runner: Runner, user: str) -> Check:
     )
 
 
-SOCKETFILTERFW = "/usr/libexec/ApplicationFirewall/socketfilterfw"
-
-
-def check_firewall(runner: Runner, lan: bool, python: Path | None) -> Check | None:
-    """With voiced on the network (``lan``) and the application firewall
-    on, whether the services' Python may accept connections. None while
-    voiced listens on this Mac only. macOS asks the logged-in user the first time a device
-    connects; ``--listapps`` shows the answer, as the user."""
+def check_firewall(runner: Runner, lan: bool) -> Check | None:
+    """With voiced on the network (``lan``), whether the application
+    firewall will ask about the services' Python. None while voiced listens
+    on this Mac only. voiced adds no exception (ADR 0035)."""
     if not lan:
         return None
-    name = "Firewall"
-    if "enabled" not in runner([SOCKETFILTERFW, "--getglobalstate"]).stdout:
-        return Check(name, "pass", "off")
-    if python is None:
-        return Check(name, "warn", "on; nothing installed yet to allow")
-    real = os.path.realpath(python)
-    lines = runner([SOCKETFILTERFW, "--listapps"]).stdout.splitlines()
-    for i, line in enumerate(lines):
-        if line.partition(" : ")[2].strip() == real:
-            rule = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            if "Allow" in rule:
-                return Check(name, "pass", f"on; {real} may accept incoming connections")
-            return Check(
-                name,
-                "fail",
-                f"on and blocks {real}: devices on the network cannot reach voiced; allow it "
-                "in System Settings > Network > Firewall > Options",
-            )
+    if not firewall_enabled(runner):
+        return Check("Firewall", "pass", "off")
+    return Check("Firewall", "warn", f"on: {FIREWALL_NOTE}")
+
+
+LOOPBACK_INTERFACE = 1  # lo0, as dns-sd numbers interfaces
+
+
+def browse_wyoming(seconds: float = 3.0) -> dict[str, set[int]] | None:
+    """The ``_wyoming._tcp`` instances mDNSResponder sees, by name, with the
+    interfaces it saw each on; None when ``dns-sd`` cannot run. dns-sd
+    writes to a terminal only, so it gets a pty, and never exits by itself."""
+    try:
+        pid, fd = pty.fork()
+    except OSError:
+        return None
+    if pid == 0:  # the child
+        try:
+            os.execv("/usr/bin/dns-sd", ["dns-sd", "-B", "_wyoming._tcp", "local."])
+        finally:
+            os._exit(127)
+    out = b""
+    deadline = time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    out += os.read(fd, 4096)
+                except OSError:
+                    break
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, 15)
+        os.waitpid(pid, 0)
+        os.close(fd)
+    seen: dict[str, set[int]] = {}
+    for line in out.decode(errors="replace").splitlines():
+        fields = line.split()
+        # 17:44:38.263  Add  3  14 local.  _wyoming._tcp.  voiced-stt
+        if len(fields) >= 7 and fields[1] == "Add" and fields[3].isdigit():
+            seen.setdefault(" ".join(fields[6:]), set()).add(int(fields[3]))
+    return seen
+
+
+def check_discovery(
+    settings: Settings, browse: Callable[[], dict[str, set[int]] | None] = browse_wyoming
+) -> Check | None:
+    """Whether Home Assistant can discover voiced: its Wyoming listeners
+    advertised on the network, not only on this Mac. From a LaunchAgent,
+    macOS's Local Network privacy can stop python-zeroconf's multicast on
+    the network interfaces (``[Errno 65] No route to host`` in the service
+    log) while loopback works (ADR 0035). None unless voiced is on the
+    network with ``zeroconf`` on."""
+    if bind_mode(settings.server.bind) != "lan" or not settings.server.zeroconf:
+        return None
+    name = "Discovery"
+    wanted = {
+        WYOMING_STT_SERVICE: settings.stt.enabled,
+        WYOMING_TTS_SERVICE: settings.tts.enabled,
+    }
+    wanted_names = [n for n, on in wanted.items() if on]
+    if not wanted_names:
+        return None
+    seen = browse()
+    if seen is None:
+        return Check(
+            name, "warn", "dns-sd could not run; cannot tell whether Home Assistant sees voiced"
+        )
+    remote = [n for n in wanted_names if seen.get(n, set()) - {LOOPBACK_INTERFACE}]
+    if len(remote) == len(wanted_names):
+        return Check(name, "pass", f"{', '.join(remote)} advertised on the network")
+    missing = [n for n in wanted_names if n not in remote]
+    if not any(n in seen for n in missing):
+        return Check(
+            name,
+            "warn",
+            f"{', '.join(missing)} not seen at all: is the service running? (`voiced status`)",
+        )
     return Check(
         name,
         "warn",
-        f"on; the first time a device on the network connects, macOS asks whether {real} "
-        "may accept incoming connections: choose Allow",
+        f"{', '.join(missing)} not advertised on the network (macOS's Local Network privacy "
+        "may block Bonjour from the services); Home Assistant may not discover voiced: add "
+        "the Wyoming integrations by this Mac's address and port instead "
+        "(docs/home-assistant.md)",
     )
 
 
@@ -505,21 +580,15 @@ def check_agents(settings: Settings, runner: Runner, exists: Exists = Path.is_fi
     ]
 
 
-def check_legacy_daemons(settings: Settings) -> Check:
-    """LaunchDaemons an earlier release installed (ADR 0035): they hold the
-    ports the agents need, and only root removes them."""
+def check_legacy_daemons(settings: Settings, runner: Runner, user: str) -> Check:
+    """LaunchDaemons of 0.4.0 or earlier (ADR 0035): they hold the ports the
+    agents need, and only root removes them."""
     name = "Old LaunchDaemons"
-    labels = [settings.launchd.label(service) for service in SERVICES]
-    found = legacy_daemons(labels)
+    found = legacy_daemons(settings.launchd.service_labels(), runner)
     if not found:
         return Check(name, "pass", "none")
-    return Check(
-        name,
-        "fail",
-        f"{', '.join(d.label for d in found)} still installed; remove them (the last "
-        f"password voiced needs) with `{legacy_removal_command([d.label for d in found])}`, "
-        "then run `voiced install`",
-    )
+    message = legacy_message(found, user, one_line=True)
+    return Check(name, "fail", f"{', '.join(d.label for d in found)}: {message}")
 
 
 # Metal --------------------------------------------------------------------
@@ -717,6 +786,7 @@ def check_models(settings: Settings) -> list[Check]:
 def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
     entry = entry_point(state_dir(settings))
     venv_python = environment_python(entry) if entry.exists() else None
+    user = pwd.getpwuid(os.getuid()).pw_name
     checks = [
         check_apple_silicon(runner),
         check_macos_version(runner),
@@ -729,8 +799,8 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         *check_models(settings),
         check_memory(runner),
         *check_ports(settings, runner),
-        check_restart(runner, pwd.getpwuid(os.getuid()).pw_name),
-        check_legacy_daemons(settings),
+        check_restart(runner, user),
+        check_legacy_daemons(settings, runner, user),
         *check_agents(settings, runner),
         check_control_socket(
             socket_path(settings),
@@ -743,8 +813,9 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
             running_macos=macos_version(runner),
         ),
     ]
-    firewall = check_firewall(runner, bind_mode(settings.server.bind) == "lan", venv_python)
-    return checks if firewall is None else [*checks, firewall]
+    firewall = check_firewall(runner, bind_mode(settings.server.bind) == "lan")
+    discovery = check_discovery(settings)
+    return [*checks, *(c for c in (firewall, discovery) if c is not None)]
 
 
 def worst(checks: Sequence[Check]) -> Result:
