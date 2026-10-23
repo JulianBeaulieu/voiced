@@ -578,7 +578,7 @@ the message with the exception name (`UnknownVoice`, `UnsupportedLanguage`,
 
 | Status | `type` | Cause |
 |---|---|---|
-| 400 | `invalid_request_error` | Bad or missing fields (FastAPI validation errors are 400, not 422, as with OpenAI), unknown voice, unsupported language, malformed multipart. |
+| 400 | `invalid_request_error` | Bad or missing fields (FastAPI validation errors are 400, not 422, as with OpenAI), a voice when none is served, unsupported language, malformed multipart. |
 | 400 | `invalid_audio` | Undecodable upload. |
 | 400 | `model_not_served` | `model` names another installed engine. |
 | 401 | `auth_error` | `api_key` is set and the bearer token is missing or wrong. |
@@ -678,8 +678,8 @@ needs the loaded engine.
   between sentences does not block other requests.
 - Text is capped at `tts.max_input_chars`: the whole message for
   `Synthesize`, the running total for a stream.
-- The voice must be one `Describe` lists, as on HTTP; no voice means
-  `tts.default_voice`.
+- No voice means `tts.default_voice`. A voice `Describe` does not list is
+  spoken in `tts.default_voice` with a warning in the log, as on HTTP.
 - A stream that fails (its `SynthesizeStart` refused, its text over
   `tts.max_input_chars`, the engine failing mid-stream) gets one `Error`. Its
   remaining chunks and the compatibility `Synthesize` are read and dropped,
@@ -697,7 +697,7 @@ whose `code` is one of:
 | Code | Cause | Connection |
 |---|---|---|
 | `server_busy` | Queue full, or model still loading | closed |
-| `invalid_request_error` | Unknown voice, unsupported language, text too long, unconvertible or oversized audio, an event with a missing or mistyped field | kept open, except after a failed STT session or stream or an oversized event |
+| `invalid_request_error` | No voice served, unsupported language, text too long, unconvertible or oversized audio, an event with a missing or mistyped field | kept open, except after a failed STT session or stream or an oversized event |
 | `engine_error` | The engine failed; health turns `degraded` | closed |
 
 A client that disconnects or stalls past the timeouts is dropped without an
