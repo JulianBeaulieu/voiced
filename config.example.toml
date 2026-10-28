@@ -18,7 +18,8 @@ bind = "127.0.0.1"
 # Wyoming has no authentication in the protocol and is not affected.
 api_key = ""
 
-# Where the services write their logs.
+# Where the services write their logs. A change moves `<service>.log` at the
+# next start and the stdout and stderr files at the next `voiced install`.
 log_dir = "~/Library/Logs/voiced"
 
 # debug, info, warning, error

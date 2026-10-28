@@ -55,17 +55,19 @@ class Voiced < Formula
         voiced install
 
       It links ~/.voiced/bin/voiced to this formula, downloads the models
-      (about 2.7 GB) and loads the services. No sudo. Then `voiced status`.
+      (about 2.7 GB) and loads the services. No sudo. Run it logged in at the
+      Mac (Screen Sharing counts); over SSH alone it stops before it changes
+      anything. Then `voiced status`.
 
       Upgrade with `brew upgrade voiced` (for a `--HEAD` install, `brew upgrade
       --fetch-HEAD voiced`); once it has removed the old version, the watchdog
       moves the services to the new one. With HOMEBREW_NO_INSTALL_CLEANUP set,
-      run `voiced restart all` after the upgrade instead. After an upgrade
-      from 0.5.0, run `voiced install` once more: it rewrites the plists so
-      launchd keeps the services' stdout and stderr logs. After the first
-      upgrade from 0.4.0 or earlier, run `voiced install` once more: it prints
-      the one line that removes the old LaunchDaemons; until then the watchdog
-      cannot restart a hung service.
+      run `voiced restart all` after the upgrade instead. After the first
+      upgrade from 0.5.0 or earlier, run `voiced install` once more: from
+      0.5.1 its plists have launchd open the services' stdout and stderr
+      logs, and from 0.4.0 or earlier it prints the one line that removes the
+      old LaunchDaemons, without which the watchdog cannot restart a hung
+      service.
 
       Before `brew uninstall voiced`, run `voiced uninstall --yes`; otherwise
       launchd stops the services, since their program is gone, but keeps them

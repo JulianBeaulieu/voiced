@@ -1,7 +1,8 @@
 # 0018: Install from the menu bar app
 
-Date: 2026-10-15, revised 2026-10-18. Status: proposed. Amended by ADR 0035:
-the services are LaunchAgents and "The privileged step" below is gone.
+Date: 2026-10-15, revised 2026-10-18. Status: accepted (2026-10-28; shipped
+in 0.1.0). Amended by ADR 0022, 0034 and 0035: the services are LaunchAgents
+and "The privileged step" below is gone.
 
 ## Context
 
