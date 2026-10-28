@@ -18,7 +18,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import math
 import os
 import sys
 import tempfile
@@ -276,6 +275,7 @@ _EXPECTED = {
     "int_from_float": "a whole number",
     "float_type": "a number",
     "float_parsing": "a number",
+    "finite_number": "a finite number",
     "string_type": "a string",
 }
 # A pydantic bound error -> how the bound reads, and its key in the context.
@@ -303,7 +303,7 @@ def _refusal(err: ErrorDetails, field: FieldInfo | None) -> str:
         text = _must_be(_EXPECTED[kind], err["input"])
     elif kind in _BOUNDS:
         words, key = _BOUNDS[kind]
-        text = f"must be {words} {format(err.get('ctx', {})[key], '.15g')}"
+        text = f"must be {words} {format(err['ctx'][key], '.15g')}"
     else:
         return err["msg"]
     hint = field.description if field is not None else None
@@ -331,8 +331,6 @@ def check_setting(name: str, value: object) -> object:
     field = model.model_fields[key]
     if field.annotation is int and isinstance(value, float) and value.is_integer():
         value = int(value)  # 300.0 from a JSON encoder that writes floats
-    if field.annotation is float and isinstance(value, float) and not math.isfinite(value):
-        raise InvalidSetting(name, _must_be("a finite number", value))
     try:
         checked = model.__pydantic_validator__.validate_assignment(
             model.model_construct(), key, value, strict=True

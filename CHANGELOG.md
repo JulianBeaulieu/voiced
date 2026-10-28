@@ -30,7 +30,8 @@ uses [Semantic Versioning](https://semver.org/).
   degraded window starts then.
 - `tts.speed` in the config file is held to the speeds a request may ask
   for, 0.25 to 4, and refused when the file is read, instead of failing
-  every request that takes the default speed. A request below 0.25 now
+  every request that takes the default speed; a file with such a value
+  must be edited before the services start. A request below 0.25 now
   fails validation for every engine; engines without rate control ignored
   it before.
 

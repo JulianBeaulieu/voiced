@@ -47,10 +47,9 @@ service's, because there is nothing to ask yet. Every poll also reads the
 pid from `launchctl print`; a new pid means launchd started the service
 (crash restart, out of memory, or `voiced start` after the watchdog came up)
 and the new process is loading, so the grace period starts again from that
-moment, with no failures counted and no degraded timer running. The first
-pid the watchdog sees counts as new too. The pid is read before `/health`,
-so a health answer is never credited to a process that launchd started
-after it.
+moment, with its counters and timers reset. The first pid the watchdog
+sees counts as new too. The pid is read before `/health`, so a health
+answer is never credited to a process that launchd started after it.
 
 The grace period ends at the first answer from the current process with its
 model loaded (`ok`, or `model_loaded` true in a `degraded` or stalled

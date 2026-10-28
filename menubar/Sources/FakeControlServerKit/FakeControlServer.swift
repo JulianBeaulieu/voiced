@@ -431,7 +431,8 @@ public final class FakeControlServer: @unchecked Sendable {
             case (.ttsModel, .string(let model)): next.settings.tts.model = model
             case (.ttsVoice, .string(let voice)): next.settings.tts.voice = voice
             // The bounds are voiced.config's MIN_TTS_SPEED, MAX_TTS_SPEED and
-            // MAX_IDLE_UNLOAD_S, and the messages voiced.settings_store's.
+            // MAX_IDLE_UNLOAD_S, the messages voiced.settings_store's, and the
+            // idle_unload_s hint that field's description in voiced.config.
             case (.ttsSpeed, .number(let speed)):
                 guard speed >= 0.25 else { return invalid(name, "must be at least 0.25") }
                 guard speed <= 4 else { return invalid(name, "must be at most 4") }

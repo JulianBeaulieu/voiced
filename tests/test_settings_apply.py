@@ -245,6 +245,14 @@ def test_a_settable_field_of_another_type_is_refused_at_import(
         store._check_settable_types()
 
 
+def test_a_file_nan_is_refused_as_not_finite(tmp_path: Path, settings: Settings) -> None:
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("[tts]\nspeed = nan\n")
+    with pytest.raises(InvalidSetting) as info:
+        apply_settings({"zeroconf": False}, cfg)
+    assert str(info.value) == "tts.speed: must be a finite number, got NaN"
+
+
 def test_a_file_value_is_refused_in_the_same_words(tmp_path: Path, settings: Settings) -> None:
     cfg = tmp_path / "c.toml"
     cfg.write_text("[stt]\nidle_unload_s = -3\n")

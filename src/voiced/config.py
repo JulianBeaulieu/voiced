@@ -85,9 +85,10 @@ def _absolute(value: Path | None) -> Path | None:
 
 
 class _Section(BaseModel):
-    """Unknown keys are errors so typos in the config file do not go unnoticed."""
+    """Unknown keys are errors so typos in the config file do not go
+    unnoticed, and a number must be finite (TOML has ``inf`` and ``nan``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ServerConfig(_Section):
@@ -134,9 +135,12 @@ class _ServiceSection(_Section):
     # Off: the service's process serves nothing and loads no model.
     enabled: bool = True
     # Seconds without a request after which the model is unloaded; the next
-    # request loads it again. 0 keeps it loaded; at most a week.
+    # request loads it again.
     idle_unload_s: int = Field(
-        default=0, ge=0, le=MAX_IDLE_UNLOAD_S, description="seconds; 0 is never, 604800 one week"
+        default=0,
+        ge=0,
+        le=MAX_IDLE_UNLOAD_S,
+        description=f"seconds; 0 is never, {MAX_IDLE_UNLOAD_S} one week",
     )
 
 
