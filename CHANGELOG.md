@@ -6,45 +6,65 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.5.1] - 2026-10-28
+
+A patch release, and the first the menu bar app installs by itself: the
+card in its menu offers 0.5.1, and Install and Relaunch updates the app and
+then the services, without a password. With the Homebrew formula or a uv
+tool install, run `voiced install` once after upgrading, or the services'
+stdout and stderr logs stop receiving output. Installing over SSH with
+nobody logged in at the Mac now stops before it changes anything.
+
 ### Changed
 
-- A setting refused by `voiced settings set`, `voiced install --set`, the
-  app or the status page now reads the same in all of them, for example
-  `tts.speed: must be a number, got "fast"`. `idle_unload_s` says what its
-  bounds mean: `must be at most 604800 (seconds; 0 is never, 604800 one
-  week)`.
 - Homebrew formula and uv tool users: run `voiced install` once after
-  upgrading to this release (the app's Update does it for you), or
-  `<service>.stdout.log` and `<service>.stderr.log` stop receiving output.
-  `voiced doctor` warns until then.
-- The services' logs are readable only by you (0600): `<service>.log`
-  was 0644 before; `<service>.stdout.log` and `<service>.stderr.log` keep
-  their names, places and 0600, now opened by launchd.
-- A `[server] log_dir` changed after install moves `<service>.stdout.log`
-  and `<service>.stderr.log` at the next `voiced install`, and `voiced
-  doctor` says so until then; `<service>.log` moves at the next start, as
-  before.
+  upgrading to this release. launchd now opens `<service>.stdout.log` and
+  `<service>.stderr.log` for the services, and only the plists `voiced
+  install` writes ask it to; until then the two files receive nothing, not
+  even the traceback of a crash at startup. Each service says so once in
+  `<service>.log`, and `voiced doctor` warns. An install the app manages
+  needs nothing: the app runs it after Install and Relaunch, or offers
+  Update voiced after `brew upgrade --cask voiced`.
+- A config file with `tts.speed` outside 0.25 to 4 is now refused when it
+  is read, as a NaN or infinite number in it is too: the services and the
+  watchdog exit with `config error at <path>`, and every `voiced` command,
+  `voiced settings set` and `voiced doctor` included, prints the same error
+  until the file is edited by hand. Such a value used to fail every request
+  that took the default speed.
+- New log files are created readable only by you (0600); `<service>.log`
+  was created 0644. An existing `<service>.log` and its rotated copies keep
+  0644 until they age out, as do files created before `voiced install`
+  rewrites the plists; `chmod 600 ~/Library/Logs/voiced/*.log*` tightens
+  them now. The
+  stdout and stderr files keep their names and places.
+- If launchd cannot open one of the stdout and stderr files, it does not
+  start the service, and `voiced doctor` fails the agent and names the
+  file. A `[server] log_dir` changed after the install moves those two
+  files at the next `voiced install`; `<service>.log` moves at the next
+  start, as before.
+- `voiced doctor` checks that each LaunchAgent's plist is what `voiced
+  install` writes: one from an earlier release or from before a `log_dir`
+  change is out of date; one installed with another state directory or
+  config is named with them.
+- A setting refused by `voiced settings set`, `voiced install --set`, the
+  app or the status page reads the same in all of them, with the bounds
+  the config has, for example `tts.speed: must be a number, got "fast"` or
+  `stt.idle_unload_s: must be at most 604800 (seconds; 0 is never, 604800
+  one week)`.
 
 ### Fixed
 
 - `voiced install` over SSH with nobody logged in at the Mac stops before
-  it changes anything, saying to log in at the Mac (Screen Sharing
-  counts); it used to remove the old LaunchDaemons and build the
-  environment first, and leave the services down.
-- `voiced doctor` reports whether you are logged in at the Mac, and fails
-  when you are not, so over SSH with nobody at the Mac it now exits
-  non-zero.
-- The message for moving from 0.4.0 or earlier says the install after the
-  removal needs you logged in at the Mac.
-- A service that launchd started again while the old process was answering
-  degraded is no longer restarted at its own first degraded answer: its
-  degraded window starts then.
-- `tts.speed` in the config file is held to the speeds a request may ask
-  for, 0.25 to 4, and refused when the file is read, instead of failing
-  every request that takes the default speed; a file with such a value
-  must be edited before the services start. A request below 0.25 now
-  fails validation for every engine; engines without rate control ignored
-  it before.
+  it changes anything and says to log in at the Mac (Screen Sharing
+  counts). 0.5.0 removed the old LaunchDaemons and built the environment
+  first, then stopped with the services down. `voiced doctor` reports the
+  login session and fails without one, so over SSH with nobody at the Mac
+  it exits non-zero; the message for moving from 0.4.0 or earlier says the
+  install after the removal needs you logged in at the Mac.
+- A request with a speed below 0.25 is now refused when it is validated,
+  as one above 4 already was, instead of by the engine.
+- After a service crashes and comes back, the watchdog no longer restarts
+  it again just because its first health check says degraded.
 
 ## [0.5.0] - 2026-10-23
 
@@ -793,6 +813,7 @@ bar app or the terminal. The defaults stay Parakeet and Kokoro.
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.5.1]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.1
 [0.5.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.0
 [0.4.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.3.0

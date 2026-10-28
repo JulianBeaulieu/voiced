@@ -436,7 +436,10 @@ set, on loopback too: any web page you open could otherwise reach it.
 | `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by launchd. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | The service's stdout; normally empty. Not rotated. |
 
-Each is 0600, readable only by you.
+Each is created 0600, readable only by you. A `<service>.log` and its
+rotated copies created before 0.5.1, or before `voiced install` rewrote the
+plists, keep 0644 until they age out; `chmod 600
+~/Library/Logs/voiced/*.log*` tightens them now.
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
 `log_dir` under `[server]` moves all of them: the rotated logs at the
@@ -563,10 +566,10 @@ whose plists changed.
 
 ### The menu bar app
 
-The app updates itself (ADR 0034), from 0.5.0 on: an app of 0.4.0 or
-earlier is updated to 0.5.0 by hand, with Homebrew or from the release
-page, and the versions after it arrive in the app. It checks when it opens
-and once a day,
+The app updates itself (ADR 0034), from 0.5.0 on; 0.5.1 is the first
+version it installs that way. An app of 0.4.0 or earlier is updated by
+hand once, with Homebrew or from the release page; after that, versions
+arrive in the app. It checks when it opens and once a day,
 and **Install and Relaunch** on the card in its menu installs the new
 version and opens it again; **Check for Updates…** checks at once. The
 relaunched app then updates the services to the voiced it carries, in the
@@ -614,13 +617,15 @@ running from `~/.voiced`. To remove them:
 
 ```sh
 brew upgrade voiced
+voiced install        # once, after upgrading from 0.5.0
 voiced restart all
 voiced status
 ```
 
 A plain `brew upgrade voiced` does nothing for a `--HEAD` install. The link
 goes through `$(brew --prefix)/opt/voiced`, which Homebrew repoints at the
-new version, so `voiced install` is not needed again. The same applies to
+new version, so `voiced install` is not needed again unless the changelog
+says the plists changed, as they did in 0.5.1 (below). The same applies to
 an upgrade of `python@3.12`. The watchdog moves the services once
 Homebrew deletes the old version, at the end of `brew upgrade`, and after
 `brew reinstall voiced` once it has returned. With
@@ -631,6 +636,12 @@ after `brew upgrade` has returned: Homebrew repoints `opt/voiced` before
 it has finished the new version, and a voiced started in between can
 leave some of its files unloadable (macOS kills, or hangs, every later
 process that loads them). `brew reinstall voiced` writes them anew.
+
+After `brew upgrade voiced` from 0.5.0, run `voiced install` once: from
+0.5.1 launchd opens each service's `<service>.stdout.log` and
+`.stderr.log`, which only the plists `voiced install` writes ask for. Until then the two
+files receive nothing, not even the traceback of a crash at startup, and
+`voiced doctor` warns.
 
 After the first `brew upgrade voiced` from 0.4.0 or earlier, run
 `voiced install` once: it prints the line that removes the old
