@@ -44,6 +44,7 @@ from collections.abc import AsyncIterator, Generator
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
+from voiced.config import MAX_TTS_SPEED, MIN_TTS_SPEED
 from voiced.engines.base import (
     TTS_SAMPLE_RATE,
     EngineError,
@@ -127,8 +128,8 @@ def _clear_mlx_cache() -> None:
 
 
 class SentenceTTSEngine(TTSEngine):
-    MIN_SPEED: ClassVar[float] = 0.25
-    MAX_SPEED: ClassVar[float] = 4.0
+    MIN_SPEED: ClassVar[float] = MIN_TTS_SPEED
+    MAX_SPEED: ClassVar[float] = MAX_TTS_SPEED
 
     def __init__(self, model_id: str | None = None) -> None:
         super().__init__(model_id)

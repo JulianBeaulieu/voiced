@@ -85,9 +85,10 @@ def _absolute(value: Path | None) -> Path | None:
 
 
 class _Section(BaseModel):
-    """Unknown keys are errors so typos in the config file do not go unnoticed."""
+    """Unknown keys are errors so typos in the config file do not go
+    unnoticed, and a number must be finite (TOML has ``inf`` and ``nan``)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class ServerConfig(_Section):
@@ -121,6 +122,11 @@ STT_STREAMS = 2
 
 MAX_IDLE_UNLOAD_S = 7 * 24 * 3600
 
+MIN_TTS_SPEED = 0.25
+MAX_TTS_SPEED = 4.0
+"""The speed multipliers a request or ``tts.speed`` may ask for: the
+sentence engines' rate control (``voiced.engines.sentence``) spans these."""
+
 
 class _ServiceSection(_Section):
     """What both inference services share: whether the service runs and how
@@ -129,8 +135,13 @@ class _ServiceSection(_Section):
     # Off: the service's process serves nothing and loads no model.
     enabled: bool = True
     # Seconds without a request after which the model is unloaded; the next
-    # request loads it again. 0 keeps it loaded; at most a week.
-    idle_unload_s: int = Field(default=0, ge=0, le=MAX_IDLE_UNLOAD_S)
+    # request loads it again.
+    idle_unload_s: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_IDLE_UNLOAD_S,
+        description=f"seconds; 0 is never, {MAX_IDLE_UNLOAD_S} one week",
+    )
 
 
 class STTConfig(_ServiceSection):
@@ -174,7 +185,7 @@ class TTSConfig(_ServiceSection):
     model: str = default_model(DEFAULT_ENGINES["tts"]).id
     default_voice: str = "af_heart"
     languages: list[str] = Field(default_factory=lambda: ["en"], min_length=1)
-    speed: float = Field(default=1.0, gt=0)
+    speed: float = Field(default=1.0, ge=MIN_TTS_SPEED, le=MAX_TTS_SPEED)
     queue_depth: int = Field(default=8, ge=1)
     max_input_chars: int = Field(default=4096, ge=1)
     # espeak-ng for Kokoro: a libespeak-ng.dylib and its data directory, in

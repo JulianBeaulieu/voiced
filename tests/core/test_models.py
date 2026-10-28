@@ -757,6 +757,14 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     assert fetched == []
 
 
+def test_a_bad_set_is_one_line_and_exit_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = ["download", "--config", str(tmp_path / "c.toml"), "--set", "stt.enabled=maybe"]
+    assert commands.main(argv) == 2
+    assert capsys.readouterr().err == '--set stt.enabled: must be true or false, got "maybe"\n'
+
+
 @pytest.mark.parametrize("stt", ["true", "false"], ids=["tts off", "both off"])
 def test_the_models_step_downloads_nothing_for_a_service_that_is_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], stt: str

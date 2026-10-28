@@ -97,7 +97,7 @@ async def test_invalid_value_is_400_and_not_written(tts_client: AsyncClient) -> 
     r = await tts_client.post("/settings", json={"tts.speed": -1}, headers=bearer("k1"))
     assert r.status_code == 400
     assert r.json()["error"] == {
-        "message": "tts.speed: must be greater than 0 and at most 4",
+        "message": "tts.speed: must be at least 0.25",
         "type": "invalid_setting",
     }
     assert path.read_text() == before

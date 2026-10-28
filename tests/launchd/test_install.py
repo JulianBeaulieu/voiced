@@ -1321,7 +1321,7 @@ def test_cli_install_takes_only_the_service_settings(
     assert "would set tts.enabled=False, stt.enabled=True in" in out
     assert "check that ports 8881, 10300 are free" in out
     assert main([*argv, "--set", "stt.enabled=maybe"]) == 1
-    assert "--set stt.enabled: expected true or false" in capsys.readouterr().out
+    assert "--set stt.enabled: must be true or false" in capsys.readouterr().out
     assert main([*argv, "--set", "bind=lan"]) == 1
     assert "--set bind: install sets only stt.enabled" in capsys.readouterr().out
     # Refused by its key, before anything is read: api_key=- would read stdin.

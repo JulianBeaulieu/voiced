@@ -156,11 +156,20 @@ class ServiceState:
         self.reported.add(kind)
         return new
 
-    def leave_alone(self) -> None:
-        """A state the watchdog does not act on: no failure, no timers."""
+    def reset_counters(self) -> None:
+        """No failures, no timers: a new process, a restart, or a state the
+        watchdog does not act on."""
         self.failures = 0
         self.degraded_since = None
         self.busy_since = None
+
+    def new_process(self, now: float) -> None:
+        """A process loading its model (launchd's new pid, or a restart by
+        the watchdog): its grace period starts at ``now``, and it starts
+        clean."""
+        self.grace_started_at = now
+        self.answered = False
+        self.reset_counters()
 
     def in_grace(self, now: float, startup_grace_s: float) -> bool:
         """Is an ``unreachable`` poll at ``now`` still the startup window?"""
@@ -221,9 +230,10 @@ def classify_stall(
 def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogConfig) -> Decision:
     """Update ``state`` with ``obs`` and say what to do.
 
-    * A new pid from launchd restarts the grace period: the new process is
-      loading its model. That includes the first pid seen, so a service
-      started long after the watchdog (``voiced start``) gets its grace too.
+    * A new pid from launchd restarts the grace period and the counters: the
+      new process is loading its model. That includes the first pid seen, so
+      a service started long after the watchdog (``voiced start``) gets its
+      grace too.
     * ``off`` (launchd's pid is the service's parked process: it is switched
       off, ADR 0033) is left alone and never counts toward the grace period
       or a restart. Reported once per process.
@@ -251,14 +261,11 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
       (``cooldown``); counters are kept so it fires right after the cooldown.
     """
     if obs.pid is not None and obs.pid != state.last_pid:
-        state.grace_started_at = now
-        state.answered = False
-        state.failures = 0
-        state.busy_since = None
+        state.new_process(now)
         state.last_pid = obs.pid
         state.reported.clear()
     if obs.kind == "off":
-        state.leave_alone()
+        state.reset_counters()
         state.awaiting_recovery = False
         quiet = not state.report_once("off")
         return Decision("none", f"not supervised: {obs.detail}", quiet=quiet)
@@ -278,7 +285,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         return Decision("none", "healthy again" if recovered else "healthy", recovered)
 
     if obs.kind == "missing_model":
-        state.leave_alone()
+        state.reset_counters()
         quiet = not state.report_once("missing_model")
         return Decision("none", f"model not downloaded, not restarting: {obs.detail}", quiet=quiet)
 
@@ -325,12 +332,8 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
 
 def mark_restarted(state: ServiceState, now: float) -> None:
     state.last_restart_at = now
-    state.grace_started_at = now
-    state.answered = False
+    state.new_process(now)
     state.restarts += 1
-    state.failures = 0
-    state.degraded_since = None
-    state.busy_since = None
     state.awaiting_recovery = True
 
 

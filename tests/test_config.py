@@ -199,3 +199,13 @@ def test_idle_unload_must_not_be_negative(tmp_path: Path) -> None:
     settings = load_settings(path)
     assert settings.stt.enabled is False
     assert settings.stt.idle_unload_s == 300
+
+
+def test_speed_is_bounded_as_requests_are(tmp_path: Path) -> None:
+    """A file speed no request may ask for is refused when the file is read,
+    not by every request that takes the default."""
+    path = tmp_path / "c.toml"
+    for speed in (4.5, 0.1):
+        path.write_text(f"[tts]\nspeed = {speed}\n")
+        with pytest.raises(ValidationError):
+            load_settings(path)

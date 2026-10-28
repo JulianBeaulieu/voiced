@@ -246,6 +246,19 @@ def test_degraded_restarts_only_after_window() -> None:
     assert "degraded for 61s" in d.reason
 
 
+def test_new_pid_starts_a_new_degraded_timer() -> None:
+    """A process launchd started in place of a degraded one is not charged
+    for the old one's time: its first degraded answer starts the timer."""
+    state = fresh()
+    degraded = Observation("degraded", "boom", 10, {}, loaded=True, pid=500)
+    assert decide(state, degraded, T0, POLICY).action == "none"
+    respawned = Observation("degraded", "boom", 1, {}, loaded=True, pid=501)
+    late = T0 + POLICY.degraded_window_s + 5
+    d = decide(state, respawned, late, POLICY)
+    assert d.action == "none", d.reason
+    assert state.degraded_since == late
+
+
 def test_ok_clears_degraded_timer() -> None:
     state = fresh()
     degraded = Observation("degraded", "x", 1, {}, True, 500)
@@ -711,6 +724,19 @@ def test_off_is_never_restarted_or_counted_and_reported_once_per_process() -> No
     assert state.grace_started_at == later
     # Switched off again: reported again.
     assert not decide(state, parked(pid=502), later + 1, POLICY).quiet
+
+
+def test_switching_off_drops_the_counters_and_a_pending_recovery() -> None:
+    state = fresh()
+    decide(state, Observation("degraded", "boom", 10, {}, loaded=True, pid=500), T0, POLICY)
+    decide(state, down(), T0 + 1, POLICY)
+    wd.mark_restarted(state, T0 + 2)
+    assert state.awaiting_recovery
+    decide(state, parked(pid=501), T0 + 3, POLICY)
+    assert (state.failures, state.degraded_since, state.busy_since) == (0, None, None)
+    assert not state.awaiting_recovery
+    # Switched on again: a new process, healthy without a "healthy again".
+    assert decide(state, ok(pid=502), T0 + 4, POLICY) == Decision("none", "healthy", False)
 
 
 def test_observe_takes_the_parked_pid_for_off_without_polling(
