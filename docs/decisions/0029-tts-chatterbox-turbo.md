@@ -245,9 +245,10 @@ to back, first audio is the same as in process.
   finalize stayed inside its 150 ms worst case (131 and 143 ms) while
   Chatterbox synthesized, but a longer sentence has longer renders.
 - mlx-audio prints `S3 Token -> Mel Inference...` and a progress bar for
-  each render to the service's stdout and stderr, which `VOICED_STDIO_LOG`
-  collects: a few lines per sentence. Removing them would mean patching
-  mlx-audio's flow-matching module, so they stay until upstream drops them.
+  each render to the service's stdout and stderr, which go to its
+  `stdout.log` and `stderr.log`: a few lines per sentence. Removing them
+  would mean patching mlx-audio's flow-matching module, so they stay until
+  upstream drops them.
 
 ## Consequences
 

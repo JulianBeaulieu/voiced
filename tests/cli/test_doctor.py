@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from voiced import doctor
-from voiced.config import Settings
+from voiced.config import SERVICES, Settings
 from voiced.engines import kokoro
 from voiced.engines.kokoro import ENV_ESPEAK_LIBRARY
 from voiced.launchd import control
 from voiced.launchd.control import CommandResult
+from voiced.launchd.install import agent_plist, plan_install
 from voiced.watchdog import Observation
 
 
@@ -411,18 +413,38 @@ def test_restart_after_a_reboot() -> None:
     assert doctor.check_restart(make_runner({**off}), "someone").result == "warn"
 
 
+def _stt_plist(
+    settings: Settings, log_dir: Path | None = None, entry: str = "/s/bin/voiced"
+) -> bytes:
+    return agent_plist(
+        "stt",
+        settings.launchd.label("stt"),
+        entry=Path(entry),
+        home=Path("/Users/someone"),
+        config_file=Path("/c/config.toml"),
+        log_dir=log_dir or settings.server.log_dir,
+    )
+
+
+def _check_agent(
+    settings: Settings, runner: doctor.Runner, installed: bytes | Literal["same"] | None = "same"
+) -> doctor.Check:
+    """The ``stt`` agent, with the plist on disk ``installed`` (by default
+    the one ``voiced install`` would write)."""
+    expected = _stt_plist(settings)
+    on_disk = expected if installed == "same" else installed
+    return doctor.check_agent("stt", settings.launchd.label("stt"), runner, on_disk, expected)
+
+
 def test_agent_states(settings: Settings) -> None:
-    label = settings.launchd.label("stt")
     loaded = make_runner(
         {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
     )
     not_loaded = make_runner({"launchctl print": CommandResult(113, "", "Could not find")})
-    assert doctor.check_agent("stt", label, loaded, lambda p: True) == doctor.Check(
-        "Agent stt", "pass", "running, pid 5"
-    )
-    check = doctor.check_agent("stt", label, not_loaded, lambda p: True)
+    assert _check_agent(settings, loaded) == doctor.Check("Agent stt", "pass", "running, pid 5")
+    check = _check_agent(settings, not_loaded)
     assert check.result == "fail" and "voiced start stt" in check.detail
-    assert doctor.check_agent("stt", label, not_loaded, lambda p: False).result == "warn"
+    assert _check_agent(settings, not_loaded, None).result == "warn"
     crashed = make_runner(
         {
             "launchctl print": CommandResult(
@@ -430,14 +452,89 @@ def test_agent_states(settings: Settings) -> None:
             )
         }
     )
-    check = doctor.check_agent("stt", label, crashed, lambda p: True)
+    check = _check_agent(settings, crashed)
     assert check.result == "warn" and "last exit 1" in check.detail
     assert "not running" in check.detail and "`voiced start stt` reload it" in check.detail
-    assert [c.name for c in doctor.check_agents(settings, not_loaded, lambda p: False)] == [
+    assert [c.name for c in doctor.check_agents(settings, not_loaded, lambda p: None)] == [
         "Agent stt",
         "Agent tts",
         "Agent watchdog",
     ]
+
+
+def test_an_agent_with_an_out_of_date_plist_says_to_install(settings: Settings) -> None:
+    """A formula or uv tool upgrade keeps the earlier release's plist, and a
+    log_dir changed after install is not in it yet."""
+    running = make_runner(
+        {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
+    )
+    check = _check_agent(settings, running, _stt_plist(settings, log_dir=Path("/old/logs")))
+    assert check.result == "warn"
+    assert "out of date" in check.detail and "run `voiced install`" in check.detail
+    crashing = make_runner(
+        {"launchctl print": CommandResult(0, "x = {\n\tstate = waiting\n\tlast exit code = 1\n}")}
+    )
+    check = _check_agent(settings, crashing, _stt_plist(settings, log_dir=Path("/old/logs")))
+    assert "not running" in check.detail and "run `voiced install`" in check.detail
+
+
+def test_an_agent_of_another_state_dir_says_which(settings: Settings) -> None:
+    """`voiced install --state-dir` without `[install] venv_dir`: installing
+    again as told would install into the default directory."""
+    running = make_runner(
+        {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
+    )
+    check = _check_agent(settings, running, _stt_plist(settings, entry="/elsewhere/bin/voiced"))
+    assert check.result == "warn"
+    assert "/elsewhere/bin/voiced" in check.detail and "[install] venv_dir" in check.detail
+    assert "--state-dir" in check.detail and "out of date" not in check.detail
+
+
+def test_an_unreadable_plist_fails_by_name(settings: Settings) -> None:
+    def unreadable(path: Path) -> bytes | None:
+        raise PermissionError(13, "Permission denied")
+
+    loaded = make_runner(
+        {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
+    )
+    checks = doctor.check_agents(settings, loaded, unreadable)
+    assert [c.result for c in checks] == ["fail"] * 3
+    assert "cannot read" in checks[0].detail and "Permission denied" in checks[0].detail
+
+
+def test_check_agents_compares_with_what_install_writes(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    running = make_runner(
+        {"launchctl print": CommandResult(0, "gui/501/x = {\n\tstate = running\n\tpid = 5\n}")}
+    )
+    plan = plan_install(settings, home=tmp_path, uv=None)
+    on_disk = {plan.agent_path(s): plan.agent_plist(s) for s in SERVICES}
+    current = doctor.check_agents(settings, running, on_disk.get)
+    assert [c.result for c in current] == ["pass"] * 3, current
+    settings.server.log_dir = tmp_path / "moved"
+    moved = doctor.check_agents(settings, running, on_disk.get)
+    assert [c.result for c in moved] == ["warn"] * 3
+
+
+def test_an_agent_launchd_cannot_open_the_logs_for_fails(settings: Settings) -> None:
+    """launchd does not start a job whose StandardOutPath or StandardErrorPath
+    it cannot open, and says so with exit code 78."""
+    refused = make_runner(
+        {
+            "launchctl print": CommandResult(
+                0, "gui/501/x = {\n\tstate = not running\n\tlast exit code = 78: EX_CONFIG\n}"
+            )
+        }
+    )
+    check = _check_agent(settings, refused)
+    assert check.result == "fail" and "probably could not open" in check.detail
+    assert str(settings.server.log_dir / "stt.stderr.log") in check.detail
+    assert "[server] log_dir" in check.detail and "`voiced start stt`" in check.detail
+    # Right after a log_dir change launchd opens the paths the installed plist names.
+    check = _check_agent(settings, refused, _stt_plist(settings, log_dir=Path("/old/logs")))
+    assert "/old/logs/stt.stderr.log" in check.detail and "run `voiced install`" in check.detail
 
 
 def test_old_launchdaemons_fail_with_their_removal(settings: Settings, no_launchd: Path) -> None:

@@ -39,8 +39,7 @@ from voiced.launchd.control import (
     run_command,
 )
 from voiced.launchd.parked import is_parked, off_detail
-from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
-from voiced.launchd.stdio import log_redirect_error
+from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES, warn_if_old_plist
 from voiced.layout import RunningEnvironment
 
 if TYPE_CHECKING:
@@ -753,7 +752,7 @@ def configure_watchdog_logging(level: str = "info", log_file: Path | None = None
         handler = logging.StreamHandler()
     handler.setFormatter(formatter)
     root.addHandler(handler)
-    log_redirect_error(log)
+    warn_if_old_plist(log)
 
 
 def silent_wav(duration_s: float = 0.2, rate: int = 16000) -> bytes:

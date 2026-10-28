@@ -296,7 +296,7 @@ prefix as the user, with no password asked at any step.
   (`VOICED_STDIO_LOG`, ADR 0006) only because launchd opened
   `StandardOutPath` and `StandardErrorPath` as root for a daemon; for an
   agent launchd could open them as the user, so those keys could replace
-  that code.
+  that code. Done on 2026-10-28 (amendment below).
 
 ## Amendment (2026-10-28)
 
@@ -314,3 +314,13 @@ install that completes it does. One function decides
 (`control.session_refusal`), and `voiced doctor` reports it as "Login
 session". The migration message says the install after the removal needs
 a login at the Mac.
+
+The stdout and stderr follow-up is done too: the agent plists set
+`StandardOutPath` and `StandardErrorPath` to the same
+`<log_dir>/<service>.stdout.log` and `.stderr.log`, with `Umask` 0o077 so
+launchd creates them 0600, and `VOICED_STDIO_LOG` is no longer in the
+environment (ADR 0006, amendment of this date). *Measured* on macOS 15.7
+with agents under a test label prefix: launchd ran as the user, created
+the six files 0600 and owned by the user, a config error from a restarted
+service landed in its `stderr.log`, and `launchctl print` showed
+`umask = 77` and both paths.

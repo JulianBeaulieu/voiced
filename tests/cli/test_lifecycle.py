@@ -233,6 +233,22 @@ def test_logs_tail_and_missing(settings: Settings) -> None:
     ]
 
 
+def test_logs_stderr_names_a_missing_stderr_file(settings: Settings) -> None:
+    """After a log_dir change the stderr file stays where the plist says
+    until `voiced install`; the empty answer says so."""
+    settings.server.log_dir.mkdir()
+    (settings.server.log_dir / "stt.log").write_text("line\n")
+    args = argparse.Namespace(service="stt", lines=3, follow=False, stderr=True)
+    out: list[str] = []
+    assert lc.cmd_logs(args, settings, out.append) == 0
+    assert out[0] == "line"
+    assert "no stt.stderr.log" in out[-1] and "`voiced install`" in out[-1]
+    (settings.server.log_dir / "stt.stderr.log").write_text("")
+    out.clear()
+    lc.cmd_logs(args, settings, out.append)
+    assert not any("no stt.stderr.log" in line for line in out)
+
+
 def _uninstall_args(**overrides: bool) -> argparse.Namespace:
     base = {
         "state_dir": None,

@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import platform
+import plistlib
 import pty
 import pwd
 import re
@@ -27,8 +28,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from voiced.config import (
+    ENV_CONFIG_PATH,
     HTTP_SERVICES,
     SERVICES,
+    DaemonName,
     ServiceName,
     Settings,
     config_path,
@@ -54,7 +57,7 @@ from voiced.launchd.control import (
     run_command,
     session_refusal,
 )
-from voiced.launchd.install import METAL_PROBE_FILE
+from voiced.launchd.install import METAL_PROBE_FILE, agent_plist
 from voiced.launchd.metal_probe import macos_version as _macos_version
 from voiced.launchd.ports import (
     FIREWALL_NOTE,
@@ -82,7 +85,7 @@ from voiced.wyoming import WYOMING_STT_SERVICE, WYOMING_TTS_SERVICE
 
 Result = Literal["pass", "warn", "fail"]
 Which = Callable[[str], str | None]
-Exists = Callable[[Path], bool]
+Read = Callable[[Path], bytes | None]
 
 MIN_MACOS_MAJOR = 14
 MIN_TOTAL_GB = 8
@@ -555,26 +558,84 @@ def check_discovery(
     )
 
 
-def check_agent(service: str, label: str, runner: Runner, exists: Exists = Path.is_file) -> Check:
+# launchd's exit code for a job it could not set up, such as a
+# StandardOutPath or StandardErrorPath it cannot open (sysexits.h).
+EX_CONFIG = "78"
+
+
+def _read_plist(path: Path) -> bytes | None:
+    """The plist, or None when there is none; any other error is raised."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _plist_fields(data: bytes) -> dict[str, Any]:
+    try:
+        parsed = plistlib.loads(data)
+    except (plistlib.InvalidFileException, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _out_of_date(label: str, installed: bytes, expected: bytes) -> str:
+    """Why the plist on disk is not what ``voiced install`` would write now."""
+    have, want = _plist_fields(installed), _plist_fields(expected)
+    have_env, want_env = have.get("EnvironmentVariables") or {}, want["EnvironmentVariables"]
+    entry, config = (have.get("ProgramArguments") or [None])[0], have_env.get(ENV_CONFIG_PATH)
+    if entry != want["ProgramArguments"][0] or config != want_env[ENV_CONFIG_PATH]:
+        # `voiced install --state-dir` or another VOICED_CONFIG: installing
+        # again with this config would install somewhere else.
+        return (
+            f"{plist_path(label)} runs {entry} with config {config}, not this one's: set "
+            "[install] venv_dir to that state directory and use that config, or run "
+            "`voiced install` again with the same --state-dir"
+        )
+    return f"{plist_path(label)} is out of date; run `voiced install`"
+
+
+def check_agent(
+    service: DaemonName,
+    label: str,
+    runner: Runner,
+    installed: bytes | None,
+    expected: bytes,
+) -> Check:
+    """``installed`` is the plist on disk, ``expected`` what ``voiced
+    install`` would write now (``agent_plist``)."""
     name = f"Agent {service}"
-    installed = exists(plist_path(label))
     status = print_service(label, runner)
-    if installed and status.loaded:
+    if installed is not None and status.loaded:
         detail = status.summary + (f", pid {status.pid}" if status.pid else "")
         if status.last_exit_code and status.last_exit_code not in ("0", "(never exited)"):
             detail += f", last exit {status.last_exit_code}"
+        stale = None if installed == expected else _out_of_date(label, installed, expected)
+        if not status.running and (status.last_exit_code or "").split(":")[0] == EX_CONFIG:
+            # launchd's code for a job it could not set up; with these
+            # plists, most likely the log files it opens before the start.
+            fields = _plist_fields(installed)
+            logs = [fields[k] for k in ("StandardOutPath", "StandardErrorPath") if k in fields]
+            cause = (
+                f"probably could not open {' or '.join(logs)}" if logs else "could not set it up"
+            )
+            fix = stale or (
+                "make [server] log_dir a directory you can write, then "
+                f"`voiced stop {service}` and `voiced start {service}`"
+            )
+            return Check(name, "fail", f"{detail}: launchd {cause}, so it does not start; {fix}")
         if not status.running:
             # KeepAlive should have started it. After bin/voiced dangled and
             # came back, launchd can leave a job at "spawn scheduled" for
             # good; booting it out and in again recovers it.
-            return Check(
-                name,
-                "warn",
-                f"{detail}: loaded but not running; `voiced stop {service}` and "
-                f"`voiced start {service}` reload it",
-            )
+            fix = stale or f"`voiced stop {service}` and `voiced start {service}` reload it"
+            return Check(name, "warn", f"{detail}: loaded but not running; {fix}")
+        if stale:
+            # An earlier release's plist (a formula or uv tool upgrade keeps
+            # it), or one naming a log_dir changed since.
+            return Check(name, "warn", f"{detail}, but {stale}")
         return Check(name, "pass", detail)
-    if installed:
+    if installed is not None:
         return Check(
             name, "fail", f"{plist_path(label)} exists but is not loaded; `voiced start {service}`"
         )
@@ -583,11 +644,23 @@ def check_agent(service: str, label: str, runner: Runner, exists: Exists = Path.
     return Check(name, "warn", "not installed; run voiced install")
 
 
-def check_agents(settings: Settings, runner: Runner, exists: Exists = Path.is_file) -> list[Check]:
-    return [
-        check_agent(service, settings.launchd.label(service), runner, exists)
-        for service in SERVICES
-    ]
+def check_agents(settings: Settings, runner: Runner, read: Read = _read_plist) -> list[Check]:
+    entry, log_dir = entry_point(state_dir(settings).absolute()), settings.server.log_dir
+    home, config = Path.home(), config_path()
+    checks = []
+    for service in SERVICES:
+        label = settings.launchd.label(service)
+        path = plist_path(label)
+        try:
+            installed = read(path)
+        except OSError as exc:
+            checks.append(Check(f"Agent {service}", "fail", f"cannot read {path}: {exc}"))
+            continue
+        expected = agent_plist(
+            service, label, entry=entry, home=home, config_file=config, log_dir=log_dir
+        )
+        checks.append(check_agent(service, label, runner, installed, expected))
+    return checks
 
 
 def check_legacy_daemons(settings: Settings, runner: Runner, user: str) -> Check:

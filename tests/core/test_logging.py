@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from voiced.launchd.plist import OLD_PLIST_ENV, log_paths
 from voiced.logging import BACKUP_COUNT, MAX_BYTES, configure_logging
+from voiced.watchdog import configure_watchdog_logging
 
 
 @pytest.fixture(autouse=True)
@@ -91,3 +94,23 @@ def test_reconfiguring_replaces_handlers(tmp_path: Path) -> None:
     configure_logging("tts", "info", tmp_path, interactive=True)
     configure_logging("tts", "info", tmp_path, interactive=True)
     assert len(logging.getLogger().handlers) == 2
+
+
+@pytest.mark.parametrize("service", ["stt", "watchdog"])
+def test_a_plist_of_an_earlier_release_is_logged_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: str
+) -> None:
+    """A formula or uv tool upgrade runs the new code under the old plist,
+    which sends stdout and stderr nowhere: the rotating log says so once."""
+    monkeypatch.setenv(OLD_PLIST_ENV, str(tmp_path / service))
+    for _ in range(2):  # reconfiguring does not repeat it
+        if service == "watchdog":
+            configure_watchdog_logging("info", log_paths(tmp_path, service).app)
+        else:
+            configure_logging(service, "info", tmp_path, interactive=False)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    text = log_paths(tmp_path, service).app.read_text()
+    assert text.count("plist of an earlier release") == 1 and "WARNING" in text
+    assert "`voiced install`" in text
+    assert OLD_PLIST_ENV not in os.environ  # nor in what the service starts

@@ -5,8 +5,8 @@ matrix multiplication on the default device and writes a JSON record of the
 outcome together with facts about the process context (uid, parent pid,
 ``launchctl managername``, ``HOME``). The installer and ``voiced doctor`` read
 that record to answer "does Metal work from a LaunchAgent on this machine"
-without guessing. Standard library plus ``mlx`` only (and the stdlib-only ``voiced.launchd``
-helpers), so it runs in any interpreter that has MLX installed.
+without guessing. Standard library plus ``mlx`` only, so it runs in any
+interpreter that has MLX installed.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
-
-from voiced.launchd.stdio import redirect_stdio_from_env
 
 MATRIX_SIZE = 1024
 
@@ -93,7 +91,6 @@ def probe() -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    redirect_stdio_from_env()
     parser = argparse.ArgumentParser(description="Check that MLX can use Metal in this context.")
     parser.add_argument("--out", type=Path, default=None, help="write the JSON result here")
     args = parser.parse_args(argv)

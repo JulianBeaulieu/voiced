@@ -818,7 +818,8 @@ trailing silence and 105 ms median at the last word
 
 Start with `voiced doctor`. It checks Apple Silicon, the macOS version,
 Python, espeak-ng, ffmpeg, memory, port conflicts, whether voiced starts
-after a reboot, the installed LaunchAgents, the firewall when voiced is on
+after a reboot, the installed LaunchAgents (loaded, and their plists
+what `voiced install` writes), the firewall when voiced is on
 the network, and Metal access, including from a LaunchAgent as the services
 run it with `voiced doctor --metal-probe`.
 

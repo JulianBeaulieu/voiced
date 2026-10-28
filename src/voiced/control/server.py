@@ -205,8 +205,8 @@ class ControlServer:
         self._server = await asyncio.start_unix_server(
             self._handle, path=str(self.path), limit=MAX_LINE_BYTES
         )
-        # For a moment 0644 (umask) between bind and chmod; the 0700 parent
-        # directory keeps other users out of that window.
+        # Run by hand, for a moment 0644 (umask) between bind and chmod; the
+        # 0700 parent directory keeps other users out of that window.
         os.chmod(self.path, 0o600)
         self._status_task = asyncio.create_task(self._status_loop(), name="voiced-control-status")
         log.info("control socket listening on %s", self.path)

@@ -88,7 +88,8 @@ files. launchd may open or create them as root before it drops to
 `UserName`, and they live in a directory the user owns, so a process
 running as the user could replace one with a symlink to a root-only path,
 make the daemon exit, and have launchd open that path as root on the
-restart. Instead the plist sets `VOICED_STDIO_LOG=<log_dir>/<service>`, and
+restart. Instead (superseded by the 2026-10-28 amendment) the plist sets
+`VOICED_STDIO_LOG=<log_dir>/<service>`, and
 the process opens both files itself, as the user, first thing
 (`voiced.entry`, before the CLI is imported, so an import traceback is
 kept; `voiced.launchd.metal_probe` does the same). Each is opened
@@ -168,3 +169,40 @@ into `gui/<uid>` itself, so it prints no root step and stages nothing.
 `voiced doctor --metal-probe` runs the probe as a one-shot agent directly
 and writes no script. The log rule stands: the plists still carry
 `VOICED_STDIO_LOG`, not `StandardOutPath`.
+
+## Amendment (2026-10-28)
+
+The LaunchAgents of ADR 0035 run in the user's own domain, where launchd
+opens `StandardOutPath` and `StandardErrorPath` as the user: a symlink
+planted in the log directory reaches only what the user could write
+anyway. So the plists name the two files again,
+`<log_dir>/<service>.stdout.log` and `.stderr.log`, and
+`VOICED_STDIO_LOG`, `voiced.launchd.stdio` and `voiced.entry` are gone;
+the console script is `voiced.cli:main`. launchd opens the files
+appending before the process starts, so an import traceback and C-level
+output still land in them. `Umask` 0o077 keeps them 0600 when launchd
+creates them, as the process created them before, and the rotating logs
+follow (0600 where they were 0644). The services' other files set their
+own mode (the control socket, the GPU lock), and they write no models:
+they load them offline. If a service ever downloaded one at run time, it
+would land 0600 in a Hugging Face cache the user's other tools share.
+
+`voiced install` creates the log directory first (the `claim` step); one
+deleted later is recreated by launchd, 0744. A path launchd cannot open
+does not start the process at all: `launchctl print` shows exit code 78
+(EX_CONFIG), where the redirect ran on without its files, and `voiced
+doctor` fails the agent naming the two files and `[server] log_dir`. The
+split between the rotating log and the stderr file above is unchanged.
+
+The plists now carry the log directory, so a `[server] log_dir` changed
+after install moves the rotating logs at the next start but the stdout
+and stderr files only at the next `voiced install`, which rewrites every
+plist that differs. Until then `voiced doctor` warns that the plist is
+out of date (it compares each plist with what `voiced install` would
+write) and `voiced logs --stderr` says the stderr file is not in the new
+directory. The same check covers an upgrade that keeps an earlier
+release's plist: `brew upgrade voiced` or `uv tool upgrade voiced` moves
+the services to the new code through the watchdog without rewriting the
+plists, and under a 0.5.0 plist their stdout and stderr go nowhere. A
+service started with `VOICED_STDIO_LOG` still set logs one warning saying
+so in its rotating log, until `voiced install` runs.

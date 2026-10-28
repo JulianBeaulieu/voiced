@@ -13,6 +13,17 @@ uses [Semantic Versioning](https://semver.org/).
   `tts.speed: must be a number, got "fast"`. `idle_unload_s` says what its
   bounds mean: `must be at most 604800 (seconds; 0 is never, 604800 one
   week)`.
+- Homebrew formula and uv tool users: run `voiced install` once after
+  upgrading to this release (the app's Update does it for you), or
+  `<service>.stdout.log` and `<service>.stderr.log` stop receiving output.
+  `voiced doctor` warns until then.
+- The services' logs are readable only by you (0600): `<service>.log`
+  was 0644 before; `<service>.stdout.log` and `<service>.stderr.log` keep
+  their names, places and 0600, now opened by launchd.
+- A `[server] log_dir` changed after install moves `<service>.stdout.log`
+  and `<service>.stderr.log` at the next `voiced install`, and `voiced
+  doctor` says so until then; `<service>.log` moves at the next start, as
+  before.
 
 ### Fixed
 
