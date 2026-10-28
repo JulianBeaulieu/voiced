@@ -436,9 +436,10 @@ set, on loopback too: any web page you open could otherwise reach it.
 | `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by launchd. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | The service's stdout; normally empty. Not rotated. |
 
-Each is created 0600, readable only by you. A `<service>.log` created
-before 0.5.1 keeps its 0644 until it rotates; `chmod 600
-~/Library/Logs/voiced/*.log*` tightens it now.
+Each is created 0600, readable only by you. A `<service>.log` and its
+rotated copies created before 0.5.1, or before `voiced install` rewrote the
+plists, keep 0644 until they age out; `chmod 600
+~/Library/Logs/voiced/*.log*` tightens them now.
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
 `log_dir` under `[server]` moves all of them: the rotated logs at the
@@ -567,7 +568,7 @@ whose plists changed.
 
 The app updates itself (ADR 0034), from 0.5.0 on; 0.5.1 is the first
 version it installs that way. An app of 0.4.0 or earlier is updated by
-hand, with Homebrew or from the release page, and the versions after it
+hand once, with Homebrew or from the release page; after that, versions
 arrive in the app. It checks when it opens and once a day,
 and **Install and Relaunch** on the card in its menu installs the new
 version and opens it again; **Check for Updates…** checks at once. The

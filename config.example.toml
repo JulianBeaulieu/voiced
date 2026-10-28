@@ -142,9 +142,10 @@ engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"
 languages = ["en"]
-# Default speed multiplier for requests that name none, 0.25 to 4; a value
-# outside that stops the services from starting. Read for each request, so a
-# change applies without a restart.
+# Default speed multiplier for requests that name none, 0.25 to 4. A value
+# outside that is a config error: the services do not start and every
+# `voiced` command refuses the file until it is edited by hand. Read for each
+# request, so a change applies without a restart.
 speed = 1.0
 queue_depth = 8
 # Longest text accepted by one /v1/audio/speech request, in characters.

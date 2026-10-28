@@ -25,13 +25,17 @@ nobody logged in at the Mac now stops before it changes anything.
   `<service>.log`, and `voiced doctor` warns. An install the app manages
   needs nothing: the app runs it after Install and Relaunch, or offers
   Update voiced after `brew upgrade --cask voiced`.
-- A config with `tts.speed` outside 0.25 to 4 now stops the services from
-  starting until it is edited. Such a value used to fail every request that
-  took the default speed; now the file is refused when it is read, as a
-  NaN or infinite number in it is too.
+- A config file with `tts.speed` outside 0.25 to 4 is now refused when it
+  is read, as a NaN or infinite number in it is too: the services and the
+  watchdog exit with `config error at <path>`, and every `voiced` command,
+  `voiced settings set` and `voiced doctor` included, prints the same error
+  until the file is edited by hand. Such a value used to fail every request
+  that took the default speed.
 - New log files are created readable only by you (0600); `<service>.log`
-  was created 0644. An existing `<service>.log` keeps its mode until it
-  rotates; `chmod 600 ~/Library/Logs/voiced/*.log*` tightens it now. The
+  was created 0644. An existing `<service>.log` and its rotated copies keep
+  0644 until they age out, as do files created before `voiced install`
+  rewrites the plists; `chmod 600 ~/Library/Logs/voiced/*.log*` tightens
+  them now. The
   stdout and stderr files keep their names and places.
 - If launchd cannot open one of the stdout and stderr files, it does not
   start the service, and `voiced doctor` fails the agent and names the
@@ -46,8 +50,7 @@ nobody logged in at the Mac now stops before it changes anything.
   app or the status page reads the same in all of them, with the bounds
   the config has, for example `tts.speed: must be a number, got "fast"` or
   `stt.idle_unload_s: must be at most 604800 (seconds; 0 is never, 604800
-  one week)`. A bad `--set` for `voiced models download` exits 2 instead of
-  printing a traceback.
+  one week)`.
 
 ### Fixed
 
