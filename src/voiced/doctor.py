@@ -47,13 +47,12 @@ from voiced.engines.kokoro import (
 from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import (
     Runner,
-    has_session,
     legacy_daemons,
     legacy_message,
-    no_session_message,
     plist_path,
     print_service,
     run_command,
+    session_refusal,
 )
 from voiced.launchd.install import METAL_PROBE_FILE
 from voiced.launchd.metal_probe import macos_version as _macos_version
@@ -429,9 +428,10 @@ def check_ports(settings: Settings, runner: Runner) -> list[Check]:
 def check_session(runner: Runner, user: str) -> Check:
     """Whether ``user`` is logged in at the Mac: the agents load only then,
     and ``voiced install`` refuses without it (ADR 0035)."""
-    if has_session(runner):
+    refusal = session_refusal(user, runner)
+    if refusal is None:
         return Check("Login session", "pass", f"{user} is logged in at this Mac")
-    return Check("Login session", "fail", no_session_message(user))
+    return Check("Login session", "fail", refusal)
 
 
 def check_restart(runner: Runner, user: str) -> Check:

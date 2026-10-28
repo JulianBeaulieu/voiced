@@ -72,6 +72,25 @@ def test_legacy_daemons_name_their_owner(no_launchd: Path) -> None:
     assert [(d.label, d.user) for d in found] == [("a.b.stt", "someone"), ("a.b.tts", None)]
 
 
+def test_the_login_session_wording() -> None:
+    """The one place the wording is pinned: the refusal ``voiced install``
+    and ``voiced doctor`` give, and the migration message's last line."""
+    assert control.session_refusal("someone", lambda argv: CommandResult(0)) is None
+    assert control.session_refusal("someone", lambda argv: CommandResult(113)) == (
+        "Not logged in at this Mac as someone, and an SSH login is not enough: the services "
+        "are LaunchAgents, which load only while you are logged in. Log in at the Mac "
+        "(Screen Sharing counts)."
+    )
+    missing = control.session_refusal("someone", lambda argv: CommandResult(127, "", "gone"))
+    assert missing == "Could not check the login session: gone"
+    found = [control.LegacyDaemon("a.b.stt", "someone")]
+    assert control.legacy_message(found, "someone").endswith(
+        "\n  voiced install\n\nThe services are down from the removal until `voiced install` "
+        "loads the agents, which needs you logged in at this Mac; an SSH login is not "
+        "enough. Log in at the Mac (Screen Sharing counts)."
+    )
+
+
 def test_run_command_missing_binary() -> None:
     result = control.run_command(["/nonexistent/binary-for-voiced-tests"])
     assert result.returncode == 127

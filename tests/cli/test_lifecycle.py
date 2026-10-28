@@ -14,6 +14,7 @@ import pytest
 from tests import hf_cache_support as hf
 from voiced import cli_lifecycle as lc
 from voiced.config import Settings
+from voiced.launchd import control
 from voiced.launchd.control import CommandResult
 from voiced.models import locked
 from voiced.watchdog import Observation
@@ -167,7 +168,8 @@ def test_start_and_stop_point_old_launchdaemons_to_their_removal(
         (message,) = out
         assert message.startswith("voiced still runs as LaunchDaemons from 0.4.0 or earlier")
         assert f"\n  sudo /bin/sh -c '/bin/launchctl bootout system/{label} " in message
-        assert "\n  voiced install\n\nThe services are down from the removal" in message
+        assert "\n  voiced install\n\nThe services are down" in message
+        assert message.endswith(f"{control.LOG_IN}.")
 
 
 def test_status_table(settings: Settings) -> None:

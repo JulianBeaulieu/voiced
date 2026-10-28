@@ -38,14 +38,13 @@ from voiced.launchd.control import (
     Runner,
     bootout_argv,
     bootstrap_argv,
-    has_session,
     legacy_daemons,
     legacy_message,
-    no_session_message,
     plist_path,
     print_service,
     run_command,
     run_streaming,
+    session_refusal,
     wait_unloaded,
 )
 from voiced.launchd.parked import off_detail
@@ -260,12 +259,6 @@ class InstallPlan:
         the one line that does it, so both never run at once."""
         found = self.legacy_daemons(query)
         return legacy_message(found, self.user) if found else None
-
-    def session_refusal(self, query: Runner) -> str | None:
-        """Why the agents cannot be loaded, or None: an agent loads only into
-        the GUI domain of a user logged in at the Mac, which an SSH login
-        alone does not create."""
-        return None if has_session(query) else no_session_message(self.user)
 
     def environment_variables(self) -> dict[str, str]:
         """The environment in the agents' plists, and the Metal probe's: the
@@ -484,11 +477,15 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
     loaded. An agent that is up to date and loaded keeps running: the
     watchdog moves the services to a new environment itself (ADR 0017).
     A label that fails to load does not stop the others. Needs the user's
-    GUI session (:meth:`InstallPlan.session_refusal`): :func:`run_install`
-    checks it before anything else, and this again, for a logout since."""
-    refusal = plan.session_refusal(query)
+    GUI session (:func:`voiced.launchd.control.session_refusal`):
+    :func:`run_install` checks it before anything else, and this again, for
+    a logout since, when the steps before this one are done."""
+    refusal = session_refusal(plan.user, query)
     if refusal is not None:
-        raise InstallError(refusal)
+        raise InstallError(
+            f"{refusal} Then run `voiced install` again: the steps before this one are "
+            "done, the agents are not loaded."
+        )
     failed: list[str] = []
     for service in SERVICES:
         label, path, plist = (
@@ -905,17 +902,25 @@ def run_install(
     ``query``, which captures it. The whole install holds
     :func:`voiced.layout.install_lock`. Raises :class:`InstallError`.
 
-    The refusals come first, before anything is written: without a login
-    session at the Mac, then while old LaunchDaemons are there. A dry run
-    refuses as the install would. ``prepare`` checks neither: it loads no
-    agent and leaves the daemons running (the app removes them next), and
-    the install that completes it checks both, before it changes anything
-    the services use.
+    Two refusals come first, before anything is written, and say so, since
+    each needs something done at the Mac before the install can go on: no
+    login session there, then old LaunchDaemons. The later ones (uv, the
+    state directory) change nothing either. A dry run lists the steps, then
+    refuses as the install would, so a migration can be planned over SSH.
+    ``prepare`` checks neither: it loads no agent and leaves the daemons
+    running (the app removes them next), and the install that completes it
+    checks both, before it changes anything the services use.
     """
     progress = progress or Progress()
-    refusal = None if prepare else plan.session_refusal(query) or plan.legacy_refusal(query)
+    refusal = None
+    if not prepare:
+        refusal = session_refusal(plan.user, query)
+    if not prepare and refusal is None:
+        refusal = plan.legacy_refusal(query)
     if refusal is not None:
-        raise InstallError(f"Not installing yet; nothing was changed. {refusal}")
+        refusal = f"Not installing yet; nothing was changed. {refusal}"
+        if not dry_run:
+            raise InstallError(refusal)
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
@@ -932,6 +937,8 @@ def run_install(
         ):
             say(step.render(dry_run=True))
             progress.step(step.id, "planned", step.shown)
+        if refusal is not None:
+            raise InstallError(refusal)
         return
     plan.state_dir.mkdir(parents=True, exist_ok=True)
     with install_lock(

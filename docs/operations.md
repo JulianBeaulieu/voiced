@@ -296,8 +296,9 @@ command until the second has loaded the agents, a few seconds with the
 models already cached. The second needs you logged in at the Mac (in
 person or with Screen Sharing; an SSH login alone is not enough): over
 SSH, plan the move with someone at the Mac, or the services stay down
-until they log in and run `voiced install`. `voiced start`, `stop`, `uninstall`, `status` and
-`doctor` print the same message while the daemons are there. They are
+until they log in and run `voiced install`. `voiced start`, `stop`,
+`uninstall`, `status` and `doctor` print the same message while the
+daemons are there. They are
 found by the default labels, the only ones the old root step installed,
 both by their plists and by `launchctl print system/<label>`, so one still
 loaded after its plist was deleted is found too.

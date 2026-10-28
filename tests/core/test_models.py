@@ -757,19 +757,26 @@ def test_the_models_step_builds_each_engine_first_then_fetches_and_loads(
     assert fetched == []
 
 
+@pytest.mark.parametrize("stt", ["true", "false"], ids=["tts off", "both off"])
 def test_the_models_step_downloads_nothing_for_a_service_that_is_off(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], stt: str
 ) -> None:
     """A service switched off loads no model (ADR 0033), so the install does
-    not fetch one for it: the app's setup installs speech to text alone."""
+    not fetch one for it: the app's setup installs speech to text alone.
+    With both off the step downloads nothing and says so for each."""
     fetched: list[str] = []
     monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
     monkeypatch.setattr("voiced.models.commands.fetch", lambda model, write: fetched.append(model))
     config = tmp_path / "config.toml"
-    config.write_text('[stt]\nengine = "fake"\n[tts]\nenabled = false\nmodel = "org/tts"\n')
+    config.write_text(
+        f'[stt]\nenabled = {stt}\nengine = "fake"\n[tts]\nenabled = false\nmodel = "org/tts"\n'
+    )
     commands.download(config, None)
     assert fetched == []
-    assert "tts: off; nothing to download" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "tts: off; nothing to download" in out
+    assert ("stt: off; nothing to download" in out) == (stt == "false")
+    assert ("stt: engine=fake" in out) == (stt == "true")
 
 
 # Against the hub (model tier) ----------------------------------------------------

@@ -121,19 +121,25 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def has_session(runner: Runner = run_command) -> bool:
-    """Whether the user's GUI domain exists: only while they are logged in
-    at the Mac (an SSH login alone has none)."""
-    return runner(["launchctl", "print", domain()]).ok
+LOG_IN = "Log in at the Mac (Screen Sharing counts)"
+"""What to do without a login session, in every message that needs one."""
+
+_NOT_RUN = (124, 126, 127)  # run_command's timeout, OSError, not found
 
 
-def no_session_message(user: str) -> str:
-    """What ``voiced install`` and ``voiced doctor`` say without
-    :func:`has_session`."""
+def session_refusal(user: str, runner: Runner = run_command) -> str | None:
+    """Why the agents cannot be loaded, or None: they load only into the
+    user's GUI domain, which exists only while they are logged in at the
+    Mac (an SSH login alone has none). ``voiced install`` refuses with it
+    and ``voiced doctor`` reports it."""
+    result = runner(["launchctl", "print", domain()])
+    if result.ok:
+        return None
+    if result.returncode in _NOT_RUN:
+        return f"Could not check the login session: {result.output}"
     return (
-        f"{user} is not logged in at this Mac, and an SSH login is not enough: the services "
-        "are LaunchAgents, which load only while you are logged in. Log in at the Mac; "
-        "Screen Sharing counts."
+        f"Not logged in at this Mac as {user}, and an SSH login is not enough: the services "
+        f"are LaunchAgents, which load only while you are logged in. {LOG_IN}."
     )
 
 
@@ -240,7 +246,7 @@ def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool =
     )
     session = (
         "The services are down from the removal until `voiced install` loads the agents, "
-        "which needs you logged in at this Mac (Screen Sharing counts; SSH alone does not)"
+        f"which needs you logged in at this Mac; an SSH login is not enough. {LOG_IN}"
     )
     removal = legacy_removal_command([d.label for d in found])
     if one_line:

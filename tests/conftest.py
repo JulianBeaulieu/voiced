@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -74,7 +75,7 @@ def no_port_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Tests never reach this machine's launchd or its plists: ``launchctl``
     on PATH answers "not found" to everything but ``print gui/<uid>``, so
-    the user is logged in at the Mac, ``HOME`` (so
+    the user is logged in at the Mac (:func:`logged_out` ends that), ``HOME`` (so
     ``~/Library/LaunchAgents``) is a scratch directory, and so is the
     directory earlier releases' LaunchDaemons are looked for in. Returns
     that directory; tests that need launchd pass a fake runner."""
@@ -84,8 +85,9 @@ def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
     bin_dir = root / "bin"
     bin_dir.mkdir()
     launchctl = bin_dir / "launchctl"
+    logged_out = shlex.quote(str(root / "logged-out"))
     launchctl.write_text(
-        f'#!/bin/sh\n[ "$*" = "print gui/{os.getuid()}" ] && exit 0\n'
+        f'#!/bin/sh\n[ "$*" = "print gui/{os.getuid()}" ] && [ ! -e {logged_out} ] && exit 0\n'
         'echo "launchctl is not run in tests" >&2\nexit 113\n'
     )
     launchctl.chmod(0o755)
@@ -97,6 +99,12 @@ def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
     daemons.mkdir()
     monkeypatch.setattr(control, "LAUNCH_DAEMONS_DIR", daemons)
     return daemons
+
+
+@pytest.fixture
+def logged_out(no_launchd: Path) -> None:
+    """Nobody is logged in at the Mac: ``launchctl print gui/<uid>`` fails."""
+    (no_launchd.parent / "logged-out").touch()
 
 
 def free_port() -> int:

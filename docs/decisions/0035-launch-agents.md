@@ -1,6 +1,6 @@
 # 0035: LaunchAgents, no administrator password
 
-Date: 2026-10-23. Status: accepted. Supersedes 0004; amends 0003, 0006,
+Date: 2026-10-23. Status: accepted; amended 2026-10-28. Supersedes 0004; amends 0003, 0006,
 0012, 0014, 0017, 0018 and 0033.
 
 ## Context
@@ -94,13 +94,6 @@ the rows applies ("After a reboot").
   find nothing loaded and leave the services running.
 - **No GUI session, no agents.** Over SSH with nobody logged in at the Mac
   there is no `gui/<uid>`; the `agents` step says "log in on the Mac first".
-  Amended after 0.5.0: `voiced install` checks the session first, before the
-  old daemons' refusal and before any step, and stops with nothing changed;
-  the `agents` step checks again, for a logout since. `--prepare` (the
-  app's first half of a migration) loads no agent and does not check; the
-  install that completes it does. The migration message says the install
-  after the removal needs a login at the Mac, and `voiced doctor` reports
-  the session ("Login session").
 - **The privileged script (ADR 0018)** is gone: no `install`, `check` or
   `uninstall` mode, no root rendering, no lock in `/var/run`, no path check
   of who could write the script (`foreign_writer`), no `osascript` in the
@@ -304,3 +297,18 @@ prefix as the user, with no password asked at any step.
   `StandardOutPath` and `StandardErrorPath` as root for a daemon; for an
   agent launchd could open them as the user, so those keys could replace
   that code.
+
+## Amendment (2026-10-28)
+
+The order of the checks. The session check ran last, in the `agents` step:
+a 0.4.0 to 0.5.0 migration over SSH with nobody at the Mac had the daemons
+removed and the environment built before the install stopped, with the
+services down. `voiced install` now checks the session first, before the
+old daemons' refusal and before any step, and stops with nothing changed;
+a dry run lists the steps, then refuses the same way. The `agents` step
+checks again, for a logout during the install, and says to run
+`voiced install` again. `--prepare` loads no agent and does not check; the
+install that completes it does. One function decides
+(`control.session_refusal`), and `voiced doctor` reports it as "Login
+session". The migration message says the install after the removal needs
+a login at the Mac.
