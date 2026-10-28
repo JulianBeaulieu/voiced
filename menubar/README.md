@@ -332,7 +332,7 @@ such as an unpushed checkout, built into a wheel first:
 ```sh
 (cd ~/src/voiced && uv build --wheel)
 menubar/Scripts/bundle.sh --dirty --debug
-defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.5.0-py3-none-any.whl
+defaults write io.github.julianbeaulieu.voiced.menubar installSource ~/src/voiced/dist/voiced-0.5.1-py3-none-any.whl
 defaults delete io.github.julianbeaulieu.voiced.menubar installSource   # back to the bundled wheel
 ```
 

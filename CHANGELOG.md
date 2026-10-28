@@ -6,45 +6,57 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.5.1] - 2026-10-28
+
+A patch release, and the first the menu bar app installs by itself: the
+card in its menu offers 0.5.1, and Install and Relaunch updates the app and
+then the services, without a password. With the Homebrew formula or a uv
+tool install, run `voiced install` once after upgrading, or the services'
+stdout and stderr logs stop receiving output. Installing over SSH with
+nobody logged in at the Mac now stops before it changes anything.
+
 ### Changed
 
-- A setting refused by `voiced settings set`, `voiced install --set`, the
-  app or the status page now reads the same in all of them, for example
-  `tts.speed: must be a number, got "fast"`. `idle_unload_s` says what its
-  bounds mean: `must be at most 604800 (seconds; 0 is never, 604800 one
-  week)`.
 - Homebrew formula and uv tool users: run `voiced install` once after
-  upgrading to this release (the app's Update does it for you), or
-  `<service>.stdout.log` and `<service>.stderr.log` stop receiving output.
-  `voiced doctor` warns until then.
-- The services' logs are readable only by you (0600): `<service>.log`
-  was 0644 before; `<service>.stdout.log` and `<service>.stderr.log` keep
-  their names, places and 0600, now opened by launchd.
-- A `[server] log_dir` changed after install moves `<service>.stdout.log`
-  and `<service>.stderr.log` at the next `voiced install`, and `voiced
-  doctor` says so until then; `<service>.log` moves at the next start, as
-  before.
+  upgrading to this release. launchd now opens `<service>.stdout.log` and
+  `<service>.stderr.log` for the services, and only the plists `voiced
+  install` writes ask it to; until then the two files receive nothing, not
+  even the traceback of a crash at startup, and `voiced doctor` warns. The
+  app's Update voiced does it for you, after an update by the app or by
+  `brew upgrade --cask voiced`.
+- The services' logs are readable only by you: `<service>.log` was 0644,
+  readable by every account on the Mac, and is now 0600 like the stdout and
+  stderr files, which keep their names and places.
+- `voiced doctor` checks that each LaunchAgent's plist is what `voiced
+  install` writes and says why one differs: an earlier release, a changed
+  `[server] log_dir`, or an install made with another state directory or
+  config. A `log_dir` changed after the install moves the stdout and stderr
+  files at the next `voiced install`; `<service>.log` moves at the next
+  start, as before.
+- A setting refused by `voiced settings set`, `voiced install --set`, the
+  app or the status page reads the same in all of them, with the bounds
+  the config has, for example `tts.speed: must be a number, got "fast"` or
+  `stt.idle_unload_s: must be at most 604800 (seconds; 0 is never, 604800
+  one week)`.
 
 ### Fixed
 
 - `voiced install` over SSH with nobody logged in at the Mac stops before
-  it changes anything, saying to log in at the Mac (Screen Sharing
-  counts); it used to remove the old LaunchDaemons and build the
-  environment first, and leave the services down.
-- `voiced doctor` reports whether you are logged in at the Mac, and fails
-  when you are not, so over SSH with nobody at the Mac it now exits
-  non-zero.
-- The message for moving from 0.4.0 or earlier says the install after the
-  removal needs you logged in at the Mac.
-- A service that launchd started again while the old process was answering
-  degraded is no longer restarted at its own first degraded answer: its
-  degraded window starts then.
+  it changes anything and says to log in at the Mac (Screen Sharing
+  counts). 0.5.0 removed the old LaunchDaemons and built the environment
+  first, then stopped with the services down. `voiced doctor` reports the
+  login session and fails without one, so over SSH with nobody at the Mac
+  it exits non-zero; the message for moving from 0.4.0 or earlier says the
+  install after the removal needs you logged in at the Mac.
 - `tts.speed` in the config file is held to the speeds a request may ask
-  for, 0.25 to 4, and refused when the file is read, instead of failing
-  every request that takes the default speed; a file with such a value
-  must be edited before the services start. A request below 0.25 now
-  fails validation for every engine; engines without rate control ignored
-  it before.
+  for, 0.25 to 4. A value outside them used to fail every request that
+  took the default speed; now the file is refused when it is read, so the
+  services do not start until it is edited. A request below 0.25 fails
+  validation for every engine; engines without rate control ignored it
+  before.
+- A service that launchd started again is no longer restarted by the
+  watchdog at its first degraded answer: the time the old process spent
+  degraded no longer counts against the new one.
 
 ## [0.5.0] - 2026-10-23
 
@@ -793,6 +805,7 @@ bar app or the terminal. The defaults stay Parakeet and Kokoro.
   `chmod 600 ~/.config/voiced/config.toml`).
 - `voiced serve` raises its open file limit from launchd's 256 to 4096.
 
+[0.5.1]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.1
 [0.5.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.5.0
 [0.4.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.4.0
 [0.3.0]: https://github.com/JulianBeaulieu/voiced/releases/tag/v0.3.0

@@ -59,8 +59,8 @@ wyoming_port = 10300
 enabled = true
 # Unload the model after this many seconds without a request, and load it
 # again when the next one arrives: that request waits for the load (about
-# 0.4 s for Parakeet, which frees 1.4 GB). 0 keeps the model loaded, as always
-# before; at most 604800 (a week). The watchdog's probe skips a service
+# 0.4 s for Parakeet, which frees 1.4 GB). 0 (never) keeps the model loaded;
+# at most 604800 (one week). The watchdog's probe skips a service
 # with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
 # Engine plugin name (see `voiced doctor` for the installed list).
@@ -112,8 +112,8 @@ wyoming_port = 10200
 enabled = true
 # Unload the model after this many seconds without a request, and load it
 # again when the next one arrives: that request waits for the load (about
-# 0.25 s for Kokoro, which frees 0.4 GB). 0 keeps the model loaded, as always
-# before; at most 604800 (a week). The watchdog's probe skips a service
+# 0.25 s for Kokoro, which frees 0.4 GB). 0 (never) keeps the model loaded;
+# at most 604800 (one week). The watchdog's probe skips a service
 # with it set, since a probe would load the model (ADR 0033).
 idle_unload_s = 0
 # kokoro (default), soprano, phonon, pocket, chatterbox, omnivoice or marvis.
@@ -141,8 +141,9 @@ engine = "kokoro"
 model = "mlx-community/Kokoro-82M-bf16"
 default_voice = "af_heart"
 languages = ["en"]
-# Default speed multiplier for requests that name none, 0.25 to 4. Read for
-# each request, so a change applies without a restart.
+# Default speed multiplier for requests that name none, 0.25 to 4; a value
+# outside that stops the services from starting. Read for each request, so a
+# change applies without a restart.
 speed = 1.0
 queue_depth = 8
 # Longest text accepted by one /v1/audio/speech request, in characters.
