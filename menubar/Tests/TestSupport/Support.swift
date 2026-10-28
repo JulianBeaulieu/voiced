@@ -81,9 +81,11 @@ public func nextEvent(
     }
 }
 
-/// Polls `condition` on the main actor until it holds or `timeout` passes.
+/// Polls `condition` on the main actor until it holds or `timeout` passes. The default is far
+/// above what a loaded CI runner needs: it returns as soon as `condition` holds, so the bound
+/// only decides how long a failing test takes to fail.
 @MainActor
-public func eventually(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
+public func eventually(timeout: Duration = .seconds(10), _ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if condition() { return true }

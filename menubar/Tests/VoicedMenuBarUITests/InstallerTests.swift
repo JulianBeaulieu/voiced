@@ -44,7 +44,8 @@ final class InstallerTests: XCTestCase {
     private var models: [AppModel] = []
 
     private func makeInstaller(
-        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60), installSource: URL? = nil
+        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60),
+        unloadTimeout: Duration? = nil, installSource: URL? = nil
     ) -> Installer {
         let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
@@ -53,7 +54,9 @@ final class InstallerTests: XCTestCase {
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
-        configuration.unloadTimeout = .milliseconds(300)
+        // The production default is far above what a loaded runner needs to see the fake's
+        // daemons go; only the test of daemons that never go passes a short one.
+        if let unloadTimeout { configuration.unloadTimeout = unloadTimeout }
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
         let capacity = capacity
         configuration.availableCapacity = { _ in capacity }
@@ -853,7 +856,7 @@ final class InstallerTests: XCTestCase {
     func testOldDaemonsStillThereAfterThePromptAreAFailureNotALoop() async throws {
         runner.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"]
         runner.onLegacyDaemonsRemoved = { [runner] in runner?.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"] }
-        let installer = makeInstaller()
+        let installer = makeInstaller(unloadTimeout: .milliseconds(100))
         installer.install()
         await reach(installer, "migration") { $0 == .migration }
         installer.removeOldServices()
@@ -895,7 +898,6 @@ final class InstallerTests: XCTestCase {
     func testNoHelloInTimeFailsAndTryAgainWaitsAgain() async throws {
         let installer = makeInstaller(startupTimeout: .milliseconds(300))
         installer.install()
-        await reachInstalled(installer)
         let failure = await failure(installer)
         XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasPrefix("voiced did not answer within") == true)
@@ -911,8 +913,8 @@ final class InstallerTests: XCTestCase {
         try startServer(.newerProtocol)
         let installer = makeInstaller()
         installer.install()
-        await reachInstalled(installer)
         let failure = await failure(installer)
+        XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasSuffix("Update the menu bar app.") == true)
     }
 
