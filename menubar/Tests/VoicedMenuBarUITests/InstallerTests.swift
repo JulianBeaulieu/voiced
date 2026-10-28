@@ -45,7 +45,7 @@ final class InstallerTests: XCTestCase {
 
     private func makeInstaller(
         startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60),
-        unloadTimeout: Duration = .seconds(60), installSource: URL? = nil
+        unloadTimeout: Duration? = nil, installSource: URL? = nil
     ) -> Installer {
         let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
@@ -54,9 +54,9 @@ final class InstallerTests: XCTestCase {
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
-        // Far above what a loaded runner needs to see the fake's daemons go; only the test of
-        // daemons that never go passes a short one.
-        configuration.unloadTimeout = unloadTimeout
+        // The production default is far above what a loaded runner needs to see the fake's
+        // daemons go; only the test of daemons that never go passes a short one.
+        if let unloadTimeout { configuration.unloadTimeout = unloadTimeout }
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
         let capacity = capacity
         configuration.availableCapacity = { _ in capacity }
@@ -89,16 +89,9 @@ final class InstallerTests: XCTestCase {
         return nil
     }
 
-    /// `voiced install` is done and loaded the agents: the installer is on to Starting, or past
-    /// it. Starting can end before a poll sees it, as when the watchdog's hello is refused.
+    /// `voiced install` is done and loaded the agents: the installer is on to Starting.
     private func reachInstalled(_ installer: Installer) async {
-        await reach(installer, "installed") { phase in
-            switch phase {
-            case .starting, .homeAssistant(.asking): true
-            case .failed(let failure): failure.stage == .starting
-            default: false
-            }
-        }
+        await reach(installer, "starting") { [.starting, .homeAssistant(.asking)].contains($0) }
     }
 
     private func environmentNames() -> [String] {
@@ -905,7 +898,6 @@ final class InstallerTests: XCTestCase {
     func testNoHelloInTimeFailsAndTryAgainWaitsAgain() async throws {
         let installer = makeInstaller(startupTimeout: .milliseconds(300))
         installer.install()
-        await reachInstalled(installer)
         let failure = await failure(installer)
         XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasPrefix("voiced did not answer within") == true)
