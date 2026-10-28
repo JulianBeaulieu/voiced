@@ -17,6 +17,11 @@ uses [Semantic Versioning](https://semver.org/).
   non-zero.
 - The message for moving from 0.4.0 or earlier says the install after the
   removal needs you logged in at the Mac.
+- `tts.speed` in the config file is held to the speeds a request may ask
+  for, 0.25 to 4, and refused when the file is read, instead of failing
+  every request that takes the default speed. A request below 0.25 now
+  fails validation for every engine; engines without rate control ignored
+  it before.
 
 ## [0.5.0] - 2026-10-23
 

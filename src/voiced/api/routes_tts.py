@@ -51,6 +51,7 @@ from voiced.api import ffmpeg
 from voiced.api.context import APIError, Ctx
 from voiced.api.foreign_models import ForeignModels, reject_foreign_model
 from voiced.api.responses import ClientGoneResponse, ClosingStreamingResponse
+from voiced.config import MAX_TTS_SPEED, MIN_TTS_SPEED
 from voiced.context import ServiceContext
 from voiced.engines.base import TTS_SAMPLE_RATE, PCMChunk
 from voiced.inference import ClientHungUp, HangUp, inference
@@ -77,7 +78,7 @@ class SpeechRequest(BaseModel):
     model: str | None = None
     input: str
     voice: str | None = None
-    speed: float | None = Field(default=None, gt=0, le=4.0)
+    speed: float | None = Field(default=None, ge=MIN_TTS_SPEED, le=MAX_TTS_SPEED)
     response_format: Literal["wav", "pcm", "mp3", "opus"] = "wav"
 
 
