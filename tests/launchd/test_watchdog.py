@@ -726,6 +726,19 @@ def test_off_is_never_restarted_or_counted_and_reported_once_per_process() -> No
     assert not decide(state, parked(pid=502), later + 1, POLICY).quiet
 
 
+def test_switching_off_drops_the_counters_and_a_pending_recovery() -> None:
+    state = fresh()
+    decide(state, Observation("degraded", "boom", 10, {}, loaded=True, pid=500), T0, POLICY)
+    decide(state, down(), T0 + 1, POLICY)
+    wd.mark_restarted(state, T0 + 2)
+    assert state.awaiting_recovery
+    decide(state, parked(pid=501), T0 + 3, POLICY)
+    assert (state.failures, state.degraded_since, state.busy_since) == (0, None, None)
+    assert not state.awaiting_recovery
+    # Switched on again: a new process, healthy without a "healthy again".
+    assert decide(state, ok(pid=502), T0 + 4, POLICY) == Decision("none", "healthy", False)
+
+
 def test_observe_takes_the_parked_pid_for_off_without_polling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
