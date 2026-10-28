@@ -1172,3 +1172,9 @@ connections itself, and `voiced doctor` reports the answer. The one prompt
 left removes an earlier release's LaunchDaemons before `voiced install`
 runs (ADR 0035, Migration), with the same fixed `osascript` environment
 and the bundle self-check, and fixed commands instead of a script.
+
+## Amendment (2026-10-28)
+
+Item 1's `VOICED_STDIO_LOG` and item 2 no longer hold: the agent plists set
+`StandardOutPath` and `StandardErrorPath`, which launchd opens as the user,
+and `Umask` 0o077 (ADR 0006, amendment of this date).

@@ -251,7 +251,7 @@ Each plist sets:
 | `WorkingDirectory` | your home | |
 | `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, nothing else | The service reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and the rest from it. |
 | `StandardOutPath`, `StandardErrorPath` | `<log_dir>/<service>.stdout.log`, `.stderr.log` | launchd opens them as you, appending, before the service starts, so a crash during startup is kept ([Logs](#logs)). |
-| `Umask` | 0o077 (63) | Every file the service creates, those two included, is readable only by you. |
+| `Umask` | 0o077 (63) | launchd creates those two files 0600, and the service its rotating log. |
 | `AssociatedBundleIdentifiers` | the menu bar app | System Settings > General > Login Items lists the services under voiced's name. |
 
 There is no `UserName`: an agent runs as the user whose domain it is in.
@@ -433,12 +433,15 @@ set, on loopback too: any web page you open could otherwise reach it.
 | `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by launchd. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | The service's stdout; normally empty. Not rotated. |
 
+Each is 0600, readable only by you.
+
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
 `log_dir` under `[server]` moves all of them: the rotated logs at the
 services' next start, the stdout and stderr files once `voiced install`
-has rewritten the plists that name them. If launchd cannot open one of
-those two, it does not start the service, and `launchctl print
-gui/$(id -u)/<label>` shows `last exit code = 78: EX_CONFIG`.
+has rewritten the plists that name them (`voiced doctor` warns until
+then). If launchd cannot open one of those two, it does not start the
+service: `launchctl print gui/$(id -u)/<label>` shows `last exit code =
+78: EX_CONFIG`, and `voiced doctor` fails the agent and names the files.
 `voiced logs -f` follows all service logs; `tail -f
 ~/Library/Logs/voiced/*.log` shows everything at once.
 

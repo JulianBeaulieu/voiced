@@ -234,17 +234,13 @@ class InstallPlan:
         return plist_path(self.labels[service], self.home)
 
     def agent_plist(self, service: DaemonName) -> bytes:
-        """What ``~/Library/LaunchAgents/<label>.plist`` holds for ``service``:
-        the entry point with ``watchdog`` or ``serve <service>``, kept alive
-        while the entry point exists (ADR 0017)."""
-        command = ["watchdog"] if service == "watchdog" else ["serve", service]
-        return render_plist(
-            label=self.labels[service],
-            program_arguments=[str(self.entry), *command],
+        return agent_plist(
+            service,
+            self.labels[service],
+            entry=self.entry,
+            home=self.home,
+            config_file=self.config_file,
             log_dir=self.log_dir,
-            working_directory=self.home,
-            environment=self.environment_variables(),
-            keep_alive={"PathState": {str(self.entry): True}},
         )
 
     def legacy_daemons(self, query: Runner) -> list[LegacyDaemon]:
@@ -261,14 +257,7 @@ class InstallPlan:
         return legacy_message(found, self.user) if found else None
 
     def environment_variables(self) -> dict[str, str]:
-        """The environment in the agents' plists, and the Metal probe's: the
-        services read everything else from ``VOICED_CONFIG`` (ADR 0018)."""
-        return {
-            "HOME": str(self.home),
-            "PATH": f"{self.entry.parent}:{BASE_PATH}",
-            "VOICED_CONFIG": str(self.config_file),
-            "PYTHONUNBUFFERED": "1",
-        }
+        return agent_environment(self.entry, self.home, self.config_file)
 
     # Shell commands ----------------------------------------------------
 
@@ -463,6 +452,35 @@ def remove_legacy_staging(plan: InstallPlan, say: Say) -> None:
 
 
 # The LaunchAgents ---------------------------------------------------------
+
+
+def agent_environment(entry: Path, home: Path, config_file: Path) -> dict[str, str]:
+    """The environment in the agents' plists, and the Metal probe's: the
+    services read everything else from ``VOICED_CONFIG`` (ADR 0018)."""
+    return {
+        "HOME": str(home),
+        "PATH": f"{entry.parent}:{BASE_PATH}",
+        "VOICED_CONFIG": str(config_file),
+        "PYTHONUNBUFFERED": "1",
+    }
+
+
+def agent_plist(
+    service: DaemonName, label: str, *, entry: Path, home: Path, config_file: Path, log_dir: Path
+) -> bytes:
+    """What ``~/Library/LaunchAgents/<label>.plist`` holds for ``service``:
+    the entry point with ``watchdog`` or ``serve <service>``, kept alive
+    while the entry point exists (ADR 0017). ``voiced install`` writes it
+    where it differs, ``voiced doctor`` compares it."""
+    command = ["watchdog"] if service == "watchdog" else ["serve", service]
+    return render_plist(
+        label=label,
+        program_arguments=[str(entry), *command],
+        log_dir=log_dir,
+        working_directory=home,
+        environment=agent_environment(entry, home, config_file),
+        keep_alive={"PathState": {str(entry): True}},
+    )
 
 
 def _read_bytes(path: Path) -> bytes | None:

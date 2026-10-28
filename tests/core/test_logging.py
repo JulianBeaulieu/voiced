@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import subprocess
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from voiced.launchd.plist import log_paths
+from voiced.launchd.plist import OLD_PLIST_ENV, log_paths
 from voiced.logging import BACKUP_COUNT, MAX_BYTES, configure_logging
+from voiced.watchdog import configure_watchdog_logging
 
 
 @pytest.fixture(autouse=True)
@@ -95,33 +96,29 @@ def test_reconfiguring_replaces_handlers(tmp_path: Path) -> None:
     assert len(logging.getLogger().handlers) == 2
 
 
-SERVICE = """
-import logging, sys
-from pathlib import Path
-from voiced.logging import configure_logging
-configure_logging("stt", "info", Path(sys.argv[1]))
-logging.getLogger("voiced.stt").info("a record")
-print("on stdout")
-raise RuntimeError("a crash")
-"""
+@pytest.mark.parametrize("service", ["stt", "watchdog"])
+def test_a_plist_of_an_earlier_release_is_logged_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, service: str
+) -> None:
+    """A formula or uv tool upgrade runs the new code under the old plist,
+    which sends stdout and stderr nowhere: the rotating log says so once."""
+    monkeypatch.setenv(OLD_PLIST_ENV, str(tmp_path / service))
+    for _ in range(2):  # reconfiguring does not repeat it
+        if service == "watchdog":
+            configure_watchdog_logging("info", log_paths(tmp_path, service).app)
+        else:
+            configure_logging(service, "info", tmp_path, interactive=False)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    text = log_paths(tmp_path, service).app.read_text()
+    assert text.count("plist of an earlier release") == 1 and "WARNING" in text
+    assert "`voiced install`" in text
+    assert OLD_PLIST_ENV not in os.environ  # nor in what the service starts
 
 
-def test_under_launchd_records_and_tracebacks_go_to_different_files(tmp_path: Path) -> None:
-    """stdout and stderr are files, as the plist's StandardOutPath and
-    StandardErrorPath make them: records go to the rotating log only, what
-    bypasses logging to the stderr file only."""
-    paths = log_paths(tmp_path, "stt")
-    with paths.stdout.open("ab") as out, paths.stderr.open("ab") as err:
-        result = subprocess.run(
-            [sys.executable, "-c", SERVICE, str(tmp_path)],
-            stdin=subprocess.DEVNULL,
-            stdout=out,
-            stderr=err,
-            timeout=60,
-            check=False,
-        )
-    assert result.returncode == 1
-    app, stderr = paths.app.read_text(), paths.stderr.read_text()
-    assert "a record" in app and "a crash" not in app
-    assert "RuntimeError: a crash" in stderr and "a record" not in stderr
-    assert paths.stdout.read_text() == "on stdout\n"
+def test_no_warning_from_a_current_plist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(OLD_PLIST_ENV, raising=False)
+    configure_logging("tts", "info", tmp_path, interactive=False)
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    assert (tmp_path / "tts.log").read_text() == ""

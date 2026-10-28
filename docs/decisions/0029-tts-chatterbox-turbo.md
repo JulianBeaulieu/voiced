@@ -246,8 +246,9 @@ to back, first audio is the same as in process.
   Chatterbox synthesized, but a longer sentence has longer renders.
 - mlx-audio prints `S3 Token -> Mel Inference...` and a progress bar for
   each render to the service's stdout and stderr, which go to its
-  `stdout.log` and `stderr.log`: a few lines per sentence. Removing them would mean patching
-  mlx-audio's flow-matching module, so they stay until upstream drops them.
+  `stdout.log` and `stderr.log`: a few lines per sentence. Removing them
+  would mean patching mlx-audio's flow-matching module, so they stay until
+  upstream drops them.
 
 ## Consequences
 

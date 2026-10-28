@@ -257,7 +257,8 @@ def test_install_creates_the_log_dir_before_loading_the_agents(
     settings: Settings, tmp_path: Path
 ) -> None:
     """The plists name files in it: launchd would create a missing directory
-    itself (mode 0744 when measured), the install creates it first."""
+    itself (mode 0744 when measured). The claim step creates it, as does the
+    Metal probe; either satisfies this, what matters is that it is there."""
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
     launchd = FakeLaunchd()
@@ -274,13 +275,41 @@ def test_install_creates_the_log_dir_before_loading_the_agents(
 
 def test_voiced_logs_reads_the_files_the_agents_write(settings: Settings, tmp_path: Path) -> None:
     p = _plan(settings, tmp_path)
-    written = []
+    files = log_files(settings, "all", stderr=True)
     for service in SERVICES:
         rendered = plistlib.loads(p.agent_plist(service))
-        written += [Path(rendered["StandardOutPath"]), Path(rendered["StandardErrorPath"])]
-    stderr_files = set(log_files(settings, "all", stderr=True)) - set(log_files(settings, "all"))
-    assert stderr_files == {f for f in written if f.name.endswith(".stderr.log")}
-    assert all(f.parent == p.log_dir for f in written)
+        assert Path(rendered["StandardErrorPath"]) in files
+        assert Path(rendered["StandardOutPath"]).parent == p.log_dir
+
+
+def test_a_log_dir_changed_after_install_reloads_the_agents(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The plists name the log files, so a new ``[server] log_dir`` changes
+    them and the next install boots each agent out and loads it again."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd()
+    install_agents(p, launchd, lambda _: None)
+    settings.server.log_dir = tmp_path / "moved"
+    moved = plan_install(
+        settings,
+        state_dir=p.state_dir,
+        home=tmp_path,
+        config_file=p.config_file,
+        uv="/fake/uv",
+        prefix=tmp_path / "env",
+    )
+    launchd.calls.clear()
+    install_agents(moved, launchd, lambda _: None)
+    assert [v for v in launchd.verbs() if v[0] != "print"] == [
+        verb
+        for s in SERVICES
+        for verb in (("bootout", moved.labels[s]), ("bootstrap", str(moved.agent_path(s))))
+    ]
+    for service in SERVICES:
+        rendered = plistlib.loads(moved.agent_path(service).read_bytes())
+        assert rendered["StandardErrorPath"] == str(tmp_path / f"moved/{service}.stderr.log")
 
 
 def test_install_leaves_up_to_date_agents_running(settings: Settings, tmp_path: Path) -> None:

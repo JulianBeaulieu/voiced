@@ -8,7 +8,13 @@ import sys
 from pathlib import Path
 
 from voiced.config import LogLevel
-from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
+from voiced.launchd.plist import (
+    LOG_BACKUP_COUNT,
+    LOG_FORMAT,
+    LOG_MAX_BYTES,
+    log_paths,
+    warn_if_old_plist,
+)
 
 FORMAT = LOG_FORMAT
 MAX_BYTES = LOG_MAX_BYTES
@@ -49,7 +55,7 @@ def configure_logging(
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(
-            log_dir / f"{service}.log", maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT
+            log_paths(log_dir, service).app, maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT
         )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
@@ -59,4 +65,6 @@ def configure_logging(
         logging.getLogger(name).handlers.clear()
         logging.getLogger(name).propagate = True
 
-    return logging.getLogger(f"voiced.{service}")
+    logger = logging.getLogger(f"voiced.{service}")
+    warn_if_old_plist(logger)
+    return logger
