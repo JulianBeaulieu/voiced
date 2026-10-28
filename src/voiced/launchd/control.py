@@ -121,10 +121,29 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def has_session(runner: Runner = run_command) -> bool:
-    """Whether the user's GUI domain exists: only while they are logged in
-    at the Mac (an SSH login alone has none)."""
-    return runner(["launchctl", "print", domain()]).ok
+LOG_IN = "Log in at the Mac (Screen Sharing counts)"
+"""What to do without a login session (:func:`session_refusal`)."""
+
+_NOT_RUN = (124, 126, 127)  # run_command's timeout, OSError, not found
+
+
+def session_refusal(user: str, runner: Runner = run_command) -> str | None:
+    """Why the agents cannot be loaded, or None: they load only into the
+    user's GUI domain, which exists only while they are logged in at the
+    Mac (an SSH login alone has none). ``voiced install`` refuses with it
+    and ``voiced doctor`` reports it."""
+    result = runner(["launchctl", "print", domain()])
+    if result.ok:
+        return None
+    if result.returncode in _NOT_RUN:
+        return (
+            f"Could not check the login session: {result.output.rstrip('.')}. Run "
+            "`voiced install` again; if it keeps failing, run `voiced doctor`."
+        )
+    return (
+        f"Not logged in at this Mac as {user}, and an SSH login is not enough: the services "
+        f"are LaunchAgents, which load only while you are logged in. {LOG_IN}."
+    )
 
 
 def service_target(label: str) -> str:
@@ -228,10 +247,15 @@ def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool =
         "administrator can remove. Remove them, the last time voiced needs a password, "
         "then install the LaunchAgents"
     )
+    session = (
+        "The services are down from the removal until `voiced install` loads the agents, "
+        "which needs you logged in at this Mac (Screen Sharing counts); an SSH login is "
+        "not enough"
+    )
     removal = legacy_removal_command([d.label for d in found])
     if one_line:
-        return f"{intro}: `{removal}`; then run `voiced install`"
-    return f"{intro}:\n\n  {removal}\n  voiced install"
+        return f"{intro}: `{removal}`; then run `voiced install`. {session}."
+    return f"{intro}:\n\n  {removal}\n  voiced install\n\n{session}."
 
 
 @dataclass(frozen=True)

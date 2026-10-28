@@ -38,13 +38,13 @@ from voiced.launchd.control import (
     Runner,
     bootout_argv,
     bootstrap_argv,
-    has_session,
     legacy_daemons,
     legacy_message,
     plist_path,
     print_service,
     run_command,
     run_streaming,
+    session_refusal,
     wait_unloaded,
 )
 from voiced.launchd.parked import off_detail
@@ -477,11 +477,14 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
     loaded. An agent that is up to date and loaded keeps running: the
     watchdog moves the services to a new environment itself (ADR 0017).
     A label that fails to load does not stop the others. Needs the user's
-    GUI session: an agent loads only while its user is logged in."""
-    if not has_session(query):
+    GUI session (:func:`voiced.launchd.control.session_refusal`):
+    :func:`run_install` checks it before anything else, and this again, for
+    a logout since, when the steps before this one are done."""
+    refusal = session_refusal(plan.user, query)
+    if refusal is not None:
         raise InstallError(
-            f"{plan.user} is not logged in at this Mac (an SSH login is not enough): log in "
-            "on the Mac first; the services run as your LaunchAgents while you are logged in"
+            f"{refusal} Then run `voiced install` again: the steps before this one are "
+            "done, the agents are not loaded."
         )
     failed: list[str] = []
     for service in SERVICES:
@@ -898,14 +901,29 @@ def run_install(
     default streams output and has no timeout; the engine check through
     ``query``, which captures it. The whole install holds
     :func:`voiced.layout.install_lock`. Raises :class:`InstallError`.
+
+    Two refusals come first, before anything is written, and say so, since
+    each needs something done at the Mac before the install can go on: no
+    login session there, then old LaunchDaemons. The later ones (uv, the
+    state directory) change nothing either. Both are said together, so
+    over SSH the line that removes old daemons is there to plan with. A dry
+    run that passes the later checks lists the steps, then refuses as the
+    install would. ``prepare`` checks neither: it loads no agent and leaves
+    the daemons running (the app removes them next), and the install that
+    completes it checks both, before it changes anything the services use.
     """
     progress = progress or Progress()
+    refusal = None
+    if not prepare:
+        reasons = (session_refusal(plan.user, query), plan.legacy_refusal(query))
+        refusal = "\n\n".join(r for r in reasons if r is not None) or None
+    if refusal is not None:
+        refusal = f"Not installing yet; nothing was changed. {refusal}"
+        if not dry_run:
+            raise InstallError(refusal)
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
-    refusal = None if prepare else plan.legacy_refusal(query)
-    if refusal is not None:
-        raise InstallError(f"Not installing yet. {refusal}")
     if dry_run:
         for step in install_steps(
             plan,
@@ -919,6 +937,8 @@ def run_install(
         ):
             say(step.render(dry_run=True))
             progress.step(step.id, "planned", step.shown)
+        if refusal is not None:
+            raise InstallError(refusal)
         return
     plan.state_dir.mkdir(parents=True, exist_ok=True)
     with install_lock(

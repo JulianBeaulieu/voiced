@@ -14,7 +14,7 @@ app does not: run the commands as `~/.voiced/bin/voiced`, or add
 
 | Command | What it does |
 |---|---|
-| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the ports of each service that is on are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models of each service that is on, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and last writes the three LaunchAgents to `~/Library/LaunchAgents` and loads them into your launchd domain (`gui/<uid>`); an agent whose plist is unchanged and loaded keeps running. Refuses a `~/.voiced` holding files that are not voiced's, and stops before it changes anything while LaunchDaemons from 0.4.0 or earlier are installed, printing the one line that removes them ([below](#moving-from-launchdaemons)). Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`), `--set KEY=VALUE` (repeatable, `stt.enabled`, `stt.engine`, `stt.model` and the same for `tts` only, an engine with its model: the install plans, checks ports and downloads models with these settings, and writes them to the config once the models are in, with every check of `voiced settings set`; a failed download leaves the config as it was; the app's first-run setup passes its choice this way, such as `--set tts.enabled=false`). Waits while another install or uninstall holds the state directory; changes nothing the services use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
+| `voiced install` | Links `~/.voiced/bin/voiced`, the program the plists run, to an environment that has the engines: the one this `voiced` runs from (Homebrew's, or any other with the `stt` and `tts` extras), or with `--source <checkout>` a new one it builds into `~/.voiced/envs/` from the shipped lock. Copies `config.example.toml` to `~/.config/voiced/config.toml` if there is no config yet, checks that the ports of each service that is on are free (bound as the services bind them, and with `lsof`; a port another program holds stops the install, naming the port, its config key and the holder, while voiced's own running services are fine), downloads the configured models of each service that is on, removes the plists and sudo scripts an earlier release staged in `~/.config/voiced/launchd/`, and last writes the three LaunchAgents to `~/Library/LaunchAgents` and loads them into your launchd domain (`gui/<uid>`); an agent whose plist is unchanged and loaded keeps running. Stops before it changes anything when you are not logged in at the Mac (over SSH with nobody at the console there is nowhere to load the agents; Screen Sharing counts as logged in), and while LaunchDaemons from 0.4.0 or earlier are installed, printing the one line that removes them ([below](#moving-from-launchdaemons)); `--dry-run` refuses the same way. Refuses a `~/.voiced` holding files that are not voiced's. Flags: `--dry-run` (show everything, write nothing), `--source`, `--python` (the Python version for `--source`), `--state-dir`, `--skip-models`, `--origin` (`cli`, `homebrew` or `app`, for `install.json`), `--set KEY=VALUE` (repeatable, `stt.enabled`, `stt.engine`, `stt.model` and the same for `tts` only, an engine with its model: the install plans, checks ports and downloads models with these settings, and writes them to the config once the models are in, with every check of `voiced settings set`; a failed download leaves the config as it was; the app's first-run setup passes its choice this way, such as `--set tts.enabled=false`). Waits while another install or uninstall holds the state directory; changes nothing the services use until the models are in. The layout is in [ADR 0017](decisions/0017-homebrew-packaging.md#the-install-layout). |
 | `voiced start [stt\|tts\|watchdog]` | Starts a loaded agent with `launchctl kickstart`; an installed agent that is not loaded (after `voiced stop`) is loaded with `launchctl bootstrap`. |
 | `voiced stop [stt\|tts\|watchdog]` | Unloads each loaded agent with `launchctl bootout` (`KeepAlive` would restart a merely killed process). It stays stopped until `voiced start` or your next login. |
 | `voiced restart [stt\|tts\|watchdog\|all]` | Restarts a service now: through the watchdog when its control socket answers, otherwise by sending the service `SIGKILL` and running `launchctl kickstart` directly. `all` (the default) then restarts the watchdog too, last: it sends the watchdog `SIGTERM` (the watchdog finishes the restarts it accepted before it exits), runs `launchctl kickstart`, and waits up to 30 s for the new watchdog to answer on the control socket. `watchdog` restarts only the watchdog. The exit status is non-zero if any of these restarts failed. |
@@ -44,6 +44,7 @@ without touching your install.
 espeak-ng library Kokoro would load (`[tts] espeak_library`, else the
 `espeakng-loader` wheel's in voiced's environment, else the Homebrew keg),
 ffmpeg, memory, the four ports (and which process holds them), whether
+you are logged in at the Mac (what `voiced install` needs), whether
 voiced starts after a reboot (FileVault or automatic login), LaunchDaemons
 left from 0.4.0 or earlier, each service's configured model (downloaded at
 its pin, or the command that fetches it), whether the agents are installed
@@ -292,11 +293,15 @@ voiced install
 It stops the three daemons and deletes their plists, nothing else; your
 `~/.voiced`, config and models stay. The services are down from the first
 command until the second has loaded the agents, a few seconds with the
-models already cached. `voiced start`, `stop`, `uninstall`, `status` and
-`doctor` print the same message while the daemons are there. They are
-found by the default labels, the only ones the old root step installed,
-both by their plists and by `launchctl print system/<label>`, so one still
-loaded after its plist was deleted is found too.
+models already cached. The second needs you logged in at the Mac (in
+person or with Screen Sharing; an SSH login alone is not enough): over
+SSH, plan the move with someone at the Mac, or the services stay down
+until they log in and run `voiced install`. `voiced start`, `stop`,
+`uninstall`, `status` and `doctor` print the same message while the
+daemons are there. They are found by the default labels, the only ones
+the old root step installed, both by their plists and by `launchctl print
+system/<label>`, so one still loaded after its plist was deleted is found
+too.
 The menu bar app does the same with one administrator prompt when it
 updates or repairs such an install ([The menu bar app](#the-menu-bar-app)).
 
