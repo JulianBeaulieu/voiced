@@ -44,7 +44,8 @@ final class InstallerTests: XCTestCase {
     private var models: [AppModel] = []
 
     private func makeInstaller(
-        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60), installSource: URL? = nil
+        startupTimeout: Duration = .seconds(3), stallTimeout: Duration = .seconds(60),
+        unloadTimeout: Duration = .seconds(60), installSource: URL? = nil
     ) -> Installer {
         let probe = InstallProbe(launchAgentsDirectory: agents, launchDaemonsDirectory: daemons)
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
@@ -53,7 +54,9 @@ final class InstallerTests: XCTestCase {
         configuration.startupTimeout = startupTimeout
         configuration.stallTimeout = stallTimeout
         configuration.pollInterval = .milliseconds(20)
-        configuration.unloadTimeout = .milliseconds(300)
+        // Far above what a loaded runner needs to see the fake's daemons go; only the test of
+        // daemons that never go passes a short one.
+        configuration.unloadTimeout = unloadTimeout
         configuration.hostIdentity = { HostIdentity(host: "studio.local", address: "192.0.2.10") }
         let capacity = capacity
         configuration.availableCapacity = { _ in capacity }
@@ -86,9 +89,16 @@ final class InstallerTests: XCTestCase {
         return nil
     }
 
-    /// `voiced install` is done and loaded the agents: the installer is on to Starting.
+    /// `voiced install` is done and loaded the agents: the installer is on to Starting, or past
+    /// it. Starting can end before a poll sees it, as when the watchdog's hello is refused.
     private func reachInstalled(_ installer: Installer) async {
-        await reach(installer, "starting") { [.starting, .homeAssistant(.asking)].contains($0) }
+        await reach(installer, "installed") { phase in
+            switch phase {
+            case .starting, .homeAssistant(.asking): true
+            case .failed(let failure): failure.stage == .starting
+            default: false
+            }
+        }
     }
 
     private func environmentNames() -> [String] {
@@ -853,7 +863,7 @@ final class InstallerTests: XCTestCase {
     func testOldDaemonsStillThereAfterThePromptAreAFailureNotALoop() async throws {
         runner.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"]
         runner.onLegacyDaemonsRemoved = { [runner] in runner?.loadedDaemons = ["io.github.julianbeaulieu.voiced.tts"] }
-        let installer = makeInstaller()
+        let installer = makeInstaller(unloadTimeout: .milliseconds(100))
         installer.install()
         await reach(installer, "migration") { $0 == .migration }
         installer.removeOldServices()
@@ -911,8 +921,8 @@ final class InstallerTests: XCTestCase {
         try startServer(.newerProtocol)
         let installer = makeInstaller()
         installer.install()
-        await reachInstalled(installer)
         let failure = await failure(installer)
+        XCTAssertEqual(failure?.stage, .starting)
         XCTAssertTrue(failure?.cause.hasSuffix("Update the menu bar app.") == true)
     }
 

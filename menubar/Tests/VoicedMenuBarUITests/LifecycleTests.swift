@@ -115,7 +115,8 @@ final class LifecycleTests: XCTestCase {
         var configuration = InstallerConfiguration(resources: resources, home: home, installProbe: probe)
         configuration.startupTimeout = startupTimeout
         configuration.pollInterval = .milliseconds(20)
-        configuration.unloadTimeout = .milliseconds(300)
+        // No test here waits for the old daemons to time out: far above what a loaded runner needs.
+        configuration.unloadTimeout = .seconds(60)
         configuration.availableCapacity = { _ in 100_000_000_000 }
         let model = AppModel(
             socketPath: socket, installProbe: probe, backoff: Backoff(initial: .milliseconds(20), maximum: .milliseconds(80)),
@@ -179,7 +180,7 @@ final class LifecycleTests: XCTestCase {
     private var record: InstallRecord? { InstallRecord.read(stateDirectory: state) }
 
     private func reach(_ installer: Installer, _ description: String = "phase", _ condition: (InstallerPhase) -> Bool) async {
-        let reached = await eventually(timeout: .seconds(10)) { condition(installer.phase) }
+        let reached = await eventually { condition(installer.phase) }
         XCTAssertTrue(reached, "\(description) not reached; phase is \(installer.phase)")
     }
 
