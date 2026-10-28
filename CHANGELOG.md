@@ -25,6 +25,9 @@ uses [Semantic Versioning](https://semver.org/).
   non-zero.
 - The message for moving from 0.4.0 or earlier says the install after the
   removal needs you logged in at the Mac.
+- A service that launchd started again while the old process was answering
+  degraded is no longer restarted at its own first degraded answer: its
+  degraded window starts then.
 - `tts.speed` in the config file is held to the speeds a request may ask
   for, 0.25 to 4, and refused when the file is read, instead of failing
   every request that takes the default speed. A request below 0.25 now

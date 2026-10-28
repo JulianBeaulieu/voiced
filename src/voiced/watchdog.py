@@ -221,8 +221,8 @@ def classify_stall(
 def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogConfig) -> Decision:
     """Update ``state`` with ``obs`` and say what to do.
 
-    * A new pid from launchd restarts the grace period: the new process is
-      loading its model. That includes the first pid seen, so a service
+    * A new pid from launchd restarts the grace period and the counters: the
+      new process is loading its model. That includes the first pid seen, so a service
       started long after the watchdog (``voiced start``) gets its grace too.
     * ``off`` (launchd's pid is the service's parked process: it is switched
       off, ADR 0033) is left alone and never counts toward the grace period
@@ -254,6 +254,7 @@ def decide(state: ServiceState, obs: Observation, now: float, policy: WatchdogCo
         state.grace_started_at = now
         state.answered = False
         state.failures = 0
+        state.degraded_since = None
         state.busy_since = None
         state.last_pid = obs.pid
         state.reported.clear()
