@@ -13,6 +13,10 @@ uses [Semantic Versioning](https://semver.org/).
   `tts.speed: must be a number, got "fast"`. `idle_unload_s` says what its
   bounds mean: `must be at most 604800 (seconds; 0 is never, 604800 one
   week)`.
+- launchd now opens the services' `stdout.log` and `stderr.log` itself;
+  the log files keep their names and places, and every file the services
+  create is readable only by you. A `[server] log_dir` changed after
+  install moves the stdout and stderr files at the next `voiced install`.
 
 ### Fixed
 

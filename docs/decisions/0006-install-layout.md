@@ -168,3 +168,23 @@ into `gui/<uid>` itself, so it prints no root step and stages nothing.
 `voiced doctor --metal-probe` runs the probe as a one-shot agent directly
 and writes no script. The log rule stands: the plists still carry
 `VOICED_STDIO_LOG`, not `StandardOutPath`.
+
+## Amendment (2026-10-28)
+
+The LaunchAgents of ADR 0035 run in the user's own domain, where launchd
+opens `StandardOutPath` and `StandardErrorPath` as the user: a symlink
+planted in the log directory reaches only what the user could write
+anyway. So the plists name the two files again, `<log_dir>/<service>.stdout.log`
+and `.stderr.log`, and `VOICED_STDIO_LOG`, `voiced.launchd.stdio` and
+`voiced.entry` are gone; the console script is `voiced.cli:main`. launchd
+opens the files appending before the process starts, so an import
+traceback and C-level output still land in them, and `Umask` 0o077 keeps
+them 0600 when launchd creates them (and makes every file a service
+creates private to the user). `voiced install` creates the log directory
+first, as before; one deleted later is recreated by launchd, 0744. A path
+launchd cannot open does not start the process at all (exit code 78,
+EX_CONFIG, in `launchctl print`), where the redirect ran on without it.
+The split between the rotating log and the stderr file above is
+unchanged. A `[server] log_dir` changed after install moves the rotating
+logs at the next start and the stdout and stderr files at the next
+`voiced install`, which rewrites the plists.

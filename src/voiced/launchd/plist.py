@@ -11,9 +11,10 @@ APP_BUNDLE_ID = "io.github.julianbeaulieu.voiced.menubar"
 """Named in ``AssociatedBundleIdentifiers``, so Login Items lists the
 services under the app's name and icon."""
 
-ENV_STDIO_LOG = "VOICED_STDIO_LOG"
-"""``<log_dir>/<service>``, the prefix of the two files ``voiced.launchd.stdio``
-points stdout and stderr at."""
+UMASK = 0o077
+"""The services' umask: launchd creates their stdout and stderr files 0600
+with it, and the services create their own files with it too. Nobody but
+the user reads any of them."""
 
 # The rotating application log, shared by voiced.logging and the stdlib-only
 # watchdog so both rotate the same way.
@@ -27,8 +28,8 @@ class LogPaths:
     """Where one service's output ends up under ``log_dir``."""
 
     app: Path  # written by voiced.logging (rotating)
-    stdout: Path  # the process stdout (voiced.launchd.stdio)
-    stderr: Path  # the process stderr (voiced.launchd.stdio)
+    stdout: Path  # the process stdout (launchd's StandardOutPath)
+    stderr: Path  # the process stderr (launchd's StandardErrorPath)
 
 
 def log_paths(log_dir: Path, service: str) -> LogPaths:
@@ -57,10 +58,16 @@ def render_plist(
     dangles (ADR 0017). No ``UserName``: an agent runs as the user whose
     domain it is in.
 
-    There is no ``StandardOutPath``/``StandardErrorPath``: ``VOICED_STDIO_LOG``
-    tells the process to open its own (``voiced.launchd.stdio``, ADR 0006).
+    launchd opens ``<service>.stdout.log`` and ``.stderr.log`` as the user,
+    appending, before it starts the process (ADR 0006), so tracebacks and
+    C-level output (MLX, espeak-ng) land there. It creates a missing file
+    with ``Umask`` (0600), and a missing directory too (0744, whatever the
+    umask), though ``voiced install`` creates the log directory first. A
+    path it cannot open is not skipped: launchd does not start the process
+    and records exit code 78 (EX_CONFIG), which ``launchctl print`` shows.
     """
     service = label.rsplit(".", 1)[-1]
+    logs = log_paths(log_dir, service)
     plist: dict[str, object] = {
         "Label": label,
         "ProgramArguments": program_arguments,
@@ -71,7 +78,10 @@ def render_plist(
         # is set in-process (cli.cmd_serve).
         "ProcessType": "Interactive",
         "WorkingDirectory": str(working_directory),
-        "EnvironmentVariables": {**environment, ENV_STDIO_LOG: str(log_dir / service)},
+        "EnvironmentVariables": environment,
+        "StandardOutPath": str(logs.stdout),
+        "StandardErrorPath": str(logs.stderr),
+        "Umask": UMASK,
         "AssociatedBundleIdentifiers": [APP_BUNDLE_ID],
     }
     return plistlib.dumps(plist, sort_keys=False)

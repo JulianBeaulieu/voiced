@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from voiced.launchd.plist import log_paths
 from voiced.logging import BACKUP_COUNT, MAX_BYTES, configure_logging
 
 
@@ -91,3 +93,35 @@ def test_reconfiguring_replaces_handlers(tmp_path: Path) -> None:
     configure_logging("tts", "info", tmp_path, interactive=True)
     configure_logging("tts", "info", tmp_path, interactive=True)
     assert len(logging.getLogger().handlers) == 2
+
+
+SERVICE = """
+import logging, sys
+from pathlib import Path
+from voiced.logging import configure_logging
+configure_logging("stt", "info", Path(sys.argv[1]))
+logging.getLogger("voiced.stt").info("a record")
+print("on stdout")
+raise RuntimeError("a crash")
+"""
+
+
+def test_under_launchd_records_and_tracebacks_go_to_different_files(tmp_path: Path) -> None:
+    """stdout and stderr are files, as the plist's StandardOutPath and
+    StandardErrorPath make them: records go to the rotating log only, what
+    bypasses logging to the stderr file only."""
+    paths = log_paths(tmp_path, "stt")
+    with paths.stdout.open("ab") as out, paths.stderr.open("ab") as err:
+        result = subprocess.run(
+            [sys.executable, "-c", SERVICE, str(tmp_path)],
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=err,
+            timeout=60,
+            check=False,
+        )
+    assert result.returncode == 1
+    app, stderr = paths.app.read_text(), paths.stderr.read_text()
+    assert "a record" in app and "a crash" not in app
+    assert "RuntimeError: a crash" in stderr and "a record" not in stderr
+    assert paths.stdout.read_text() == "on stdout\n"

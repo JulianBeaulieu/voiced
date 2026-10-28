@@ -9,7 +9,6 @@ from pathlib import Path
 
 from voiced.config import LogLevel
 from voiced.launchd.plist import LOG_BACKUP_COUNT, LOG_FORMAT, LOG_MAX_BYTES
-from voiced.launchd.stdio import log_redirect_error
 
 FORMAT = LOG_FORMAT
 MAX_BYTES = LOG_MAX_BYTES
@@ -28,8 +27,8 @@ def configure_logging(
     Without ``log_dir`` everything goes to stderr. With it, the rotating file
     gets every line and stderr gets them too only when it is a terminal
     (``interactive``, default ``sys.stderr.isatty()``): ``voiced serve`` run by
-    hand. Under launchd stderr is ``<service>.stderr.log`` (opened by
-    ``voiced.launchd.stdio``), which nothing rotates, so nothing is logged
+    hand. Under launchd stderr is ``<service>.stderr.log`` (the plist's
+    ``StandardErrorPath``), which nothing rotates, so nothing is logged
     there; it keeps only what bypasses logging, such as a traceback from a
     crash before or outside it (ADR 0006). Safe to call more than once:
     handlers are replaced, not stacked.
@@ -60,6 +59,4 @@ def configure_logging(
         logging.getLogger(name).handlers.clear()
         logging.getLogger(name).propagate = True
 
-    logger = logging.getLogger(f"voiced.{service}")
-    log_redirect_error(logger)
-    return logger
+    return logging.getLogger(f"voiced.{service}")

@@ -249,12 +249,12 @@ Each plist sets:
 | `ThrottleInterval` | 10 | Wait 10 s between restarts so a crash loop does not spin. |
 | `ProcessType` | Interactive | Full CPU and GPU scheduling priority. |
 | `WorkingDirectory` | your home | |
-| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, `VOICED_STDIO_LOG`, nothing else | The service reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and the rest from it. `VOICED_STDIO_LOG` (`<log_dir>/<service>`) makes it open `<service>.stdout.log` and `.stderr.log` itself and point its stdout and stderr at them. |
+| `EnvironmentVariables` | `HOME`, `PATH` (service environment first), `VOICED_CONFIG`, `PYTHONUNBUFFERED`, nothing else | The service reads the same config file as the CLI, and takes the model cache (`[install] hf_home`), the espeak-ng paths (`[tts] espeak_library`, `espeak_data`) and the rest from it. |
+| `StandardOutPath`, `StandardErrorPath` | `<log_dir>/<service>.stdout.log`, `.stderr.log` | launchd opens them as you, appending, before the service starts, so a crash during startup is kept ([Logs](#logs)). |
+| `Umask` | 0o077 (63) | Every file the service creates, those two included, is readable only by you. |
 | `AssociatedBundleIdentifiers` | the menu bar app | System Settings > General > Login Items lists the services under voiced's name. |
 
 There is no `UserName`: an agent runs as the user whose domain it is in.
-The plists do not set `StandardOutPath` or `StandardErrorPath`; the
-process opens its logs itself and refuses a symlink (ADR 0006).
 
 Agents run while you are logged in: they start at login and stop at
 logout ([After a reboot](#after-a-reboot)). Metal works from an agent: the
@@ -430,10 +430,15 @@ set, on loopback too: any web page you open could otherwise reach it.
 |---|---|
 | `~/Library/Logs/voiced/stt.log`, `tts.log` | Service log, rotated at 10 MB, five backups kept. |
 | `~/Library/Logs/voiced/watchdog.log` | Every restart and every non-healthy observation; healthy polls only at `debug`. |
-| `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by the service itself. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
+| `~/Library/Logs/voiced/<service>.stderr.log` | The service's stderr, opened by launchd. Log records are not written here under launchd, only output that bypasses logging, such as the traceback of a crash during startup; `voiced logs --stderr` includes it. Not rotated, but stays small. |
 | `~/Library/Logs/voiced/<service>.stdout.log` | The service's stdout; normally empty. Not rotated. |
 
 `log_level` under `[server]` takes `debug`, `info`, `warning`, `error`.
+`log_dir` under `[server]` moves all of them: the rotated logs at the
+services' next start, the stdout and stderr files once `voiced install`
+has rewritten the plists that name them. If launchd cannot open one of
+those two, it does not start the service, and `launchctl print
+gui/$(id -u)/<label>` shows `last exit code = 78: EX_CONFIG`.
 `voiced logs -f` follows all service logs; `tail -f
 ~/Library/Logs/voiced/*.log` shows everything at once.
 

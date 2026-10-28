@@ -32,7 +32,6 @@ from voiced.config import (
 )
 from voiced.launchd.ports import bind_port
 from voiced.launchd.progress import Progress
-from voiced.launchd.stdio import follow_log_dir, redirect_stdio_from_env
 
 if TYPE_CHECKING:
     import uvicorn
@@ -286,8 +285,6 @@ def cmd_config(settings: Settings) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    # A no-op after voiced.entry; covers a console script from before it.
-    redirect_stdio_from_env()
     args = build_parser().parse_args(argv)
     try:
         settings = load_settings()
@@ -297,7 +294,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if getattr(args, "json_progress", False):  # install, models download
             Progress(sys.stdout).fail_before_start(message)
         return 2
-    follow_log_dir(settings.server.log_dir)
     for notice in apply_engine_environment(settings):  # before huggingface_hub is imported
         print(f"voiced: {notice}", file=sys.stderr)
     if args.command in LIFECYCLE:

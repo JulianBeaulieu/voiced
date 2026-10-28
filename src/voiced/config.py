@@ -31,9 +31,9 @@ from voiced.models import DEFAULT_ENGINES, DEFAULT_HF_HOME, default_model
 ENV_PREFIX = "VOICED_"
 ENV_CONFIG_PATH = "VOICED_CONFIG"
 DEFAULT_CONFIG_PATH = Path("~/.config/voiced/config.toml")
-# The default log directory, under the home. The plists name it whatever the
-# config says (ADR 0018: root renders them from the user name alone); a
-# custom ``[server] log_dir`` takes over once the config is read.
+# The default log directory, under the home. ``[server] log_dir`` replaces
+# it: the rotating logs follow it once the config is read, the stdout and
+# stderr files once ``voiced install`` has rewritten the plists naming them.
 LOG_DIR_IN_HOME = Path("Library/Logs/voiced")
 
 # Environment variables the engines read, set from the config file

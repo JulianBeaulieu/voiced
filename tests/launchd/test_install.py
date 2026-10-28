@@ -28,6 +28,7 @@ import pytest
 from tests import hf_cache_support as hf
 from tests.scripts_support import load
 from voiced.cli import main
+from voiced.cli_lifecycle import log_files
 from voiced.config import (
     DEFAULT_LAUNCHD_LABEL_PREFIX,
     SERVICES,
@@ -213,8 +214,10 @@ def test_agent_plists_run_what_install_links(settings: Settings, tmp_path: Path)
                 "PATH": f"{home}/.voiced/bin:{BASE_PATH}",
                 "VOICED_CONFIG": str(home / ".config/voiced/config.toml"),
                 "PYTHONUNBUFFERED": "1",
-                "VOICED_STDIO_LOG": str(tmp_path / "custom-logs" / service),
             },
+            "StandardOutPath": str(tmp_path / "custom-logs" / f"{service}.stdout.log"),
+            "StandardErrorPath": str(tmp_path / "custom-logs" / f"{service}.stderr.log"),
+            "Umask": 0o077,
             "AssociatedBundleIdentifiers": [f"{DEFAULT_LAUNCHD_LABEL_PREFIX}.menubar"],
         }
         assert plan.agent_path(service) == home / f"Library/LaunchAgents/{rendered['Label']}.plist"
@@ -248,6 +251,36 @@ def test_install_loads_the_agents_as_the_user(settings: Settings, tmp_path: Path
         assert path.read_bytes() == p.agent_plist(service)
         assert stat.S_IMODE(path.stat().st_mode) == 0o644
     assert not any(line.startswith("sudo") for line in said)
+
+
+def test_install_creates_the_log_dir_before_loading_the_agents(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The plists name files in it: launchd would create a missing directory
+    itself (mode 0744 when measured), the install creates it first."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd()
+    found: list[bool] = []
+
+    def query(argv: Sequence[str]) -> CommandResult:
+        if argv[1:2] == ["bootstrap"]:
+            found.append(p.log_dir.is_dir())
+        return launchd(argv)
+
+    run_install(p, runner=lambda argv: CommandResult(0), query=query, say=lambda _: None)
+    assert found == [True] * len(SERVICES)
+
+
+def test_voiced_logs_reads_the_files_the_agents_write(settings: Settings, tmp_path: Path) -> None:
+    p = _plan(settings, tmp_path)
+    written = []
+    for service in SERVICES:
+        rendered = plistlib.loads(p.agent_plist(service))
+        written += [Path(rendered["StandardOutPath"]), Path(rendered["StandardErrorPath"])]
+    stderr_files = set(log_files(settings, "all", stderr=True)) - set(log_files(settings, "all"))
+    assert stderr_files == {f for f in written if f.name.endswith(".stderr.log")}
+    assert all(f.parent == p.log_dir for f in written)
 
 
 def test_install_leaves_up_to_date_agents_running(settings: Settings, tmp_path: Path) -> None:
@@ -529,6 +562,7 @@ def test_metal_probe_runs_as_a_one_shot_agent(plan: InstallPlan, tmp_path: Path)
         if argv[1] == "bootstrap":
             seen.update(plistlib.loads(Path(argv[-1]).read_bytes()))
             seen["path"] = argv[-1]
+            seen["logs"] = (tmp_path / "logs").is_dir()
             (tmp_path / "logs/metal-probe.json").write_text('{"ok": true}\n')
         return result
 
@@ -536,6 +570,8 @@ def test_metal_probe_runs_as_a_one_shot_agent(plan: InstallPlan, tmp_path: Path)
     label = p.labels["metalprobe"]
     assert seen["Label"] == label and seen["KeepAlive"] is False
     assert seen["ProgramArguments"][:3] == ["/x/python", "-m", "voiced.launchd.metal_probe"]
+    assert seen["StandardErrorPath"] == str(tmp_path / "logs/metalprobe.stderr.log")
+    assert seen["logs"]  # the directory was there before launchd opened the files
     assert "UserName" not in seen
     assert not Path(seen["path"]).exists()
     assert launchd.verbs()[-1] == ("bootout", label) and label not in launchd.loaded
