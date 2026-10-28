@@ -12,6 +12,7 @@ import contextlib
 import json
 import os
 import platform
+import plistlib
 import pty
 import pwd
 import re
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from voiced.config import (
+    ENV_CONFIG_PATH,
     HTTP_SERVICES,
     SERVICES,
     DaemonName,
@@ -57,7 +59,6 @@ from voiced.launchd.control import (
 )
 from voiced.launchd.install import METAL_PROBE_FILE, agent_plist
 from voiced.launchd.metal_probe import macos_version as _macos_version
-from voiced.launchd.plist import log_paths
 from voiced.launchd.ports import (
     FIREWALL_NOTE,
     firewall_enabled,
@@ -563,10 +564,35 @@ EX_CONFIG = "78"
 
 
 def _read_plist(path: Path) -> bytes | None:
+    """The plist, or None when there is none; any other error is raised."""
     try:
         return path.read_bytes()
-    except OSError:
+    except FileNotFoundError:
         return None
+
+
+def _plist_fields(data: bytes) -> dict[str, Any]:
+    try:
+        parsed = plistlib.loads(data)
+    except (plistlib.InvalidFileException, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _out_of_date(label: str, installed: bytes, expected: bytes) -> str:
+    """Why the plist on disk is not what ``voiced install`` would write now."""
+    have, want = _plist_fields(installed), _plist_fields(expected)
+    have_env, want_env = have.get("EnvironmentVariables") or {}, want["EnvironmentVariables"]
+    entry, config = (have.get("ProgramArguments") or [None])[0], have_env.get(ENV_CONFIG_PATH)
+    if entry != want["ProgramArguments"][0] or config != want_env[ENV_CONFIG_PATH]:
+        # `voiced install --state-dir` or another VOICED_CONFIG: installing
+        # again with this config would install somewhere else.
+        return (
+            f"{plist_path(label)} runs {entry} with config {config}, not this one's: set "
+            "[install] venv_dir to that state directory and use that config, or run "
+            "`voiced install` again with the same --state-dir"
+        )
+    return f"{plist_path(label)} is out of date; run `voiced install`"
 
 
 def check_agent(
@@ -575,7 +601,6 @@ def check_agent(
     runner: Runner,
     installed: bytes | None,
     expected: bytes,
-    log_dir: Path,
 ) -> Check:
     """``installed`` is the plist on disk, ``expected`` what ``voiced
     install`` would write now (``agent_plist``)."""
@@ -585,33 +610,30 @@ def check_agent(
         detail = status.summary + (f", pid {status.pid}" if status.pid else "")
         if status.last_exit_code and status.last_exit_code not in ("0", "(never exited)"):
             detail += f", last exit {status.last_exit_code}"
+        stale = None if installed == expected else _out_of_date(label, installed, expected)
         if not status.running and (status.last_exit_code or "").split(":")[0] == EX_CONFIG:
-            logs = log_paths(log_dir, service)
-            return Check(
-                name,
-                "fail",
-                f"{detail}: launchd could not open {logs.stdout} or {logs.stderr}, so it does "
-                f"not start the service; make [server] log_dir ({log_dir}) a directory you can "
-                f"write, then `voiced stop {service}` and `voiced start {service}`",
+            # launchd's code for a job it could not set up; with these
+            # plists, most likely the log files it opens before the start.
+            fields = _plist_fields(installed)
+            logs = [fields[k] for k in ("StandardOutPath", "StandardErrorPath") if k in fields]
+            cause = (
+                f"probably could not open {' or '.join(logs)}" if logs else "could not set it up"
             )
-        if installed != expected:
-            # An earlier release's plist (a formula or uv tool upgrade keeps
-            # it), or one naming a log_dir changed since.
-            return Check(
-                name,
-                "warn",
-                f"{detail}, but {plist_path(label)} is out of date; run `voiced install`",
+            fix = stale or (
+                "make [server] log_dir a directory you can write, then "
+                f"`voiced stop {service}` and `voiced start {service}`"
             )
+            return Check(name, "fail", f"{detail}: launchd {cause}, so it does not start; {fix}")
         if not status.running:
             # KeepAlive should have started it. After bin/voiced dangled and
             # came back, launchd can leave a job at "spawn scheduled" for
             # good; booting it out and in again recovers it.
-            return Check(
-                name,
-                "warn",
-                f"{detail}: loaded but not running; `voiced stop {service}` and "
-                f"`voiced start {service}` reload it",
-            )
+            fix = stale or f"`voiced stop {service}` and `voiced start {service}` reload it"
+            return Check(name, "warn", f"{detail}: loaded but not running; {fix}")
+        if stale:
+            # An earlier release's plist (a formula or uv tool upgrade keeps
+            # it), or one naming a log_dir changed since.
+            return Check(name, "warn", f"{detail}, but {stale}")
         return Check(name, "pass", detail)
     if installed is not None:
         return Check(
@@ -624,20 +646,20 @@ def check_agent(
 
 def check_agents(settings: Settings, runner: Runner, read: Read = _read_plist) -> list[Check]:
     entry, log_dir = entry_point(state_dir(settings).absolute()), settings.server.log_dir
+    home, config = Path.home(), config_path()
     checks = []
     for service in SERVICES:
         label = settings.launchd.label(service)
+        path = plist_path(label)
+        try:
+            installed = read(path)
+        except OSError as exc:
+            checks.append(Check(f"Agent {service}", "fail", f"cannot read {path}: {exc}"))
+            continue
         expected = agent_plist(
-            service,
-            label,
-            entry=entry,
-            home=Path.home(),
-            config_file=config_path(),
-            log_dir=log_dir,
+            service, label, entry=entry, home=home, config_file=config, log_dir=log_dir
         )
-        checks.append(
-            check_agent(service, label, runner, read(plist_path(label)), expected, log_dir)
-        )
+        checks.append(check_agent(service, label, runner, installed, expected))
     return checks
 
 

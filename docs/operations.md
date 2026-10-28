@@ -48,7 +48,10 @@ you are logged in at the Mac (what `voiced install` needs), whether
 voiced starts after a reboot (FileVault or automatic login), LaunchDaemons
 left from 0.4.0 or earlier, each service's configured model (downloaded at
 its pin, or the command that fetches it), whether the agents are installed
-and loaded, the control socket, Metal from the service environment, the
+and loaded and their plists are what `voiced install` writes (it warns
+after an upgrade that kept an earlier release's plist, or a `log_dir`
+changed since; it fails an agent launchd refused with exit code 78), the
+control socket, Metal from the service environment, the
 last `--metal-probe` result and, with `bind` on the network, whether the
 firewall is on (macOS then asks at the Mac whether the services' Python
 may accept connections, again after an update that changes it) and

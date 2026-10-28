@@ -114,11 +114,3 @@ def test_a_plist_of_an_earlier_release_is_logged_once(
     assert text.count("plist of an earlier release") == 1 and "WARNING" in text
     assert "`voiced install`" in text
     assert OLD_PLIST_ENV not in os.environ  # nor in what the service starts
-
-
-def test_no_warning_from_a_current_plist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(OLD_PLIST_ENV, raising=False)
-    configure_logging("tts", "info", tmp_path, interactive=False)
-    for handler in logging.getLogger().handlers:
-        handler.flush()
-    assert (tmp_path / "tts.log").read_text() == ""

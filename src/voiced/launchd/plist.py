@@ -54,8 +54,9 @@ def log_paths(log_dir: Path, service: str) -> LogPaths:
 
 
 def warn_if_old_plist(logger: logging.Logger) -> None:
-    """Log once, in the rotating log, that this process runs from an old
-    plist (:data:`OLD_PLIST_ENV`); called by the log configurers."""
+    """Remove :data:`OLD_PLIST_ENV` from the environment, logging once, in
+    the rotating log, that it was there: this process runs from an old
+    plist. Called by the log configurers."""
     if os.environ.pop(OLD_PLIST_ENV, None) is not None:
         logger.warning(
             "started from the plist of an earlier release: stdout and stderr go nowhere "

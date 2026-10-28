@@ -47,6 +47,7 @@ from voiced.launchd.install import (
     BASE_PATH,
     InstallError,
     InstallPlan,
+    agent_environment,
     install_agents,
     new_environment_dir,
     plan_install,
@@ -633,7 +634,12 @@ def test_engine_variables_come_from_the_config_not_the_plists(
     settings.tts.espeak_data = tmp_path / "data"
     p = plan_install(settings, home=tmp_path, uv=None)
     assert p.model_download_command()[-2:] == ["--config", str(p.config_file)]
-    assert set(p.environment_variables()) == {"HOME", "PATH", "VOICED_CONFIG", "PYTHONUNBUFFERED"}
+    assert set(agent_environment(p.entry, p.home, p.config_file)) == {
+        "HOME",
+        "PATH",
+        "VOICED_CONFIG",
+        "PYTHONUNBUFFERED",
+    }
     summary = plan_summary(p)
     assert f"hf_home        {tmp_path / 'hf'}" in summary
     assert f"VOICED_ESPEAK_DATA {tmp_path / 'data'}" in summary

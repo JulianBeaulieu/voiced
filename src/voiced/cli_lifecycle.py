@@ -822,8 +822,9 @@ def cmd_logs(args: argparse.Namespace, settings: Settings, echo: Echo) -> int:
     if missing:
         # launchd creates them where the plists say: after a log_dir change,
         # still in the old directory until `voiced install`.
+        it = "it" if len(missing) == 1 else "them"
         echo(
-            f"no {', '.join(missing)} under {settings.server.log_dir}: launchd creates it "
+            f"no {', '.join(missing)} under {settings.server.log_dir}: launchd creates {it} "
             "when the service starts; after changing [server] log_dir, run `voiced install`"
         )
     return 0

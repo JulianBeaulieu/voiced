@@ -256,9 +256,6 @@ class InstallPlan:
         found = self.legacy_daemons(query)
         return legacy_message(found, self.user) if found else None
 
-    def environment_variables(self) -> dict[str, str]:
-        return agent_environment(self.entry, self.home, self.config_file)
-
     # Shell commands ----------------------------------------------------
 
     def build_commands(self) -> list[list[str]]:
@@ -575,7 +572,7 @@ def run_metal_probe(
         program_arguments=[str(python), "-m", "voiced.launchd.metal_probe", "--out", str(out)],
         log_dir=plan.log_dir,
         working_directory=plan.home,
-        environment=plan.environment_variables(),
+        environment=agent_environment(plan.entry, plan.home, plan.config_file),
         keep_alive=False,
     )
     plan.log_dir.mkdir(parents=True, exist_ok=True)
