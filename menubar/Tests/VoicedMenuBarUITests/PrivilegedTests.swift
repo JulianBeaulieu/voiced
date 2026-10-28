@@ -160,7 +160,8 @@ final class PrivilegedTests: XCTestCase {
     }
 
     func testCancellingKillsWhatIgnoresSIGTERM() async throws {
-        let runner = SystemInstallRunner(terminationGrace: 0.3)
+        // A grace far above the 150 ms check below, which a loaded runner may oversleep.
+        let runner = SystemInstallRunner(terminationGrace: 2)
         let marker = scratch.appendingPathComponent("pid")
         let task = Task {
             try await self.collect(runner.run(InstallCommand(
@@ -172,7 +173,7 @@ final class PrivilegedTests: XCTestCase {
         task.cancel()
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(kill(child, 0), 0, "SIGTERM is ignored, so it still runs within the grace")
-        let gone = await eventually(timeout: .seconds(3)) { kill(child, 0) != 0 }
+        let gone = await eventually { kill(child, 0) != 0 }
         XCTAssertTrue(gone)
         let ended = await finished(task, within: .seconds(3))
         XCTAssertNotNil(ended, "the stream ends once the group is killed")
