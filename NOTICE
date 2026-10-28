@@ -43,7 +43,7 @@ Python packages (src/voiced/requirements.lock)
   dlinfo==2.0.0  MIT  https://pypi.org/project/dlinfo/2.0.0/
   espeakng-loader==0.2.4  MIT  https://pypi.org/project/espeakng-loader/0.2.4/
   fastapi==0.143.0  MIT  https://pypi.org/project/fastapi/0.143.0/
-  filelock==4.1.1  MIT  https://pypi.org/project/filelock/4.1.1/
+  filelock==4.2.1  MIT  https://pypi.org/project/filelock/4.2.1/
   flatbuffers==25.12.19  Apache-2.0  https://pypi.org/project/flatbuffers/25.12.19/
   fsspec==2026.9.0  BSD-3-Clause  https://pypi.org/project/fsspec/2026.9.0/
   google-crc32c==1.9.0  Apache-2.0  https://pypi.org/project/google-crc32c/1.9.0/
