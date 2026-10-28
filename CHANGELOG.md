@@ -6,6 +6,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- A setting refused by `voiced settings set`, `voiced install --set`, the
+  app or the status page now reads the same in all of them, for example
+  `tts.speed: must be a number, got "fast"`. `idle_unload_s` says what its
+  bounds mean: `must be at most 604800 (seconds; 0 is never, 604800 one
+  week)`.
+
 ### Fixed
 
 - `voiced install` over SSH with nobody logged in at the Mac stops before

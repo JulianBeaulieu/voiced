@@ -135,7 +135,9 @@ class _ServiceSection(_Section):
     enabled: bool = True
     # Seconds without a request after which the model is unloaded; the next
     # request loads it again. 0 keeps it loaded; at most a week.
-    idle_unload_s: int = Field(default=0, ge=0, le=MAX_IDLE_UNLOAD_S)
+    idle_unload_s: int = Field(
+        default=0, ge=0, le=MAX_IDLE_UNLOAD_S, description="seconds; 0 is never, 604800 one week"
+    )
 
 
 class STTConfig(_ServiceSection):

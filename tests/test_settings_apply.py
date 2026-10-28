@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from annotated_types import Le
 
 import voiced.settings_store as store
-from voiced.config import Settings, load_settings
+from voiced.config import Settings, TTSConfig, load_settings
 from voiced.settings_store import (
     ConfigFileError,
     InvalidSetting,
     apply_settings,
     bind_mode,
+    check_setting,
+    parse_setting,
 )
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "config.example.toml"
@@ -142,6 +146,126 @@ def test_invalid_never_reaches_the_file(cfg: Path) -> None:
         assert info.value.field == field
     assert cfg.read_text() == before
     assert not [p for p in cfg.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+IDLE_HINT = "(seconds; 0 is never, 604800 one week)"
+
+
+@pytest.mark.parametrize(
+    ("pair", "value", "message"),
+    [
+        ("tts.speed=4.5", 4.5, "tts.speed: must be at most 4"),
+        ("tts.speed=0.1", 0.1, "tts.speed: must be at least 0.25"),
+        ("tts.speed=fast", "fast", 'tts.speed: must be a number, got "fast"'),
+        ("tts.speed=nan", float("nan"), "tts.speed: must be a finite number, got NaN"),
+        ("stt.idle_unload_s=-1", -1, f"stt.idle_unload_s: must be at least 0 {IDLE_HINT}"),
+        (
+            "stt.idle_unload_s=604801",
+            604801,
+            f"stt.idle_unload_s: must be at most 604800 {IDLE_HINT}",
+        ),
+        (
+            "stt.idle_unload_s=5m",
+            "5m",
+            f'stt.idle_unload_s: must be a whole number, got "5m" {IDLE_HINT}',
+        ),
+        ("stt.enabled=maybe", "maybe", 'stt.enabled: must be true or false, got "maybe"'),
+        ("tts.voice= ", " ", "tts.voice: must not be empty"),
+        ("bind=everywhere", "everywhere", 'bind: must be "loopback" or "lan", got "everywhere"'),
+    ],
+)
+def test_terminal_and_app_get_the_same_refusal(
+    cfg: Path, pair: str, value: object, message: str
+) -> None:
+    """``voiced settings set`` reads text, the app sends JSON; one check
+    refuses both, with one message."""
+    with pytest.raises(InvalidSetting) as typed:
+        parse_setting(pair)
+    with pytest.raises(InvalidSetting) as sent:
+        apply_settings({pair.partition("=")[0]: value}, cfg)
+    assert str(typed.value) == str(sent.value) == message
+
+
+@pytest.mark.parametrize("name", [n for n in store.SETTABLE if n != "bind"])
+def test_every_settable_default_passes_the_check(name: str) -> None:
+    """Each settable field has a check for its type, and its default is
+    within the field's own bounds."""
+    default = store._field(name).get_default(call_default_factory=True)
+    assert check_setting(name, default) == default
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("tts.speed", True, "must be a number, got true"),
+        ("stt.idle_unload_s", 1.5, f"must be a whole number, got 1.5 {IDLE_HINT}"),
+        ("tts.voice", None, "must be a string, got null"),
+    ],
+)
+def test_a_json_value_is_quoted_as_json(name: str, value: object, message: str) -> None:
+    with pytest.raises(InvalidSetting) as info:
+        check_setting(name, value)
+    assert info.value.message == message
+
+
+def test_a_value_the_app_sends_as_a_float_is_a_whole_number(cfg: Path) -> None:
+    change = apply_settings({"stt.idle_unload_s": 300.0}, cfg)
+    assert change.settings.stt.idle_unload_s == 300
+    with pytest.raises(InvalidSetting, match="must be a whole number"):
+        parse_setting("stt.idle_unload_s=300.0")
+
+
+@pytest.fixture
+def speed_at_most_2() -> Iterator[None]:
+    """``tts.speed`` with ``le=2`` in place of its real bound."""
+    field = TTSConfig.model_fields["speed"]
+    real = field.metadata
+    field.metadata = [Le(2) if isinstance(m, Le) else m for m in real]
+    TTSConfig.model_rebuild(force=True)
+    yield
+    field.metadata = real
+    TTSConfig.model_rebuild(force=True)
+
+
+@pytest.mark.usefixtures("speed_at_most_2")
+def test_the_bounds_are_the_config_fields(cfg: Path) -> None:
+    """No bound is restated: change the field's and both clients follow."""
+    with pytest.raises(InvalidSetting) as typed:
+        parse_setting("tts.speed=3")
+    with pytest.raises(InvalidSetting) as sent:
+        apply_settings({"tts.speed": 3}, cfg)
+    assert str(typed.value) == str(sent.value) == "tts.speed: must be at most 2"
+
+
+def test_a_settable_field_of_another_type_is_refused_at_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(store.SETTABLE, "server.log_dir", ("server", "log_dir"))
+    with pytest.raises(TypeError, match=r"server\.log_dir"):
+        store._check_settable_types()
+
+
+def test_a_file_value_is_refused_in_the_same_words(tmp_path: Path, settings: Settings) -> None:
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("[stt]\nidle_unload_s = -3\n")
+    with pytest.raises(InvalidSetting) as info:
+        apply_settings({"tts.speed": 1.5}, cfg)
+    assert str(info.value) == f"stt.idle_unload_s: must be at least 0 {IDLE_HINT}"
+
+
+@pytest.mark.parametrize(
+    ("pair", "parsed"),
+    [
+        ("tts.speed=2", ("tts.speed", 2.0)),
+        ("stt.idle_unload_s=300", ("stt.idle_unload_s", 300)),
+        ("zeroconf=OFF", ("zeroconf", False)),
+        ("tts.voice= bf_emma ", ("tts.voice", "bf_emma")),
+        ("api_key= k ", ("api_key", " k ")),
+        ("bind=lan", ("bind", "lan")),
+    ],
+)
+def test_parse_setting_types_text_by_the_config_field(pair: str, parsed: object) -> None:
+    assert parse_setting(pair) == parsed
 
 
 def test_file_already_invalid_is_reported(tmp_path: Path, settings: Settings) -> None:

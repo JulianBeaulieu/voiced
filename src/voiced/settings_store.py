@@ -16,7 +16,9 @@ shape.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -29,6 +31,8 @@ from typing import Any, Literal, TypeAlias
 
 import tomlkit
 from pydantic import BaseModel, ValidationError
+from pydantic.fields import FieldInfo
+from pydantic_core import ErrorDetails
 
 from voiced import models
 from voiced.config import (
@@ -69,18 +73,28 @@ SETTABLE: dict[str, tuple[str, str]] = {
 """Settable name (as the control protocol spells it) -> (section, file key)."""
 
 
-def setting_type(name: str) -> object:
-    """The annotation of the config field a settable name writes."""
-    section, key = SETTABLE[name]
+def _section_model(section: str) -> type[BaseModel]:
     model = Settings.model_fields[section].annotation
     assert isinstance(model, type) and issubclass(model, BaseModel)
-    return model.model_fields[key].annotation
+    return model
 
 
-BOOLEAN_SETTINGS = tuple(name for name in SETTABLE if setting_type(name) is bool)
-"""Settable names whose value is true or false (from the config models)."""
-INTEGER_SETTINGS = tuple(name for name in SETTABLE if setting_type(name) is int)
-"""Settable names whose value is a whole number (from the config models)."""
+def _field(name: str) -> FieldInfo:
+    """The config field a settable name writes: its type and its constraints."""
+    section, key = SETTABLE[name]
+    return _section_model(section).model_fields[key]
+
+
+def _check_settable_types() -> None:
+    """:func:`check_setting` and :func:`parse_setting` know these types; a
+    settable field of another is refused here, at import, not by a client."""
+    for name in SETTABLE:
+        if _field(name).annotation not in (bool, int, float, str):
+            raise TypeError(f"{name}: a settable field is a bool, int, float or str")
+
+
+_check_settable_types()
+
 
 # Which services read a section at startup. browser_settings is read from the
 # file by the status page, and tts.speed by the tts service for each request
@@ -253,41 +267,95 @@ def _settable_name(section: str, key: str) -> str:
     return f"{section}.{key}"
 
 
-def _coerce(name: str, value: object, current: Mapping[str, Any]) -> object:
-    """Shape checks the section models would be too lenient about, plus the
-    ``bind`` mode mapping. The models validate everything else."""
+# A pydantic error type -> what the value must be.
+_EXPECTED = {
+    "bool_type": "true or false",
+    "bool_parsing": "true or false",
+    "int_type": "a whole number",
+    "int_parsing": "a whole number",
+    "int_from_float": "a whole number",
+    "float_type": "a number",
+    "float_parsing": "a number",
+    "string_type": "a string",
+}
+# A pydantic bound error -> how the bound reads, and its key in the context.
+_BOUNDS = {
+    "greater_than": ("greater than", "gt"),
+    "greater_than_equal": ("at least", "ge"),
+    "less_than": ("less than", "lt"),
+    "less_than_equal": ("at most", "le"),
+}
+
+
+def _must_be(expected: str, value: object) -> str:
+    """A refusal by type: what the value must be, and the value as JSON spells it."""
+    return f"must be {expected}, got {json.dumps(value, default=str)}"
+
+
+def _refusal(err: ErrorDetails, field: FieldInfo | None) -> str:
+    """A pydantic error as voiced words it, the field's ``description`` (if
+    any) as a hint. The one wording for every check of a config value: a
+    settable value (:func:`check_setting`) and the whole file
+    (:func:`validate_file_data`). Error types without a wording here keep
+    pydantic's message."""
+    kind = err["type"]
+    if kind in _EXPECTED:
+        text = _must_be(_EXPECTED[kind], err["input"])
+    elif kind in _BOUNDS:
+        words, key = _BOUNDS[kind]
+        text = f"must be {words} {format(err.get('ctx', {})[key], '.15g')}"
+    else:
+        return err["msg"]
+    hint = field.description if field is not None else None
+    return f"{text} ({hint})" if hint else text
+
+
+def check_setting(name: str, value: object) -> object:
+    """``value`` for the settable ``name`` as it is stored, else
+    :class:`InvalidSetting`.
+
+    The one check for every client: ``settings.set`` (JSON from the app and
+    the status page) and ``voiced settings set`` (text, which
+    :func:`parse_setting` reads by the field's type first). The config
+    field itself validates the value, in strict mode (no ``"yes"`` for
+    true, no ``1.5`` for 1), so its type and constraints cannot drift from
+    ``voiced.config``. ``bind`` is the mode, ``loopback`` or ``lan``;
+    :func:`stage_settings` turns it into an address.
+    """
     if name == "bind":
         if value not in ("loopback", "lan"):
-            raise InvalidSetting(name, 'must be "loopback" or "lan"')
-        old = str(current.get("bind", LOOPBACK_BIND))
-        if bind_mode(old) == value:
-            return old  # keep a specific address of the same kind
-        return LOOPBACK_BIND if value == "loopback" else LAN_BIND
-    if name in BOOLEAN_SETTINGS:
-        if not isinstance(value, bool):
-            raise InvalidSetting(name, "must be true or false")
+            raise InvalidSetting(name, _must_be('"loopback" or "lan"', value))
         return value
-    if name in INTEGER_SETTINGS:
-        if isinstance(value, float) and value.is_integer():
-            value = int(value)  # 300.0 from a JSON encoder that writes floats
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise InvalidSetting(name, "must be a whole number of seconds")
-        if value < 0:
-            raise InvalidSetting(name, "must be 0 (never) or more")
-        return value
-    if name == "tts.speed":
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            raise InvalidSetting(name, "must be a number")
-        if not 0 < float(value) <= 4:
-            raise InvalidSetting(name, "must be greater than 0 and at most 4")
-        return float(value)
+    section, key = SETTABLE[name]
+    model = _section_model(section)
+    field = model.model_fields[key]
+    if field.annotation is int and isinstance(value, float) and value.is_integer():
+        value = int(value)  # 300.0 from a JSON encoder that writes floats
+    if field.annotation is float and isinstance(value, float) and not math.isfinite(value):
+        raise InvalidSetting(name, _must_be("a finite number", value))
+    try:
+        checked = model.__pydantic_validator__.validate_assignment(
+            model.model_construct(), key, value, strict=True
+        )
+    except ValidationError as exc:
+        raise InvalidSetting(name, _refusal(exc.errors()[0], field)) from None
+    value = getattr(checked, key)
     if not isinstance(value, str):
-        raise InvalidSetting(name, "must be a string")
+        return value
     if name != "api_key" and not value.strip():
         raise InvalidSetting(name, "must not be empty")
     if "\n" in value or "\r" in value:
         raise InvalidSetting(name, "must be a single line")
     return value if name == "api_key" else value.strip()
+
+
+def _bind_address(mode: object, current: Mapping[str, Any]) -> str:
+    """The address for a ``bind`` mode: the file's own address when it is
+    already of that kind (a specific LAN address stays), else the default."""
+    old = str(current.get("bind", LOOPBACK_BIND))
+    if bind_mode(old) == mode:
+        return old
+    return LOOPBACK_BIND if mode == "loopback" else LAN_BIND
 
 
 def validate_file_data(data: Mapping[str, Any]) -> dict[str, BaseModel]:
@@ -297,9 +365,8 @@ def validate_file_data(data: Mapping[str, Any]) -> dict[str, BaseModel]:
     for name in data:
         if name not in Settings.model_fields:
             raise InvalidSetting(name, "unknown section")
-    for name, field in Settings.model_fields.items():
-        model = field.annotation
-        assert isinstance(model, type) and issubclass(model, BaseModel)
+    for name in Settings.model_fields:
+        model = _section_model(name)
         raw = data.get(name, {})
         if not isinstance(raw, Mapping):
             raise InvalidSetting(name, "must be a table")
@@ -308,7 +375,8 @@ def validate_file_data(data: Mapping[str, Any]) -> dict[str, BaseModel]:
         except ValidationError as exc:
             err = exc.errors()[0]
             key = str(err["loc"][0]) if err["loc"] else ""
-            raise InvalidSetting(_settable_name(name, key), err["msg"]) from None
+            field = model.model_fields.get(key)
+            raise InvalidSetting(_settable_name(name, key), _refusal(err, field)) from None
     return sections
 
 
@@ -439,9 +507,11 @@ def stage_settings(
 
     wanted: dict[str, object] = {}
     for name, value in changes.items():
-        section, _key = SETTABLE[name]
-        table = data.get(section, {})
-        wanted[name] = _coerce(name, value, table if isinstance(table, Mapping) else {})
+        wanted[name] = check_setting(name, value)
+    if "bind" in wanted:
+        server = data.get("server")
+        current = server if isinstance(server, Mapping) else {}
+        wanted["bind"] = _bind_address(wanted["bind"], current)
     if engines is not None and _ENGINE_KEYS & set(wanted):
         complete_engine_change(wanted, old_sections, engines())
 
@@ -526,32 +596,43 @@ _FALSE = ("false", "no", "off", "0")
 
 
 def parse_setting(pair: str, stdin: Callable[[], str] = sys.stdin.readline) -> tuple[str, object]:
-    """``KEY=VALUE`` from the command line to a typed value for ``settings.set``."""
+    """``KEY=VALUE`` from the command line, checked by :func:`check_setting`.
+    ``api_key=-`` reads the key from ``stdin``. Raises ``ValueError``
+    (:class:`InvalidSetting` for a value).
+
+    ``settings.set`` checks the value again; checking here as well makes a
+    typo exit 2 before the control socket is asked, and covers
+    ``voiced install --set`` and ``models download --set``, which run
+    without one."""
     key, sep, raw = pair.partition("=")
     key = key.strip()
     if not sep:
         raise ValueError(f"{pair!r}: expected KEY=VALUE")
     if key not in SETTABLE:
         raise ValueError(f"{key!r} is not settable; settable: {', '.join(SETTABLE)}")
-    if key in BOOLEAN_SETTINGS:
-        if raw.lower() in _TRUE:
-            return key, True
-        if raw.lower() in _FALSE:
-            return key, False
-        raise ValueError(f"{key}: expected true or false, got {raw!r}")
-    if key == "tts.speed":
-        try:
-            return key, float(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a number, got {raw!r}") from None
-    if key in INTEGER_SETTINGS:
-        try:
-            return key, int(raw)
-        except ValueError:
-            raise ValueError(f"{key}: expected a whole number of seconds, got {raw!r}") from None
     if key == "api_key" and raw == "-":
-        return key, stdin().rstrip("\r\n")
-    return key, raw
+        raw = stdin().rstrip("\r\n")
+    return key, check_setting(key, _from_text(key, raw))
+
+
+def _from_text(name: str, raw: str) -> object:
+    """Command-line text as a value of the field's type. Text that does not
+    read as one stays text, for :func:`check_setting` to refuse with the
+    message the app would get."""
+    kind = _field(name).annotation
+    try:
+        if kind is bool:
+            if raw.lower() in _TRUE:
+                return True
+            if raw.lower() in _FALSE:
+                return False
+        elif kind is int:
+            return int(raw)
+        elif kind is float:
+            return float(raw)
+    except ValueError:
+        pass
+    return raw
 
 
 _MISSING = object()

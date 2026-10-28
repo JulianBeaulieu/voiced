@@ -168,5 +168,5 @@ def test_parse_enabled_and_idle_unload(pair: str, parsed: tuple[str, object]) ->
 def test_parse_idle_unload_wants_whole_seconds() -> None:
     from voiced.cli_lifecycle import parse_setting
 
-    with pytest.raises(ValueError, match="whole number of seconds"):
+    with pytest.raises(ValueError, match="whole number"):
         parse_setting("stt.idle_unload_s=5m")

@@ -89,8 +89,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "download":
         from voiced.settings_store import parse_setting
 
+        try:
+            changes = dict(parse_setting(pair) for pair in args.pairs)
+        except ValueError as exc:
+            print(f"--set {exc}", file=sys.stderr)
+            return 2
         report = (lambda line: print(line, flush=True)) if args.report else None
-        download(args.config, report, dict(parse_setting(pair) for pair in args.pairs))
+        download(args.config, report, changes)
         return 0
     if args.command == "pin":
         for model_id in pin(args.models, args.revision):

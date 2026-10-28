@@ -98,8 +98,9 @@ def test_settings_set_api_key_from_stdin(settings: Settings, cfg: Path) -> None:
 def test_settings_set_rejects(settings: Settings, cfg: Path) -> None:
     before = cfg.read_text()
     for argv, code, message in [
-        (["tts.speed=fast"], 2, "expected a number"),
-        (["zeroconf=maybe"], 2, "expected true or false"),
+        (["tts.speed=fast"], 2, 'tts.speed: must be a number, got "fast"'),
+        (["tts.speed=5"], 2, "tts.speed: must be at most 4"),
+        (["zeroconf=maybe"], 2, 'zeroconf: must be true or false, got "maybe"'),
         (["nope=1"], 2, "not settable"),
         (["bind"], 2, "expected KEY=VALUE"),
         (["tts.voice=nobody"], 1, "tts.voice: fake has no voice"),

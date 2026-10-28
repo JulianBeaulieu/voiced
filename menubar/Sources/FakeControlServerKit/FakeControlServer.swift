@@ -430,15 +430,21 @@ public final class FakeControlServer: @unchecked Sendable {
             case (.ttsEngine, .string(let engine)): next.settings.tts.engine = engine
             case (.ttsModel, .string(let model)): next.settings.tts.model = model
             case (.ttsVoice, .string(let voice)): next.settings.tts.voice = voice
+            // The bounds are voiced.config's MIN_TTS_SPEED, MAX_TTS_SPEED and
+            // MAX_IDLE_UNLOAD_S, and the messages voiced.settings_store's.
             case (.ttsSpeed, .number(let speed)):
-                guard speed > 0, speed <= 4 else { return invalid(name, "must be greater than 0 and at most 4") }
+                guard speed >= 0.25 else { return invalid(name, "must be at least 0.25") }
+                guard speed <= 4 else { return invalid(name, "must be at most 4") }
                 next.settings.tts.speed = speed
             case (.sttEnabled, .bool(let on)): next.settings.stt.enabled = on
             case (.ttsEnabled, .bool(let on)): next.settings.tts.enabled = on
             case (.sttIdleUnload, .number(let seconds)), (.ttsIdleUnload, .number(let seconds)):
-                guard seconds >= 0, seconds.rounded() == seconds else {
-                    return invalid(name, "must be a whole number of seconds")
+                let hint = "(seconds; 0 is never, 604800 one week)"
+                guard seconds.rounded() == seconds else {
+                    return invalid(name, "must be a whole number, got \(seconds) \(hint)")
                 }
+                guard seconds >= 0 else { return invalid(name, "must be at least 0 \(hint)") }
+                guard seconds <= 604_800 else { return invalid(name, "must be at most 604800 \(hint)") }
                 if key == .sttIdleUnload {
                     next.settings.stt.idleUnloadS = Int(seconds)
                 } else {
