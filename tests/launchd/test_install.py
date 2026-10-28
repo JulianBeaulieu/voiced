@@ -359,13 +359,77 @@ def test_prepare_builds_and_downloads_and_changes_nothing_that_runs(
     assert launchd.loaded == {} and not p.agent_path("stt").exists()
 
 
-def test_the_agents_need_a_logged_in_user(settings: Settings, tmp_path: Path) -> None:
-    """Over SSH with nobody logged in at the Mac there is no gui domain."""
+@pytest.mark.parametrize("legacy", [False, True], ids=["fresh", "old daemons"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["install", "dry run"])
+def test_without_a_login_session_install_changes_nothing(
+    settings: Settings, tmp_path: Path, no_launchd: Path, legacy: bool, dry_run: bool
+) -> None:
+    """Over SSH with nobody logged in at the Mac there is no gui domain, so
+    the agents cannot load: the install says so first, before the old
+    daemons' refusal and before any step, so nothing is built or removed
+    for an install that cannot finish. A dry run says the same."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    if legacy:
+        for service in SERVICES:
+            _daemon(no_launchd, p.labels[service], p.user)
+    launchd = FakeLaunchd(session=False)
+    calls: list[list[str]] = []
+    said: list[str] = []
+    with pytest.raises(InstallError) as refused:
+        run_install(
+            p,
+            runner=lambda argv: calls.append(list(argv)) or CommandResult(0),  # type: ignore[func-returns-value]
+            query=launchd,
+            dry_run=dry_run,
+            say=said.append,
+        )
+    assert str(refused.value) == (
+        f"Not installing yet; nothing was changed. {p.user} is not logged in at this Mac, "
+        "and an SSH login is not enough: the services are LaunchAgents, which load only "
+        "while you are logged in. Log in at the Mac; Screen Sharing counts."
+    )
+    assert calls == [] and said == []
+    assert launchd.calls == [["launchctl", "print", f"gui/{os.getuid()}"]]
+    assert not p.state_dir.exists() and not p.config_file.exists() and not p.log_dir.exists()
+    assert not p.agent_path("stt").parent.exists()
+
+
+def test_prepare_needs_no_login_session(settings: Settings, tmp_path: Path) -> None:
+    """``prepare`` loads no agent; the install that completes it checks."""
+    _environment(tmp_path / "env")
+    p = _plan(settings, tmp_path)
+    launchd = FakeLaunchd(session=False)
+    run_install(p, runner=lambda argv: CommandResult(0), query=launchd, prepare=True, say=[].append)
+    assert ["launchctl", "print", f"gui/{os.getuid()}"] not in launchd.calls
+    with pytest.raises(InstallError, match="not logged in at this Mac"):
+        run_install(p, runner=lambda argv: CommandResult(0), query=launchd, say=[].append)
+    assert not p.entry.exists()
+
+
+def test_the_agents_step_checks_the_session_again(settings: Settings, tmp_path: Path) -> None:
+    """A logout during a long install: the agents step refuses, as the
+    install did at its start."""
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
     with pytest.raises(InstallError, match="not logged in at this Mac"):
         install_agents(p, FakeLaunchd(session=False), lambda _: None)
     assert not p.agent_path("stt").exists()
+
+
+def test_the_migration_says_the_install_needs_a_login_at_the_mac(
+    settings: Settings, tmp_path: Path, no_launchd: Path
+) -> None:
+    """The services are down from the removal until the install loads the
+    agents, so a migration over SSH is planned with someone at the Mac."""
+    p = _plan(settings, tmp_path)
+    _daemon(no_launchd, p.labels["watchdog"], p.user)
+    refusal = p.legacy_refusal(FakeLaunchd())
+    assert refusal is not None and refusal.endswith(
+        "\n  voiced install\n\nThe services are down from the removal until `voiced install` "
+        "loads the agents, which needs you logged in at this Mac (Screen Sharing counts; "
+        "SSH alone does not)."
+    )
 
 
 def test_a_changed_agent_is_loaded_again_only_once_the_old_one_is_gone(
@@ -1090,7 +1154,12 @@ def test_install_refuses_an_environment_without_the_engines(
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
     with pytest.raises(InstallError, match="--source"):
-        run_install(p, runner=pytest.fail, query=lambda argv: CommandResult(1), say=lambda _: None)
+        run_install(
+            p,
+            runner=pytest.fail,
+            query=lambda argv: FakeLaunchd()(argv) if argv[0] == "launchctl" else CommandResult(1),
+            say=lambda _: None,
+        )
     assert not p.entry.exists()
 
 
@@ -1227,6 +1296,44 @@ def test_the_models_step_downloads_what_the_staged_settings_name(
     assert fetched == []
 
 
+@pytest.mark.parametrize("off", [("tts",), ("stt", "tts")], ids=["text to speech off", "both off"])
+def test_the_models_step_downloads_only_the_services_that_are_on(
+    settings: Settings,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    off: tuple[str, ...],
+) -> None:
+    """A service that is off loads no model (ADR 0033): the step the
+    install runs, with the choice passed as ``--set``, downloads nothing for
+    it and says so, also when both are off."""
+    from voiced.models import commands
+
+    class Loaded:
+        name = model_id = "fake"
+
+        async def load(self) -> None:
+            pass
+
+    created: list[str] = []
+    monkeypatch.setattr("voiced.models.commands.cache_dir", lambda: "/hf/hub")
+    monkeypatch.setattr(
+        "voiced.engines.registry.create_engine",
+        lambda kind, engine, model: created.append(kind) or Loaded(),
+    )
+    _environment(tmp_path / "env")
+    (tmp_path / "config.toml").write_text('[stt]\nengine = "fake"\n[tts]\nengine = "fake"\n')
+    p = _plan(settings, tmp_path, changes={f"{s}.enabled": False for s in off})
+    assert p.off == off
+    argv = p.model_download_command()
+    assert argv[4:5] == ["download"] and argv.count("--set") == len(off)
+    assert commands.main(argv[4:]) == 0
+    assert created == [s for s in ("stt", "tts") if s not in off]
+    out = capsys.readouterr().out
+    for service in off:
+        assert f"{service}: off; nothing to download" in out
+
+
 def test_cli_install_takes_only_the_service_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1286,6 +1393,18 @@ def test_cli_install_prints_the_removal_line_for_old_launchdaemons(
     assert main(["install", "--dry-run", "--state-dir", str(tmp_path / "state")]) == 1
     out = capsys.readouterr().out
     assert f"\n\n  {legacy_removal_command(labels)}\n  voiced install" in out
+
+
+def test_cli_install_without_a_login_session_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("VOICED_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setattr(install_module, "has_session", lambda query: False)
+    assert main(["install", "--state-dir", str(tmp_path / "state"), "--skip-models"]) == 1
+    out = capsys.readouterr().out
+    assert "install failed: Not installing yet; nothing was changed." in out
+    assert "Screen Sharing counts" in out
+    assert not (tmp_path / "state").exists() and not (tmp_path / "config.toml").exists()
 
 
 def test_cli_install_refuses_root(

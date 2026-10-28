@@ -6,6 +6,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- `voiced install` over SSH with nobody logged in at the Mac now stops
+  before it changes anything, saying to log in at the Mac first (Screen
+  Sharing counts). It used to remove the old LaunchDaemons and build the
+  environment first, and leave the services down. `voiced doctor` reports
+  the login session too, and the message for moving from 0.4.0 or earlier
+  says the install after the removal needs someone logged in at the Mac.
+
 ## [0.5.0] - 2026-10-23
 
 voiced no longer asks for an administrator password. The services run as

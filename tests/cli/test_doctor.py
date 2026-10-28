@@ -385,6 +385,16 @@ def test_check_ports_uses_all_four(settings: Settings) -> None:
     ]
 
 
+def test_the_login_session_is_reported_as_install_refuses_it() -> None:
+    from voiced.launchd.control import domain, no_session_message
+
+    logged_in = make_runner({f"launchctl print {domain()}": CommandResult(0)})
+    check = doctor.check_session(logged_in, "someone")
+    assert (check.result, check.detail) == ("pass", "someone is logged in at this Mac")
+    check = doctor.check_session(make_runner({}), "someone")
+    assert (check.result, check.detail) == ("fail", no_session_message("someone"))
+
+
 def test_restart_after_a_reboot() -> None:
     """The agents start when the user logs in: FileVault's unlock at boot is
     that login, otherwise automatic login is (ADR 0035)."""
@@ -447,7 +457,8 @@ def test_old_launchdaemons_fail_with_their_removal(settings: Settings, no_launch
     assert check.result == "fail"
     assert check.detail.startswith(f"{watchdog}: voiced still runs as LaunchDaemons")
     assert f"/bin/launchctl bootout system/{watchdog}" in check.detail
-    assert check.detail.endswith("`; then run `voiced install`")
+    assert "`; then run `voiced install`. " in check.detail
+    assert check.detail.endswith("(Screen Sharing counts; SSH alone does not).")
     (no_launchd / f"{watchdog}.plist").unlink()
     stt = "io.github.julianbeaulieu.voiced.stt"
     loaded = make_runner({f"launchctl print system/{stt}": CommandResult(0, "system/x = {}")})

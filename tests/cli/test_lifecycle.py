@@ -167,7 +167,7 @@ def test_start_and_stop_point_old_launchdaemons_to_their_removal(
         (message,) = out
         assert message.startswith("voiced still runs as LaunchDaemons from 0.4.0 or earlier")
         assert f"\n  sudo /bin/sh -c '/bin/launchctl bootout system/{label} " in message
-        assert message.endswith("\n  voiced install")
+        assert "\n  voiced install\n\nThe services are down from the removal" in message
 
 
 def test_status_table(settings: Settings) -> None:

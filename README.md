@@ -73,7 +73,10 @@ needed)", and if you cancel, the services keep running the old way until
 you accept. With `brew upgrade --cask voiced`, Homebrew asks instead, since
 it runs the old version's uninstall step, which removes the old services;
 voiced is then down until you open the app, which installs the new
-services without asking.
+services without asking. From a terminal, `voiced install` prints the line
+that removes them; the install that follows needs you logged in at the Mac
+(Screen Sharing counts, SSH alone does not), so over SSH plan it with
+someone at the Mac.
 
 Moving the app to the Trash, or `brew uninstall --cask voiced`, leaves the
 services running: to remove voiced, use Settings > About > Uninstall
@@ -97,7 +100,9 @@ voiced install
 ```
 
 `voiced install` downloads the configured models and starts the services
-as your LaunchAgents, with no `sudo`;
+as your LaunchAgents, with no `sudo`. On a headless Mac, someone has to be
+logged in at it (Screen Sharing counts): over SSH alone the install stops
+before it changes anything;
 [docs/operations.md](docs/operations.md#commands) says what it does. Both
 the cask and the formula come from the
 [tap](https://github.com/JulianBeaulieu/homebrew-voiced).
@@ -834,7 +839,7 @@ run it with `voiced doctor --metal-probe`.
 | Streamed transcript repeats a short word after a pause | A known limit of streaming with Parakeet around one-second pauses; batch transcription of the same audio is not affected. |
 | A service exits at startup with `unknown stt engine` or `unknown tts engine` | `engine` in the config names an engine that is not installed; the message lists the installed ones. |
 | ERROR log line `ASGI callable returned without completing response` | Expected; see [Logs](docs/operations.md#logs). |
-| `voiced install`, `status` or `doctor` prints a `sudo /bin/sh -c '/bin/launchctl bootout system/...'` line | voiced 0.4.0 or earlier installed the services as LaunchDaemons, which only an administrator can remove. Run that line once (the last time voiced needs a password), then `voiced install`. |
+| `voiced install`, `status` or `doctor` prints a `sudo /bin/sh -c '/bin/launchctl bootout system/...'` line | voiced 0.4.0 or earlier installed the services as LaunchDaemons, which only an administrator can remove. Run that line once (the last time voiced needs a password), then `voiced install`, logged in at the Mac (Screen Sharing counts, SSH alone does not). |
 | `voiced install`, `stop`, `start` or `uninstall` refuses to run under `sudo` | The services are your LaunchAgents, and under `sudo` the command would address root's. Run it as yourself, without `sudo`. |
 | Home Assistant does not discover voiced | `bind` is still `127.0.0.1`, mDNS does not cross your VLAN, or macOS keeps the services' Bonjour announcements on the Mac (`voiced doctor`: Discovery). Add the integrations by the Mac's address and port; see [docs/home-assistant.md](docs/home-assistant.md). |
 | Services do not come up after a reboot | They start when you log in; without FileVault or automatic login the Mac waits at the login window. See [voiced runs while you are logged in](#voiced-runs-while-you-are-logged-in). |

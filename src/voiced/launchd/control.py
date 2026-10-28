@@ -127,6 +127,16 @@ def has_session(runner: Runner = run_command) -> bool:
     return runner(["launchctl", "print", domain()]).ok
 
 
+def no_session_message(user: str) -> str:
+    """What ``voiced install`` and ``voiced doctor`` say without
+    :func:`has_session`."""
+    return (
+        f"{user} is not logged in at this Mac, and an SSH login is not enough: the services "
+        "are LaunchAgents, which load only while you are logged in. Log in at the Mac; "
+        "Screen Sharing counts."
+    )
+
+
 def service_target(label: str) -> str:
     return f"{domain()}/{label}"
 
@@ -228,10 +238,14 @@ def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool =
         "administrator can remove. Remove them, the last time voiced needs a password, "
         "then install the LaunchAgents"
     )
+    session = (
+        "The services are down from the removal until `voiced install` loads the agents, "
+        "which needs you logged in at this Mac (Screen Sharing counts; SSH alone does not)"
+    )
     removal = legacy_removal_command([d.label for d in found])
     if one_line:
-        return f"{intro}: `{removal}`; then run `voiced install`"
-    return f"{intro}:\n\n  {removal}\n  voiced install"
+        return f"{intro}: `{removal}`; then run `voiced install`. {session}."
+    return f"{intro}:\n\n  {removal}\n  voiced install\n\n{session}."
 
 
 @dataclass(frozen=True)

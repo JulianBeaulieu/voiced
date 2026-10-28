@@ -47,8 +47,10 @@ from voiced.engines.kokoro import (
 from voiced.ffmpeg_exe import ffmpeg_origin, ffmpeg_path
 from voiced.launchd.control import (
     Runner,
+    has_session,
     legacy_daemons,
     legacy_message,
+    no_session_message,
     plist_path,
     print_service,
     run_command,
@@ -422,6 +424,14 @@ def check_ports(settings: Settings, runner: Runner) -> list[Check]:
 
 
 # Disk and launchd ---------------------------------------------------------
+
+
+def check_session(runner: Runner, user: str) -> Check:
+    """Whether ``user`` is logged in at the Mac: the agents load only then,
+    and ``voiced install`` refuses without it (ADR 0035)."""
+    if has_session(runner):
+        return Check("Login session", "pass", f"{user} is logged in at this Mac")
+    return Check("Login session", "fail", no_session_message(user))
 
 
 def check_restart(runner: Runner, user: str) -> Check:
@@ -799,6 +809,7 @@ def run_all(settings: Settings, runner: Runner = run_command) -> list[Check]:
         *check_models(settings),
         check_memory(runner),
         *check_ports(settings, runner),
+        check_session(runner, user),
         check_restart(runner, user),
         check_legacy_daemons(settings, runner, user),
         *check_agents(settings, runner),

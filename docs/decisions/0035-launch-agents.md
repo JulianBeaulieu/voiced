@@ -94,6 +94,13 @@ the rows applies ("After a reboot").
   find nothing loaded and leave the services running.
 - **No GUI session, no agents.** Over SSH with nobody logged in at the Mac
   there is no `gui/<uid>`; the `agents` step says "log in on the Mac first".
+  Amended after 0.5.0: `voiced install` checks the session first, before the
+  old daemons' refusal and before any step, and stops with nothing changed;
+  the `agents` step checks again, for a logout since. `--prepare` (the
+  app's first half of a migration) loads no agent and does not check; the
+  install that completes it does. The migration message says the install
+  after the removal needs a login at the Mac, and `voiced doctor` reports
+  the session ("Login session").
 - **The privileged script (ADR 0018)** is gone: no `install`, `check` or
   `uninstall` mode, no root rendering, no lock in `/var/run`, no path check
   of who could write the script (`foreign_writer`), no `osascript` in the

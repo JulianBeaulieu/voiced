@@ -73,7 +73,8 @@ def no_port_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Tests never reach this machine's launchd or its plists: ``launchctl``
-    on PATH answers "not found" to everything, ``HOME`` (so
+    on PATH answers "not found" to everything but ``print gui/<uid>``, so
+    the user is logged in at the Mac, ``HOME`` (so
     ``~/Library/LaunchAgents``) is a scratch directory, and so is the
     directory earlier releases' LaunchDaemons are looked for in. Returns
     that directory; tests that need launchd pass a fake runner."""
@@ -83,7 +84,10 @@ def no_launchd(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Mon
     bin_dir = root / "bin"
     bin_dir.mkdir()
     launchctl = bin_dir / "launchctl"
-    launchctl.write_text('#!/bin/sh\necho "launchctl is not run in tests" >&2\nexit 113\n')
+    launchctl.write_text(
+        f'#!/bin/sh\n[ "$*" = "print gui/{os.getuid()}" ] && exit 0\n'
+        'echo "launchctl is not run in tests" >&2\nexit 113\n'
+    )
     launchctl.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
     home = root / "home"

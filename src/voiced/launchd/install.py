@@ -41,6 +41,7 @@ from voiced.launchd.control import (
     has_session,
     legacy_daemons,
     legacy_message,
+    no_session_message,
     plist_path,
     print_service,
     run_command,
@@ -260,6 +261,12 @@ class InstallPlan:
         found = self.legacy_daemons(query)
         return legacy_message(found, self.user) if found else None
 
+    def session_refusal(self, query: Runner) -> str | None:
+        """Why the agents cannot be loaded, or None: an agent loads only into
+        the GUI domain of a user logged in at the Mac, which an SSH login
+        alone does not create."""
+        return None if has_session(query) else no_session_message(self.user)
+
     def environment_variables(self) -> dict[str, str]:
         """The environment in the agents' plists, and the Metal probe's: the
         services read everything else from ``VOICED_CONFIG`` (ADR 0018)."""
@@ -477,12 +484,11 @@ def install_agents(plan: InstallPlan, query: Runner, say: Say) -> None:
     loaded. An agent that is up to date and loaded keeps running: the
     watchdog moves the services to a new environment itself (ADR 0017).
     A label that fails to load does not stop the others. Needs the user's
-    GUI session: an agent loads only while its user is logged in."""
-    if not has_session(query):
-        raise InstallError(
-            f"{plan.user} is not logged in at this Mac (an SSH login is not enough): log in "
-            "on the Mac first; the services run as your LaunchAgents while you are logged in"
-        )
+    GUI session (:meth:`InstallPlan.session_refusal`): :func:`run_install`
+    checks it before anything else, and this again, for a logout since."""
+    refusal = plan.session_refusal(query)
+    if refusal is not None:
+        raise InstallError(refusal)
     failed: list[str] = []
     for service in SERVICES:
         label, path, plist = (
@@ -898,14 +904,21 @@ def run_install(
     default streams output and has no timeout; the engine check through
     ``query``, which captures it. The whole install holds
     :func:`voiced.layout.install_lock`. Raises :class:`InstallError`.
+
+    The refusals come first, before anything is written: without a login
+    session at the Mac, then while old LaunchDaemons are there. A dry run
+    refuses as the install would. ``prepare`` checks neither: it loads no
+    agent and leaves the daemons running (the app removes them next), and
+    the install that completes it checks both, before it changes anything
+    the services use.
     """
     progress = progress or Progress()
+    refusal = None if prepare else plan.session_refusal(query) or plan.legacy_refusal(query)
+    if refusal is not None:
+        raise InstallError(f"Not installing yet; nothing was changed. {refusal}")
     if plan.source is not None and plan.uv is None:
         raise InstallError("--source builds with uv, which is not on PATH: brew install uv")
     previous = current_manifest(plan)  # refuses before anything is written
-    refusal = None if prepare else plan.legacy_refusal(query)
-    if refusal is not None:
-        raise InstallError(f"Not installing yet. {refusal}")
     if dry_run:
         for step in install_steps(
             plan,
