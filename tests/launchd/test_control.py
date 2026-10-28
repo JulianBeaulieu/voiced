@@ -82,12 +82,15 @@ def test_the_login_session_wording() -> None:
         "(Screen Sharing counts)."
     )
     missing = control.session_refusal("someone", lambda argv: CommandResult(127, "", "gone"))
-    assert missing == "Could not check the login session: gone"
+    assert missing == (
+        "Could not check the login session: gone. Run `voiced install` again; if it keeps "
+        "failing, run `voiced doctor`."
+    )
     found = [control.LegacyDaemon("a.b.stt", "someone")]
     assert control.legacy_message(found, "someone").endswith(
         "\n  voiced install\n\nThe services are down from the removal until `voiced install` "
-        "loads the agents, which needs you logged in at this Mac; an SSH login is not "
-        "enough. Log in at the Mac (Screen Sharing counts)."
+        "loads the agents, which needs you logged in at this Mac (Screen Sharing counts); "
+        "an SSH login is not enough."
     )
 
 

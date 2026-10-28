@@ -905,18 +905,18 @@ def run_install(
     Two refusals come first, before anything is written, and say so, since
     each needs something done at the Mac before the install can go on: no
     login session there, then old LaunchDaemons. The later ones (uv, the
-    state directory) change nothing either. A dry run lists the steps, then
-    refuses as the install would, so a migration can be planned over SSH.
-    ``prepare`` checks neither: it loads no agent and leaves the daemons
-    running (the app removes them next), and the install that completes it
-    checks both, before it changes anything the services use.
+    state directory) change nothing either. Both are said together, so
+    over SSH the line that removes old daemons is there to plan with. A dry
+    run that passes the later checks lists the steps, then refuses as the
+    install would. ``prepare`` checks neither: it loads no agent and leaves
+    the daemons running (the app removes them next), and the install that
+    completes it checks both, before it changes anything the services use.
     """
     progress = progress or Progress()
     refusal = None
     if not prepare:
-        refusal = session_refusal(plan.user, query)
-    if not prepare and refusal is None:
-        refusal = plan.legacy_refusal(query)
+        reasons = (session_refusal(plan.user, query), plan.legacy_refusal(query))
+        refusal = "\n\n".join(r for r in reasons if r is not None) or None
     if refusal is not None:
         refusal = f"Not installing yet; nothing was changed. {refusal}"
         if not dry_run:

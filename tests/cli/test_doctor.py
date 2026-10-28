@@ -458,7 +458,7 @@ def test_old_launchdaemons_fail_with_their_removal(settings: Settings, no_launch
     assert check.detail.startswith(f"{watchdog}: voiced still runs as LaunchDaemons")
     assert f"/bin/launchctl bootout system/{watchdog}" in check.detail
     assert "`; then run `voiced install`. " in check.detail
-    assert check.detail.endswith(f"{control.LOG_IN}.")
+    assert check.detail.endswith("an SSH login is not enough.")
     (no_launchd / f"{watchdog}.plist").unlink()
     stt = "io.github.julianbeaulieu.voiced.stt"
     loaded = make_runner({f"launchctl print system/{stt}": CommandResult(0, "system/x = {}")})

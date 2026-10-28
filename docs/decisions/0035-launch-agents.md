@@ -1,7 +1,7 @@
 # 0035: LaunchAgents, no administrator password
 
-Date: 2026-10-23. Status: accepted; amended 2026-10-28. Supersedes 0004; amends 0003, 0006,
-0012, 0014, 0017, 0018 and 0033.
+Date: 2026-10-23. Status: accepted; amended 2026-10-28. Supersedes 0004;
+amends 0003, 0006, 0012, 0014, 0017, 0018 and 0033.
 
 ## Context
 
@@ -303,9 +303,11 @@ prefix as the user, with no password asked at any step.
 The order of the checks. The session check ran last, in the `agents` step:
 a 0.4.0 to 0.5.0 migration over SSH with nobody at the Mac had the daemons
 removed and the environment built before the install stopped, with the
-services down. `voiced install` now checks the session first, before the
-old daemons' refusal and before any step, and stops with nothing changed;
-a dry run lists the steps, then refuses the same way. The `agents` step
+services down. `voiced install` now checks the session and the old
+daemons first, before any step, and stops with nothing changed, saying
+both when both apply, so the line that removes the daemons is there over
+SSH too; a dry run lists the steps, then refuses the same way. The
+`agents` step
 checks again, for a logout during the install, and says to run
 `voiced install` again. `--prepare` loads no agent and does not check; the
 install that completes it does. One function decides

@@ -122,7 +122,7 @@ def domain() -> str:
 
 
 LOG_IN = "Log in at the Mac (Screen Sharing counts)"
-"""What to do without a login session, in every message that needs one."""
+"""What to do without a login session (:func:`session_refusal`)."""
 
 _NOT_RUN = (124, 126, 127)  # run_command's timeout, OSError, not found
 
@@ -136,7 +136,10 @@ def session_refusal(user: str, runner: Runner = run_command) -> str | None:
     if result.ok:
         return None
     if result.returncode in _NOT_RUN:
-        return f"Could not check the login session: {result.output}"
+        return (
+            f"Could not check the login session: {result.output.rstrip('.')}. Run "
+            "`voiced install` again; if it keeps failing, run `voiced doctor`."
+        )
     return (
         f"Not logged in at this Mac as {user}, and an SSH login is not enough: the services "
         f"are LaunchAgents, which load only while you are logged in. {LOG_IN}."
@@ -246,7 +249,8 @@ def legacy_message(found: Sequence[LegacyDaemon], user: str, *, one_line: bool =
     )
     session = (
         "The services are down from the removal until `voiced install` loads the agents, "
-        f"which needs you logged in at this Mac; an SSH login is not enough. {LOG_IN}"
+        "which needs you logged in at this Mac (Screen Sharing counts); an SSH login is "
+        "not enough"
     )
     removal = legacy_removal_command([d.label for d in found])
     if one_line:

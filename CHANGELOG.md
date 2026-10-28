@@ -13,7 +13,8 @@ uses [Semantic Versioning](https://semver.org/).
   counts); it used to remove the old LaunchDaemons and build the
   environment first, and leave the services down.
 - `voiced doctor` reports whether you are logged in at the Mac, and fails
-  without it, so over SSH with nobody at the Mac it now exits non-zero.
+  when you are not, so over SSH with nobody at the Mac it now exits
+  non-zero.
 - The message for moving from 0.4.0 or earlier says the install after the
   removal needs you logged in at the Mac.
 

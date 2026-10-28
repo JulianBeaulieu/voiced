@@ -398,8 +398,11 @@ def test_without_a_login_session_install_changes_nothing(
             say=said.append,
         )
     reason = session_refusal(p.user, FakeLaunchd(session=False))
-    assert str(refused.value) == f"Not installing yet; nothing was changed. {reason}"
-    assert calls == [] and launchd.calls == [["launchctl", "print", f"gui/{os.getuid()}"]]
+    removal = legacy_removal_command([p.labels[s] for s in SERVICES])
+    assert str(refused.value).startswith(f"Not installing yet; nothing was changed. {reason}")
+    assert (removal in str(refused.value)) == legacy
+    assert calls == [] and launchd.calls[0] == ["launchctl", "print", f"gui/{os.getuid()}"]
+    assert all(c[2].startswith("system/") for c in launchd.calls[1:])
     assert all(line.startswith(("would ", "$ ")) for line in said) and bool(said) == dry_run
     assert not p.state_dir.exists() and not p.config_file.exists() and not p.log_dir.exists()
     assert not p.agent_path("stt").parent.exists()
@@ -422,12 +425,16 @@ def test_the_agents_step_checks_the_session_again(settings: Settings, tmp_path: 
     what is left to do."""
     _environment(tmp_path / "env")
     p = _plan(settings, tmp_path)
-    with pytest.raises(InstallError) as refused:
-        install_agents(p, FakeLaunchd(session=False), lambda _: None)
-    assert str(refused.value) == (
-        f"{session_refusal(p.user, FakeLaunchd(session=False))} Then run `voiced install` "
-        "again: the steps before this one are done, the agents are not loaded."
-    )
+    timed_out = CommandResult(124, "", "launchctl: timed out after 30.0s")
+    for gui in (CommandResult(113), timed_out):
+        query = lambda argv, gui=gui: gui  # noqa: E731
+        with pytest.raises(InstallError) as refused:
+            install_agents(p, query, lambda _: None)
+        assert str(refused.value) == (
+            f"{session_refusal(p.user, query)} Then run `voiced install` "
+            "again: the steps before this one are done, the agents are not loaded."
+        )
+    assert "timed out after 30.0s. Run `voiced install` again;" in str(refused.value)
     assert not p.agent_path("stt").exists()
 
 
