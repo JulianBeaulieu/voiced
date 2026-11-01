@@ -57,7 +57,7 @@ dependencies = [
 # nemotron_asr_streaming loader and the first_chunk_mel its first piece is sized by.
 # Whisper (ADR 0032) calls generate(language=, word_timestamps=) and reads
 # result.language and result.segments[] start, end and text.
-stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.5.10"]
+stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.6.2"]
 # mlx-audio is pinned to the releases the engines were checked against: Kokoro
 # relies on its internals (load_voice_tensor, model(..., return_output=True),
 # the residual blocks istftnet.AdainResBlk1d and AdaINResBlock1 it wraps for
@@ -78,7 +78,7 @@ stt = ["parakeet-mlx>=0.5,<0.6", "mlx-audio>=0.5.9,<0.5.10"]
 # it to take Soprano's 32 kHz output to 24 kHz; sentencepiece is Pocket TTS's
 # tokenizer, which mlx-audio does not declare.
 tts = [
-    "mlx-audio>=0.5.9,<0.5.10",
+    "mlx-audio>=0.5.9,<0.6.2",
     "kokoro-onnx>=0.4",
     "huggingface-hub>=1.1",
     "scipy>=1.11",
