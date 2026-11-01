@@ -63,9 +63,9 @@ Python packages (src/voiced/requirements.lock)
   markdown-it-py==4.2.0  MIT  https://pypi.org/project/markdown-it-py/4.2.0/
   mdurl==0.1.2  MIT  https://pypi.org/project/mdurl/0.1.2/
   miniaudio==1.71  MIT  https://pypi.org/project/miniaudio/1.71/
-  mlx==0.32.3  MIT  https://pypi.org/project/mlx/0.32.3/
-  mlx-audio==0.5.9  MIT  https://pypi.org/project/mlx-audio/0.5.9/
-  mlx-metal==0.32.3  MIT  https://pypi.org/project/mlx-metal/0.32.3/
+  mlx==0.32.4  MIT  https://pypi.org/project/mlx/0.32.4/
+  mlx-audio==0.6.1  MIT  https://pypi.org/project/mlx-audio/0.6.1/
+  mlx-metal==0.32.4  MIT  https://pypi.org/project/mlx-metal/0.32.4/
   moonshine-voice==0.1.5  MIT  https://pypi.org/project/moonshine-voice/0.1.5/
   msgpack==1.2.3  Apache-2.0  https://pypi.org/project/msgpack/1.2.3/
   narwhals==2.27.1  MIT  https://pypi.org/project/narwhals/2.27.1/
